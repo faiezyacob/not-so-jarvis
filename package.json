@@ -1,0 +1,11 @@
+{
+  "name": "not-so-jarvis",
+  "version": "0.1.0",
+  "description": "JARVIS — Local AI Assistant",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": ["jarvis", "ai", "assistant", "local"],
+  "license": "MIT"
+}

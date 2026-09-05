@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JARVIS — Local AI Assistant</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <header class="header">
+        <div class="header-left">
+            <span class="header-title">JARVIS</span>
+            <span class="header-subtitle">LOCAL INTELLIGENCE SYSTEM</span>
+        </div>
+        <div class="header-right">
+            <span class="status-label">SYSTEM ONLINE</span>
+            <span class="status-dot"></span>
+            <button class="settings-btn" id="settingsBtn" aria-label="Settings">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="3"></circle>
+                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                </svg>
+            </button>
+            <div class="settings-dropdown" id="settingsDropdown">
+                <div class="settings-dropdown-title">WIDGETS</div>
+                <label class="settings-toggle">
+                    <input type="checkbox" checked data-widget="cpu">
+                    <span class="settings-toggle-label">CPU</span>
+                </label>
+                <label class="settings-toggle">
+                    <input type="checkbox" checked data-widget="ram">
+                    <span class="settings-toggle-label">RAM</span>
+                </label>
+                <label class="settings-toggle">
+                    <input type="checkbox" checked data-widget="vram">
+                    <span class="settings-toggle-label">VRAM</span>
+                </label>
+                <label class="settings-toggle">
+                    <input type="checkbox" checked data-widget="weather">
+                    <span class="settings-toggle-label">Weather</span>
+                </label>
+
+                <div class="settings-dropdown-title settings-section-gap">CHAT PROVIDER</div>
+                <div class="settings-field">
+                    <label class="settings-field-label">Provider</label>
+                    <select class="settings-select" id="chatProvider">
+                        <option value="ollama">Ollama</option>
+                        <option value="lmstudio">LM Studio</option>
+                    </select>
+                </div>
+                <div class="settings-field">
+                    <label class="settings-field-label">Model</label>
+                    <input type="text" class="settings-input" id="chatModel" placeholder="e.g. llama3.2" autocomplete="off">
+                </div>
+                <div class="settings-field">
+                    <button class="settings-browse-btn" id="modelLibraryBtn" type="button">Browse models</button>
+                </div>
+                <div class="settings-field">
+                    <button class="settings-unload-btn" id="unloadModelBtn" type="button">Unload model</button>
+                </div>
+                <div class="settings-field">
+                    <button class="settings-restart-btn" id="restartServerBtn" type="button">Restart server</button>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <main class="main">
+        <aside class="conversations-panel" id="conversationsPanel">
+            <div class="conv-panel-header">
+                <span class="conv-panel-title" id="convHeaderTitle">CONVERSATIONS</span>
+                <button class="conv-new-btn" id="newConversationBtn" aria-label="New conversation">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                        <line x1="12" y1="5" x2="12" y2="19"></line>
+                        <line x1="5" y1="12" x2="19" y2="12"></line>
+                    </svg>
+                </button>
+            </div>
+            <div class="conversation-list" id="conversationList"></div>
+        </aside>
+
+        <section class="chat-area">
+            <div class="chat-messages" id="chatMessages">
+                <!-- Messages injected by JS -->
+            </div>
+            <div class="chat-input-bar">
+                <input
+                    type="text"
+                    id="chatInput"
+                    class="chat-input"
+                    placeholder="Enter a command..."
+                    autocomplete="off"
+                >
+                <button class="chat-send" id="chatSend" aria-label="Send message">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="22" y1="2" x2="11" y2="13"></line>
+                        <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                    </svg>
+                </button>
+            </div>
+        </section>
+
+        <aside class="system-monitor">
+            <div class="monitor-header">SYSTEM MONITOR</div>
+
+            <div class="metric-card" id="cpuCard">
+                <div class="metric-label">CPU</div>
+                <div class="metric-name" id="cpuName">Detecting...</div>
+                <div class="metric-value" id="cpuValue">Fetching data..</div>
+                <div class="metric-detail" id="cpuDetail">-</div>
+                <canvas class="metric-graph" id="cpuGraph"></canvas>
+            </div>
+
+            <div class="metric-card" id="ramCard">
+                <div class="metric-label">RAM</div>
+                <div class="metric-value" id="ramValue">Fetching data..</div>
+                <div class="metric-detail" id="ramDetail">- / - GB</div>
+                <canvas class="metric-graph" id="ramGraph"></canvas>
+            </div>
+
+            <div class="metric-card" id="vramCard">
+                <div class="metric-label">VRAM</div>
+                <div class="metric-name" id="gpuName">Detecting...</div>
+                <div class="metric-value" id="vramValue">Fetching data..</div>
+                <div class="metric-detail" id="vramDetail">- / - GB</div>
+                <canvas class="metric-graph" id="vramGraph"></canvas>
+            </div>
+
+            <div class="metric-card" id="weatherCard">
+                <div class="metric-label">WEATHER</div>
+                <div class="weather-status" id="weatherStatus">Requesting location...</div>
+                <div class="weather-main" id="weatherMain">
+                    <span class="weather-icon" id="weatherIcon"></span>
+                    <span class="weather-temp" id="weatherTemp">--</span>
+                </div>
+                <div class="weather-detail" id="weatherDetail"></div>
+                <div class="weather-location" id="weatherLocation"></div>
+            </div>
+
+            <div class="monitor-footer">
+                <span class="footer-label">LOCAL</span>
+                <span class="footer-timestamp" id="systemTimestamp"></span>
+            </div>
+        </aside>
+    </main>
+
+    <div class="model-library-overlay" id="modelLibraryOverlay">
+        <div class="model-library">
+            <div class="model-library-header">
+                <div class="model-library-header-left">
+                    <span class="model-library-title">MODEL LIBRARY</span>
+                    <span class="model-library-subtitle">Browse and download local AI models</span>
+                </div>
+                <button class="model-library-close" id="modelLibraryClose" aria-label="Close model library">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                        <line x1="18" y1="6" x2="6" y2="18"></line>
+                        <line x1="6" y1="6" x2="18" y2="18"></line>
+                    </svg>
+                </button>
+            </div>
+            <div class="model-library-hardware" id="modelLibraryHardware">
+                <!-- Populated by JS -->
+            </div>
+            <div class="model-library-grid" id="modelLibraryGrid">
+                <!-- Populated by JS -->
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="modalOverlay">
+        <div class="modal" id="modal">
+            <div class="modal-header" id="modalHeader">
+                <!-- Populated by JS -->
+            </div>
+            <div class="modal-body" id="modalBody">
+                <!-- Populated by JS -->
+            </div>
+            <div class="modal-footer" id="modalFooter">
+                <!-- Populated by JS -->
+            </div>
+        </div>
+    </div>
+
+    <script src="js/db.js"></script>
+    <script src="js/markdown.js"></script>
+    <script src="js/hardware-compat.js"></script>
+    <script src="js/model-library.js"></script>
+    <script src="js/conversations.js"></script>
+    <script src="js/chat.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
