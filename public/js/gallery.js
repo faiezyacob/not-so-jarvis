@@ -47,11 +47,15 @@
 
         const visible = widgetImages.slice(0, 6);
         visible.forEach((img) => {
-            const cell = document.createElement('button');
-            cell.type = 'button';
+            const cell = document.createElement('div');
             cell.className = 'generated-thumb';
             cell.title = img.prompt || img.id;
+            cell.setAttribute('role', 'button');
+            cell.tabIndex = 0;
             cell.addEventListener('click', () => openPreview(img));
+            cell.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openPreview(img); }
+            });
             const thumb = document.createElement('img');
             thumb.src = img.url;
             thumb.alt = img.prompt || 'Generated image';
@@ -61,6 +65,7 @@
                 cell.textContent = 'IMG';
             });
             cell.appendChild(thumb);
+            cell.appendChild(makeDeleteButton(img, cell));
             gridEl.appendChild(cell);
         });
 
@@ -165,6 +170,45 @@
         return false;
     }
 
+    async function deleteImage(img) {
+        const res = await fetch('/api/generated/' + encodeURIComponent(img.id), { method: 'DELETE' });
+        if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            throw new Error(data.error || 'Delete failed');
+        }
+    }
+
+    // Build a delete button wired to img.id. On success it removes the image
+    // from the in-memory widget list and re-renders the grid; the cell DOM
+    // node is also removed when present (e.g. inside the View All overlay).
+    function makeDeleteButton(img, cell) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'gallery-delete-btn';
+        btn.setAttribute('aria-label', 'Delete image');
+        btn.innerHTML =
+            '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+            '<polyline points="3 6 5 6 21 6"></polyline>' +
+            '<path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>' +
+            '<line x1="10" y1="11" x2="10" y2="17"></line>' +
+            '<line x1="14" y1="11" x2="14" y2="17"></line></svg>';
+        btn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            if (!window.confirm('Delete this generated image permanently?')) return;
+            btn.disabled = true;
+            try {
+                await deleteImage(img);
+                widgetImages = widgetImages.filter((w) => w.id !== img.id);
+                renderWidget();
+                if (cell && cell.parentNode) cell.remove();
+            } catch (err) {
+                window.alert('Delete failed: ' + err.message);
+                btn.disabled = false;
+            }
+        });
+        return btn;
+    }
+
     function openPreview(img) {
         const { container, body, closeBtn } = buildModalShell('GENERATED IMAGE');
         const modal = openModal(container);
@@ -215,6 +259,25 @@
             footer.appendChild(copyBtn);
         }
 
+        const deleteBtn = document.createElement('button');
+        deleteBtn.type = 'button';
+        deleteBtn.className = 'modal-btn modal-btn-danger';
+        deleteBtn.textContent = 'Delete Image';
+        deleteBtn.addEventListener('click', async () => {
+            if (!window.confirm('Delete this generated image permanently?')) return;
+            deleteBtn.disabled = true;
+            try {
+                await deleteImage(img);
+                widgetImages = widgetImages.filter((w) => w.id !== img.id);
+                renderWidget();
+                close();
+            } catch (err) {
+                window.alert('Delete failed: ' + err.message);
+                deleteBtn.disabled = false;
+            }
+        });
+        footer.appendChild(deleteBtn);
+
         const closeButton = document.createElement('button');
         closeButton.type = 'button';
         closeButton.className = 'modal-btn modal-btn-cancel';
@@ -250,11 +313,15 @@
                 return;
             }
             images.forEach((img) => {
-                const cell = document.createElement('button');
-                cell.type = 'button';
+                const cell = document.createElement('div');
                 cell.className = 'gallery-cell';
                 cell.title = img.prompt || img.id;
+                cell.setAttribute('role', 'button');
+                cell.tabIndex = 0;
                 cell.addEventListener('click', () => openPreview(img));
+                cell.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openPreview(img); }
+                });
                 const thumb = document.createElement('img');
                 thumb.src = img.url;
                 thumb.alt = img.prompt || 'Generated image';
@@ -264,6 +331,7 @@
                     cell.textContent = 'IMG';
                 });
                 cell.appendChild(thumb);
+                cell.appendChild(makeDeleteButton(img, cell));
                 grid.appendChild(cell);
             });
         }).catch(() => {

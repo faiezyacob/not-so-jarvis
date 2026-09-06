@@ -149,11 +149,39 @@ function add(meta) {
     return publicMeta(entry);
 }
 
+// Delete a generated image by id: removes the metadata record and, when the
+// rawFilename is known, the image file from disk. Returns the removed entry,
+// or null if no matching record was found.
+function remove(id) {
+    ensureLoaded();
+    const index = history.findIndex((e) => e.id === id);
+    if (index === -1) return null;
+    const [entry] = history.splice(index, 1);
+    saveHistory(history);
+
+    const raw = entry.rawFilename || lastPathSegment(entry.file);
+    if (raw) {
+        const abs = path.join(GENERATED_DIR, path.basename(raw));
+        if (abs.startsWith(GENERATED_DIR) && fs.existsSync(abs)) {
+            try { fs.unlinkSync(abs); } catch (err) { /* ignore — record already removed */ }
+        }
+    }
+    return entry;
+}
+
+function lastPathSegment(str) {
+    if (!str) return null;
+    const decoded = decodeURIComponent(str);
+    const idx = decoded.lastIndexOf('/');
+    return idx === -1 ? decoded : decoded.slice(idx + 1);
+}
+
 module.exports = {
     GENERATED_DIR,
     HISTORY_PATH,
     list,
     listRecent,
     add,
+    remove,
     makeId
 };

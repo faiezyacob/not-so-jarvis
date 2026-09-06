@@ -264,6 +264,19 @@ async function handleAPI(req, res, urlPath) {
         return true;
     }
 
+    // DELETE /api/generated/:id — delete a generated image (history + file)
+    const genDeleteMatch = urlPath.match(/^\/api\/generated\/([^/]+)$/);
+    if (genDeleteMatch && req.method === 'DELETE') {
+        const id = decodeURIComponent(genDeleteMatch[1]);
+        const removed = generatedHistory.remove(id);
+        if (!removed) {
+            json(res, 404, { error: 'Image not found' });
+            return true;
+        }
+        json(res, 200, { ok: true });
+        return true;
+    }
+
     // POST /api/comfyui/free — unload all ComfyUI models and free cached memory
     if (urlPath === '/api/comfyui/free' && req.method === 'POST') {
         try {
