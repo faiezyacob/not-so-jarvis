@@ -86,6 +86,15 @@
                         placeholder="Loading..." autocomplete="off">
                     <datalist id="imageVaeList"></datalist>
                 </div>
+                <div class="settings-dropdown-title settings-section-slim">LORA STACK</div>
+                <div class="settings-field">
+                    <div class="lora-list" id="loraList"></div>
+                    <select class="settings-select" id="loraAddSelect">
+                        <option value="">— Add LoRA —</option>
+                    </select>
+                    <span class="settings-hint">Attach LoRAs to every generation. Stacked in order, each with its own strength.</span>
+                    <span class="settings-save-status" id="loraStatus"></span>
+                </div>
                 <div class="settings-field">
                     <span class="settings-hint">Blank = use default. Leave a field and press Enter to save. Clear a field and press Enter to revert.</span>
                     <span class="settings-save-status" id="imageSettingsStatus"></span>

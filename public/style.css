@@ -158,6 +158,8 @@ body {
     right: 24px;
     min-width: 300px;
     max-width: 340px;
+    max-height: calc(100vh - 90px);
+    overflow-y: auto;
     background: var(--bg-secondary);
     border: 1px solid var(--border-color);
     border-radius: 8px;
@@ -1174,6 +1176,118 @@ em {
 }
 
 .settings-save-status--error {
+    color: #d98c72;
+}
+
+/* --- LoRA Stack (Image Generation Settings) --- */
+
+.settings-section-slim {
+    padding: 2px 14px 4px;
+    margin-bottom: 0;
+}
+
+.lora-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 168px;
+    overflow-y: auto;
+}
+
+.lora-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 6px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 5px;
+}
+
+.lora-row--off {
+    opacity: 0.45;
+}
+
+.lora-row-toggle {
+    appearance: none;
+    width: 26px;
+    height: 14px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 7px;
+    position: relative;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    flex-shrink: 0;
+}
+
+.lora-row-toggle::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 8px;
+    height: 8px;
+    background: var(--text-dim);
+    border-radius: 50%;
+    transition: all 0.2s ease;
+}
+
+.lora-row-toggle:checked {
+    background: rgba(108, 255, 154, 0.15);
+    border-color: rgba(108, 255, 154, 0.3);
+}
+
+.lora-row-toggle:checked::after {
+    transform: translateX(12px);
+    background: var(--accent);
+}
+
+.lora-name {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-secondary);
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.lora-strength {
+    width: 64px;
+    height: 4px;
+    accent-color: var(--accent);
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.lora-strength-label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--accent-muted);
+    width: 30px;
+    text-align: right;
+    flex-shrink: 0;
+}
+
+.lora-remove {
+    width: 18px;
+    height: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: color 0.15s ease;
+}
+
+.lora-remove:hover {
     color: #d98c72;
 }
 

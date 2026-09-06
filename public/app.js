@@ -254,12 +254,177 @@ function initFreeComfyButton() {
 // in data/config.json so they apply to every generation. The UI lists the
 // models ComfyUI actually has when it is reachable, but free text is always
 // allowed.
+//
+// LoRA stack: users attach LoRAs from the list ComfyUI reports (LoraLoader
+// lora_name entries). Each attached LoRA has an on/off toggle and a strength
+// slider. The stack is persisted as settings.loras[] and chained into the
+// Krea2 workflow by the image-generator service.
 
 const IMAGE_GEN_FIELDS = [
     { key: 'unet', inputId: 'imageUnet', listId: 'imageUnetList' },
     { key: 'clip', inputId: 'imageClip', listId: 'imageClipList' },
     { key: 'vae', inputId: 'imageVae', listId: 'imageVaeList' }
 ];
+
+const LORA_STRENGTH_MIN = 0;
+const LORA_STRENGTH_MAX = 2;
+const LORA_STRENGTH_STEP = 0.05;
+
+// --- LoRA stack helpers ---
+
+function initLoraStack() {
+    return {
+        loras: [],          // [{ name, strength, on }] current attached stack
+        available: [],      // lora filenames ComfyUI reports
+        listEl: null,
+        addSelect: null,
+        statusEl: null
+    };
+}
+
+function loraStatus(state, text, isError) {
+    if (!state.statusEl) return;
+    state.statusEl.textContent = text;
+    state.statusEl.classList.toggle('settings-save-status--error', !!isError);
+}
+
+function loraRow(state, lora, index) {
+    const row = document.createElement('div');
+    row.className = 'lora-row' + (lora.on === false ? ' lora-row--off' : '');
+
+    const toggle = document.createElement('input');
+    toggle.type = 'checkbox';
+    toggle.className = 'lora-row-toggle';
+    toggle.checked = lora.on !== false;
+    toggle.title = 'Toggle LoRA';
+    toggle.addEventListener('change', () => {
+        lora.on = toggle.checked;
+        saveLoraStack(state);
+    });
+
+    const name = document.createElement('span');
+    name.className = 'lora-name';
+    name.textContent = lora.name;
+    name.title = lora.name;
+
+    const strength = document.createElement('input');
+    strength.type = 'range';
+    strength.className = 'lora-strength';
+    strength.min = String(LORA_STRENGTH_MIN);
+    strength.max = String(LORA_STRENGTH_MAX);
+    strength.step = String(LORA_STRENGTH_STEP);
+    strength.value = String(clampLoraStrength(lora.strength));
+    strength.title = 'Strength';
+    strength.addEventListener('input', () => {
+        row.dataset.strength = strength.value;
+    });
+    strength.addEventListener('change', () => {
+        lora.strength = Number(strength.value);
+        saveLoraStack(state);
+    });
+    row.dataset.strength = String(clampLoraStrength(lora.strength));
+
+    const strengthVal = document.createElement('span');
+    strengthVal.className = 'lora-strength-label';
+
+    const remove = document.createElement('button');
+    remove.className = 'lora-remove';
+    remove.textContent = '\u00D7';
+    remove.title = 'Remove LoRA';
+    remove.addEventListener('click', () => {
+        state.loras.splice(index, 1);
+        renderLoraStack(state);
+        saveLoraStack(state);
+    });
+
+    row.appendChild(toggle);
+    row.appendChild(name);
+    row.appendChild(strength);
+    row.appendChild(strengthVal);
+    row.appendChild(remove);
+    return row;
+}
+
+function clampLoraStrength(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return 1;
+    return Math.max(LORA_STRENGTH_MIN, Math.min(LORA_STRENGTH_MAX, n));
+}
+
+function renderLoraStack(state) {
+    if (!state.listEl) return;
+    state.listEl.innerHTML = '';
+
+    state.loras.forEach((lora, i) => {
+        const row = loraRow(state, lora, i);
+        state.listEl.appendChild(row);
+        const label = row.querySelector('.lora-strength-label');
+        const slider = row.querySelector('.lora-strength');
+        const updateLabel = () => { label.textContent = Number(slider ? slider.value : (lora.strength || 1)).toFixed(2); };
+        if (slider) slider.addEventListener('input', updateLabel);
+        updateLabel();
+    });
+
+    // Rebuild the "Add LoRA" dropdown, hiding names already in the stack.
+    if (state.addSelect) {
+        const attached = new Set(state.loras.map(l => l.name));
+        state.addSelect.innerHTML = '';
+        const placeholder = document.createElement('option');
+        placeholder.value = '';
+        placeholder.textContent = '\u2014 Add LoRA \u2014';
+        state.addSelect.appendChild(placeholder);
+        state.available.forEach(name => {
+            if (attached.has(name)) return;
+            const opt = document.createElement('option');
+            opt.value = name;
+            opt.textContent = name;
+            state.addSelect.appendChild(opt);
+        });
+    }
+}
+
+async function saveLoraStack(state) {
+    loraStatus(state, 'Saving...');
+    try {
+        const res = await fetch('/api/settings/image', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ loras: state.loras })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            loraStatus(state, 'Save failed: ' + (data.error || 'Unknown error'), true);
+            return;
+        }
+        const count = state.loras.filter(l => l.on !== false).length;
+        loraStatus(state, count
+            ? 'Saved ' + count + ' LoRA' + (count > 1 ? 's' : '')
+            : 'No active LoRAs');
+    } catch {
+        loraStatus(state, 'Save failed: connection error', true);
+    }
+    setTimeout(() => loraStatus(state, ''), 3000);
+}
+
+function initLoraSettings(state) {
+    const listEl = document.getElementById('loraList');
+    const addSelect = document.getElementById('loraAddSelect');
+    const statusEl = document.getElementById('loraStatus');
+    if (!listEl || !addSelect) return;
+
+    state.listEl = listEl;
+    state.addSelect = addSelect;
+    state.statusEl = statusEl;
+
+    addSelect.addEventListener('change', () => {
+        const name = addSelect.value;
+        if (!name) return;
+        state.loras.push({ name, strength: 1, on: true });
+        addSelect.value = '';
+        renderLoraStack(state);
+        saveLoraStack(state);
+    });
+}
 
 function initImageGenSettings() {
     const inputs = IMAGE_GEN_FIELDS
@@ -269,6 +434,9 @@ function initImageGenSettings() {
 
     const statusEl = document.getElementById('imageSettingsStatus');
     let saved = {};
+
+    const loraState = initLoraStack();
+    initLoraSettings(loraState);
 
     const setStatus = (text, isError) => {
         if (!statusEl) return;
@@ -331,8 +499,18 @@ function initImageGenSettings() {
                 }
             });
 
+            // Load the LoRA stack (attached list + available scan from ComfyUI).
+            loraState.available = Array.isArray(choices.loras) ? choices.loras : [];
+            loraState.loras = Array.isArray(settings.loras) ? settings.loras.map((l) => ({
+                name: l.name,
+                strength: clampLoraStrength(l.strength),
+                on: l.on !== false
+            })) : [];
+            renderLoraStack(loraState);
+
             if (!data.comfyAvailable) {
                 setStatus('ComfyUI unreachable — showing defaults only', true);
+                loraStatus(loraState, 'ComfyUI unreachable — LoRAs unavailable', true);
             }
         } catch {
             setStatus('Could not load image settings', true);

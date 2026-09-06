@@ -295,11 +295,14 @@ const DEFAULT_SETTINGS = {
     height: Number(process.env.KREA2_HEIGHT) || 1024,
     steps: Number(process.env.KREA2_STEPS) || 8,
     cfg: Number(process.env.KREA2_CFG) || 1,
+    // Stacked LoRAs applied to every Krea2 generation, in order. Each entry
+    // is { name, strength, on } where strength is the model+clip LoRA scale.
+    loras: [],
 };
 
 // Fields the user may override through the settings panel / API. Kept
 // separate from DEFAULT_SETTINGS so we only persist explicit overrides.
-const CONFIGURABLE_KEYS = ['unet', 'clip', 'clipType', 'vae', 'width', 'height', 'steps', 'cfg'];
+const CONFIGURABLE_KEYS = ['unet', 'clip', 'clipType', 'vae', 'width', 'height', 'steps', 'cfg', 'loras'];
 
 // Effective settings = env-driven defaults merged with any globally stored
 // overrides from data/config.json (see config-manager).
@@ -319,13 +322,37 @@ function getDefaults() {
     return { ...DEFAULT_SETTINGS };
 }
 
+function clampNumber(value, min, max, fallback) {
+    const n = Number(value);
+    return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : fallback;
+}
+
+// Normalize a client-supplied LoRA list. Drops entries without a name and
+// clamps strength to Mix Studio's -100..100 range (the UI uses 0..2).
+function sanitizeLoras(value) {
+    if (!Array.isArray(value)) return [];
+    const out = [];
+    for (const item of value) {
+        const name = String((item && item.name) || '').trim();
+        if (!name) continue;
+        out.push({
+            name,
+            strength: clampNumber(item.strength, -100, 100, 1),
+            on: item.on !== false
+        });
+    }
+    return out;
+}
+
 function sanitizeSettings(patch) {
     const out = {};
     for (const key of CONFIGURABLE_KEYS) {
         if (!(key in patch)) continue;
         const value = patch[key];
         if (value === null) { out[key] = null; continue; }
-        if (key === 'width' || key === 'height' || key === 'steps') {
+        if (key === 'loras') {
+            out[key] = sanitizeLoras(value);
+        } else if (key === 'width' || key === 'height' || key === 'steps') {
             const n = Math.round(Number(value));
             if (Number.isFinite(n) && n > 0) out[key] = n;
         } else if (key === 'cfg') {
@@ -360,7 +387,8 @@ async function getModelChoices() {
         return {
             unets: required(info.UNETLoader, 'unet_name'),
             clips: required(info.CLIPLoader, 'clip_name'),
-            vaes: required(info.VAELoader, 'vae_name')
+            vaes: required(info.VAELoader, 'vae_name'),
+            loras: required(info.LoraLoader, 'lora_name')
         };
     } catch {
         return null;
@@ -380,6 +408,34 @@ function diffusionModelLoader(unetName) {
     return { class_type: 'UNETLoader', inputs: { unet_name: name, weight_dtype: 'default' } };
 }
 
+// Chain LoraLoader nodes after the base UNET/CLIP loaders. Each active LoRA
+// becomes a LoraLoader whose model/clip outputs feed the next, so stacked
+// LoRAs compose in order (same approach Mix Studio uses). Returns the final
+// { model, clip } references for the sampler and prompt encoders.
+function buildLoraChain(graph, loras) {
+    let model = ['unet', 0];
+    let clip = ['clip', 0];
+    let n = 0;
+    for (const l of loras || []) {
+        if (!l || !l.on || !l.name) continue;
+        n += 1;
+        const key = 'lora' + n;
+        graph[key] = {
+            class_type: 'LoraLoader',
+            inputs: {
+                model,
+                clip,
+                lora_name: l.name,
+                strength_model: Number(l.strength) || 0,
+                strength_clip: Number(l.strength) || 0
+            }
+        };
+        model = [key, 0];
+        clip = [key, 1];
+    }
+    return { model, clip };
+}
+
 function buildKrea2T2IGraph(prompt, options = {}) {
     const settings = Object.assign({}, DEFAULT_SETTINGS, options.settings || {});
     const seed = Number.isInteger(options.seed) && options.seed >= 0 ? options.seed : 0;
@@ -394,9 +450,16 @@ function buildKrea2T2IGraph(prompt, options = {}) {
     graph.clip = { class_type: 'CLIPLoader', inputs: { clip_name: settings.clip, type: settings.clipType, device: 'default' } };
     graph.vae = { class_type: 'VAELoader', inputs: { vae_name: settings.vae } };
 
-    graph.pos = { class_type: 'CLIPTextEncode', inputs: { clip: ['clip', 0], text: String(prompt || '') } };
+    // Chain any attached LoRAs onto the base model + clip. When no LoRAs are
+    // configured (or all disabled) this returns the raw ['unet', 0] / ['clip', 0]
+    // refs, so the graph is identical to the plain text-to-image pipeline.
+    const chain = buildLoraChain(graph, settings.loras);
+    const modelRef = chain.model;
+    const clipRef = chain.clip;
+
+    graph.pos = { class_type: 'CLIPTextEncode', inputs: { clip: clipRef, text: String(prompt || '') } };
     graph.neg = negative
-        ? { class_type: 'CLIPTextEncode', inputs: { clip: ['clip', 0], text: negative } }
+        ? { class_type: 'CLIPTextEncode', inputs: { clip: clipRef, text: negative } }
         : { class_type: 'ConditioningZeroOut', inputs: { conditioning: ['pos', 0] } };
 
     graph.latent = {
@@ -407,7 +470,7 @@ function buildKrea2T2IGraph(prompt, options = {}) {
     graph.sampler = {
         class_type: 'KSampler',
         inputs: {
-            model: ['unet', 0],
+            model: modelRef,
             positive: ['pos', 0],
             negative: ['neg', 0],
             latent_image: ['latent', 0],
@@ -514,11 +577,15 @@ async function generateImage(prompt, options = {}) {
         console.log('[image-generator] saved image:', basename, '(' + buffer.length + ' bytes)');
 
         // Record lightweight metadata so the Generated gallery can show it.
+        const activeLoras = (settings.loras || [])
+            .filter((l) => l && l.on && l.name)
+            .map((l) => ({ name: l.name, strength: Number(l.strength) || 0 }));
         const meta = generatedHistory.add({
             file: '/generated/' + encodeURIComponent(basename),
             rawFilename: basename,
             prompt,
             model: 'Krea2',
+            loras: activeLoras,
             width: settings.width,
             height: settings.height
         });
@@ -547,6 +614,7 @@ module.exports = {
     stripCreativeMetaInstructions,
     generateImage,
     buildKrea2T2IGraph,
+    buildLoraChain,
     validateGraphAgainstComfy,
     effectiveSettings,
     getDefaults,
