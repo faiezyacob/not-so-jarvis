@@ -36,4 +36,27 @@ function setModelConfig(provider, model) {
     return config;
 }
 
-module.exports = { getConfig, setModelConfig };
+const IMAGE_SETTINGS_KEY = 'imageGeneration';
+
+function getImageSettings() {
+    const config = loadConfig();
+    const stored = config[IMAGE_SETTINGS_KEY];
+    return stored && typeof stored === 'object' ? stored : {};
+}
+
+function setImageSettings(patch) {
+    const config = loadConfig();
+    const current = { ...(config[IMAGE_SETTINGS_KEY] || {}) };
+    for (const [key, value] of Object.entries(patch || {})) {
+        if (value === null || value === undefined || value === '') {
+            delete current[key];
+        } else {
+            current[key] = value;
+        }
+    }
+    config[IMAGE_SETTINGS_KEY] = current;
+    saveConfig(config);
+    return current;
+}
+
+module.exports = { getConfig, setModelConfig, getImageSettings, setImageSettings };

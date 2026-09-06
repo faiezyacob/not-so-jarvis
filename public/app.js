@@ -107,6 +107,109 @@ function initSettings() {
     });
 
     initChatProviderSettings();
+    initImageGenSettings();
+}
+
+// --- Image Generation Settings ---
+//
+// UNET / CLIP / VAE overrides for the Krea2 pipeline are stored server-side
+// in data/config.json so they apply to every generation. The UI lists the
+// models ComfyUI actually has when it is reachable, but free text is always
+// allowed.
+
+const IMAGE_GEN_FIELDS = [
+    { key: 'unet', inputId: 'imageUnet', listId: 'imageUnetList' },
+    { key: 'clip', inputId: 'imageClip', listId: 'imageClipList' },
+    { key: 'vae', inputId: 'imageVae', listId: 'imageVaeList' }
+];
+
+function initImageGenSettings() {
+    const inputs = IMAGE_GEN_FIELDS
+        .map(f => ({ f, input: document.getElementById(f.inputId) }))
+        .filter(x => x.input);
+    if (!inputs.length) return;
+
+    const statusEl = document.getElementById('imageSettingsStatus');
+    let saved = {};
+
+    const setStatus = (text, isError) => {
+        if (!statusEl) return;
+        statusEl.textContent = text;
+        statusEl.classList.toggle('settings-save-status--error', !!isError);
+    };
+
+    const persist = async (field, input) => {
+        const value = input.value.trim();
+        if (value === (saved[field.key] || '')) return;
+
+        setStatus('Saving...');
+        try {
+            const res = await fetch('/api/settings/image', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ [field.key]: value })
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                setStatus('Save failed: ' + (data.error || 'Unknown error'), true);
+                return;
+            }
+            saved[field.key] = value;
+            setStatus(value ? 'Saved: ' + value : 'Reverted to default');
+        } catch {
+            setStatus('Save failed: connection error', true);
+        }
+        setTimeout(() => setStatus(''), 3000);
+    };
+
+    (async () => {
+        try {
+            const res = await fetch('/api/settings/image');
+            if (!res.ok) throw new Error('API error');
+            const data = await res.json();
+
+            const defaults = data.defaults || {};
+            const settings = data.settings || {};
+            const choices = data.choices || {};
+
+            IMAGE_GEN_FIELDS.forEach((f) => {
+                const input = document.getElementById(f.inputId);
+                if (!input) return;
+                saved[f.key] = settings[f.key] || '';
+                input.value = saved[f.key];
+                input.placeholder = f.key === 'clip'
+                    ? (defaults.clip || 'CLIP model')
+                    : (defaults[f.key] || (f.key.toUpperCase() + ' model'));
+                input.title = 'Default: ' + (defaults[f.key] || '');
+
+                const list = document.getElementById(f.listId);
+                if (list) {
+                    const options = choices[f.key === 'clip' ? 'clips' : f.key + 's'] || [];
+                    options.forEach((name) => {
+                        const opt = document.createElement('option');
+                        opt.value = name;
+                        list.appendChild(opt);
+                    });
+                }
+            });
+
+            if (!data.comfyAvailable) {
+                setStatus('ComfyUI unreachable — showing defaults only', true);
+            }
+        } catch {
+            setStatus('Could not load image settings', true);
+        }
+    })();
+
+    inputs.forEach(({ f, input }) => {
+        input.addEventListener('change', () => persist(f, input));
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                input.blur();
+            }
+        });
+    });
 }
 
 // --- Chat Provider Settings ---

@@ -156,7 +156,8 @@ body {
     position: absolute;
     top: calc(100% + 6px);
     right: 24px;
-    min-width: 210px;
+    min-width: 300px;
+    max-width: 340px;
     background: var(--bg-secondary);
     border: 1px solid var(--border-color);
     border-radius: 8px;
@@ -636,6 +637,45 @@ body {
     }
 }
 
+/* --- Generating Status --- */
+
+.generating-status {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--accent);
+    letter-spacing: 0.3px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.generating-status::before {
+    content: '';
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent);
+    opacity: 0.5;
+    animation: generatingPulse 1.2s ease-in-out infinite;
+}
+
+@keyframes generatingPulse {
+    0%, 100% { opacity: 0.3; transform: scale(0.8); }
+    50% { opacity: 1; transform: scale(1.1); }
+}
+
+/* Markdown Formatted Content - Image */
+
+.md-image {
+    display: block;
+    max-width: 100%;
+    max-height: 480px;
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+    margin: 10px 0;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
+}
+
 /* --- Markdown Formatted Content --- */
 
 .message-content p {
@@ -1067,6 +1107,28 @@ em {
     .metric-graph {
         height: 64px;
     }
+}
+
+/* --- Image Generation Settings --- */
+
+.settings-hint {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    line-height: 1.4;
+    letter-spacing: 0.3px;
+    color: var(--text-dim);
+}
+
+.settings-save-status {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: 0.3px;
+    color: var(--accent-muted);
+    min-height: 12px;
+}
+
+.settings-save-status--error {
+    color: #d98c72;
 }
 
 /* --- Settings Browse Button --- */

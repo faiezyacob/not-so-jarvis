@@ -2,6 +2,31 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
+// Minimal .env loader (no external dependencies). Reads KEY=VALUE lines from
+// a `.env` file next to server.js into process.env, without overwriting
+// variables already set by the shell.
+(function loadEnvFile() {
+    try {
+        const envPath = path.join(__dirname, '.env');
+        if (!fs.existsSync(envPath)) return;
+        const lines = fs.readFileSync(envPath, 'utf8').split(/\r?\n/);
+        for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith('#')) continue;
+            const eq = trimmed.indexOf('=');
+            if (eq === -1) continue;
+            const key = trimmed.slice(0, eq).trim();
+            let value = trimmed.slice(eq + 1).trim();
+            if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+                value = value.slice(1, -1);
+            }
+            if (key && process.env[key] === undefined) process.env[key] = value;
+        }
+    } catch (err) {
+        console.warn('[env] Could not load .env:', err.message);
+    }
+})();
+
 const PORT = process.env.PORT || 3001;
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
@@ -35,6 +60,8 @@ const contextBuilder = require('./server/context-builder');
 const providers = require('./server/providers');
 const models = require('./server/models');
 const providerManager = require('./server/provider-manager');
+const imageGenerator = require('./services/image-generator');
+const GENERATED_DIR = path.join(__dirname, 'data', 'generated');
 
 function readBody(req) {
     return new Promise((resolve, reject) => {
@@ -184,6 +211,35 @@ async function handleAPI(req, res, urlPath) {
         return true;
     }
 
+    // GET /api/settings/image — current + default image generation settings
+    // for the Krea2 pipeline, plus the UNET/CLIP/VAE models ComfyUI has
+    // available (null when ComfyUI is unreachable).
+    if (urlPath === '/api/settings/image' && req.method === 'GET') {
+        try {
+            const settings = imageGenerator.effectiveSettings();
+            const defaults = imageGenerator.getDefaults();
+            const choices = await imageGenerator.getModelChoices();
+            const comfyAvailable = choices !== null;
+            json(res, 200, { settings, defaults, choices, comfyAvailable });
+        } catch (err) {
+            json(res, 500, { error: err.message });
+        }
+        return true;
+    }
+
+    // POST /api/settings/image — persist global image generation overrides
+    // (unet, clip, clipType, vae, width, height, steps, cfg).
+    if (urlPath === '/api/settings/image' && req.method === 'POST') {
+        try {
+            const body = await readBody(req);
+            const settings = imageGenerator.saveSettings(body || {});
+            json(res, 200, { ok: true, settings });
+        } catch (err) {
+            json(res, 400, { error: err.message });
+        }
+        return true;
+    }
+
     // POST /api/models/unload (legacy)
     if (urlPath === '/api/models/unload' && req.method === 'POST') {
         handleUnloadModel(req, res);
@@ -247,6 +303,23 @@ async function handleAPI(req, res, urlPath) {
     const sumMatch = urlPath.match(/^\/api\/conversations\/([^/]+)\/summarize$/);
     if (sumMatch && req.method === 'POST') {
         handleSummarize(req, res, decodeURIComponent(sumMatch[1]));
+        return true;
+    }
+
+    // GET /generated/:file — serve generated images
+    const generatedMatch = urlPath.match(/^\/generated\/([^/]+)$/);
+    if (generatedMatch && req.method === 'GET') {
+        const filename = decodeURIComponent(generatedMatch[1]);
+        const safeName = path.basename(filename);
+        const fullPath = path.join(GENERATED_DIR, safeName);
+        if (!fullPath.startsWith(GENERATED_DIR) || !fs.existsSync(fullPath)) {
+            send404(res);
+            return true;
+        }
+        const ext = path.extname(fullPath).toLowerCase();
+        const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+        res.writeHead(200, { 'Content-Type': contentType, 'Cache-Control': 'public, max-age=31536000, immutable' });
+        fs.createReadStream(fullPath).pipe(res);
         return true;
     }
 
@@ -402,8 +475,6 @@ async function handleChatStream(req, res) {
             return;
         }
 
-        const contextMessages = contextBuilder.buildContext(conversationId, message, provider, model);
-
         // Set up SSE headers
         res.writeHead(200, {
             'Content-Type': 'text/event-stream',
@@ -411,6 +482,20 @@ async function handleChatStream(req, res) {
             'Connection': 'keep-alive',
             'X-Accel-Buffering': 'no'
         });
+
+        // Detect whether this request should generate an image. If so, run the
+        // Krea2/ComfyUI pipeline and stream a single image event when done.
+        const intent = await imageGenerator.detectIntent(message, providers, provider, model);
+
+        if (intent.intent === 'image_generation') {
+            await handleImageGenerationStream(req, res, {
+                provider, model, conversationId, message,
+                imagePrompt: intent.prompt
+            });
+            return;
+        }
+
+        const contextMessages = contextBuilder.buildContext(conversationId, message, provider, model);
 
         let fullReply = '';
 
@@ -439,6 +524,60 @@ async function handleChatStream(req, res) {
             res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
             res.end();
         }
+    }
+}
+
+// Handle an image-generation chat request over SSE. Emits a "generating"
+// status event, then an "image" event with the chat-ready payload, or an
+// "error" event on failure.
+async function handleImageGenerationStream(req, res, opts) {
+    const { provider, model, conversationId, message, imagePrompt } = opts;
+
+    try {
+        if (!imageGenerator.canStartGeneration()) {
+            res.write(`data: ${JSON.stringify({ error: 'An image generation is already in progress. Please wait for it to finish.' })}\n\n`);
+            res.end();
+            return;
+        }
+
+        res.write(`data: ${JSON.stringify({ generating: 'Generating image...' })}\n\n`);
+
+        const result = await imageGenerator.generateImage(imagePrompt, { provider, model });
+
+        const content =
+            'Generated image:\n' +
+            '**Prompt:** ' + imagePrompt + '\n\n' +
+            '![' + 'image' + '](' + result.url + ')';
+
+        res.write(`data: ${JSON.stringify({ image: { url: result.url, content } })}\n\n`);
+        res.end();
+    } catch (err) {
+        console.error('[image-generator] Generation failed:', err.message, '\n', err.stack);
+        res.write(`data: ${JSON.stringify({ error: friendlyImageError(err) })}\n\n`);
+        res.end();
+    }
+}
+
+function friendlyImageError(err) {
+    switch (err.code) {
+        case 'comfyui_unavailable':
+            return 'ComfyUI is not running. Start ComfyUI, then try again.';
+        case 'comfyui_missing_nodes':
+            return err.message;
+        case 'comfyui_krea2_clip_unsupported':
+            return err.message;
+        case 'comfyui_validation_error':
+            return err.message;
+        case 'comfyui_generation_error':
+            return err.message;
+        case 'comfyui_timeout':
+            return 'Image generation timed out. ComfyUI may be overloaded — please try again.';
+        case 'comfyui_output_not_found':
+            return 'ComfyUI finished but did not produce an image. Check the ComfyUI console, then try again.';
+        case 'generation_busy':
+            return err.message;
+        default:
+            return 'Image generation failed: ' + (err.message || 'unknown error');
     }
 }
 

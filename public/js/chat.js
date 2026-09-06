@@ -244,6 +244,7 @@ const Chat = (() => {
             const decoder = new TextDecoder();
             let buffer = '';
             let fullReply = '';
+            let generatingEl = null;
 
             while (true) {
                 const { done, value } = await reader.read();
@@ -257,10 +258,29 @@ const Chat = (() => {
                     if (line.startsWith('data: ')) {
                         const data = JSON.parse(line.slice(6));
                         if (data.error) {
-                            addMessageDom('ai', 'Error: ' + data.error);
-                            return;
+                            if (generatingEl) { generatingEl.remove(); generatingEl = null; }
+                            contentEl.innerHTML = Markdown.parse(data.error);
+                            fullReply = data.error;
+                            aiMessageEl.classList.add('message--error');
+                            continue;
+                        }
+                        if (data.generating) {
+                            if (!generatingEl) {
+                                generatingEl = document.createElement('div');
+                                generatingEl.className = 'generating-status';
+                                contentEl.appendChild(generatingEl);
+                            }
+                            generatingEl.textContent = data.generating;
+                            chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+                        }
+                        if (data.image) {
+                            fullReply = data.image.content;
+                            if (generatingEl) generatingEl.remove();
+                            contentEl.innerHTML = Markdown.parse(data.image.content);
+                            chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
                         }
                         if (data.chunk) {
+                            if (generatingEl) generatingEl.remove();
                             fullReply += data.chunk;
                             contentEl.innerHTML = Markdown.parse(fullReply);
                             chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;

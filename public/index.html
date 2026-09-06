@@ -62,6 +62,30 @@
                 <div class="settings-field">
                     <button class="settings-restart-btn" id="restartServerBtn" type="button">Restart server</button>
                 </div>
+
+                <div class="settings-dropdown-title settings-section-gap">IMAGE GENERATION</div>
+                <div class="settings-field">
+                    <label class="settings-field-label" for="imageUnet">UNET Model</label>
+                    <input type="text" class="settings-input" id="imageUnet" list="imageUnetList"
+                        placeholder="Loading..." autocomplete="off">
+                    <datalist id="imageUnetList"></datalist>
+                </div>
+                <div class="settings-field">
+                    <label class="settings-field-label" for="imageClip">CLIP Model</label>
+                    <input type="text" class="settings-input" id="imageClip" list="imageClipList"
+                        placeholder="Loading..." autocomplete="off">
+                    <datalist id="imageClipList"></datalist>
+                </div>
+                <div class="settings-field">
+                    <label class="settings-field-label" for="imageVae">VAE Model</label>
+                    <input type="text" class="settings-input" id="imageVae" list="imageVaeList"
+                        placeholder="Loading..." autocomplete="off">
+                    <datalist id="imageVaeList"></datalist>
+                </div>
+                <div class="settings-field">
+                    <span class="settings-hint">Blank = use default. Leave a field and press Enter to save. Clear a field and press Enter to revert.</span>
+                    <span class="settings-save-status" id="imageSettingsStatus"></span>
+                </div>
             </div>
         </div>
     </header>

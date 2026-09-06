@@ -36,6 +36,11 @@ const Markdown = (() => {
         // Strikethrough (~~ ... ~~)
         result = result.replace(/~~([^~]+)~~/g, '<del>$1</del>');
 
+        // Images ![alt](url) - handle before links so they don't match as links
+        result = result.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, url) => {
+            return '<img class="md-image" src="' + url + '" alt="' + alt + '">';
+        });
+
         // Links [text](url)
         result = result.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer" class="md-link">$1</a>');
 
