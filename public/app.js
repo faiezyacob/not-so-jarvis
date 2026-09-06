@@ -71,6 +71,116 @@ function applyWidgetSettings(settings) {
     });
 }
 
+// --- Widget Order (Drag & Drop) ---
+
+const WIDGET_ORDER_KEY = 'jarvis-widget-order';
+const DEFAULT_WIDGET_ORDER = ['cpuCard', 'ramCard', 'vramCard', 'weatherCard', 'generatedWidget'];
+
+function loadWidgetOrder() {
+    try {
+        const saved = localStorage.getItem(WIDGET_ORDER_KEY);
+        if (saved) {
+            const order = JSON.parse(saved);
+            if (Array.isArray(order) && order.length === DEFAULT_WIDGET_ORDER.length) return order;
+        }
+    } catch {}
+    return DEFAULT_WIDGET_ORDER.slice();
+}
+
+function saveWidgetOrder(order) {
+    try { localStorage.setItem(WIDGET_ORDER_KEY, JSON.stringify(order)); } catch {}
+}
+
+function applyWidgetOrder() {
+    const monitor = document.querySelector('.system-monitor');
+    if (!monitor) return;
+
+    const order = loadWidgetOrder();
+    const cards = monitor.querySelectorAll('.metric-card');
+
+    const cardMap = {};
+    cards.forEach(card => { cardMap[card.id] = card; });
+
+    order.forEach(id => {
+        const card = cardMap[id];
+        if (card) monitor.insertBefore(card, document.querySelector('.monitor-footer'));
+    });
+}
+
+let draggedCard = null;
+
+function initWidgetDragDrop() {
+    applyWidgetOrder();
+
+    const monitor = document.querySelector('.system-monitor');
+    if (!monitor) return;
+
+    const cards = monitor.querySelectorAll('.metric-card');
+
+    cards.forEach(card => {
+        card.setAttribute('draggable', 'true');
+
+        card.addEventListener('dragstart', (e) => {
+            draggedCard = card;
+            card.classList.add('metric-card--dragging');
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', card.id);
+        });
+
+        card.addEventListener('dragend', () => {
+            card.classList.remove('metric-card--dragging');
+            monitor.querySelectorAll('.metric-card').forEach(c => {
+                c.classList.remove('metric-card--dragover');
+            });
+            draggedCard = null;
+            persistCurrentOrder();
+            resizeAllCanvases();
+        });
+
+        card.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            if (!draggedCard || draggedCard === card) return;
+            e.dataTransfer.dropEffect = 'move';
+            card.classList.add('metric-card--dragover');
+        });
+
+        card.addEventListener('dragleave', () => {
+            card.classList.remove('metric-card--dragover');
+        });
+
+        card.addEventListener('drop', (e) => {
+            e.preventDefault();
+            card.classList.remove('metric-card--dragover');
+            if (!draggedCard || draggedCard === card) return;
+
+            const allCards = Array.from(monitor.querySelectorAll('.metric-card'));
+            const dragIdx = allCards.indexOf(draggedCard);
+            const dropIdx = allCards.indexOf(card);
+
+            if (dragIdx < dropIdx) {
+                monitor.insertBefore(draggedCard, card.nextSibling);
+            } else {
+                monitor.insertBefore(draggedCard, card);
+            }
+        });
+    });
+}
+
+function persistCurrentOrder() {
+    const monitor = document.querySelector('.system-monitor');
+    if (!monitor) return;
+    const cards = monitor.querySelectorAll('.metric-card');
+    const order = Array.from(cards).map(c => c.id);
+    saveWidgetOrder(order);
+}
+
+function resizeAllCanvases() {
+    ['cpu', 'ram', 'vram'].forEach(key => {
+        resizeCanvas(canvasElements[key]);
+        drawChart(key);
+    });
+}
+
 function initSettings() {
     const settingsBtn = document.getElementById('settingsBtn');
     const dropdown = document.getElementById('settingsDropdown');
@@ -370,6 +480,7 @@ async function bootApp() {
     initCanvases();
     initTimestamp();
     initSettings();
+    initWidgetDragDrop();
 
     // Fetch initial stats
     await updateSystemStats();
