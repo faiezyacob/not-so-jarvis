@@ -156,21 +156,75 @@ body {
     position: absolute;
     top: calc(100% + 6px);
     right: 24px;
-    min-width: 300px;
-    max-width: 340px;
+    min-width: 500px;
+    max-width: 600px;
     max-height: calc(100vh - 90px);
-    overflow-y: auto;
     background: var(--bg-secondary);
     border: 1px solid var(--border-color);
     border-radius: 8px;
-    padding: 10px 0;
     z-index: 100;
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
     backdrop-filter: blur(12px);
+    overflow: hidden;
 }
 
 .settings-dropdown.open {
-    display: block;
+    display: flex;
+    flex-direction: row;
+}
+
+/* --- Settings Nav (Left Panel) --- */
+
+.settings-nav {
+    flex: 0 0 130px;
+    border-right: 1px solid var(--border-color);
+    padding: 6px 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.settings-nav-item {
+    padding: 8px 16px;
+    background: transparent;
+    border: none;
+    border-left: 2px solid transparent;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 1.5px;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    text-align: left;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.settings-nav-item:hover {
+    color: var(--text-primary);
+    background: var(--accent-faint);
+}
+
+.settings-nav-item.active {
+    color: var(--accent);
+    background: var(--accent-faint);
+    border-left-color: var(--accent);
+}
+
+/* --- Settings Panels (Right Panel) --- */
+
+.settings-panels {
+    flex: 1;
+    overflow-y: auto;
+    max-height: calc(100vh - 90px);
+}
+
+.settings-panel {
+    display: none;
+    flex-direction: column;
+}
+
+.settings-panel.active {
+    display: flex;
 }
 
 .settings-dropdown-title {
@@ -277,6 +331,18 @@ body {
 
 .settings-input {
     cursor: text;
+}
+
+.settings-select {
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    background-color: var(--bg-card);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%237a9484' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 8px center;
+    background-size: 12px 12px;
+    padding-right: 28px;
 }
 
 .settings-select:focus,

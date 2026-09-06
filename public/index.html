@@ -10,7 +10,7 @@
 
     <header class="header">
         <div class="header-left">
-            <span class="header-title">JARVIS</span>
+            <span class="header-title">NOT-SO-JARVIS</span>
             <span class="header-subtitle">LOCAL INTELLIGENCE SYSTEM</span>
         </div>
         <div class="header-right">
@@ -23,84 +23,97 @@
                 </svg>
             </button>
             <div class="settings-dropdown" id="settingsDropdown">
-                <div class="settings-dropdown-title">WIDGETS</div>
-                <label class="settings-toggle">
-                    <input type="checkbox" checked data-widget="cpu">
-                    <span class="settings-toggle-label">CPU</span>
-                </label>
-                <label class="settings-toggle">
-                    <input type="checkbox" checked data-widget="ram">
-                    <span class="settings-toggle-label">RAM</span>
-                </label>
-                <label class="settings-toggle">
-                    <input type="checkbox" checked data-widget="vram">
-                    <span class="settings-toggle-label">VRAM</span>
-                </label>
-                <label class="settings-toggle">
-                    <input type="checkbox" checked data-widget="weather">
-                    <span class="settings-toggle-label">Weather</span>
-                </label>
-                <label class="settings-toggle">
-                    <input type="checkbox" checked data-widget="generated">
-                    <span class="settings-toggle-label">Gallery</span>
-                </label>
+                <div class="settings-nav" id="settingsNav">
+                    <button class="settings-nav-item active" data-panel="general">GENERAL</button>
+                    <button class="settings-nav-item" data-panel="chat">CHAT</button>
+                    <button class="settings-nav-item" data-panel="image">IMAGE</button>
+                </div>
+                <div class="settings-panels" id="settingsPanels">
+                    <!-- General -->
+                    <div class="settings-panel active" data-panel="general">
+                        <div class="settings-dropdown-title">WIDGETS</div>
+                        <label class="settings-toggle">
+                            <input type="checkbox" checked data-widget="cpu">
+                            <span class="settings-toggle-label">CPU</span>
+                        </label>
+                        <label class="settings-toggle">
+                            <input type="checkbox" checked data-widget="ram">
+                            <span class="settings-toggle-label">RAM</span>
+                        </label>
+                        <label class="settings-toggle">
+                            <input type="checkbox" checked data-widget="vram">
+                            <span class="settings-toggle-label">VRAM</span>
+                        </label>
+                        <label class="settings-toggle">
+                            <input type="checkbox" checked data-widget="weather">
+                            <span class="settings-toggle-label">Weather</span>
+                        </label>
+                        <label class="settings-toggle">
+                            <input type="checkbox" checked data-widget="generated">
+                            <span class="settings-toggle-label">Gallery</span>
+                        </label>
+                        <div class="settings-field">
+                            <button class="settings-restart-btn" id="restartServerBtn" type="button">Restart server</button>
+                        </div>
+                    </div>
 
-                <div class="settings-dropdown-title settings-section-gap">CHAT PROVIDER</div>
-                <div class="settings-field">
-                    <label class="settings-field-label">Provider</label>
-                    <select class="settings-select" id="chatProvider">
-                        <option value="ollama">Ollama</option>
-                        <option value="lmstudio">LM Studio</option>
-                    </select>
-                </div>
-                <div class="settings-field">
-                    <label class="settings-field-label">Model</label>
-                    <input type="text" class="settings-input" id="chatModel" placeholder="e.g. llama3.2" autocomplete="off">
-                </div>
-                <div class="settings-field">
-                    <button class="settings-browse-btn" id="modelLibraryBtn" type="button">Browse models</button>
-                </div>
-                <div class="settings-field">
-                    <button class="settings-unload-btn" id="unloadModelBtn" type="button">Unload model</button>
-                </div>
-                <div class="settings-field">
-                    <button class="settings-restart-btn" id="restartServerBtn" type="button">Restart server</button>
-                </div>
+                    <!-- Chat -->
+                    <div class="settings-panel" data-panel="chat">
+                        <div class="settings-dropdown-title">CHAT PROVIDER</div>
+                        <div class="settings-field">
+                            <label class="settings-field-label">Provider</label>
+                            <select class="settings-select" id="chatProvider">
+                                <option value="ollama">Ollama</option>
+                                <option value="lmstudio">LM Studio</option>
+                            </select>
+                        </div>
+                        <div class="settings-field">
+                            <label class="settings-field-label">Model</label>
+                            <input type="text" class="settings-input" id="chatModel" placeholder="e.g. llama3.2" autocomplete="off">
+                        </div>
+                        <div class="settings-field">
+                            <button class="settings-browse-btn" id="modelLibraryBtn" type="button">Browse models</button>
+                        </div>
+                        <div class="settings-field">
+                            <button class="settings-unload-btn" id="unloadModelBtn" type="button">Unload model</button>
+                        </div>
+                    </div>
 
-                <div class="settings-dropdown-title settings-section-gap">IMAGE GENERATION</div>
-                <div class="settings-field">
-                    <label class="settings-field-label" for="imageUnet">UNET Model</label>
-                    <input type="text" class="settings-input" id="imageUnet" list="imageUnetList"
-                        placeholder="Loading..." autocomplete="off">
-                    <datalist id="imageUnetList"></datalist>
-                </div>
-                <div class="settings-field">
-                    <label class="settings-field-label" for="imageClip">CLIP Model</label>
-                    <input type="text" class="settings-input" id="imageClip" list="imageClipList"
-                        placeholder="Loading..." autocomplete="off">
-                    <datalist id="imageClipList"></datalist>
-                </div>
-                <div class="settings-field">
-                    <label class="settings-field-label" for="imageVae">VAE Model</label>
-                    <input type="text" class="settings-input" id="imageVae" list="imageVaeList"
-                        placeholder="Loading..." autocomplete="off">
-                    <datalist id="imageVaeList"></datalist>
-                </div>
-                <div class="settings-dropdown-title settings-section-slim">LORA STACK</div>
-                <div class="settings-field">
-                    <div class="lora-list" id="loraList"></div>
-                    <select class="settings-select" id="loraAddSelect">
-                        <option value="">— Add LoRA —</option>
-                    </select>
-                    <span class="settings-hint">Attach LoRAs to every generation. Stacked in order, each with its own strength.</span>
-                    <span class="settings-save-status" id="loraStatus"></span>
-                </div>
-                <div class="settings-field">
-                    <span class="settings-hint">Blank = use default. Leave a field and press Enter to save. Clear a field and press Enter to revert.</span>
-                    <span class="settings-save-status" id="imageSettingsStatus"></span>
-                </div>
-                <div class="settings-field">
-                    <button class="settings-free-btn" id="freeComfyBtn" type="button">Free comfy</button>
+                    <!-- Image -->
+                    <div class="settings-panel" data-panel="image">
+                        <div class="settings-dropdown-title">IMAGE GENERATION</div>
+                        <div class="settings-field">
+                            <label class="settings-field-label" for="imageUnet">UNET Model</label>
+                            <input type="text" class="settings-input" id="imageUnet"
+                                placeholder="Loading..." autocomplete="off">
+                        </div>
+                        <div class="settings-field">
+                            <label class="settings-field-label" for="imageClip">CLIP Model</label>
+                            <input type="text" class="settings-input" id="imageClip"
+                                placeholder="Loading..." autocomplete="off">
+                        </div>
+                        <div class="settings-field">
+                            <label class="settings-field-label" for="imageVae">VAE Model</label>
+                            <input type="text" class="settings-input" id="imageVae"
+                                placeholder="Loading..." autocomplete="off">
+                        </div>
+                        <div class="settings-dropdown-title settings-section-slim">LORA STACK</div>
+                        <div class="settings-field">
+                            <div class="lora-list" id="loraList"></div>
+                            <select class="settings-select" id="loraAddSelect">
+                                <option value="">— Add LoRA —</option>
+                            </select>
+                            <span class="settings-hint">Attach LoRAs to every generation. Stacked in order, each with its own strength.</span>
+                            <span class="settings-save-status" id="loraStatus"></span>
+                        </div>
+                        <div class="settings-field">
+                            <span class="settings-hint">Blank = use default. Leave a field and press Enter to save. Clear a field and press Enter to revert.</span>
+                            <span class="settings-save-status" id="imageSettingsStatus"></span>
+                        </div>
+                        <div class="settings-field">
+                            <button class="settings-free-btn" id="freeComfyBtn" type="button">Free comfy</button>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>

@@ -216,9 +216,23 @@ function initSettings() {
         }
     });
 
+    // Panel navigation (left sidebar)
+    const navItems = dropdown.querySelectorAll('.settings-nav-item');
+    const panels = dropdown.querySelectorAll('.settings-panel');
+    navItems.forEach(item => {
+        item.addEventListener('click', () => {
+            navItems.forEach(i => i.classList.remove('active'));
+            panels.forEach(p => p.classList.remove('active'));
+            item.classList.add('active');
+            const panel = dropdown.querySelector('.settings-panel[data-panel="' + item.dataset.panel + '"]');
+            if (panel) panel.classList.add('active');
+        });
+    });
+
     initChatProviderSettings();
     initImageGenSettings();
     initFreeComfyButton();
+    initRestartServerButton();
 }
 
 function initFreeComfyButton() {
@@ -286,6 +300,7 @@ function loraStatus(state, text, isError) {
     if (!state.statusEl) return;
     state.statusEl.textContent = text;
     state.statusEl.classList.toggle('settings-save-status--error', !!isError);
+    state.statusEl.style.display = text ? '' : 'none';
 }
 
 function loraRow(state, lora, index) {
@@ -415,6 +430,7 @@ function initLoraSettings(state) {
     state.listEl = listEl;
     state.addSelect = addSelect;
     state.statusEl = statusEl;
+    if (statusEl) statusEl.style.display = 'none';
 
     addSelect.addEventListener('change', () => {
         const name = addSelect.value;
@@ -433,6 +449,7 @@ function initImageGenSettings() {
     if (!inputs.length) return;
 
     const statusEl = document.getElementById('imageSettingsStatus');
+    if (statusEl) statusEl.style.display = 'none';
     let saved = {};
 
     const loraState = initLoraStack();
@@ -442,6 +459,7 @@ function initImageGenSettings() {
         if (!statusEl) return;
         statusEl.textContent = text;
         statusEl.classList.toggle('settings-save-status--error', !!isError);
+        statusEl.style.display = text ? '' : 'none';
     };
 
     const persist = async (field, input) => {
@@ -567,7 +585,6 @@ function initChatProviderSettings() {
     });
 
     initUnloadModelButton(providerSelect, modelInput);
-    initRestartServerButton();
 }
 
 function initUnloadModelButton(providerSelect, modelInput) {
