@@ -108,6 +108,34 @@ function initSettings() {
 
     initChatProviderSettings();
     initImageGenSettings();
+    initFreeComfyButton();
+}
+
+function initFreeComfyButton() {
+    const freeBtn = document.getElementById('freeComfyBtn');
+    if (!freeBtn) return;
+
+    freeBtn.addEventListener('click', async () => {
+        freeBtn.disabled = true;
+        freeBtn.textContent = 'Freeing...';
+
+        try {
+            const res = await fetch('/api/comfyui/free', { method: 'POST' });
+            const data = await res.json().catch(() => ({}));
+
+            if (!res.ok) {
+                window.alert('Free failed: ' + (data.error || 'Unknown error'));
+                return;
+            }
+
+            window.alert('ComfyUI models unloaded and memory freed');
+        } catch (err) {
+            window.alert('Connection error: ' + err.message);
+        } finally {
+            freeBtn.disabled = false;
+            freeBtn.textContent = 'Free model';
+        }
+    });
 }
 
 // --- Image Generation Settings ---

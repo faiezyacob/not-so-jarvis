@@ -214,6 +214,32 @@ function downloadModelLMStudio(catalogModelId) {
     return status;
 }
 
+/* ---------- Remove (Uninstall) ---------- */
+
+async function removeModel(provider, model) {
+    const providerStatus = await getProviders();
+    const isOnline = providerStatus.find(p => p.id === provider);
+
+    if (provider === 'ollama') {
+        if (!isOnline.online) throw new Error('Ollama is not running');
+        if (!model) throw new Error('Model name is required');
+        const res = await fetch(OLLAMA_URL + '/api/delete', {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model })
+        });
+        if (!res.ok) {
+            const err = await res.text();
+            throw new Error('Ollama remove error ' + res.status + ': ' + err);
+        }
+        return { removed: true, model };
+    }
+    if (provider === 'lmstudio') {
+        throw new Error('LM Studio does not support programmatic model removal. Please delete the model in LM Studio directly.');
+    }
+    throw new Error('Unknown provider: ' + provider);
+}
+
 /* ---------- Load / Unload ---------- */
 
 async function loadModel(provider, model) {
@@ -293,5 +319,6 @@ module.exports = {
     getDownloadStatus,
     getActiveDownloads,
     loadModel,
-    unloadModel
+    unloadModel,
+    removeModel
 };

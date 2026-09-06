@@ -59,6 +59,36 @@ class SystemMonitor {
     }
 
     /**
+     * Asynchronously read the current VRAM memory-usage percentage directly
+     * from nvidia-smi. Returns a fresh value rather than the (possibly stale)
+     * periodic snapshot. Returns null when VRAM is not available.
+     * @returns {Promise<number|null>} Memory usage percentage 0-100, or null.
+     */
+    async getVRAMUsagePercent() {
+        try {
+            const output = await new Promise((resolve, reject) => {
+                exec(
+                    'nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader,nounits',
+                    { timeout: 5000 },
+                    (error, stdout) => {
+                        if (error || !stdout) return reject(error || new Error('no output'));
+                        resolve(stdout);
+                    }
+                );
+            });
+
+            const line = String(output).trim().split('\n')[0];
+            const parts = line ? line.split(',').map((s) => parseFloat(s.trim())) : [];
+            const used = parts[0];
+            const total = parts[1];
+            if (!Number.isFinite(used) || !Number.isFinite(total) || total <= 0) return null;
+            return Math.round((used / total) * 100);
+        } catch {
+            return null;
+        }
+    }
+
+    /**
      * Start periodic polling.
      * @param {number} intervalMs - Polling interval in milliseconds
      */
@@ -196,7 +226,10 @@ class SystemMonitor {
                         this._stats.vram.total = Math.round(totalMB / 1024 * 10) / 10;
                         this._stats.vram.used = Math.round(usedMB / 1024 * 10) / 10;
                         this._stats.vram.free = Math.round((totalMB - usedMB) / 1024 * 10) / 10;
-                        this._stats.vram.usage = utilization;
+                        // Memory-usage percentage — how full the VRAM is.
+                        this._stats.vram.usage = totalMB > 0
+                            ? Math.round((usedMB / totalMB) * 100)
+                            : 0;
                     }
                 }
             }

@@ -62,17 +62,33 @@ const IMAGE_OF_RE = new RegExp(
 );
 
 const IMAGE_INTENT_SYSTEM_PROMPT =
-    'You are JARVIS, a local AI assistant. Decide whether the user is asking you to ' +
-    'GENERATE AN IMAGE (text-to-image) or asking a normal chat question.\n\n' +
-    'Respond with ONLY a single JSON object, no markdown, no commentary. Use exactly one of ' +
-    'these two shapes:\n' +
-    '{"intent": "image_generation", "prompt": "the image subject without extraneous chat words"}\n' +
+    'You are JARVIS, a local AI assistant. Classify whether the user wants to generate an ' +
+    'image, and if so, extract structured data from their request.\n\n' +
+    'Respond with ONLY a single JSON object, no markdown, no commentary.\n\n' +
+    'For image generation requests, use this exact shape:\n' +
+    '{"intent": "image_generation", "user_prompt": "the actual image concept", ' +
+    '"creative_mode": "none|light|full", "explicit_constraints": []}\n\n' +
+    'For normal chat questions, use this exact shape:\n' +
     '{"intent": "chat", "message": "the original user message"}\n\n' +
-    'Treat requests like "generate an image of X", "create a picture of X", "make a photo of X", ' +
-    '"render X", "draw X as a ...", "generate a cinematic bedroom interior" as image_generation. ' +
-    'For image_generation, extract ONLY the visual subject/description into the prompt field, ' +
-    'dropping phrases like "generate an image of". Normal questions (facts, code help, math, ' +
-    'summaries, reports, text output) must be chat.';
+    'Classification rules:\n' +
+    '- "generate an image of X", "create a picture of X", "make a photo of X", ' +
+    '"render X", "draw X as a ...", "generate a cinematic bedroom interior" → image_generation\n' +
+    '- Normal questions (facts, code, math, summaries, reports, text output) → chat\n\n' +
+    'user_prompt rules:\n' +
+    '- Extract ONLY the visual concept the user wants to see.\n' +
+    '- Remove verb preambles ("generate an image of", "create a picture of", etc.).\n' +
+    '- Remove meta-instructions about HOW to generate ("be creative", "surprise me").\n' +
+    '- Keep all visual details: subject descriptions, clothing, poses, locations, colors, style.\n\n' +
+    'creative_mode rules:\n' +
+    '- "none": No creative freedom requested. Default when user just asks for an image.\n' +
+    '- "light": User requests a specific enhancement like "make it cinematic", ' +
+    '"dramatic lighting", "professional composition", "make it moody".\n' +
+    '- "full": User explicitly says "be creative", "surprise me", "use your imagination", ' +
+    '"go wild", "do your thing", "whatever you think looks best".\n\n' +
+    'explicit_constraints rules:\n' +
+    '- Array of strings for any explicit constraints the user states ' +
+    '(e.g., "must be in black and white", "no text", "landscape orientation").\n' +
+    '- Empty array [] if none.';
 
 // Returns 'definite' | 'likely' | null. "definite" means the message clearly
 // asks for an image (explicit image vocabulary). "likely" means it opens with
@@ -87,26 +103,19 @@ function imageRequestStrength(message) {
 }
 
 // Use the configured LLM to classify intent. Returns
-// { intent: 'image_generation', prompt } | { intent: 'chat', message }.
+// { intent: 'image_generation', user_prompt, creative_mode, explicit_constraints }
+// or { intent: 'chat', message }.
 async function detectIntent(message, providers, provider, model) {
     const strength = imageRequestStrength(message);
 
-    if (strength === 'definite') {
-        // The heuristic is confident; still let the LLM refine the extracted
-        // prompt subject when available, falling back to the heuristic extract.
-        const { prompt } = extractImageSubject(message);
-        if (prompt) return { intent: 'image_generation', prompt };
-        return { intent: 'chat', message };
-    }
-
-    // Normal chat questions never reach the LLM.
     if (strength === null) {
         return { intent: 'chat', message };
     }
 
-    // "likely" — verb-led but no image word. Ask the LLM so requests like
-    // "Generate a cinematic bedroom interior." still work while "Generate a
-    // summary of today's meetings." stays a chat response.
+    // For both "definite" and "likely" image requests, call the LLM to get
+    // structured data including creative_mode and explicit constraints. This
+    // ensures meta-instructions like "be creative" are separated from the
+    // actual image concept.
     const cluesPrompt =
         'User message: "' + message + '"\n\n' +
         'Output the JSON classification only.';
@@ -119,16 +128,36 @@ async function detectIntent(message, providers, provider, model) {
 
         const parsed = parseIntentJson(raw);
         if (parsed && parsed.intent === 'image_generation') {
-            const prompt = String(parsed.prompt || '').trim();
-            if (prompt) {
-                return { intent: 'image_generation', prompt };
+            const user_prompt = String(parsed.user_prompt || '').trim();
+            if (user_prompt) {
+                return {
+                    intent: 'image_generation',
+                    user_prompt,
+                    creative_mode: parsed.creative_mode || 'none',
+                    explicit_constraints: Array.isArray(parsed.explicit_constraints)
+                        ? parsed.explicit_constraints
+                        : []
+                };
             }
         }
     } catch (err) {
         console.warn('[image-generator] LLM intent detection failed, using heuristic:', err.message);
     }
 
-    // LLM unavailable or said "chat" — safe default.
+    // LLM unavailable or said "chat" — for "definite" requests, fall back to
+    // heuristic extraction with meta-instruction cleanup.
+    if (strength === 'definite') {
+        const { prompt } = extractImageSubject(message);
+        if (prompt) {
+            return {
+                intent: 'image_generation',
+                user_prompt: stripCreativeMetaInstructions(prompt),
+                creative_mode: 'none',
+                explicit_constraints: []
+            };
+        }
+    }
+
     return { intent: 'chat', message };
 }
 
@@ -178,6 +207,70 @@ function extractImageSubject(message) {
         .trim();
 
     return { prompt: cleaned };
+}
+
+// Strip creative meta-instructions that leak into heuristic-extracted prompts
+// when the LLM is unavailable. Preserves visual descriptions ("with dramatic
+// lighting") but removes process-level instructions ("be creative").
+function stripCreativeMetaInstructions(text) {
+    return text
+        .replace(/[,;]\s*(?:but\s+)?(?:i\s+)?(?:want|'?d like|would like|need)\s+you\s+to\s+be\s+(?:as\s+)?creative(?:(?:\s+(?:as\s+(?:you\s+)?(?:want|like|can)|as\s+possible|with\s+it))+)?\.?\s*/i, '')
+        .replace(/[,;]\s*(?:but\s+)?(?:please\s+)?be\s+(?:as\s+)?creative(?:(?:\s+(?:as\s+(?:you\s+)?(?:want|like|can)|as\s+possible|with\s+it))+)?\.?\s*/i, '')
+        .replace(/[,;]\s*(?:but\s+)?(?:surprise\s+me|use\s+your\s+imagination|be\s+imaginative|go\s+wild|do\s+your\s+thing|whatever\s+you\s+think\s+looks\s+best)(?:\s+with\s+it)?\.?\s*/i, '')
+        .replace(/\s*,?\s*with\s+it\.?$/i, '')
+        .trim();
+}
+
+// --- Prompt Builder -------------------------------------------------------------
+
+const PROMPT_BUILDER_SYSTEM_PROMPT =
+    'You are a prompt builder for an image-generation model (Krea2).\n\n' +
+    'The user\'s original image concept is the source of truth.\n' +
+    'Preserve every explicit requirement.\n\n' +
+    'If creative_mode is "none", only clarify and improve the request without ' +
+    'materially changing it.\n' +
+    'If creative_mode is "light", enhance only the requested aspects.\n' +
+    'If creative_mode is "full", creatively expand secondary visual details ' +
+    'while preserving the user\'s core concept and all explicit constraints.\n\n' +
+    'What you may enhance based on creative_mode:\n' +
+    '- Lighting and atmosphere\n' +
+    '- Environment details and textures\n' +
+    '- Composition and framing\n' +
+    '- Camera angle and lens\n' +
+    '- Visual storytelling and mood\n' +
+    '- Background details\n\n' +
+    'What you must NEVER change regardless of creative_mode:\n' +
+    '- The subject (person, animal, object, scene)\n' +
+    '- Explicit attributes (clothing color, hair, pose, action)\n' +
+    '- The location/setting the user specified\n' +
+    '- Any explicit constraint the user stated\n\n' +
+    'Never replace, contradict, remove, or reinterpret the user\'s intent.\n' +
+    'Output ONLY the final image-generation prompt. No explanations, no quotes, no markdown.';
+
+// Use the conversational model to build the final image-generation prompt from
+// the structured intent data. Falls back to the raw user_prompt on failure.
+async function buildImagePrompt(structuredRequest, providers, provider, model) {
+    const { user_prompt, creative_mode, explicit_constraints } = structuredRequest;
+
+    const userMessage =
+        'user_prompt: "' + user_prompt + '"\n' +
+        'creative_mode: "' + (creative_mode || 'none') + '"\n' +
+        'explicit_constraints: ' + JSON.stringify(explicit_constraints || []) + '\n\n' +
+        'Build the final image-generation prompt. Output ONLY the prompt text.';
+
+    try {
+        const raw = await providers.chat(provider, [
+            { role: 'system', content: PROMPT_BUILDER_SYSTEM_PROMPT },
+            { role: 'user', content: userMessage }
+        ], model);
+
+        const prompt = String(raw || '').trim();
+        if (prompt) return prompt;
+    } catch (err) {
+        console.warn('[image-generator] Prompt builder failed, using raw prompt:', err.message);
+    }
+
+    return user_prompt;
 }
 
 // --- Krea2 text-to-image workflow ----------------------------------------------
@@ -431,11 +524,14 @@ async function generateImage(prompt, options = {}) {
 module.exports = {
     GENERATED_DIR,
     IMAGE_INTENT_SYSTEM_PROMPT,
+    PROMPT_BUILDER_SYSTEM_PROMPT,
     DEFAULT_SETTINGS,
     canStartGeneration,
     detectIntent,
+    buildImagePrompt,
     imageRequestStrength,
     extractImageSubject,
+    stripCreativeMetaInstructions,
     generateImage,
     buildKrea2T2IGraph,
     validateGraphAgainstComfy,

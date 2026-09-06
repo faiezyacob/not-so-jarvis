@@ -61,6 +61,8 @@ const providers = require('./server/providers');
 const models = require('./server/models');
 const providerManager = require('./server/provider-manager');
 const imageGenerator = require('./services/image-generator');
+const comfyui = require('./services/comfyui');
+const vramManager = require('./services/vram-manager');
 const GENERATED_DIR = path.join(__dirname, 'data', 'generated');
 
 function readBody(req) {
@@ -199,6 +201,21 @@ async function handleAPI(req, res, urlPath) {
         return true;
     }
 
+    // POST /api/ai/models/remove — uninstall a downloaded model
+    if (urlPath === '/api/ai/models/remove' && req.method === 'POST') {
+        const body = await readBody(req);
+        const modelId = (body.modelId || '').trim();
+        const provider = (body.provider || 'ollama').trim();
+        if (!modelId) { json(res, 400, { error: 'modelId is required' }); return true; }
+        try {
+            const result = await providerManager.removeModel(provider, modelId);
+            json(res, 200, result);
+        } catch (err) {
+            json(res, 502, { error: err.message });
+        }
+        return true;
+    }
+
     // POST /api/chat
     if (urlPath === '/api/chat' && req.method === 'POST') {
         handleChat(req, res);
@@ -236,6 +253,21 @@ async function handleAPI(req, res, urlPath) {
             json(res, 200, { ok: true, settings });
         } catch (err) {
             json(res, 400, { error: err.message });
+        }
+        return true;
+    }
+
+    // POST /api/comfyui/free — unload all ComfyUI models and free cached memory
+    if (urlPath === '/api/comfyui/free' && req.method === 'POST') {
+        try {
+            if (!(await comfyui.isAvailable())) {
+                json(res, 409, { error: 'ComfyUI is unreachable' });
+                return true;
+            }
+            await comfyui.freeModels();
+            json(res, 200, { ok: true, freed: 'comfyui-models' });
+        } catch (err) {
+            json(res, 500, { error: err.message });
         }
         return true;
     }
@@ -443,6 +475,9 @@ async function handleChat(req, res) {
             return;
         }
 
+        vramManager.rememberChatModel(provider, model);
+        await vramManager.freeVRAMBeforeChat();
+
         const contextMessages = contextBuilder.buildContext(conversationId, message, provider, model);
         const reply = await providers.chat(provider, contextMessages, model);
 
@@ -488,12 +523,25 @@ async function handleChatStream(req, res) {
         const intent = await imageGenerator.detectIntent(message, providers, provider, model);
 
         if (intent.intent === 'image_generation') {
+            // Build the final prompt using the conversational model. This
+            // preserves the user's original concept while enriching it based
+            // on creative_mode.
+            const finalPrompt = await imageGenerator.buildImagePrompt(intent, providers, provider, model);
+
+            // Free VRAM for the image models by unloading the chat model first
+            // if the GPU is nearly full.
+            await vramManager.freeVRAMBeforeImage();
             await handleImageGenerationStream(req, res, {
                 provider, model, conversationId, message,
-                imagePrompt: intent.prompt
+                imagePrompt: finalPrompt
             });
             return;
         }
+
+        // Chat response — remember this chat model, then free VRAM by unloading
+        // ComfyUI's models if the GPU is nearly full.
+        vramManager.rememberChatModel(provider, model);
+        await vramManager.freeVRAMBeforeChat();
 
         const contextMessages = contextBuilder.buildContext(conversationId, message, provider, model);
 

@@ -62,6 +62,18 @@ async function getObjectInfo(timeoutMs) {
     return res.json();
 }
 
+// Unload all models from VRAM and free cached memory in ComfyUI. Used to free
+// VRAM before loading/using the chat model when the GPU is nearly full.
+async function freeModels() {
+    const res = await comfyFetch('/free', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ unload_models: true, free_memory: true }),
+        timeout: 30000
+    });
+    await res.text();
+}
+
 // Submit a workflow graph (API format) and return the prompt id.
 async function queuePrompt(graph) {
     const body = { prompt: graph, client_id: CLIENT_ID };
@@ -215,6 +227,7 @@ module.exports = {
     comfyFetch,
     isAvailable,
     getObjectInfo,
+    freeModels,
     queuePrompt,
     waitForPrompt,
     findOutputFiles,

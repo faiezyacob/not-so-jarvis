@@ -344,6 +344,34 @@ body {
     cursor: default;
 }
 
+.settings-free-btn {
+    width: 100%;
+    height: 30px;
+    background: rgba(120, 200, 255, 0.08);
+    border: 1px solid rgba(120, 200, 255, 0.3);
+    border-radius: 5px;
+    color: #8fc7ff;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.5px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.settings-free-btn:hover {
+    background: rgba(120, 200, 255, 0.14);
+    border-color: rgba(120, 200, 255, 0.5);
+}
+
+.settings-free-btn:active {
+    transform: scale(0.98);
+}
+
+.settings-free-btn:disabled {
+    opacity: 0.6;
+    cursor: default;
+}
+
 /* --- Main Layout --- */
 
 .main {
@@ -1505,7 +1533,8 @@ em {
 }
 
 .ml-download-btn,
-.ml-use-btn {
+.ml-use-btn,
+.ml-remove-btn {
     flex: 1;
     height: 32px;
     border-radius: 5px;
@@ -1563,6 +1592,29 @@ em {
 
 .ml-use-btn:active {
     transform: scale(0.97);
+}
+
+.ml-remove-btn {
+    background: transparent;
+    border: 1px solid rgba(255, 92, 92, 0.3);
+    color: #ff5c5c;
+    flex: 0 0 auto;
+    padding: 0 12px;
+}
+
+.ml-remove-btn:hover {
+    background: rgba(255, 92, 92, 0.12);
+    border-color: rgba(255, 92, 92, 0.5);
+    color: #ff5c5c;
+}
+
+.ml-remove-btn:active {
+    transform: scale(0.97);
+}
+
+.ml-remove-btn:disabled {
+    opacity: 0.5;
+    cursor: default;
 }
 
 /* --- Confirmation Modal --- */
@@ -1790,6 +1842,21 @@ em {
 }
 
 .modal-btn-warning:active {
+    transform: scale(0.97);
+}
+
+.modal-btn-danger {
+    background: rgba(255, 92, 92, 0.1);
+    border: 1px solid rgba(255, 92, 92, 0.3);
+    color: #ff5c5c;
+}
+
+.modal-btn-danger:hover {
+    background: rgba(255, 92, 92, 0.18);
+    border-color: rgba(255, 92, 92, 0.5);
+}
+
+.modal-btn-danger:active {
     transform: scale(0.97);
 }
 

@@ -33,8 +33,8 @@ const MODEL_CATALOG = [
     {
         id: 'llama3.2:3b',
         provider: 'ollama',
-        displayName: 'gemma4 12B',
-        parameterSize: '12B',
+        displayName: 'llama3.2 3b',
+        parameterSize: '3B',
         category: 'lightweight',
         recommended: false,
         capabilities: ['tools'],

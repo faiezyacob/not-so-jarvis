@@ -149,12 +149,6 @@ const Markdown = (() => {
                 inList = false;
             }
 
-            // Empty line
-            // if (line.trim() === '') {
-            //     html += '<br>';
-            //     continue;
-            // }
-
             // Regular paragraph line
             html += '<p class="md-paragraph">' + parseInline(line) + '</p>';
         }

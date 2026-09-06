@@ -201,6 +201,7 @@ const ModelLibrary = (function () {
             + '<div class="ml-card-actions">'
             + (installed
                 ? '<button class="ml-use-btn" data-model-id="' + model.id + '" data-provider="' + model.provider + '">Use Model</button>'
+                    + '<button class="ml-remove-btn" data-model-id="' + model.id + '" data-provider="' + model.provider + '">Remove</button>'
                 : '<button class="ml-download-btn" data-model-id="' + model.id + '" data-provider="' + model.provider + '">Download</button>'
             )
             + '</div>';
@@ -208,6 +209,9 @@ const ModelLibrary = (function () {
         if (installed) {
             card.querySelector('.ml-use-btn').addEventListener('click', function () {
                 handleUseModelClick(model);
+            });
+            card.querySelector('.ml-remove-btn').addEventListener('click', function () {
+                handleRemoveClick(model);
             });
         } else {
             card.querySelector('.ml-download-btn').addEventListener('click', function () {
@@ -270,8 +274,8 @@ const ModelLibrary = (function () {
 
         header.innerHTML = '<div class="modal-title">Download ' + model.displayName + '</div>';
         body.innerHTML = '<div class="modal-model-info">'
-            + '<div class="modal-model-specs">' + model.parameterSize + '</div>'
-            + '<div class="modal-model-size">~' + HardwareCompat.formatBytes(model.downloadSizeBytes) + '</div>'
+            + '<div class="modal-model-specs">Parameter size: ' + model.parameterSize + '</div>'
+            + '<div class="modal-model-size">Model size: ~' + HardwareCompat.formatBytes(model.downloadSizeBytes) + '</div>'
             + '<div class="modal-compat-badge compat-good">' + compat.label + '</div>'
             + '</div>';
 
@@ -374,6 +378,55 @@ const ModelLibrary = (function () {
             hideModal();
             applyModel(model);
             close();
+        });
+    }
+
+    async function handleRemoveClick(model) {
+        var header = document.getElementById('modalHeader');
+        var body = document.getElementById('modalBody');
+        var footer = document.getElementById('modalFooter');
+
+        header.innerHTML = '<div class="modal-title">Remove ' + model.displayName + '</div>';
+        body.innerHTML = '<div class="modal-model-info">'
+            + '<div class="modal-model-specs">' + model.parameterSize + '</div>'
+            + '</div>'
+            + '<div class="modal-warning-text">This will uninstall "' + model.id + '" from ' + model.provider + '. This cannot be undone.</div>';
+
+        footer.innerHTML = '<button class="modal-btn modal-btn-cancel" id="modalCancel">Cancel</button>'
+            + '<button class="modal-btn modal-btn-danger" id="modalConfirm">Remove Model</button>';
+
+        showModal();
+
+        document.getElementById('modalCancel').addEventListener('click', hideModal);
+        document.getElementById('modalConfirm').addEventListener('click', async function () {
+            hideModal();
+            var removeBtn = document.querySelector('[data-model-id="' + model.id + '"].ml-remove-btn');
+            if (removeBtn) {
+                removeBtn.disabled = true;
+                removeBtn.textContent = 'Removing...';
+            }
+            try {
+                var resp = await fetch('/api/ai/models/remove', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ modelId: model.id, provider: model.provider })
+                });
+                var result = await resp.json();
+                if (result.error) {
+                    if (removeBtn) {
+                        removeBtn.textContent = 'Error';
+                        removeBtn.disabled = false;
+                    }
+                    return;
+                }
+                var gridEl = document.getElementById('modelLibraryGrid');
+                if (gridEl) refreshLibrary();
+            } catch (err) {
+                if (removeBtn) {
+                    removeBtn.textContent = 'Error';
+                    removeBtn.disabled = false;
+                }
+            }
         });
     }
 
