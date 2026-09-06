@@ -5,7 +5,7 @@
       "title": "youre getting better now",
       "summary": "",
       "createdAt": 1788698365226,
-      "updatedAt": 1788698378648
+      "updatedAt": 1788699891121
     }
   ],
   "messages": [
@@ -22,6 +22,20 @@
       "role": "assistant",
       "content": "I appreciate the feedback. I'm constantly refining my processes to better assist you. \n\nHow can I help you with your system or projects today?",
       "createdAt": 1788698378648
+    },
+    {
+      "id": "599f5b1f-06d7-44c9-951e-e8a92bbaaca8",
+      "conversationId": "de2e003b-104e-438e-ad17-f5b4154925dc",
+      "role": "user",
+      "content": "generate an image of cat licking its paw",
+      "createdAt": 1788699857695
+    },
+    {
+      "id": "10831e77-9d88-4089-b5ae-d34f0a0cb8bf",
+      "conversationId": "de2e003b-104e-438e-ad17-f5b4154925dc",
+      "role": "assistant",
+      "content": "Generated image:\n**Prompt:** A cat licking its paw.\n\n![image](/generated/89504e47_2026-09-06T13-04-51-116Z.png)",
+      "createdAt": 1788699891121
     }
   ]
 }

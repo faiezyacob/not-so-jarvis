@@ -50,14 +50,14 @@ const canvasContexts = {
 // --- Widget Settings ---
 
 const WIDGET_SETTINGS_KEY = 'jarvis-widget-settings';
-const WIDGET_IDS = { cpu: 'cpuCard', ram: 'ramCard', vram: 'vramCard', weather: 'weatherCard' };
+const WIDGET_IDS = { cpu: 'cpuCard', ram: 'ramCard', vram: 'vramCard', weather: 'weatherCard', generated: 'generatedWidget' };
 
 function loadWidgetSettings() {
     try {
         const saved = localStorage.getItem(WIDGET_SETTINGS_KEY);
         if (saved) return JSON.parse(saved);
     } catch {}
-    return { cpu: true, ram: true, vram: true, weather: true };
+    return { cpu: true, ram: true, vram: true, weather: true, generated: true };
 }
 
 function saveWidgetSettings(settings) {
@@ -388,6 +388,7 @@ async function bootApp() {
 
     initWeather();
     ModelLibrary.init();
+    Gallery.init();
 
     // Boot conversation + chat
     try {

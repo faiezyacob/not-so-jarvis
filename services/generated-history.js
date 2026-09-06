@@ -1,0 +1,159 @@
+/* ============================================
+   JARVIS — Generated Image History
+   Lightweight metadata store for every image the
+   Krea2 / ComfyUI pipeline produces. The image
+   files themselves live on disk in data/generated;
+   only small metadata records are kept here in a
+   single local JSON file so the gallery survives
+   page reloads and server restarts.
+   ============================================ */
+
+const fs = require('fs');
+const path = require('path');
+
+const GENERATED_DIR = path.join(__dirname, '..', 'data', 'generated');
+const HISTORY_PATH = path.join(__dirname, '..', 'data', 'generated-history.json');
+
+let history = null;      // cached array of metadata records (newest first)
+let loadedOnce = false;
+
+function loadHistory() {
+    try {
+        const raw = fs.readFileSync(HISTORY_PATH, 'utf-8');
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed.entries)) return parsed.entries;
+    } catch (err) {
+        // Missing or corrupt metadata file — seed from disk below.
+    }
+    return null;
+}
+
+function saveHistory(entries) {
+    const dir = path.dirname(HISTORY_PATH);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    const payload = { updatedAt: new Date().toISOString(), entries };
+    fs.writeFileSync(HISTORY_PATH, JSON.stringify(payload, null, 2), 'utf-8');
+}
+
+// Seed the history from the image files currently on disk. Used when no
+// metadata file exists yet (e.g. images generated before this widget was
+// added). Width/height is approximated from the current Krea2 defaults since
+// it was not recorded; prompt/model are marked unknown.
+function seedFromDisk() {
+    const entries = [];
+    let files = [];
+    try {
+        files = fs.readdirSync(GENERATED_DIR);
+    } catch (err) {
+        return entries;
+    }
+    for (const name of files) {
+        if (!/\.(?:png|jpg|jpeg|webp)$/i.test(name)) continue;
+        const abs = path.join(GENERATED_DIR, name);
+        let mtime;
+        try { mtime = fs.statSync(abs).mtime; } catch { continue; }
+        const createdAt = mtime.toISOString().replace(/\.\d+Z$/, '');
+        entries.push({
+            id: makeId(createdAt),
+            file: '/generated/' + encodeURIComponent(name),
+            prompt: '',
+            model: 'Krea2',
+            rawFilename: name,
+            createdAt
+        });
+    }
+    return entries;
+}
+
+function entriesSorted(entries) {
+    return entries.slice().sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
+}
+
+// Build an id like "2026-09-06_2041_001" (date, time, 3-digit sequence).
+function makeId(createdAtIso) {
+    const d = new Date(Date.parse(createdAtIso) || Date.now());
+    const pad = (n) => String(n).padStart(2, '0');
+    const yyyy = d.getFullYear();
+    const mm = pad(d.getMonth() + 1);
+    const dd = pad(d.getDate());
+    const hh = pad(d.getHours());
+    const min = pad(d.getMinutes());
+    const base = yyyy + '-' + mm + '-' + dd + '_' + hh + min + '_';
+
+    // Keep a per-process sequence so ids are unique even within the same minute.
+    let lastBase = null;
+    let seq = 0;
+    const existing = new Set((history || []).map((e) => e.id));
+    let id = base + String(++seq).padStart(3, '0');
+    let attempts = 0;
+    while (existing.has(id) && attempts < 1000) {
+        if (lastBase !== null && lastBase !== base) seq = 0;
+        lastBase = base;
+        seq += 1;
+        id = base + String(seq).padStart(3, '0');
+        attempts += 1;
+    }
+    return id;
+}
+
+function ensureLoaded() {
+    if (loadedOnce) return;
+    loadedOnce = true;
+    const loaded = loadHistory();
+    history = entriesSorted(loaded || seedFromDisk());
+    if (history.length) saveHistory(history);
+}
+
+// Returns all generated image metadata, newest first.
+function list() {
+    ensureLoaded();
+    return history.map(publicMeta);
+}
+
+// Limit to the most recent N entries.
+function listRecent(limit) {
+    const all = list();
+    return typeof limit === 'number' ? all.slice(0, limit) : all;
+}
+
+function publicMeta(entry) {
+    return {
+        id: entry.id,
+        file: entry.file,
+        prompt: entry.prompt || '',
+        model: entry.model || 'Krea2',
+        width: entry.width || null,
+        height: entry.height || null,
+        createdAt: entry.createdAt
+    };
+}
+
+// Record a freshly generated image. Returns the added entry (public shape).
+function add(meta) {
+    ensureLoaded();
+    const createdAt = meta.createdAt || new Date().toISOString().replace(/\.\d+Z$/, '');
+    const entry = {
+        id: meta.id || makeId(createdAt),
+        file: meta.file,
+        rawFilename: meta.rawFilename || meta.filename || null,
+        prompt: meta.prompt || '',
+        model: meta.model || 'Krea2',
+        width: meta.width || null,
+        height: meta.height || null,
+        createdAt
+    };
+    // Replace an existing entry with the same id (idempotent re-add).
+    history = history.filter((e) => e.id !== entry.id);
+    history.unshift(entry);
+    saveHistory(history);
+    return publicMeta(entry);
+}
+
+module.exports = {
+    GENERATED_DIR,
+    HISTORY_PATH,
+    list,
+    listRecent,
+    add,
+    makeId
+};

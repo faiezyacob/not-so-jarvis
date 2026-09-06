@@ -40,6 +40,10 @@
                     <input type="checkbox" checked data-widget="weather">
                     <span class="settings-toggle-label">Weather</span>
                 </label>
+                <label class="settings-toggle">
+                    <input type="checkbox" checked data-widget="generated">
+                    <span class="settings-toggle-label">Gallery</span>
+                </label>
 
                 <div class="settings-dropdown-title settings-section-gap">CHAT PROVIDER</div>
                 <div class="settings-field">
@@ -165,6 +169,14 @@
                 <div class="weather-location" id="weatherLocation"></div>
             </div>
 
+            <div class="metric-card" id="generatedWidget">
+                <div class="metric-label">GENERATED</div>
+                <div class="generated-grid"></div>
+                <div class="generated-empty">No generated images yet. Ask JARVIS to create one.</div>
+                <div class="generated-info">0 images</div>
+                <button type="button" class="generated-view-all" id="generatedViewAll">View All</button>
+            </div>
+
             <div class="monitor-footer">
                 <span class="footer-label">LOCAL</span>
                 <span class="footer-timestamp" id="systemTimestamp"></span>
@@ -215,6 +227,7 @@
     <script src="js/model-library.js"></script>
     <script src="js/conversations.js"></script>
     <script src="js/chat.js"></script>
+    <script src="js/gallery.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

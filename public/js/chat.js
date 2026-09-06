@@ -278,6 +278,7 @@ const Chat = (() => {
                             if (generatingEl) generatingEl.remove();
                             contentEl.innerHTML = Markdown.parse(data.image.content);
                             chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+                            if (window.Gallery) window.Gallery.refresh();
                         }
                         if (data.chunk) {
                             if (generatingEl) generatingEl.remove();

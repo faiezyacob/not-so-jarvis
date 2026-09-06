@@ -10,6 +10,7 @@ const fs = require('fs');
 const path = require('path');
 const comfyui = require('./comfyui');
 const configManager = require('../server/config-manager');
+const generatedHistory = require('./generated-history');
 
 const GENERATED_DIR = path.join(__dirname, '..', 'data', 'generated');
 
@@ -511,12 +512,24 @@ async function generateImage(prompt, options = {}) {
         fs.writeFileSync(filePath, buffer);
 
         console.log('[image-generator] saved image:', basename, '(' + buffer.length + ' bytes)');
+
+        // Record lightweight metadata so the Generated gallery can show it.
+        const meta = generatedHistory.add({
+            file: '/generated/' + encodeURIComponent(basename),
+            rawFilename: basename,
+            prompt,
+            model: 'Krea2',
+            width: settings.width,
+            height: settings.height
+        });
+
         return {
-            url: '/generated/' + encodeURIComponent(basename),
+            url: meta.file,
             filename: basename,
             width: settings.width,
             height: settings.height,
-            prompt
+            prompt,
+            meta
         };
     });
 }

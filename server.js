@@ -61,6 +61,7 @@ const providers = require('./server/providers');
 const models = require('./server/models');
 const providerManager = require('./server/provider-manager');
 const imageGenerator = require('./services/image-generator');
+const generatedHistory = require('./services/generated-history');
 const comfyui = require('./services/comfyui');
 const vramManager = require('./services/vram-manager');
 const GENERATED_DIR = path.join(__dirname, 'data', 'generated');
@@ -254,6 +255,12 @@ async function handleAPI(req, res, urlPath) {
         } catch (err) {
             json(res, 400, { error: err.message });
         }
+        return true;
+    }
+
+    // GET /api/generated — all generated image metadata (newest first)
+    if (urlPath === '/api/generated' && req.method === 'GET') {
+        json(res, 200, { images: generatedHistory.list() });
         return true;
     }
 
@@ -597,7 +604,7 @@ async function handleImageGenerationStream(req, res, opts) {
             '**Prompt:** ' + imagePrompt + '\n\n' +
             '![' + 'image' + '](' + result.url + ')';
 
-        res.write(`data: ${JSON.stringify({ image: { url: result.url, content } })}\n\n`);
+        res.write(`data: ${JSON.stringify({ image: { url: result.url, content, meta: result.meta || null } })}\n\n`);
         res.end();
     } catch (err) {
         console.error('[image-generator] Generation failed:', err.message, '\n', err.stack);
