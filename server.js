@@ -306,10 +306,40 @@ async function handleAPI(req, res, urlPath) {
                 comfyui.getQueue(),
                 comfyui.getSystemStats()
             ]);
-            json(res, 200, { available: true, queue, system_stats: systemStats, ws_url: comfyui.comfyWsUrl() });
+            json(res, 200, { available: true, queue, system_stats: systemStats });
         } catch (err) {
             json(res, 500, { error: err.message });
         }
+        return true;
+    }
+
+    // GET /api/comfyui/events — Server-Sent Events streaming live generation
+    // progress. The JARVIS server keeps a WebSocket to ComfyUI and relays the
+    // step/total progress here; the browser never talks to ComfyUI directly.
+    if (urlPath === '/api/comfyui/events' && req.method === 'GET') {
+        res.writeHead(200, {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'X-Accel-Buffering': 'no'
+        });
+        res.write('retry: 2000\n\n');
+        const send = (event, data) => {
+            try { res.write('event: ' + event + '\ndata: ' + JSON.stringify(data) + '\n\n'); } catch {}
+        };
+        const onProgress = (update) => {
+            if (update && update.idle) {
+                send('idle', {});
+            } else {
+                send('progress', { value: update.value, max: update.max });
+            }
+        };
+        comfyui.subscribeProgress(onProgress);
+        const ping = setInterval(() => { try { res.write(': ping\n\n'); } catch {} }, 25000);
+        req.on('close', () => {
+            clearInterval(ping);
+            comfyui.unsubscribeProgress(onProgress);
+        });
         return true;
     }
 

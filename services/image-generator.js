@@ -861,6 +861,11 @@ async function generateImage(prompt, options = {}) {
 
         console.log('[image-generator] saved image:', basename, '(' + buffer.length + ' bytes)');
 
+        // The image is safely on disk — remove the ComfyUI original (and its
+        // history entry) so it isn't stored twice. Best-effort; a cleanup
+        // failure never breaks the finished generation.
+        await comfyui.deleteOutputFile(entry, { history: pid });
+
         // Record lightweight metadata so the Generated gallery can show it.
         const activeLoras = (settings.loras || [])
             .filter((l) => l && l.on && l.name)

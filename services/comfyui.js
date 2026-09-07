@@ -6,6 +6,9 @@
    downloading generated images.
    ============================================ */
 
+const fs = require('fs');
+const path = require('path');
+
 const COMFYUI_URL = (process.env.COMFYUI_URL || 'http://127.0.0.1:8188').replace(/\/+$/, '');
 const CLIENT_ID = 'jarvis-' + Math.random().toString(16).slice(2, 10);
 
@@ -67,6 +70,80 @@ async function isAvailable() {
 async function getObjectInfo(timeoutMs) {
     const res = await comfyFetch('/object_info', { timeout: Number(timeoutMs) || 120000 });
     return res.json();
+}
+
+// --- Real-time progress relay ---------------------------------------------
+//
+// Keeps a single process-wide WebSocket connection to ComfyUI and broadcasts
+// its text progress events ({"type":"progress","data":{value,max}}) to any
+// registered subscriber. This mirrors how the frontend learns the live step
+// percentage without the browser ever connecting to ComfyUI directly. Native
+// WebSocket is available in Node >= 22; on older runtimes this falls back to
+// nothing (the widget just shows the indeterminate bar).
+
+let progressWs = null;
+let progressWsTimer = null;
+let progressSubscribers = [];
+
+function subscribeProgress(cb) {
+    if (typeof cb !== 'function') return;
+    progressSubscribers.push(cb);
+    if (progressSubscribers.length === 1) ensureProgressWs();
+}
+
+function unsubscribeProgress(cb) {
+    progressSubscribers = progressSubscribers.filter((fn) => fn !== cb);
+    if (progressSubscribers.length === 0) closeProgressWs();
+}
+
+function ensureProgressWs() {
+    if (typeof WebSocket === 'undefined') return;
+    if (progressWs && (progressWs.readyState === 0 || progressWs.readyState === 1)) return;
+    let ws;
+    try {
+        ws = new WebSocket(comfyWsUrl() + '?clientId=' + CLIENT_ID);
+    } catch (err) {
+        scheduleProgressWsRetry();
+        return;
+    }
+    progressWs = ws;
+    ws.onmessage = (ev) => {
+        if (typeof ev.data !== 'string') return;
+        let msg;
+        try { msg = JSON.parse(ev.data); } catch { return; }
+        if (!msg || typeof msg !== 'object' || !msg.data) return;
+        const d = msg.data;
+        if (msg.type === 'progress' && typeof d.value === 'number' && typeof d.max === 'number') {
+            const update = { value: d.value, max: d.max };
+            progressSubscribers.slice().forEach((fn) => { try { fn(update); } catch {} });
+        } else if (msg.type === 'executing' && d.node === null) {
+            // Generation finished — clear to 100% then idle.
+            progressSubscribers.slice().forEach((fn) => { try { fn({ value: 1, max: 1, idle: true }); } catch {} });
+        }
+    };
+    ws.onclose = () => { progressWs = null; scheduleProgressWsRetry(); };
+    ws.onerror = () => { try { ws.close(); } catch {} };
+}
+
+function scheduleProgressWsRetry() {
+    if (progressSubscribers.length === 0) return;
+    clearTimeout(progressWsTimer);
+    progressWsTimer = setTimeout(ensureProgressWs, 2000);
+}
+
+function closeProgressWs() {
+    clearTimeout(progressWsTimer);
+    progressWsTimer = null;
+    if (progressWs) {
+        try {
+            progressWs.onopen = null;
+            progressWs.onmessage = null;
+            progressWs.onerror = null;
+            progressWs.onclose = null;
+            progressWs.close();
+        } catch {}
+    }
+    progressWs = null;
 }
 
 // Fetch the ComfyUI execution queue. Returns an object with queue_running
@@ -224,6 +301,115 @@ async function downloadImage(entry) {
     return buf;
 }
 
+// Locate ComfyUI's output directory so we can remove the original copy of a
+// generated image. Tries, in order: an explicit COMFYUI_OUTPUT_DIR override,
+// ComfyUI's --output-directory CLI arg (from /system_stats argv), and a
+// .../ComfyUI/main.py script path (again from argv) with an output/ sibling.
+// Returns null when the directory cannot be determined.
+async function resolveOutputDir() {
+    if (process.env.COMFYUI_OUTPUT_DIR) {
+        return path.resolve(process.env.COMFYUI_OUTPUT_DIR);
+    }
+
+    let argv = [];
+    try {
+        const stats = await getSystemStats();
+        argv = (stats && stats.system && stats.system.argv) || [];
+    } catch {}
+
+    for (let i = 0; i < argv.length; i += 1) {
+        const arg = String(argv[i] || '');
+        let dir = null;
+        if (arg === '--output-directory' || arg === '--output_directory') {
+            dir = String(argv[i + 1] || '');
+        } else if (/^--output-(?:directory|_directory)=/.test(arg)) {
+            dir = arg.split('=').slice(1).join('=');
+        }
+        if (dir) {
+            const resolved = path.resolve(dir);
+            if (fs.existsSync(resolved)) return resolved;
+        }
+    }
+
+    for (const arg of argv) {
+        const script = String(arg || '');
+        if (!/[\\/]main\.py$/i.test(script)) continue;
+        const root = path.resolve(path.dirname(script));
+        const candidate = path.join(root, 'output');
+        if (fs.existsSync(candidate)) return candidate;
+    }
+
+    return null;
+}
+
+// Remove a generated image from ComfyUI's output folder. ComfyUI ships no HTTP
+// delete for output files, so when it runs on the same machine we unlink the
+// file directly. Best-effort: never throws. When options.history (a prompt id)
+// is given, the corresponding /history entry is cleared too so ComfyUI doesn't
+// keep a dangling reference to the removed file.
+async function deleteOutputFile(entry, options = {}) {
+    if (!entry || !entry.filename) return false;
+    let target;
+    try {
+        target = await resolveOutputFilePath(entry);
+    } catch {
+        target = null;
+    }
+    if (!target) {
+        console.warn('[comfyui] cannot resolve ComfyUI output dir; leaving original at output/' +
+            (entry.subfolder ? entry.subfolder + '/' : '') + entry.filename +
+            '. Set COMFYUI_OUTPUT_DIR to enable cleanup.');
+        await safeDeleteHistory(options);
+        return false;
+    }
+    try {
+        await fs.promises.unlink(target);
+        console.log('[comfyui] removed ComfyUI output:', target);
+    } catch (err) {
+        if (err.code !== 'ENOENT') {
+            console.warn('[comfyui] could not remove ComfyUI output ' + target + ': ' + err.message);
+        }
+    } finally {
+        await safeDeleteHistory(options);
+    }
+    return true;
+}
+
+async function resolveOutputFilePath(entry) {
+    const outputDir = await resolveOutputDir();
+    if (!outputDir) return null;
+    const filename = path.basename(entry.filename);
+    if (!filename) return null;
+    const candidate = path.resolve(outputDir, String(entry.subfolder || ''), filename);
+    const root = path.resolve(outputDir) + path.sep;
+    if (candidate !== path.resolve(outputDir) && candidate.indexOf(root) !== 0) {
+        console.warn('[comfyui] refusing to delete path outside output dir: ' + candidate);
+        return null;
+    }
+    return candidate;
+}
+
+async function safeDeleteHistory(options) {
+    if (!options || !options.history) return;
+    try {
+        await deleteHistory(options.history);
+    } catch (err) {
+        console.warn('[comfyui] could not clear ComfyUI history for ' + options.history + ': ' + err.message);
+    }
+}
+
+// Remove a prompt's entry from ComfyUI's /history so it doesn't reference a
+// deleted output file.
+async function deleteHistory(pid) {
+    const res = await comfyFetch('/history', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ delete: [pid] }),
+        timeout: 30000
+    });
+    await res.text();
+}
+
 async function downloadSourceImage(imageName) {
     const parts = String(imageName || '').split('/');
     const filename = parts.pop();
@@ -250,12 +436,16 @@ module.exports = {
     getObjectInfo,
     getQueue,
     getSystemStats,
+    subscribeProgress,
+    unsubscribeProgress,
     freeModels,
     queuePrompt,
     waitForPrompt,
     findOutputFiles,
     extractTextOutputs,
     downloadImage,
+    deleteOutputFile,
+    deleteHistory,
     downloadSourceImage,
     sleep
 };

@@ -1134,13 +1134,13 @@ async function fetchWeather() {
 // --- ComfyUI Widget ---
 
 const COMFYUI_REFRESH_MS = 1000;
-let comfyuiWs = null;
-let comfyuiWsUrl = null;
-let comfyuiProgress = null; // { value, max } from ComfyUI's /ws progress events
+let comfyuiProgress = null; // { value, max } from ComfyUI's /ws relayed via SSE
+let comfyuiEvents = null;
 
 function initComfyUI() {
     fetchComfyUIStatus();
     setInterval(fetchComfyUIStatus, COMFYUI_REFRESH_MS);
+    connectComfyUIEvents();
 }
 
 async function fetchComfyUIStatus() {
@@ -1148,43 +1148,40 @@ async function fetchComfyUIStatus() {
         const res = await fetch('/api/comfyui/status');
         if (!res.ok) throw new Error('Fetch failed');
         const data = await res.json();
-        if (data.ws_url && data.ws_url !== comfyuiWsUrl) {
-            comfyuiWsUrl = data.ws_url;
-            connectComfyUIWS();
-        }
         updateComfyUIDisplay(data);
     } catch {
         updateComfyUIDisplay({ available: false, queue: null, system_stats: null });
     }
 }
 
-// Live progress percentage comes from ComfyUI's websocket broadcasts. The
-// fetch poll gives online/offline + queue state; WS gives step/total steps.
-function connectComfyUIWS() {
-    if (!comfyuiWsUrl) return;
-    try { if (comfyuiWs) comfyuiWs.close(); } catch {}
+// Real-time generation progress is relayed from the JARVIS server, which keeps
+// its own WebSocket to ComfyUI and streams progress here over Server-Sent
+// Events. The browser never talks to ComfyUI directly.
+function connectComfyUIEvents() {
+    if (comfyuiEvents) return;
     try {
-        const ws = new WebSocket(comfyuiWsUrl);
-        ws.onopen = () => { comfyuiWs = ws; };
-        ws.onmessage = (e) => {
+        comfyuiEvents = new EventSource('/api/comfyui/events');
+        comfyuiEvents.addEventListener('progress', (e) => {
             try {
-                const msg = JSON.parse(e.data);
-                if (msg.type === 'progress' && msg.data && msg.data.max > 0) {
-                    comfyuiProgress = { value: msg.data.value, max: msg.data.max };
-                    updateComfyUIProgress();
-                } else if (msg.type === 'executing' && msg.data && msg.data.node === null) {
-                    comfyuiProgress = { value: 1, max: 1 };
+                const d = JSON.parse(e.data);
+                if (d && d.max > 0) {
+                    comfyuiProgress = { value: d.value, max: d.max };
                     updateComfyUIProgress();
                 }
             } catch {}
-        };
-        ws.onclose = () => {
-            comfyuiWs = null;
+        });
+        comfyuiEvents.addEventListener('idle', () => {
             comfyuiProgress = null;
-            setTimeout(connectComfyUIWS, 5000);
+        });
+        comfyuiEvents.onerror = () => {
+            comfyuiProgress = null;
+            comfyuiEvents.close();
+            comfyuiEvents = null;
+            setTimeout(connectComfyUIEvents, 5000);
         };
-        ws.onerror = () => { try { ws.close(); } catch {} };
-    } catch {}
+    } catch {
+        comfyuiEvents = null;
+    }
 }
 
 function updateComfyUIDisplay(data) {
