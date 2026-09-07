@@ -196,6 +196,7 @@
             imgWrap.textContent = 'Image file is missing.';
         });
         imgWrap.appendChild(imgEl);
+        makeZoomButton(imgWrap, imgEl);
         body.appendChild(imgWrap);
 
         const footer = document.createElement('div');
@@ -210,6 +211,218 @@
 
         body.appendChild(footer);
         closeBtn.addEventListener('click', close);
+    }
+
+    function makeZoomButton(imgWrap, imgEl) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'gallery-zoom-btn';
+        btn.setAttribute('aria-label', 'Zoom image');
+        btn.innerHTML =
+            '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+            '<circle cx="11" cy="11" r="8"></circle>' +
+            '<line x1="21" y1="21" x2="16.65" y2="16.65"></line>' +
+            '<line x1="11" y1="8" x2="11" y2="14"></line>' +
+            '<line x1="8" y1="11" x2="14" y2="11"></line></svg>';
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            openZoom(imgEl.src);
+        });
+        imgEl.addEventListener('error', () => { btn.style.display = 'none'; });
+        imgWrap.appendChild(btn);
+        return btn;
+    }
+
+    function zoomIconButton(svg, label) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'gallery-zoom-btn-icon';
+        btn.setAttribute('aria-label', label);
+        btn.innerHTML = svg;
+        return btn;
+    }
+
+    // Fullscreen zoom lightbox with wheel/button zoom, drag-to-pan, and a
+    // fit-scale reset. The image scales about its center inside a clipped
+    // viewport; a separate "mover" layer carries 1:1 panning offsets.
+    function openZoom(src) {
+        const overlay = document.createElement('div');
+        overlay.className = 'modal-overlay gallery-overlay gallery-zoom-overlay open';
+
+        const stage = document.createElement('div');
+        stage.className = 'gallery-zoom-stage';
+
+        const viewport = document.createElement('div');
+        viewport.className = 'gallery-zoom-viewport';
+        const mover = document.createElement('div');
+        mover.className = 'gallery-zoom-mover';
+        const img = document.createElement('img');
+        img.className = 'gallery-zoom-image';
+        img.alt = 'Zoomed image';
+        mover.appendChild(img);
+        viewport.appendChild(mover);
+
+        const controls = document.createElement('div');
+        controls.className = 'gallery-zoom-controls';
+
+        const zoomOutBtn = zoomIconButton(
+            '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+            '<circle cx="11" cy="11" r="8"></circle>' +
+            '<line x1="21" y1="21" x2="16.65" y2="16.65"></line>' +
+            '<line x1="8" y1="11" x2="14" y2="11"></line></svg>',
+            'Zoom out'
+        );
+        const pct = document.createElement('span');
+        pct.className = 'gallery-zoom-percent';
+        pct.textContent = '100%';
+
+        const zoomInBtn = zoomIconButton(
+            '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+            '<circle cx="11" cy="11" r="8"></circle>' +
+            '<line x1="21" y1="21" x2="16.65" y2="16.65"></line>' +
+            '<line x1="11" y1="8" x2="11" y2="14"></line>' +
+            '<line x1="8" y1="11" x2="14" y2="11"></line></svg>',
+            'Zoom in'
+        );
+
+        const resetBtn = zoomIconButton(
+            '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+            '<polyline points="15 3 21 3 21 9"></polyline>' +
+            '<polyline points="9 21 3 21 3 15"></polyline>' +
+            '<line x1="21" y1="3" x2="14" y2="10"></line>' +
+            '<line x1="3" y1="21" x2="10" y2="14"></line></svg>',
+            'Reset zoom'
+        );
+
+        const closeBtn = zoomIconButton(
+            '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">' +
+            '<line x1="18" y1="6" x2="6" y2="18"></line>' +
+            '<line x1="6" y1="6" x2="18" y2="18"></line></svg>',
+            'Close'
+        );
+
+        controls.appendChild(zoomOutBtn);
+        controls.appendChild(pct);
+        controls.appendChild(zoomInBtn);
+        controls.appendChild(resetBtn);
+        controls.appendChild(closeBtn);
+
+        stage.appendChild(viewport);
+        stage.appendChild(controls);
+        overlay.appendChild(stage);
+        document.body.appendChild(overlay);
+
+        const MAX = 8;
+        let scale = 1;
+        let fit = 1;
+        let tx = 0;
+        let ty = 0;
+
+        function applyZoom() {
+            mover.style.transform = 'translate(' + tx + 'px, ' + ty + 'px)';
+            img.style.transform = 'scale(' + scale + ')';
+            pct.textContent = Math.round(scale * 100) + '%';
+        }
+
+        img.addEventListener('load', () => {
+            const availW = overlay.clientWidth - 40;
+            const availH = overlay.clientHeight - 40;
+            const nw = img.naturalWidth || availW;
+            const nh = img.naturalHeight || availH;
+            fit = Math.min(availW / nw, availH / nh, 1);
+            scale = fit;
+            tx = 0;
+            ty = 0;
+            applyZoom();
+        });
+
+        function zoomIn() {
+            scale = Math.min(scale * 1.5, MAX);
+            applyZoom();
+        }
+
+        function zoomOut() {
+            if (scale / 1.5 < fit) {
+                scale = fit;
+                tx = 0;
+                ty = 0;
+            } else {
+                scale = scale / 1.5;
+            }
+            applyZoom();
+        }
+
+        function resetZoom() {
+            scale = fit;
+            tx = 0;
+            ty = 0;
+            applyZoom();
+        }
+
+        function close() {
+            document.removeEventListener('keydown', onKey);
+            overlay.remove();
+        }
+
+        // Drag to pan when zoomed in.
+        let dragging = false;
+        let startX = 0;
+        let startY = 0;
+        let origTx = 0;
+        let origTy = 0;
+
+        viewport.addEventListener('pointerdown', (e) => {
+            if (scale <= fit) return;
+            dragging = true;
+            startX = e.clientX;
+            startY = e.clientY;
+            origTx = tx;
+            origTy = ty;
+            viewport.classList.add('gallery-zoom-dragging');
+            try { viewport.setPointerCapture(e.pointerId); } catch (err) {}
+        });
+        viewport.addEventListener('pointermove', (e) => {
+            if (!dragging) return;
+            tx = origTx + (e.clientX - startX);
+            ty = origTy + (e.clientY - startY);
+            applyZoom();
+        });
+        function endDrag(e) {
+            dragging = false;
+            viewport.classList.remove('gallery-zoom-dragging');
+            try { viewport.releasePointerCapture(e.pointerId); } catch (err) {}
+        }
+        viewport.addEventListener('pointerup', endDrag);
+        viewport.addEventListener('pointercancel', endDrag);
+
+        viewport.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            if (e.deltaY < 0) zoomIn(); else zoomOut();
+        }, { passive: false });
+
+        overlay.addEventListener('click', (e) => {
+            if (e.target === overlay) close();
+        });
+        const onKey = (e) => {
+            if (e.key !== 'Escape') return;
+            const openOverlays = document.querySelectorAll('.modal-overlay.open');
+            if (openOverlays.length && openOverlays[openOverlays.length - 1] !== overlay) return;
+            close();
+        };
+        document.addEventListener('keydown', onKey);
+
+        zoomInBtn.addEventListener('click', zoomIn);
+        zoomOutBtn.addEventListener('click', zoomOut);
+        resetBtn.addEventListener('click', resetZoom);
+        closeBtn.addEventListener('click', close);
+
+        img.addEventListener('error', () => {
+            viewport.classList.add('gallery-preview-broken');
+            viewport.textContent = 'Image file is missing.';
+            controls.style.display = 'none';
+        });
+
+        img.src = src;
     }
 
     function formatResolution(img) {
@@ -288,6 +501,7 @@
             imgWrap.textContent = 'Image file is missing.';
         });
         imgWrap.appendChild(imgEl);
+        makeZoomButton(imgWrap, imgEl);
         body.appendChild(imgWrap);
 
         const meta = document.createElement('div');
