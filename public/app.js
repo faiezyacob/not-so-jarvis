@@ -363,7 +363,8 @@ function loraRow(state, lora, index) {
     remove.className = 'lora-remove';
     remove.textContent = '\u00D7';
     remove.title = 'Remove LoRA';
-    remove.addEventListener('click', () => {
+    remove.addEventListener('click', (e) => {
+        e.stopPropagation();
         state.loras.splice(index, 1);
         renderLoraStack(state);
         saveLoraStack(state);

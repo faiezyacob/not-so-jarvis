@@ -324,6 +324,7 @@ const Chat = (() => {
             chatSend.disabled = false;
             chatInput.disabled = false;
             chatSend.classList.remove('sending');
+            chatInput.focus();
         }
     }
 
