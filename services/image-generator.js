@@ -296,7 +296,8 @@ const DEFAULT_SETTINGS = {
     steps: Number(process.env.KREA2_STEPS) || 8,
     cfg: Number(process.env.KREA2_CFG) || 1,
     // Stacked LoRAs applied to every Krea2 generation, in order. Each entry
-    // is { name, strength, on } where strength is the model+clip LoRA scale.
+    // is { name, strength, on, triggerWord } where strength is the model+clip
+    // LoRA scale and triggerWord is an optional keyword prepended to the prompt.
     loras: [],
 };
 
@@ -335,10 +336,12 @@ function sanitizeLoras(value) {
     for (const item of value) {
         const name = String((item && item.name) || '').trim();
         if (!name) continue;
+        const triggerWord = String((item && item.triggerWord) || '').trim();
         out.push({
             name,
             strength: clampNumber(item.strength, -100, 100, 1),
-            on: item.on !== false
+            on: item.on !== false,
+            triggerWord: triggerWord || ''
         });
     }
     return out;
@@ -545,7 +548,16 @@ async function generateImage(prompt, options = {}) {
         // Prefer a fresh read of the global settings so edits made through
         // the settings panel take effect without restarting the server.
         const settings = effectiveSettings();
-        const graph = buildKrea2T2IGraph(prompt, Object.assign({}, options, { seed, settings }));
+
+        // Prepend trigger words from active LoRAs to the prompt.
+        const triggerWords = (settings.loras || [])
+            .filter((l) => l && l.on && l.name && l.triggerWord)
+            .map((l) => l.triggerWord);
+        const finalPrompt = triggerWords.length
+            ? triggerWords.join(', ') + ', ' + String(prompt || '')
+            : String(prompt || '');
+
+        const graph = buildKrea2T2IGraph(finalPrompt, Object.assign({}, options, { seed, settings }));
 
         const info = await comfyui.getObjectInfo();
         await validateGraphAgainstComfy(info, graph);
@@ -579,11 +591,11 @@ async function generateImage(prompt, options = {}) {
         // Record lightweight metadata so the Generated gallery can show it.
         const activeLoras = (settings.loras || [])
             .filter((l) => l && l.on && l.name)
-            .map((l) => ({ name: l.name, strength: Number(l.strength) || 0 }));
+            .map((l) => ({ name: l.name, strength: Number(l.strength) || 0, triggerWord: l.triggerWord || '' }));
         const meta = generatedHistory.add({
             file: '/generated/' + encodeURIComponent(basename),
             rawFilename: basename,
-            prompt,
+            prompt: finalPrompt,
             model: 'Krea2',
             loras: activeLoras,
             width: settings.width,
@@ -595,7 +607,7 @@ async function generateImage(prompt, options = {}) {
             filename: basename,
             width: settings.width,
             height: settings.height,
-            prompt,
+            prompt: finalPrompt,
             meta
         };
     });

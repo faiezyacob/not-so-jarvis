@@ -270,9 +270,10 @@ function initFreeComfyButton() {
 // allowed.
 //
 // LoRA stack: users attach LoRAs from the list ComfyUI reports (LoraLoader
-// lora_name entries). Each attached LoRA has an on/off toggle and a strength
-// slider. The stack is persisted as settings.loras[] and chained into the
-// Krea2 workflow by the image-generator service.
+// lora_name entries). Each attached LoRA has an on/off toggle, a strength
+// slider, and an optional trigger word. The stack is persisted as
+// settings.loras[] and chained into the Krea2 workflow by the
+// image-generator service. Trigger words are prepended to the prompt.
 
 const IMAGE_GEN_FIELDS = [
     { key: 'unet', inputId: 'imageUnet', listId: 'imageUnetList' },
@@ -288,7 +289,7 @@ const LORA_STRENGTH_STEP = 0.05;
 
 function initLoraStack() {
     return {
-        loras: [],          // [{ name, strength, on }] current attached stack
+        loras: [],          // [{ name, strength, on, triggerWord }] current attached stack
         available: [],      // lora filenames ComfyUI reports
         listEl: null,
         addSelect: null,
@@ -317,10 +318,26 @@ function loraRow(state, lora, index) {
         saveLoraStack(state);
     });
 
+    const nameWrap = document.createElement('div');
+    nameWrap.className = 'lora-name-wrap';
+
     const name = document.createElement('span');
     name.className = 'lora-name';
     name.textContent = lora.name;
     name.title = lora.name;
+    nameWrap.appendChild(name);
+
+    const triggerInput = document.createElement('input');
+    triggerInput.type = 'text';
+    triggerInput.className = 'lora-trigger-word';
+    triggerInput.placeholder = 'trigger word';
+    triggerInput.value = lora.triggerWord || '';
+    triggerInput.title = 'Trigger word prepended to prompt';
+    triggerInput.addEventListener('change', () => {
+        lora.triggerWord = triggerInput.value.trim();
+        saveLoraStack(state);
+    });
+    nameWrap.appendChild(triggerInput);
 
     const strength = document.createElement('input');
     strength.type = 'range';
@@ -353,7 +370,7 @@ function loraRow(state, lora, index) {
     });
 
     row.appendChild(toggle);
-    row.appendChild(name);
+    row.appendChild(nameWrap);
     row.appendChild(strength);
     row.appendChild(strengthVal);
     row.appendChild(remove);
@@ -435,7 +452,7 @@ function initLoraSettings(state) {
     addSelect.addEventListener('change', () => {
         const name = addSelect.value;
         if (!name) return;
-        state.loras.push({ name, strength: 1, on: true });
+        state.loras.push({ name, strength: 1, on: true, triggerWord: '' });
         addSelect.value = '';
         renderLoraStack(state);
         saveLoraStack(state);

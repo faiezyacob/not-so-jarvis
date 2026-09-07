@@ -1313,11 +1313,41 @@ em {
     font-family: var(--font-mono);
     font-size: 10px;
     color: var(--text-secondary);
-    flex: 1;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+.lora-name-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1;
+    min-width: 0;
+}
+
+.lora-trigger-word {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    color: var(--accent-muted);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 3px;
+    padding: 1px 4px;
+    width: 100%;
+    min-width: 0;
+    outline: none;
+    transition: border-color 0.15s ease;
+}
+
+.lora-trigger-word:focus {
+    border-color: var(--accent-muted);
+}
+
+.lora-trigger-word::placeholder {
+    color: var(--text-dim);
+    font-style: italic;
 }
 
 .lora-strength {
