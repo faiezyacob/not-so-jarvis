@@ -36,6 +36,8 @@ services/             Independent services (monitoring, image generation, ComfyU
   system-monitor.js     CPU/RAM/VRAM/GPU telemetry (nvidia-smi), live polling
   comfyui.js            All ComfyUI HTTP communication (health, queue, wait, download)
   image-generator.js    Image intent detection, prompt building, Krea2 workflow graph
+  task-router.js        Context-aware intent/action router (ActiveTask continuation routing)
+  task-state.js         Per-conversation ActiveTask/TaskContext store (in-memory)
   generated-history.js  Metadata store for generated images (data/generated-history.json)
   vram-manager.js       Orchestrates unloading chat<->image models based on VRAM pressure
 public/               Frontend
@@ -74,6 +76,8 @@ data/                 Runtime data (persisted JSON + generated media)
 - **Persistence is simple JSON files** in `data/`, rewritten in full on mutation. No ORM/schema library.
 - **Frontend mirrors backend persistence**: conversations are also stored client-side in IndexedDB (`public/js/db.js`) for UI durability.
 - **Image generation idempotency/locking**: only one image generation at a time, enforced by `withGenerationLock` in `image-generator.js`.
+- **Two-level intent detection** (when no active task, in `services/image-generator.js`): a fast Level 1 regex SIGNAL (`imageRequestStrength` → `definite`/`likely`/`null`) decides whether to ask a structured LLM classifier (`detectIntent`); the LLM's structured JSON is the final authority on tool execution, the chat model's free-text reply never is. The signal is **not** position-dependent (generation verbs can appear anywhere) and `isConceptQuestion` keeps "What is image generation?"-style questions as chat.
+- **Extended intent schema**: `detectIntent`/`IMAGE_INTENT_SYSTEM_PROMPT` return/expect `action` (`generate`|`modify`), `creative_mode` (`none`|`light`|`full`), `explicit_constraints`, and chat `related_task`. `CREATIVE_FREEDOM_RE` detects "be creative"/"surprise me"; a creative request with no subject gets `DEFAULT_CREATIVE_PROMPT`. These fields flow to `buildImagePrompt` and into the ActiveTask `parameters`.
 - **SSE streaming** for chat (`/api/chat/stream`) — text chunks, stats, then a final `done` event; image generations emit a single `image` event.
 - **Restart mechanism**: `POST /api/restart` exits with code `100`, which `start.bat` catches to relaunch in the same terminal.
 
@@ -123,7 +127,8 @@ data/                 Runtime data (persisted JSON + generated media)
 
 ## Important relationships between components
 
-- **Chat → Image**: In `handleChatStream`, the message is classified by `imageGenerator.detectIntent()`. If intent is `image_generation`, the app builds a prompt, frees VRAM via `vram-manager.freeVRAMBeforeImage()`, then streams a single image. Otherwise it streams a normal chat reply (after `freeVRAMBeforeChat()`).
+- **Chat → Image**: In `handleChatStream`, `task-router.routeMessage()` decides (before any tool runs) whether the message should start a new task, continue/modify the active image task, answer a question about the active task, or is unrelated. Only when the router says `shouldExecuteTool` does the app build a prompt, free VRAM via `vram-manager.freeVRAMBeforeImage()`, and run the pipeline. Otherwise it streams a normal chat reply (after `freeVRAMBeforeChat()`).
+- **ActiveTask lifecycle**: per-conversation task state lives in `services/task-state.js` (typed as `image`/`video`/`audio`). It stays active across turns and is only cleared when the user starts a different non-tool task or the application clears it. Tool execution sets `status: running` before running and `completed`/`failed` only after the tool actually finishes.
 - **Image pipeline**: `generateImage()` reads global settings (`effectiveSettings`), prepends active LoRA trigger words to the prompt, builds the Krea2 graph, validates against ComfyUI's object info, queues it, waits, downloads the output, saves to `data/generated/`, and records metadata in `generated-history`.
 - **Config flow**: Settings UI → `POST /api/settings/image` → `imageGenerator.saveSettings` → `sanitizeSettings`/`sanitizeLoras` → `config-manager.setImageSettings` → `data/config.json`. At generation time `effectiveSettings()` merges defaults with stored overrides.
 - **VRAM orchestration**: `vram-manager` connects chat providers and ComfyUI, unloading whichever model isn't needed to fit the next one in GPU memory.
@@ -133,6 +138,7 @@ data/                 Runtime data (persisted JSON + generated media)
 
 - **Add/change an API endpoint** — `server.js` `handleAPI()`.
 - **Change chat behavior/providers** — `server/providers.js`, `server/context-builder.js`, `server/conversation-service.js`.
+- **Change task/intent routing or ActiveTask lifecycle** — `services/task-router.js`, `services/task-state.js`, `server.js` `handleChatStream` + `handleImageGenerationStream`.
 - **Change image generation / prompt / LoRA logic** — `services/image-generator.js`.
 - **Change ComfyUI communication** — `services/comfyui.js`.
 - **Change VRAM/unload orchestration** — `services/vram-manager.js`.

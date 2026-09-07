@@ -39,83 +39,138 @@ async function withGenerationLock(fn) {
 
 // --- Intent detection ----------------------------------------------------------
 
-// Level 1 fast heuristic: explicit image vocabulary. Catches the obvious
-// requests without needing the LLM.
+// Level 1 fast heuristic: a SIGNAL, not the final authority. It catches obvious
+// generation requests without needing the LLM; the LLM (or task router) makes
+// the final call. Unlike a naive keyword matcher it is NOT position-dependent —
+// the generation verb may appear anywhere in the request, and concept questions
+// ("What is image generation?") are explicitly excluded.
+
 const IMAGE_MEDIA_WORDS = [
     'image', 'picture', 'photo', 'photograph', 'portrait', 'art', 'artwork',
     'illustration', 'drawing', 'painting', 'comic', 'shot', 'scene', 'view',
     'screenshot', 'wallpaper', 'poster', 'logo', 'avatar', 'meme', 'graphic',
     'landscape', 'interior'
 ];
-const GENERATION_VERBS = [
-    'generate', 'create', 'make', 'render', 'produce', 'paint', 'draw',
-    'imagine', 'design', 'illustrate', 'compose', 'show'
+// Verb stems so inflected forms ("generate", "generating", "created",
+// "make", "making") are all detected wherever they appear in the sentence.
+const GENERATION_VERB_STEMS = [
+    'generat', 'creat', 'mak', 'render', 'produc', 'paint', 'draw',
+    'imagin', 'design', 'illustrat', 'compos', 'show'
 ];
-const IMAGE_WORD_RE = new RegExp('\\b(?:' + IMAGE_MEDIA_WORDS.join('|') + ')\\b', 'i');
-const GENERATION_VERB_RE = new RegExp(
-    '^(?:please\\s+)?(?:' + GENERATION_VERBS.join('|') +
-    ')(?:\\s+(?:me|us|a|an|the))?\\b', 'i'
-);
+const IMAGE_WORD_RE = new RegExp('\\b(?:' + IMAGE_MEDIA_WORDS.join('|') + ')s?\\b', 'i');
+const GENERATION_VERB_RE = new RegExp('\\b(?:' + GENERATION_VERB_STEMS.join('|') + ')\\w*\\b', 'i');
 // "X of [subject]" pattern where X is itself an image word ("image of",
-// "portrait of", "photo of", ...).
+// "portrait of", "photo of", ...). A strong signal regardless of any verb.
 const IMAGE_OF_RE = new RegExp(
-    '\\b(?:' + IMAGE_MEDIA_WORDS.join('|') + ')\\s+of\\b', 'i'
+    '\\b(?:' + IMAGE_MEDIA_WORDS.join('|') + ')s?\\s+of\\b', 'i'
 );
 
+// Frames that DISCUSS image/media ideas rather than request them. Any message
+// matching these is chat intent even if it also contains "image" or a
+// generation verb. This is what keeps "What is image generation?" and
+// "Can you explain how to generate images?" out of the image pipeline.
+function isConceptQuestion(message) {
+    const text = String(message || '').trim();
+    if (!text) return true;
+
+    // Leading interrogatives: "What is X?", "Which model...?", "Why...".
+    if (/^(?:what|which|why|who|when|where)\b/i.test(text)) return true;
+    // "How do/does/can/should/to/i..." — process / concept questions.
+    if (/^how\b[\s\S]*\b(?:do|does|can|could|would|should|to|i)\b/i.test(text)) return true;
+    // Explanatory / definitional request verbs.
+    if (/\b(?:explain|describe|teach|define|learn|understand|tell\s+me)\b/i.test(text)) return true;
+    // The concept noun phrases "image generation" and "image model(s)".
+    if (/\bimage\s*[-_ ]?\s*generation\b/i.test(text)) return true;
+    if (/\bimage\s+models?\b/i.test(text)) return true;
+    // "how to generate/..." ("Can you explain how to generate images?").
+    if (/\bhow\s+to\s+(?:generate|create|make|render|produce|paint|draw)/i.test(text)) return true;
+
+    return false;
+}
+
+// Creative-freedom markers for the heuristic fallback ("be creative",
+// "something creative", "surprise me", "use your imagination", ...).
+const CREATIVE_FREEDOM_RE =
+    /\b(?:creative|be\s+creative|as\s+creative\s+as\s+you\s+(?:want|like|can)|something\s+creative|surprise\s+me|use\s+your\s+imagination|be\s+imaginative|imaginative\s+art(?:work)?|go\s+wild|do\s+(?:your|my)\s+thing|whatever\s+you\s+(?:think|want)|you\s+decide)\b/i;
+
+function detectCreativeFreedom(message) {
+    return CREATIVE_FREEDOM_RE.test(String(message || '')) ? 'full' : 'none';
+}
+
 const IMAGE_INTENT_SYSTEM_PROMPT =
-    'You are JARVIS, a local AI assistant. Classify whether the user wants to generate an ' +
-    'image, and if so, extract structured data from their request.\n\n' +
+    'You are JARVIS, a local AI assistant with an image-generation tool ' +
+    '(Krea2/ComfyUI). Classify whether the user wants to generate an image, and ' +
+    'if so, extract structured data from their request.\n\n' +
     'Respond with ONLY a single JSON object, no markdown, no commentary.\n\n' +
-    'For image generation requests, use this exact shape:\n' +
-    '{"intent": "image_generation", "user_prompt": "the actual image concept", ' +
+    'For image generation requests:\n' +
+    '{"intent": "image_generation", "action": "generate|modify", "user_prompt": "the actual image concept", ' +
     '"creative_mode": "none|light|full", "explicit_constraints": []}\n\n' +
-    'For normal chat questions, use this exact shape:\n' +
-    '{"intent": "chat", "message": "the original user message"}\n\n' +
+    'For normal chat:\n' +
+    '{"intent": "chat", "related_task": "image_generation"|null, "message": "the original user message"}\n\n' +
+    'action rules:\n' +
+    '- "generate": a brand-new image request.\n' +
+    '- "modify": an incremental change to an existing image concept (used by the task router).\n\n' +
     'Classification rules:\n' +
-    '- "generate an image of X", "create a picture of X", "make a photo of X", ' +
-    '"render X", "draw X as a ...", "generate a cinematic bedroom interior" → image_generation\n' +
-    '- Normal questions (facts, code, math, summaries, reports, text output) → chat\n\n' +
+    '- Image requests may use ANY natural phrasing. Examples:\n' +
+    '  "generate me an image", "can you generate me an image", "could you create a picture",\n' +
+    '  "I want you to make a photo", "please create an image of X", "I\'d like you to generate a portrait",\n' +
+    '  "show me a futuristic city", "draw me a cyberpunk character", "make something creative".\n' +
+    '- CHAT — do NOT classify as image generation:\n' +
+    '  "What is image generation?", "How does image generation work?",\n' +
+    '  "What image model should I use?", "Can you explain how to generate images?".\n' +
+    '- Normal questions (facts, code, math, summaries, reports, text output) → chat, related_task null.\n\n' +
     'user_prompt rules:\n' +
-    '- Extract ONLY the visual concept the user wants to see.\n' +
-    '- Remove verb preambles ("generate an image of", "create a picture of", etc.).\n' +
-    '- Remove meta-instructions about HOW to generate ("be creative", "surprise me").\n' +
-    '- Keep all visual details: subject descriptions, clothing, poses, locations, colors, style.\n\n' +
+    '- Extract ONLY the visual concept. Remove verb preambles and meta-instructions.\n' +
+    '- If the user grants creative freedom without a concrete subject ("be creative", ' +
+    '"something creative", "surprise me"), set creative_mode "full"; user_prompt may be a ' +
+    'generic inventive subject ("" is allowed).\n\n' +
     'creative_mode rules:\n' +
-    '- "none": No creative freedom requested. Default when user just asks for an image.\n' +
-    '- "light": User requests a specific enhancement like "make it cinematic", ' +
-    '"dramatic lighting", "professional composition", "make it moody".\n' +
-    '- "full": User explicitly says "be creative", "surprise me", "use your imagination", ' +
-    '"go wild", "do your thing", "whatever you think looks best".\n\n' +
+    '- "none": no creative freedom. Default when the user just asks for an image.\n' +
+    '- "light": a specific enhancement is requested ("make it cinematic", "dramatic lighting", "make it moody").\n' +
+    '- "full": the user grants creative freedom ("be creative", "creative", "creative image", ' +
+    '"something creative", "surprise me", "use your imagination", "go wild", "you decide").\n\n' +
+    'related_task rules:\n' +
+    '- Set "related_task": "image_generation" when a chat question refers to an image or an ' +
+    'image-generation task (e.g., about the current or desired image). Otherwise null.\n\n' +
     'explicit_constraints rules:\n' +
     '- Array of strings for any explicit constraints the user states ' +
     '(e.g., "must be in black and white", "no text", "landscape orientation").\n' +
     '- Empty array [] if none.';
 
 // Returns 'definite' | 'likely' | null. "definite" means the message clearly
-// asks for an image (explicit image vocabulary). "likely" means it opens with
-// a generation verb but has no explicit image word — worth asking the LLM.
+// asks for an image (generation verb + explicit image vocabulary, or an "X of"
+// construction). "likely" means generation vocabulary is present but no explicit
+// image word — worth asking the LLM. Concept questions are excluded entirely.
 function imageRequestStrength(message) {
+    if (isConceptQuestion(message)) return null;
+
+    // Strong explicit frame: "image of X", "portrait of X", ...
     if (IMAGE_OF_RE.test(message)) return 'definite';
-    if (GENERATION_VERB_RE.test(message)) {
-        if (IMAGE_WORD_RE.test(message)) return 'definite';
-        return 'likely';
-    }
+
+    const hasGenerationVerb = GENERATION_VERB_RE.test(message);
+
+    if (hasGenerationVerb && IMAGE_WORD_RE.test(message)) return 'definite';
+    if (hasGenerationVerb) return 'likely';
     return null;
 }
 
 // Use the configured LLM to classify intent. Returns
-// { intent: 'image_generation', user_prompt, creative_mode, explicit_constraints }
-// or { intent: 'chat', message }.
+// { intent: 'image_generation', action, user_prompt, creative_mode, explicit_constraints }
+// or { intent: 'chat', related_task, message }.
+//
+// The heuristic decides WHEN the LLM is consulted and supplies the fallback;
+// the structured LLM classification (extension of the schema, not the chat
+// model's natural-language reply) adds action / creative_mode / constraints.
 async function detectIntent(message, providers, provider, model) {
     const strength = imageRequestStrength(message);
 
     if (strength === null) {
-        return { intent: 'chat', message };
+        return { intent: 'chat', related_task: null, message };
     }
 
     // For both "definite" and "likely" image requests, call the LLM to get
-    // structured data including creative_mode and explicit constraints. This
-    // ensures meta-instructions like "be creative" are separated from the
+    // structured data including action, creative_mode and explicit constraints.
+    // This ensures meta-instructions like "be creative" are separated from the
     // actual image concept.
     const cluesPrompt =
         'User message: "' + message + '"\n\n' +
@@ -128,16 +183,30 @@ async function detectIntent(message, providers, provider, model) {
         ], model);
 
         const parsed = parseIntentJson(raw);
-        if (parsed && parsed.intent === 'image_generation') {
-            const user_prompt = String(parsed.user_prompt || '').trim();
-            if (user_prompt) {
+        if (parsed) {
+            // Structured classification is authoritative for tool execution:
+            // action, user_prompt and creative_mode decide whether a tool runs.
+            if (parsed.intent === 'image_generation') {
+                const creative_mode = normalizeCreativeMode(parsed.creative_mode);
+                const user_prompt = String(parsed.user_prompt || '').trim();
+                // A concrete subject is not required when creative freedom is granted.
+                if (user_prompt || creative_mode === 'full') {
+                    return {
+                        intent: 'image_generation',
+                        action: normalizeAction(parsed.action),
+                        user_prompt: user_prompt || DEFAULT_CREATIVE_PROMPT,
+                        creative_mode,
+                        explicit_constraints: Array.isArray(parsed.explicit_constraints)
+                            ? parsed.explicit_constraints
+                            : []
+                    };
+                }
+            }
+            if (parsed.intent === 'chat') {
                 return {
-                    intent: 'image_generation',
-                    user_prompt,
-                    creative_mode: parsed.creative_mode || 'none',
-                    explicit_constraints: Array.isArray(parsed.explicit_constraints)
-                        ? parsed.explicit_constraints
-                        : []
+                    intent: 'chat',
+                    related_task: parsed.related_task || null,
+                    message
                 };
             }
         }
@@ -145,21 +214,47 @@ async function detectIntent(message, providers, provider, model) {
         console.warn('[image-generator] LLM intent detection failed, using heuristic:', err.message);
     }
 
-    // LLM unavailable or said "chat" — for "definite" requests, fall back to
-    // heuristic extraction with meta-instruction cleanup.
-    if (strength === 'definite') {
+    // LLM unavailable, malformed JSON, or said "chat" — for "definite" requests,
+    // fall back to heuristic extraction with meta-instruction cleanup. If the
+    // user granted creative freedom without a concrete subject, that alone is
+    // enough to run (creative_mode full) using a generic inventive prompt.
+    const creative = detectCreativeFreedom(message);
+    if (strength === 'definite' || creative === 'full') {
         const { prompt } = extractImageSubject(message);
-        if (prompt) {
+        let cleaned = String(stripCreativeMetaInstructions(prompt) || '').trim();
+        if (cleaned && isBareCreativeRequest(cleaned)) cleaned = '';
+        if (cleaned || creative === 'full') {
             return {
                 intent: 'image_generation',
-                user_prompt: stripCreativeMetaInstructions(prompt),
-                creative_mode: 'none',
+                action: 'generate',
+                user_prompt: cleaned || DEFAULT_CREATIVE_PROMPT,
+                creative_mode: creative,
                 explicit_constraints: []
             };
         }
     }
 
-    return { intent: 'chat', message };
+    return { intent: 'chat', related_task: null, message };
+}
+
+const DEFAULT_CREATIVE_PROMPT = 'an original, imaginative piece of art';
+
+function normalizeAction(value) {
+    return String(value || '').toLowerCase() === 'modify' ? 'modify' : 'generate';
+}
+
+function normalizeCreativeMode(value) {
+    const v = String(value || 'none').toLowerCase();
+    return v === 'full' || v === 'light' ? v : 'none';
+}
+
+// True when the extracted prompt is nothing but a creative-freedom marker
+// ("something creative", "creative image", "just be creative", ...) — i.e. the
+// user granted creative freedom without specifying a subject.
+function isBareCreativeRequest(text) {
+    const t = String(text || '').replace(/[,;.\s]+$/i, '').trim();
+    return CREATIVE_FREEDOM_RE.test(t) &&
+        /^(?:something\s+)?(?:just\s+)?(?:be\s+)?creative(?:\s+(?:image|art(?:work)?))?$/i.test(t);
 }
 
 function parseIntentJson(raw) {
@@ -181,23 +276,34 @@ function parseIntentJson(raw) {
     }
 }
 
-// Heuristic fallback: strip the generation verb phrase and the "image of"
-// preamble to get the visual subject ("Generate an image of a futuristic
-// Tokyo street" -> "a futuristic Tokyo street"). Used directly for "definite"
-// requests and as a fallback when the LLM is unavailable.
+// Heuristic fallback: strip the generation verb phrase, modal/politeness
+// preambles, and the "image of" preamble to get the visual subject
+// ("Can you please generate an image of a futuristic Tokyo street" ->
+// "a futuristic Tokyo street"). Used directly for "definite" requests and as
+// a fallback when the LLM is unavailable.
 function extractImageSubject(message) {
     let cleaned = String(message || '').trim();
 
-    // Strip leading politeness + generation verb + articles.
+    // Strip politeness + modal/politeness preambles ("please", "can you",
+    // "could you", "would you", "I want you to", "I'd like you to", ...).
     cleaned = cleaned
-        .replace(/^(please\s+)?/i, '')
-        .replace(/^(?:generate|create|make|render|produce|paint|draw|imagine|design|illustrate|compose|show)\s+(?:me|us)?\s*(?:an?|the)?\s+/i, '')
-        .replace(/^(?:i\s+(?:want|'?d like|would like|need)|give\s+me)\s+(?:an?|the)?\s*/i, '')
+        .replace(/^(?:please\s+)?/i, '')
+        .replace(/^(?:can|could|would|will|do|did)\s+you\s+/i, '')
+        .replace(/^(?:can|could|would|will|shall|should)\s+/i, '')
+        .replace(/^i\s+(?:want|'?d like|would like|need)\s+(?:you\s+to\s+)?/i, '')
+        .replace(/^(?:would\s+you\s+mind\s+)?/i, '')
+        .trim();
+
+    // Strip leading generation verb + recipient + articles.
+    const verbStems = GENERATION_VERB_STEMS.join('|');
+    cleaned = cleaned
+        .replace(new RegExp('^(?:' + verbStems + ')\\w*\\s+(?:me|us)?\\s*(?:an?|the)?\\s*', 'i'), '')
+        .replace(/^(?:give\s+me|show\s+me)\s+(?:an?|the)?\s*/i, '')
         .trim();
 
     // "X of <subject>" where X is an image word — keep only the subject.
     const media = IMAGE_MEDIA_WORDS.join('|');
-    const ofMatch = cleaned.match(new RegExp('\\b(?:' + media + ')\\s+of\\s+(.+)$', 'i'));
+    const ofMatch = cleaned.match(new RegExp('\\b(?:' + media + ')s?\\s+of\\s+(.+)$', 'i'));
     if (ofMatch) {
         cleaned = ofMatch[1].trim();
     }

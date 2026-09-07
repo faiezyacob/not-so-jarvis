@@ -64,6 +64,8 @@ const imageGenerator = require('./services/image-generator');
 const generatedHistory = require('./services/generated-history');
 const comfyui = require('./services/comfyui');
 const vramManager = require('./services/vram-manager');
+const taskRouter = require('./services/task-router');
+const taskState = require('./services/task-state');
 const GENERATED_DIR = path.join(__dirname, 'data', 'generated');
 
 function readBody(req) {
@@ -538,22 +540,87 @@ async function handleChatStream(req, res) {
             'X-Accel-Buffering': 'no'
         });
 
-        // Detect whether this request should generate an image. If so, run the
-        // Krea2/ComfyUI pipeline and stream a single image event when done.
-        const intent = await imageGenerator.detectIntent(message, providers, provider, model);
+        // Route the message through the context-aware task router. The router
+        // decides (before any tool runs) whether this message should start a new
+        // task, continue/modify the active task, answer a question about it, or
+        // is just unrelated conversation. The LLM's natural-language reply never
+        // decides whether a tool executes — that decision lives here.
+        const decision = await taskRouter.routeMessage({
+            message,
+            provider,
+            model,
+            conversationId
+        });
 
-        if (intent.intent === 'image_generation') {
-            // Build the final prompt using the conversational model. This
-            // preserves the user's original concept while enriching it based
-            // on creative_mode.
-            const finalPrompt = await imageGenerator.buildImagePrompt(intent, providers, provider, model);
+        if (decision.shouldExecuteTool && decision.task === 'image_generation') {
+            const activeTask = taskState.getTask(conversationId);
+            const isNew = decision.intent === 'new_task' || decision.intent === 'switch_task'
+                || (decision.action === 'generate');
 
-            // Free VRAM for the image models by unloading the chat model first
-            // if the GPU is nearly full.
+            // Determine the effective prompt for this generation run.
+            let imagePrompt;
+            let structuredRequest;
+
+            if (isNew && decision.structuredRequest) {
+                // Brand-new task detected through the intent pipeline.
+                structuredRequest = decision.structuredRequest;
+                imagePrompt = await imageGenerator.buildImagePrompt(structuredRequest, providers, provider, model);
+            } else if (isNew && decision.updatedPrompt) {
+                // Brand-new / switched task reported by the router.
+                structuredRequest = {
+                    intent: 'image_generation',
+                    user_prompt: decision.updatedPrompt,
+                    creative_mode: 'none',
+                    explicit_constraints: []
+                };
+                imagePrompt = await imageGenerator.buildImagePrompt(structuredRequest, providers, provider, model);
+            } else {
+                // Continue / modify the active task. Prefer the router's updated
+                // prompt concept, run through the existing enhancer while
+                // preserving the active task's creative mode and constraints.
+                if (decision.updatedPrompt) {
+                    structuredRequest = {
+                        intent: 'image_generation',
+                        user_prompt: decision.updatedPrompt,
+                        creative_mode: (activeTask.parameters && activeTask.parameters.creative_mode) || 'none',
+                        explicit_constraints: (activeTask.parameters && activeTask.parameters.explicit_constraints) || []
+                    };
+                    imagePrompt = await imageGenerator.buildImagePrompt(structuredRequest, providers, provider, model);
+                } else {
+                    // Fallback: apply the modification directly to the current prompt.
+                    imagePrompt = await taskRouter.applyPromptModification(
+                        activeTask.prompt || message, message, provider, model
+                    );
+                }
+            }
+
+            const action = isNew ? 'generate' : 'modify';
+
+            // Track the task as running, then free VRAM and execute.
+            const ctxPreviousPrompt = activeTask.prompt || null;
+            taskState.setTask(conversationId, {
+                type: 'image',
+                operation: action,
+                prompt: imagePrompt,
+                lastAction: action,
+                status: 'running'
+            });
+            if (action === 'generate') {
+                taskState.setTask(conversationId, {
+                    originalPrompt: structuredRequest ? structuredRequest.user_prompt : message,
+                    parameters: Object.assign({}, taskState.getTask(conversationId).parameters, {
+                        creative_mode: structuredRequest ? structuredRequest.creative_mode : 'none',
+                        explicit_constraints: structuredRequest ? structuredRequest.explicit_constraints : []
+                    })
+                });
+            }
+
             await vramManager.freeVRAMBeforeImage();
             await handleImageGenerationStream(req, res, {
                 provider, model, conversationId, message,
-                imagePrompt: finalPrompt
+                imagePrompt,
+                action,
+                previousPrompt: ctxPreviousPrompt
             });
             return;
         }
@@ -563,7 +630,23 @@ async function handleChatStream(req, res) {
         vramManager.rememberChatModel(provider, model);
         await vramManager.freeVRAMBeforeChat();
 
-        const contextMessages = contextBuilder.buildContext(conversationId, message, provider, model);
+        // The active task stays alive across chat/question turns so the user can
+        // resume it later. It is only cleared when the user explicitly starts a
+        // different, non-tool task (new_task/switch_task that is not a
+        // generation), which replaces the active task.
+        if ((decision.intent === 'new_task' || decision.intent === 'switch_task') && !decision.shouldExecuteTool) {
+            taskState.clearTask(conversationId);
+        }
+
+        const contextMessages = contextBuilder.buildContext(
+            conversationId,
+            message,
+            provider,
+            model,
+            decision.intent === 'task_question'
+                ? taskRouter.renderActiveTaskContext(taskState.getTask(conversationId))
+                : ''
+        );
 
         let fullReply = '';
 
@@ -597,9 +680,10 @@ async function handleChatStream(req, res) {
 
 // Handle an image-generation chat request over SSE. Emits a "generating"
 // status event, then an "image" event with the chat-ready payload, or an
-// "error" event on failure.
+// "error" event on failure. The active task is only marked completed after the
+// tool actually finishes — never before.
 async function handleImageGenerationStream(req, res, opts) {
-    const { provider, model, conversationId, message, imagePrompt } = opts;
+    const { provider, model, conversationId, message, imagePrompt, action, previousPrompt } = opts;
 
     try {
         if (!imageGenerator.canStartGeneration()) {
@@ -612,8 +696,30 @@ async function handleImageGenerationStream(req, res, opts) {
 
         const result = await imageGenerator.generateImage(imagePrompt, { provider, model });
 
+        // Tool succeeded — now update task context and generate the user-facing
+        // response based on the actual result.
+        const existingParams = taskState.getTask(conversationId).parameters || {};
+        taskState.setTask(conversationId, {
+            prompt: imagePrompt,
+            generatedAsset: result.url,
+            parameters: Object.assign({}, existingParams, {
+                width: result.width,
+                height: result.height
+            }),
+            status: 'completed',
+            lastAction: action || 'generate'
+        });
+
+        const summary = await taskRouter.buildSuccessReply({
+            action: action || 'generate',
+            prompt: imagePrompt,
+            previousPrompt: previousPrompt || null,
+            provider,
+            model
+        });
+
         const content =
-            'Generated image:\n' +
+            summary + '\n\n' +
             '**Prompt:** ' + imagePrompt + '\n\n' +
             '![' + 'image' + '](' + result.url + ')';
 
@@ -621,6 +727,7 @@ async function handleImageGenerationStream(req, res, opts) {
         res.end();
     } catch (err) {
         console.error('[image-generator] Generation failed:', err.message, '\n', err.stack);
+        taskState.setTask(conversationId, { status: 'failed' });
         res.write(`data: ${JSON.stringify({ error: friendlyImageError(err) })}\n\n`);
         res.end();
     }

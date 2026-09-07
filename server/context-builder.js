@@ -11,6 +11,10 @@ const conversationService = require('./conversation-service');
 const SYSTEM_PROMPT =
     'You are JARVIS, a local AI assistant running on the user\'s own machine. '
     + 'You assist with system monitoring, software development, and general tasks. '
+    + 'You also have access to a local image-generation tool (Krea2/ComfyUI): when the '
+    + 'user asks you to generate, create, draw, render, or imagine an image, an image '
+    + 'is created locally and shown in the conversation. Concept questions about how '
+    + 'image generation works are answered as normal chat. '
     + 'Be concise and helpful. The local environment may expose CPU, RAM, GPU and '
     + 'VRAM telemetry.';
 
@@ -20,7 +24,7 @@ function getRelevantMessages(conversationId, query) {
     return [];
 }
 
-function buildContext(conversationId, userMessage, provider, model) {
+function buildContext(conversationId, userMessage, provider, model, activeTaskContext) {
     const recent = conversationService
         .getMessages(conversationId)
         .slice(-conversationService.CONFIG.RECENT_MESSAGE_LIMIT);
@@ -28,6 +32,13 @@ function buildContext(conversationId, userMessage, provider, model) {
     const messages = [];
 
     messages.push({ role: 'system', content: SYSTEM_PROMPT });
+
+    if (activeTaskContext) {
+        messages.push({
+            role: 'system',
+            content: activeTaskContext
+        });
+    }
 
     const conv = conversationService.getConversation(conversationId);
     if (conv && conv.summary) {
