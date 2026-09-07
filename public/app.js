@@ -519,6 +519,34 @@ function initImageGenSettings() {
         setTimeout(() => setStatus(''), 3000);
     };
 
+    // Aspect Ratio + Size are the only user-facing resolution controls. They
+    // map to Krea2 latent dimensions server-side, so no pixel values appear
+    // in the UI.
+    const persistSelect = async (key, select) => {
+        setStatus('Saving...');
+        try {
+            const res = await fetch('/api/settings/image', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ [key]: select.value })
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                setStatus('Save failed: ' + (data.error || 'Unknown error'), true);
+                return;
+            }
+            setStatus('Saved: ' + select.value);
+        } catch {
+            setStatus('Save failed: connection error', true);
+        }
+        setTimeout(() => setStatus(''), 3000);
+    };
+
+    const aspectSelect = document.getElementById('imageAspectRatio');
+    const sizeSelect = document.getElementById('imageSize');
+    if (aspectSelect) aspectSelect.addEventListener('change', () => persistSelect('aspectRatio', aspectSelect));
+    if (sizeSelect) sizeSelect.addEventListener('change', () => persistSelect('imageSize', sizeSelect));
+
     (async () => {
         try {
             const res = await fetch('/api/settings/image');
@@ -565,6 +593,10 @@ function initImageGenSettings() {
                     : (loraState.triggerMemory[l.name] || '')
             })) : [];
             renderLoraStack(loraState);
+
+            // Restore the saved Aspect Ratio + Size (fall back to defaults).
+            if (aspectSelect) aspectSelect.value = settings.aspectRatio || defaults.aspectRatio || '4:5';
+            if (sizeSelect) sizeSelect.value = settings.imageSize || defaults.imageSize || 'M';
 
             if (!data.comfyAvailable) {
                 setStatus('ComfyUI unreachable — showing defaults only', true);

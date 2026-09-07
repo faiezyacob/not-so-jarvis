@@ -529,6 +529,50 @@ async function buildImagePrompt(structuredRequest, providers, provider, model) {
     return { prompt: user_prompt, attributes: null };
 }
 
+// --- Resolution (Aspect Ratio + Size) ------------------------------------------
+//
+// The only user-facing resolution controls. Size names the SHORT side in
+// pixels (S 768 / M 1024 / L 1536); the long side is scaled from the aspect
+// ratio, so M + 4:5 yields ~1024x1280 and M + 16:9 yields ~1820x1024.
+// Dimensions are snapped to multiples of 16 before reaching Krea2: the
+// EmptySD3LatentImage node feeds an SD3-style VAE (8x downscale), and the
+// 16-grid keeps the latent whole on strict ComfyUI builds instead of sending
+// arbitrary pixel values.
+
+const ASPECT_RATIOS = ['1:1', '4:5', '3:4', '16:9', '9:16'];
+const IMAGE_SIZES = { S: 768, M: 1024, L: 1536 };
+
+function normalizeAspectRatio(value) {
+    const v = String(value || '').trim();
+    return ASPECT_RATIOS.includes(v) ? v : null;
+}
+
+function normalizeImageSize(value) {
+    const v = String(value || '').trim().toUpperCase();
+    return Object.prototype.hasOwnProperty.call(IMAGE_SIZES, v) ? v : null;
+}
+
+function snapToLatentGrid(n) {
+    return Math.max(64, Math.min(4096, Math.round(n / 16) * 16));
+}
+
+// Map aspectRatio + imageSize to concrete Krea2 latent dimensions.
+// Invalid inputs fall back to the 4:5 / M defaults.
+function resolveDimensions(settings) {
+    const ratio = normalizeAspectRatio(settings && settings.aspectRatio) || '4:5';
+    const size = normalizeImageSize(settings && settings.imageSize) || 'M';
+    const parts = ratio.split(':').map(Number);
+    const short = IMAGE_SIZES[size];
+    const long = Math.round(short * Math.max(parts[0], parts[1]) / Math.min(parts[0], parts[1]));
+    const landscape = parts[0] >= parts[1];
+    return {
+        width: snapToLatentGrid(landscape ? long : short),
+        height: snapToLatentGrid(landscape ? short : long),
+        aspectRatio: ratio,
+        imageSize: size
+    };
+}
+
 // --- Krea2 text-to-image workflow ----------------------------------------------
 //
 // Adapted from Mix Studio's working Krea2 pipeline (server.js buildT2I +
@@ -546,6 +590,12 @@ const DEFAULT_SETTINGS = {
     clip: process.env.KREA2_CLIP || 'Huihui-Qwen3-VL-4B-Instruct-abliterated-fp8_scaled.safetensors',
     clipType: process.env.KREA2_CLIP_TYPE || 'krea2',
     vae: process.env.KREA2_VAE || 'wan_2.1_vae.safetensors',
+    // User-facing resolution controls. The UI exposes only these two
+    // dropdowns — never raw pixels. Width/height below are always derived
+    // from them via resolveDimensions(), so stored or env-provided pixel
+    // values never reach the Krea2 graph directly.
+    aspectRatio: normalizeAspectRatio(process.env.KREA2_ASPECT_RATIO) || '4:5',
+    imageSize: normalizeImageSize(process.env.KREA2_IMAGE_SIZE) || 'M',
     width: Number(process.env.KREA2_WIDTH) || 1024,
     height: Number(process.env.KREA2_HEIGHT) || 1024,
     steps: Number(process.env.KREA2_STEPS) || 8,
@@ -561,10 +611,12 @@ const DEFAULT_SETTINGS = {
 
 // Fields the user may override through the settings panel / API. Kept
 // separate from DEFAULT_SETTINGS so we only persist explicit overrides.
-const CONFIGURABLE_KEYS = ['unet', 'clip', 'clipType', 'vae', 'width', 'height', 'steps', 'cfg', 'loras', 'loraTriggerWords'];
+const CONFIGURABLE_KEYS = ['unet', 'clip', 'clipType', 'vae', 'aspectRatio', 'imageSize', 'width', 'height', 'steps', 'cfg', 'loras', 'loraTriggerWords'];
 
 // Effective settings = env-driven defaults merged with any globally stored
-// overrides from data/config.json (see config-manager).
+// overrides from data/config.json (see config-manager). Width/height are
+// always (re)derived from aspectRatio + imageSize here, so the Krea2 graph,
+// metadata, and task parameters downstream never see raw pixel settings.
 function effectiveSettings() {
     const stored = configManager.getImageSettings();
     const settings = { ...DEFAULT_SETTINGS };
@@ -574,6 +626,9 @@ function effectiveSettings() {
             settings[key] = value;
         }
     }
+    const dims = resolveDimensions(settings);
+    settings.width = dims.width;
+    settings.height = dims.height;
     return settings;
 }
 
@@ -628,6 +683,12 @@ function sanitizeSettings(patch) {
             out[key] = sanitizeLoras(value);
         } else if (key === 'loraTriggerWords') {
             out[key] = sanitizeLoraTriggerWords(value);
+        } else if (key === 'aspectRatio') {
+            const v = normalizeAspectRatio(value);
+            if (v) out[key] = v;
+        } else if (key === 'imageSize') {
+            const v = normalizeImageSize(value);
+            if (v) out[key] = v;
         } else if (key === 'width' || key === 'height' || key === 'steps') {
             const n = Math.round(Number(value));
             if (Number.isFinite(n) && n > 0) out[key] = n;
@@ -896,12 +957,15 @@ module.exports = {
     IMAGE_INTENT_SYSTEM_PROMPT,
     PROMPT_BUILDER_SYSTEM_PROMPT,
     DEFAULT_SETTINGS,
+    ASPECT_RATIOS,
+    IMAGE_SIZES,
     canStartGeneration,
     detectIntent,
     buildImagePrompt,
     imageRequestStrength,
     extractImageSubject,
     stripCreativeMetaInstructions,
+    resolveDimensions,
     generateImage,
     buildKrea2T2IGraph,
     buildLoraChain,

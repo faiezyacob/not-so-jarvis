@@ -248,7 +248,7 @@ async function handleAPI(req, res, urlPath) {
     }
 
     // POST /api/settings/image — persist global image generation overrides
-    // (unet, clip, clipType, vae, width, height, steps, cfg).
+    // (unet, clip, clipType, vae, aspectRatio, imageSize, steps, cfg, loras).
     if (urlPath === '/api/settings/image' && req.method === 'POST') {
         try {
             const body = await readBody(req);

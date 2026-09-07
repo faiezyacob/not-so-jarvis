@@ -83,7 +83,7 @@ data/                 Runtime data (persisted JSON + generated media)
 
 ## State-management patterns
 
-- **Server config**: `data/config.json`, managed by `server/config-manager.js` (`getConfig`, `setModelConfig`, `getImageSettings`, `setImageSettings`). The `imageGeneration` key stores global image settings overrides (unet, clip, vae, width, height, steps, cfg, loras).
+- **Server config**: `data/config.json`, managed by `server/config-manager.js` (`getConfig`, `setModelConfig`, `getImageSettings`, `setImageSettings`). The `imageGeneration` key stores global image settings overrides (unet, clip, vae, aspectRatio, imageSize, steps, cfg, loras; width/height are derived from aspectRatio + imageSize via `resolveDimensions`).
 - **Conversations/messages**: `data/conversations.json`, managed by `server/conversation-service.js`. In-memory cache reloaded at startup.
 - **Generated image metadata**: `data/generated-history.json`, managed by `services/generated-history.js` (cached in memory, flushed on change).
 - **LoRA stack**: part of global image settings (`imageGeneration.loras`). Each entry is `{ name, strength, on, triggerWord }`. Trigger words from active LoRAs are prepended to the image prompt at generation time.
