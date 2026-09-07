@@ -294,6 +294,25 @@ async function handleAPI(req, res, urlPath) {
         return true;
     }
 
+    // GET /api/comfyui/status — ComfyUI availability, queue and device stats
+    if (urlPath === '/api/comfyui/status' && req.method === 'GET') {
+        try {
+            const available = await comfyui.isAvailable();
+            if (!available) {
+                json(res, 200, { available: false, queue: null, system_stats: null });
+                return true;
+            }
+            const [queue, systemStats] = await Promise.all([
+                comfyui.getQueue(),
+                comfyui.getSystemStats()
+            ]);
+            json(res, 200, { available: true, queue, system_stats: systemStats, ws_url: comfyui.comfyWsUrl() });
+        } catch (err) {
+            json(res, 500, { error: err.message });
+        }
+        return true;
+    }
+
     // POST /api/models/unload (legacy)
     if (urlPath === '/api/models/unload' && req.method === 'POST') {
         handleUnloadModel(req, res);
@@ -422,12 +441,38 @@ async function handleRenameConversation(req, res, id) {
 }
 
 function handleDeleteConversation(req, res, id) {
+    const messages = conversationService.getMessages(id);
     const removed = conversationService.deleteConversation(id);
     if (!removed) {
         json(res, 404, { error: 'Conversation not found' });
         return;
     }
+    removeConversationImages(messages);
     json(res, 200, { ok: true });
+}
+
+// Remove generated image files that were linked from a deleted conversation's
+// messages, keeping the gallery in sync with what the chat actually references.
+function removeConversationImages(messages) {
+    const wanted = new Set();
+    const urlRe = /\/generated\/([^\s)\]}]+)/g;
+    (messages || []).forEach((m) => {
+        const content = (m && m.content) || '';
+        let match;
+        while ((match = urlRe.exec(content))) {
+            wanted.add(match[1]);
+        }
+    });
+    if (!wanted.size) return;
+
+    generatedHistory.list().forEach((entry) => {
+        const segment = String(entry.file || '');
+        const idx = segment.lastIndexOf('/');
+        const name = idx === -1 ? segment : segment.slice(idx + 1);
+        if (wanted.has(name)) {
+            generatedHistory.remove(entry.id);
+        }
+    });
 }
 
 function handleGetMessages(req, res, id) {
@@ -554,45 +599,49 @@ async function handleChatStream(req, res) {
 
         if (decision.shouldExecuteTool && decision.task === 'image_generation') {
             const activeTask = taskState.getTask(conversationId);
-            const isNew = decision.intent === 'new_task' || decision.intent === 'switch_task'
-                || (decision.action === 'generate');
+            const isNew = decision.intent === 'new_task' || decision.intent === 'switch_task';
 
             // Determine the effective prompt for this generation run.
             let imagePrompt;
             let structuredRequest;
+            let attributes;
+            let enhanced;
 
             if (isNew && decision.structuredRequest) {
                 // Brand-new task detected through the intent pipeline.
                 structuredRequest = decision.structuredRequest;
-                imagePrompt = await imageGenerator.buildImagePrompt(structuredRequest, providers, provider, model);
+                enhanced = await imageGenerator.buildImagePrompt(structuredRequest, providers, provider, model);
             } else if (isNew && decision.updatedPrompt) {
-                // Brand-new / switched task reported by the router.
+                // Brand-new / switched task reported by the router. Pass the
+                // active task's prompt as context so a tweak the router treats
+                // as a new task can still continue the same subject.
                 structuredRequest = {
                     intent: 'image_generation',
                     user_prompt: decision.updatedPrompt,
+                    previous_prompt: activeTask.prompt || '',
                     creative_mode: 'none',
                     explicit_constraints: []
                 };
-                imagePrompt = await imageGenerator.buildImagePrompt(structuredRequest, providers, provider, model);
+                enhanced = await imageGenerator.buildImagePrompt(structuredRequest, providers, provider, model);
             } else {
-                // Continue / modify the active task. Prefer the router's updated
-                // prompt concept, run through the existing enhancer while
-                // preserving the active task's creative mode and constraints.
-                if (decision.updatedPrompt) {
-                    structuredRequest = {
-                        intent: 'image_generation',
-                        user_prompt: decision.updatedPrompt,
-                        creative_mode: (activeTask.parameters && activeTask.parameters.creative_mode) || 'none',
-                        explicit_constraints: (activeTask.parameters && activeTask.parameters.explicit_constraints) || []
-                    };
-                    imagePrompt = await imageGenerator.buildImagePrompt(structuredRequest, providers, provider, model);
-                } else {
-                    // Fallback: apply the modification directly to the current prompt.
-                    imagePrompt = await taskRouter.applyPromptModification(
-                        activeTask.prompt || message, message, provider, model
-                    );
-                }
+                // Continue / modify the active task. The stored full prompt and
+                // attribute breakdown are the source of truth; only the targeted
+                // attribute changes, everything else is preserved verbatim.
+                structuredRequest = {
+                    intent: 'image_generation',
+                    action: 'modify',
+                    user_prompt: decision.updatedPrompt || activeTask.prompt || message,
+                    base_prompt: activeTask.prompt || '',
+                    modification: message,
+                    base_attributes: (activeTask.parameters && activeTask.parameters.attributes) || null,
+                    creative_mode: (activeTask.parameters && activeTask.parameters.creative_mode) || 'none',
+                    explicit_constraints: (activeTask.parameters && activeTask.parameters.explicit_constraints) || []
+                };
+                enhanced = await imageGenerator.buildImagePrompt(structuredRequest, providers, provider, model);
             }
+
+            imagePrompt = enhanced.prompt;
+            attributes = enhanced.attributes;
 
             const action = isNew ? 'generate' : 'modify';
 
@@ -610,7 +659,14 @@ async function handleChatStream(req, res) {
                     originalPrompt: structuredRequest ? structuredRequest.user_prompt : message,
                     parameters: Object.assign({}, taskState.getTask(conversationId).parameters, {
                         creative_mode: structuredRequest ? structuredRequest.creative_mode : 'none',
-                        explicit_constraints: structuredRequest ? structuredRequest.explicit_constraints : []
+                        explicit_constraints: structuredRequest ? structuredRequest.explicit_constraints : [],
+                        attributes: attributes || null
+                    })
+                });
+            } else if (attributes) {
+                taskState.setTask(conversationId, {
+                    parameters: Object.assign({}, taskState.getTask(conversationId).parameters, {
+                        attributes
                     })
                 });
             }

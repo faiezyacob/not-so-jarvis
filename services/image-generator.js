@@ -330,40 +330,174 @@ function stripCreativeMetaInstructions(text) {
 
 // --- Prompt Builder -------------------------------------------------------------
 
+// Structured visual attributes the enhancer tracks so modifications can target
+// individual details instead of rewriting the whole prompt. Each prompt the
+// enhancer produces is also broken down into these fields.
+const VISUAL_ATTRIBUTE_KEYS = [
+    'subject', 'appearance', 'top', 'bottom', 'pose',
+    'setting', 'expression', 'camera', 'lighting'
+];
+
 const PROMPT_BUILDER_SYSTEM_PROMPT =
-    'You are a prompt builder for an image-generation model (Krea2).\n\n' +
-    'The user\'s original image concept is the source of truth.\n' +
-    'Preserve every explicit requirement.\n\n' +
-    'If creative_mode is "none", only clarify and improve the request without ' +
-    'materially changing it.\n' +
-    'If creative_mode is "light", enhance only the requested aspects.\n' +
-    'If creative_mode is "full", creatively expand secondary visual details ' +
-    'while preserving the user\'s core concept and all explicit constraints.\n\n' +
-    'What you may enhance based on creative_mode:\n' +
-    '- Lighting and atmosphere\n' +
-    '- Environment details and textures\n' +
-    '- Composition and framing\n' +
-    '- Camera angle and lens\n' +
-    '- Visual storytelling and mood\n' +
-    '- Background details\n\n' +
-    'What you must NEVER change regardless of creative_mode:\n' +
-    '- The subject (person, animal, object, scene)\n' +
-    '- Explicit attributes (clothing color, hair, pose, action)\n' +
-    '- The location/setting the user specified\n' +
-    '- Any explicit constraint the user stated\n\n' +
-    'Never replace, contradict, remove, or reinterpret the user\'s intent.\n' +
-    'Output ONLY the final image-generation prompt. No explanations, no quotes, no markdown.';
+    'You are JARVIS\'s creative visual director for a local image-generation ' +
+    'pipeline (Krea2/ComfyUI). You turn image requests into ONE complete, ' +
+    'concrete visual prompt. You are NOT a keyword generator: fill missing ' +
+    'visual information with specific, usable detail, and never pad prompts ' +
+    'with generic filler such as "cinematic", "highly detailed", ' +
+    '"photorealistic", "atmospheric depth", or "professional". Only include a ' +
+    'detail when it materially improves the image.\n\n' +
+
+    'VISUAL ATTRIBUTE FIELDS — alongside the prompt you also populate these ' +
+    'structured attribute fields. Empty string "" when an attribute is not ' +
+    'present in the prompt:\n' +
+    '- subject: who/what the image shows\n' +
+    '- appearance: hair, build, distinguishing physical traits\n' +
+    '- top: the upper-body clothing\n' +
+    '- bottom: the lower-body clothing\n' +
+    '- pose: pose / action\n' +
+    '- setting: the environment / location\n' +
+    '- expression: facial expression (when useful)\n' +
+    '- camera: camera angle / framing / lens (when useful)\n' +
+    '- lighting: lighting and time of day (when useful)\n\n' +
+
+    'EXAMPLE — user concept "a young Korean woman". Prompt:\n' +
+    '"A young Korean woman with long black hair, wearing an oversized cream ' +
+    'sweater and blue jeans, standing casually on a quiet Seoul street in the ' +
+    'late afternoon."\n' +
+    'attributes: {"subject": "a young Korean woman", "appearance": "with long ' +
+    'black hair", "top": "wearing an oversized cream sweater", "bottom": "blue ' +
+    'jeans", "pose": "standing casually", "setting": "on a quiet Seoul street ' +
+    'in the late afternoon", "expression": "", "camera": "", "lighting": ""}\n' +
+    'Keep prompts concise (usually one or two sentences). Never change the ' +
+    'subject or drop any explicit detail the user gave.\n\n' +
+
+    'creative_mode controls how freely you invent detail:\n' +
+    '- "none": stay close to the user\'s request; only fill in what is needed ' +
+    'to make the prompt usable; do not invent unnecessary details.\n' +
+    '- "light": fill the obvious missing visual attributes (for example a ' +
+    'believable outfit when the user named only a subject and setting).\n' +
+    '- "full": freely complete the visual concept with an appropriate ' +
+    'appearance, outfit, pose, setting, etc.\n\n' +
+
+    'PREVIOUS CONTEXT — a previous image prompt may be provided as context ' +
+    '(the image generated before). If the user\'s new concept clearly continues ' +
+    'the same subject (same person or scene, an incremental tweak like changing ' +
+    'the top), keep the prior details and layer the change on top of them. If ' +
+    'it is genuinely a new subject, do not carry the prior details over.\n\n' +
+
+    'MODIFICATION — when a current image prompt, its current attribute values, ' +
+    'and a modification request are provided, they are the single source of ' +
+    'truth:\n' +
+    '1. Identify which attribute(s) the user wants changed.\n' +
+    '2. Replace ONLY those attributes with concrete, specific new values. Never ' +
+    'write vague phrases such as "in a different pose" — describe the actual ' +
+    'new pose, outfit, setting, lighting, etc.\n' +
+    '3. List exactly those attributes in "changed". Every attribute not listed ' +
+    'keeps its current value word-for-word. Clothing is independent: changing ' +
+    'the top never changes the bottom and vice versa unless the user explicitly ' +
+    'asks for both.\n' +
+    '4. Rebuild the complete prompt from the updated attribute values.\n\n' +
+
+    'Respond with ONLY a single JSON object, no markdown, no commentary:\n' +
+    '- Brand-new generation: {"prompt": "...", "attributes": {field: value, ...}}\n' +
+    '- Modification: {"changed": ["field"], "attributes": {field: value, ...}, ' +
+    '"prompt": "..."}';
+
+// Strip code fences and isolate the JSON payload from the enhancer's reply.
+function parseEnhancerJson(raw) {
+    if (!raw) return null;
+    let text = String(raw).trim();
+    const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fenced) text = fenced[1].trim();
+    const braceStart = text.indexOf('{');
+    const braceEnd = text.lastIndexOf('}');
+    if (braceStart === -1 || braceEnd === -1 || braceEnd <= braceStart) return null;
+    text = text.slice(braceStart, braceEnd + 1);
+    try {
+        return JSON.parse(text);
+    } catch (err) {
+        return null;
+    }
+}
+
+// Coerce a parsed attributes object into the canonical shape. Returns null when
+// every field is empty (nothing worth tracking).
+function normalizeAttributes(value) {
+    const src = value && typeof value === 'object' ? value : {};
+    const out = {};
+    let any = false;
+    for (const key of VISUAL_ATTRIBUTE_KEYS) {
+        const v = src[key];
+        out[key] = (typeof v === 'string' && v.trim()) ? v.trim() : '';
+        if (out[key]) any = true;
+    }
+    return any ? out : null;
+}
+
+// Deterministic preservation: every attribute NOT listed in changedKeys is
+// copied word-for-word from the base attributes. This guarantees a modifier
+// over-rewrite can never drop e.g. the top when only the bottom was requested.
+function mergeVisualAttributes(base, updated, changedKeys) {
+    if (!base || !Object.values(base).some(Boolean)) return normalizeAttributes(updated);
+    const changed = Array.isArray(changedKeys) && changedKeys.length
+        ? new Set(changedKeys.map((k) => String(k)))
+        : new Set();
+    const out = {};
+    let any = false;
+    for (const key of VISUAL_ATTRIBUTE_KEYS) {
+        if (changed.has(key) && typeof updated[key] === 'string' && updated[key].trim()) {
+            out[key] = updated[key].trim();
+        } else if (typeof base[key] === 'string' && base[key].trim()) {
+            out[key] = base[key];
+        } else {
+            out[key] = '';
+        }
+        if (out[key]) any = true;
+    }
+    return any ? out : null;
+}
 
 // Use the conversational model to build the final image-generation prompt from
-// the structured intent data. Falls back to the raw user_prompt on failure.
+// the structured intent data. Returns { prompt, attributes } so modifications
+// can deterministically preserve untouched details. In modify mode the current
+// prompt + current attributes are the source of truth: only the targeted fields
+// change and every other field is copied verbatim from the stored attributes.
+// Falls back to the raw concept + prior attributes on failure.
 async function buildImagePrompt(structuredRequest, providers, provider, model) {
-    const { user_prompt, creative_mode, explicit_constraints } = structuredRequest;
+    const { user_prompt, creative_mode, explicit_constraints, base_prompt, modification, previous_prompt, base_attributes } = structuredRequest;
+    const isModify = Boolean(base_prompt && modification);
+    // Escalate to "full" when the modification itself grants creative freedom,
+    // otherwise keep the creative mode carried by the active task.
+    const mode = detectCreativeFreedom(modification) === 'full'
+        ? 'full'
+        : normalizeCreativeMode(creative_mode);
 
-    const userMessage =
-        'user_prompt: "' + user_prompt + '"\n' +
-        'creative_mode: "' + (creative_mode || 'none') + '"\n' +
-        'explicit_constraints: ' + JSON.stringify(explicit_constraints || []) + '\n\n' +
-        'Build the final image-generation prompt. Output ONLY the prompt text.';
+    let userMessage;
+    if (isModify) {
+        // Modify mode: the current prompt + attributes are the source of truth.
+        userMessage =
+            'CURRENT IMAGE PROMPT (source of truth):\n"' + base_prompt + '"\n\n' +
+            'CURRENT VISUAL ATTRIBUTES:\n' + JSON.stringify(base_attributes || {}) + '\n\n' +
+            'USER MODIFICATION REQUEST:\n"' + modification + '"\n\n' +
+            'creative_mode: "' + mode + '"\n' +
+            'explicit_constraints: ' + JSON.stringify(explicit_constraints || []) + '\n\n' +
+            'Output ONLY the JSON described in the system prompt.';
+    } else {
+        // Generate mode: enhance the new concept. When a previous prompt exists,
+        // give the LLM that context so incremental tweaks ("make her top ...")
+        // can continue the same subject instead of starting from scratch.
+        userMessage =
+            'user concept: "' + user_prompt + '"\n' +
+            'creative_mode: "' + mode + '"\n' +
+            'explicit_constraints: ' + JSON.stringify(explicit_constraints || []) + '\n\n';
+        if (previous_prompt) {
+            userMessage +=
+                'PREVIOUS IMAGE PROMPT (context — continue the same subject when ' +
+                'the concept builds on it, ignore when it is a new subject):\n"' +
+                previous_prompt + '"\n\n';
+        }
+        userMessage += 'Output ONLY the JSON described in the system prompt.';
+    }
 
     try {
         const raw = await providers.chat(provider, [
@@ -371,13 +505,28 @@ async function buildImagePrompt(structuredRequest, providers, provider, model) {
             { role: 'user', content: userMessage }
         ], model);
 
-        const prompt = String(raw || '').trim();
-        if (prompt) return prompt;
+        const parsed = parseEnhancerJson(raw);
+        const prompt = parsed && typeof parsed.prompt === 'string' ? parsed.prompt.trim() : '';
+        if (prompt) {
+            let attributes = normalizeAttributes(parsed.attributes);
+            if (isModify) {
+                attributes = mergeVisualAttributes(base_attributes, parsed.attributes, parsed.changed);
+            }
+            return { prompt, attributes };
+        }
     } catch (err) {
         console.warn('[image-generator] Prompt builder failed, using raw prompt:', err.message);
     }
 
-    return user_prompt;
+    if (isModify) {
+        return {
+            prompt: String(base_prompt || '').trim()
+                ? String(base_prompt).trim() + ', ' + String(modification || '').trim()
+                : String(modification || user_prompt || '').trim(),
+            attributes: base_attributes || null
+        };
+    }
+    return { prompt: user_prompt, attributes: null };
 }
 
 // --- Krea2 text-to-image workflow ----------------------------------------------
@@ -405,11 +554,14 @@ const DEFAULT_SETTINGS = {
     // is { name, strength, on, triggerWord } where strength is the model+clip
     // LoRA scale and triggerWord is an optional keyword prepended to the prompt.
     loras: [],
+    // Remembered trigger words keyed by LoRA name. Kept separate from the
+    // active stack so a removed LoRA keeps its trigger word if re-added later.
+    loraTriggerWords: {},
 };
 
 // Fields the user may override through the settings panel / API. Kept
 // separate from DEFAULT_SETTINGS so we only persist explicit overrides.
-const CONFIGURABLE_KEYS = ['unet', 'clip', 'clipType', 'vae', 'width', 'height', 'steps', 'cfg', 'loras'];
+const CONFIGURABLE_KEYS = ['unet', 'clip', 'clipType', 'vae', 'width', 'height', 'steps', 'cfg', 'loras', 'loraTriggerWords'];
 
 // Effective settings = env-driven defaults merged with any globally stored
 // overrides from data/config.json (see config-manager).
@@ -453,6 +605,19 @@ function sanitizeLoras(value) {
     return out;
 }
 
+// Normalize the remembered per-LoRA trigger word map. Keys are LoRA names,
+// values are trimmed trigger words. Empty values are dropped.
+function sanitizeLoraTriggerWords(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+    const out = {};
+    for (const [name, word] of Object.entries(value)) {
+        const key = String(name || '').trim();
+        const trimmed = String(word || '').trim();
+        if (key && trimmed) out[key] = trimmed;
+    }
+    return out;
+}
+
 function sanitizeSettings(patch) {
     const out = {};
     for (const key of CONFIGURABLE_KEYS) {
@@ -461,6 +626,8 @@ function sanitizeSettings(patch) {
         if (value === null) { out[key] = null; continue; }
         if (key === 'loras') {
             out[key] = sanitizeLoras(value);
+        } else if (key === 'loraTriggerWords') {
+            out[key] = sanitizeLoraTriggerWords(value);
         } else if (key === 'width' || key === 'height' || key === 'steps') {
             const n = Math.round(Number(value));
             if (Number.isFinite(n) && n > 0) out[key] = n;
@@ -593,7 +760,7 @@ function buildKrea2T2IGraph(prompt, options = {}) {
     };
 
     graph.decode = { class_type: 'VAEDecode', inputs: { samples: ['sampler', 0], vae: ['vae', 0] } };
-    graph.save = { class_type: 'SaveImage', inputs: { images: ['decode', 0], filename_prefix: 'KreaStudio/gen' } };
+    graph.save = { class_type: 'SaveImage', inputs: { images: ['decode', 0], filename_prefix: 'not-so-jarvis/gen' } };
 
     return graph;
 }

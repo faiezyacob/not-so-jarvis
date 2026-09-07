@@ -50,14 +50,14 @@ const canvasContexts = {
 // --- Widget Settings ---
 
 const WIDGET_SETTINGS_KEY = 'jarvis-widget-settings';
-const WIDGET_IDS = { cpu: 'cpuCard', ram: 'ramCard', vram: 'vramCard', weather: 'weatherCard', generated: 'generatedWidget' };
+const WIDGET_IDS = { cpu: 'cpuCard', ram: 'ramCard', vram: 'vramCard', weather: 'weatherCard', generated: 'generatedWidget', comfyui: 'comfyuiCard' };
 
 function loadWidgetSettings() {
     try {
         const saved = localStorage.getItem(WIDGET_SETTINGS_KEY);
-        if (saved) return JSON.parse(saved);
+        if (saved) return { comfyui: true, ...JSON.parse(saved) };
     } catch {}
-    return { cpu: true, ram: true, vram: true, weather: true, generated: true };
+    return { cpu: true, ram: true, vram: true, weather: true, generated: true, comfyui: true };
 }
 
 function saveWidgetSettings(settings) {
@@ -74,7 +74,7 @@ function applyWidgetSettings(settings) {
 // --- Widget Order (Drag & Drop) ---
 
 const WIDGET_ORDER_KEY = 'jarvis-widget-order';
-const DEFAULT_WIDGET_ORDER = ['cpuCard', 'ramCard', 'vramCard', 'weatherCard', 'generatedWidget'];
+const DEFAULT_WIDGET_ORDER = ['cpuCard', 'ramCard', 'vramCard', 'weatherCard', 'generatedWidget', 'comfyuiCard'];
 
 function loadWidgetOrder() {
     try {
@@ -290,6 +290,7 @@ const LORA_STRENGTH_STEP = 0.05;
 function initLoraStack() {
     return {
         loras: [],          // [{ name, strength, on, triggerWord }] current attached stack
+        triggerMemory: {},  // { [loraName]: triggerWord } remembered even after removal
         available: [],      // lora filenames ComfyUI reports
         listEl: null,
         addSelect: null,
@@ -334,7 +335,13 @@ function loraRow(state, lora, index) {
     triggerInput.value = lora.triggerWord || '';
     triggerInput.title = 'Trigger word prepended to prompt';
     triggerInput.addEventListener('change', () => {
-        lora.triggerWord = triggerInput.value.trim();
+        const word = triggerInput.value.trim();
+        lora.triggerWord = word;
+        if (word) {
+            state.triggerMemory[lora.name] = word;
+        } else {
+            delete state.triggerMemory[lora.name];
+        }
         saveLoraStack(state);
     });
     nameWrap.appendChild(triggerInput);
@@ -422,7 +429,10 @@ async function saveLoraStack(state) {
         const res = await fetch('/api/settings/image', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ loras: state.loras })
+            body: JSON.stringify({
+                loras: state.loras,
+                loraTriggerWords: state.triggerMemory
+            })
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
@@ -453,7 +463,12 @@ function initLoraSettings(state) {
     addSelect.addEventListener('change', () => {
         const name = addSelect.value;
         if (!name) return;
-        state.loras.push({ name, strength: 1, on: true, triggerWord: '' });
+        state.loras.push({
+            name,
+            strength: 1,
+            on: true,
+            triggerWord: state.triggerMemory[name] || ''
+        });
         addSelect.value = '';
         renderLoraStack(state);
         saveLoraStack(state);
@@ -535,12 +550,19 @@ function initImageGenSettings() {
                 }
             });
 
-            // Load the LoRA stack (attached list + available scan from ComfyUI).
+            // Load the LoRA stack (attached list + available scan from ComfyUI)
+            // and the remembered per-LoRA trigger words.
             loraState.available = Array.isArray(choices.loras) ? choices.loras : [];
+            loraState.triggerMemory = (settings.loraTriggerWords && typeof settings.loraTriggerWords === 'object')
+                ? settings.loraTriggerWords
+                : {};
             loraState.loras = Array.isArray(settings.loras) ? settings.loras.map((l) => ({
                 name: l.name,
                 strength: clampLoraStrength(l.strength),
-                on: l.on !== false
+                on: l.on !== false,
+                triggerWord: (l.triggerWord !== undefined && l.triggerWord !== null)
+                    ? String(l.triggerWord)
+                    : (loraState.triggerMemory[l.name] || '')
             })) : [];
             renderLoraStack(loraState);
 
@@ -713,6 +735,7 @@ async function bootApp() {
     initWeather();
     ModelLibrary.init();
     Gallery.init();
+    initComfyUI();
 
     // Boot conversation + chat
     try {
@@ -1106,5 +1129,130 @@ async function fetchWeather() {
     } catch {
         setWeatherError('Unable to fetch weather data');
     }
+}
+
+// --- ComfyUI Widget ---
+
+const COMFYUI_REFRESH_MS = 1000;
+let comfyuiWs = null;
+let comfyuiWsUrl = null;
+let comfyuiProgress = null; // { value, max } from ComfyUI's /ws progress events
+
+function initComfyUI() {
+    fetchComfyUIStatus();
+    setInterval(fetchComfyUIStatus, COMFYUI_REFRESH_MS);
+}
+
+async function fetchComfyUIStatus() {
+    try {
+        const res = await fetch('/api/comfyui/status');
+        if (!res.ok) throw new Error('Fetch failed');
+        const data = await res.json();
+        if (data.ws_url && data.ws_url !== comfyuiWsUrl) {
+            comfyuiWsUrl = data.ws_url;
+            connectComfyUIWS();
+        }
+        updateComfyUIDisplay(data);
+    } catch {
+        updateComfyUIDisplay({ available: false, queue: null, system_stats: null });
+    }
+}
+
+// Live progress percentage comes from ComfyUI's websocket broadcasts. The
+// fetch poll gives online/offline + queue state; WS gives step/total steps.
+function connectComfyUIWS() {
+    if (!comfyuiWsUrl) return;
+    try { if (comfyuiWs) comfyuiWs.close(); } catch {}
+    try {
+        const ws = new WebSocket(comfyuiWsUrl);
+        ws.onopen = () => { comfyuiWs = ws; };
+        ws.onmessage = (e) => {
+            try {
+                const msg = JSON.parse(e.data);
+                if (msg.type === 'progress' && msg.data && msg.data.max > 0) {
+                    comfyuiProgress = { value: msg.data.value, max: msg.data.max };
+                    updateComfyUIProgress();
+                } else if (msg.type === 'executing' && msg.data && msg.data.node === null) {
+                    comfyuiProgress = { value: 1, max: 1 };
+                    updateComfyUIProgress();
+                }
+            } catch {}
+        };
+        ws.onclose = () => {
+            comfyuiWs = null;
+            comfyuiProgress = null;
+            setTimeout(connectComfyUIWS, 5000);
+        };
+        ws.onerror = () => { try { ws.close(); } catch {} };
+    } catch {}
+}
+
+function updateComfyUIDisplay(data) {
+    const statusEl = document.getElementById('comfyuiStatus');
+    const valueEl = document.getElementById('comfyuiValue');
+    const progressWrap = document.getElementById('comfyuiProgressWrapper');
+    const detailEl = document.getElementById('comfyuiDetail');
+    if (!statusEl || !detailEl || !valueEl || !progressWrap) return;
+
+    if (!data || !data.available) {
+        statusEl.textContent = 'Offline';
+        statusEl.className = 'comfyui-status comfyui-status--offline';
+        valueEl.style.display = 'none';
+        progressWrap.style.display = 'none';
+        detailEl.textContent = 'ComfyUI not reachable';
+        return;
+    }
+
+    const running = (data.queue && data.queue.queue_running) || [];
+    const pending = (data.queue && data.queue.queue_pending) || [];
+    const gpu = (data.system_stats && data.system_stats.devices && data.system_stats.devices[0]) || null;
+
+    if (running.length > 0) {
+        statusEl.textContent = 'Generating';
+        statusEl.className = 'comfyui-status comfyui-status--generating';
+        valueEl.style.display = '';
+        progressWrap.style.display = 'block';
+        updateComfyUIProgress();
+    } else {
+        comfyuiProgress = null;
+        statusEl.textContent = pending.length > 0 ? 'Queued' : 'Online';
+        statusEl.className = pending.length > 0 ? 'comfyui-status comfyui-status--queued' : 'comfyui-status comfyui-status--online';
+        valueEl.style.display = 'none';
+        progressWrap.style.display = 'none';
+    }
+
+    let detail = '';
+    if (pending.length > 0) detail += pending.length + ' queued \u00B7 ';
+    if (gpu) {
+        const gpuName = gpu.name || 'GPU';
+        if (gpu.vram_total) {
+            const used = gpu.vram_total - (gpu.vram_free || 0);
+            detail += gpuName + ' \u00B7 ' + gb(used) + '/' + gb(gpu.vram_total) + ' VRAM';
+        } else {
+            detail += gpuName;
+        }
+    }
+    detailEl.textContent = detail || '-';
+}
+
+function updateComfyUIProgress() {
+    const valueEl = document.getElementById('comfyuiValue');
+    const progressBar = document.getElementById('comfyuiProgressBar');
+    if (!valueEl || !progressBar) return;
+
+    if (comfyuiProgress && comfyuiProgress.max > 0) {
+        const pct = Math.min(100, Math.round((comfyuiProgress.value / comfyuiProgress.max) * 100));
+        valueEl.textContent = pct + '%';
+        progressBar.style.width = pct + '%';
+        progressBar.classList.remove('comfyui-progress-bar--indeterminate');
+    } else {
+        valueEl.textContent = '...';
+        progressBar.style.width = '100%';
+        progressBar.classList.add('comfyui-progress-bar--indeterminate');
+    }
+}
+
+function gb(bytes) {
+    return (bytes / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
 }
 

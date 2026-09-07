@@ -124,6 +124,7 @@ const Chat = (() => {
             return;
         }
         await Conversations.remove(conv.id);
+        if (window.Gallery && window.Gallery.refresh) window.Gallery.refresh();
         const conversations = await Conversations.list();
         if (conversations.length > 0) {
             const messages = await Conversations.select(conversations[0].id);

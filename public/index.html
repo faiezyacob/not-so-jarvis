@@ -53,6 +53,10 @@
                                 <input type="checkbox" checked data-widget="generated">
                                 <span class="settings-toggle-label">Gallery</span>
                             </label>
+                            <label class="settings-toggle">
+                                <input type="checkbox" checked data-widget="comfyui">
+                                <span class="settings-toggle-label">ComfyUI</span>
+                            </label>
                         </div>
                         <div class="settings-field">
                             <button class="settings-restart-btn" id="restartServerBtn" type="button">Restart server</button>
@@ -199,6 +203,16 @@
                 <div class="generated-empty">No generated images yet. Ask JARVIS to create one.</div>
                 <div class="generated-info">0 images</div>
                 <button type="button" class="generated-view-all" id="generatedViewAll">View All</button>
+            </div>
+
+            <div class="metric-card" id="comfyuiCard">
+                <div class="metric-label">COMFYUI</div>
+                <div class="comfyui-status" id="comfyuiStatus">Checking...</div>
+                <div class="metric-value comfyui-value" id="comfyuiValue" style="display:none">--%</div>
+                <div class="comfyui-progress-wrapper" id="comfyuiProgressWrapper" style="display:none">
+                    <div class="comfyui-progress-bar" id="comfyuiProgressBar"></div>
+                </div>
+                <div class="comfyui-detail" id="comfyuiDetail">-</div>
             </div>
 
             <div class="monitor-footer">

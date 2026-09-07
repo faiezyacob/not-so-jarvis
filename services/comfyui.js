@@ -17,6 +17,13 @@ function comfyUrl(path) {
     return COMFYUI_URL + path;
 }
 
+// WebSocket endpoint for real-time progress events ({"type":"progress","data":{value,max}}).
+// Derived from the same origin/config as the fetch endpoints.
+function comfyWsUrl() {
+    const wsBase = COMFYUI_URL.replace(/^https/i, 'wss').replace(/^http/i, 'ws');
+    return wsBase + '/ws';
+}
+
 async function comfyFetch(path, options = {}) {
     let res;
     try {
@@ -59,6 +66,19 @@ async function isAvailable() {
 
 async function getObjectInfo(timeoutMs) {
     const res = await comfyFetch('/object_info', { timeout: Number(timeoutMs) || 120000 });
+    return res.json();
+}
+
+// Fetch the ComfyUI execution queue. Returns an object with queue_running
+// (array of currently executing prompts) and queue_pending (queued prompts).
+async function getQueue() {
+    const res = await comfyFetch('/queue', { timeout: 5000 });
+    return res.json();
+}
+
+// Fetch ComfyUI system/device stats (GPU name, VRAM usage, etc.).
+async function getSystemStats() {
+    const res = await comfyFetch('/system_stats', { timeout: 5000 });
     return res.json();
 }
 
@@ -224,9 +244,12 @@ module.exports = {
     COMFYUI_URL,
     GENERATION_TIMEOUT_MS,
     comfyUrl,
+    comfyWsUrl,
     comfyFetch,
     isAvailable,
     getObjectInfo,
+    getQueue,
+    getSystemStats,
     freeModels,
     queuePrompt,
     waitForPrompt,

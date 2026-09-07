@@ -1117,6 +1117,78 @@ em {
     text-overflow: ellipsis;
 }
 
+/* --- ComfyUI Card --- */
+
+.comfyui-status {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.3px;
+    margin-bottom: 9px;
+}
+
+.comfyui-status--online {
+    color: var(--accent);
+}
+
+.comfyui-status--offline {
+    color: #e07a5f;
+}
+
+.comfyui-status--generating {
+    color: var(--accent);
+    animation: comfyui-pulse 1.4s ease-in-out infinite;
+}
+
+.comfyui-status--queued {
+    color: #f4d35e;
+}
+
+.comfyui-value {
+    margin-bottom: 6px;
+}
+
+.comfyui-progress-wrapper {
+    height: 4px;
+    border-radius: 2px;
+    background: var(--bg-input);
+    overflow: hidden;
+    margin-bottom: 9px;
+}
+
+.comfyui-progress-bar {
+    height: 100%;
+    border-radius: 2px;
+    background: var(--accent);
+    box-shadow: 0 0 8px var(--accent-faint);
+    width: 0%;
+    transition: width 0.3s ease;
+}
+
+.comfyui-progress-bar--indeterminate {
+    width: 100%;
+    animation: comfyui-slide 1.2s linear infinite;
+}
+
+.comfyui-detail {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+@keyframes comfyui-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.45; }
+}
+
+@keyframes comfyui-slide {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(400%); }
+}
+
 /* --- Monitor Footer --- */
 
 .monitor-footer {
