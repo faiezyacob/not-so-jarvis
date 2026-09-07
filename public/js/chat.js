@@ -27,6 +27,17 @@ const Chat = (() => {
             }
         });
 
+        // Clicking an image inside a chat message opens the same preview
+        // lightbox as clicking a thumbnail in the GENERATED widget.
+        chatMessagesEl.addEventListener('click', (e) => {
+            const imgEl = e.target.closest('.md-image');
+            if (!imgEl) return;
+            if (window.Gallery && typeof window.Gallery.openFromUrl === 'function') {
+                e.preventDefault();
+                window.Gallery.openFromUrl(imgEl.getAttribute('src'));
+            }
+        });
+
         Conversations.onChange(() => {
             renderConversationList();
         });
@@ -144,17 +155,17 @@ const Chat = (() => {
 
     function addMessageDom(role, content) {
         const el = document.createElement('div');
-        el.className = 'message message--' + role;
+        el.className = 'message message--' + (role === 'assistant' ? 'ai' : 'user');
 
         const roleLabel = document.createElement('div');
         roleLabel.className = 'message-role';
-        roleLabel.textContent = role === 'ai' ? 'JARVIS' : 'USER';
+        roleLabel.textContent = role === 'assistant' ? 'JARVIS' : 'USER';
 
         const contentEl = document.createElement('div');
         contentEl.className = 'message-content';
 
         // Use markdown parser for AI messages, plain text for user messages
-        if (role === 'ai') {
+        if (role === 'assistant') {
             contentEl.innerHTML = Markdown.parse(content);
         } else {
             contentEl.textContent = content;
@@ -306,6 +317,14 @@ const Chat = (() => {
             if (fullReply) {
                 await Conversations.saveAssistantMessage(conversationId, fullReply);
                 renderConversationList();
+            }
+
+            // If the conversation is open but the live stream element was
+            // detached by a tab switch during generation, re-render from
+            // persistence so the finished reply/image shows up automatically.
+            if (fullReply && Conversations.currentId() === conversationId && !chatMessagesEl.contains(aiMessageEl)) {
+                const messages = await Conversations.loadMessages(conversationId);
+                renderMessages(messages);
             }
         } catch (err) {
             removeTypingIndicator();

@@ -148,6 +148,70 @@
 
     // --- Preview lightbox ---
 
+    function lastSegment(src) {
+        const decoded = decodeURIComponent(String(src || ''));
+        const idx = decoded.lastIndexOf('/');
+        return idx === -1 ? decoded : decoded.slice(idx + 1);
+    }
+
+    // Open the same preview lightbox for an image referenced by URL (e.g. a
+    // markdown image in chat). Resolves the file to its history metadata so
+    // the widget-style preview (prompt, copy, delete) is shown; falls back to
+    // a raw image-only preview when no metadata exists.
+    async function findMetaByUrl(src) {
+        try {
+            const res = await fetch('/api/generated');
+            if (!res.ok) return null;
+            const data = await res.json();
+            const fileName = lastSegment(src);
+            const images = (data.images || []).map(withUrl);
+            return images.find((img) => lastSegment(img.file) === fileName) || null;
+        } catch (err) {
+            return null;
+        }
+    }
+
+    function openFromUrl(src) {
+        findMetaByUrl(src).then((meta) => {
+            if (meta) {
+                openPreview(meta);
+            } else {
+                openRawPreview(src);
+            }
+        });
+    }
+
+    function openRawPreview(src) {
+        const { container, body, closeBtn } = buildModalShell('GENERATED IMAGE');
+        const modal = openModal(container);
+        const close = modal.close;
+
+        const imgWrap = document.createElement('div');
+        imgWrap.className = 'gallery-preview-image';
+        const imgEl = document.createElement('img');
+        imgEl.src = src;
+        imgEl.alt = 'Generated image';
+        imgEl.addEventListener('error', () => {
+            imgWrap.classList.add('gallery-preview-broken');
+            imgWrap.textContent = 'Image file is missing.';
+        });
+        imgWrap.appendChild(imgEl);
+        body.appendChild(imgWrap);
+
+        const footer = document.createElement('div');
+        footer.className = 'modal-footer';
+
+        const closeButton = document.createElement('button');
+        closeButton.type = 'button';
+        closeButton.className = 'modal-btn modal-btn-cancel';
+        closeButton.textContent = 'Close';
+        closeButton.addEventListener('click', close);
+        footer.appendChild(closeButton);
+
+        body.appendChild(footer);
+        closeBtn.addEventListener('click', close);
+    }
+
     function formatResolution(img) {
         if (img.width && img.height) return img.width + ' × ' + img.height;
         return '—';
@@ -360,6 +424,7 @@
 
     Gallery.init = init;
     Gallery.refresh = refreshWidget;
+    Gallery.openFromUrl = openFromUrl;
 
     window.Gallery = Gallery;
 })(window, document);
