@@ -154,8 +154,6 @@ async function handleAPI(req, res, urlPath) {
         let status;
         if (provider === 'ollama') {
             status = providerManager.downloadModelOllama(modelId);
-        } else if (provider === 'lmstudio') {
-            status = providerManager.downloadModelLMStudio(modelId);
         } else {
             json(res, 400, { error: 'Unknown provider' });
             return true;

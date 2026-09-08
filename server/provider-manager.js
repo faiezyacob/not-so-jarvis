@@ -5,7 +5,6 @@
    ============================================ */
 
 const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
-const LMSTUDIO_URL = process.env.LMSTUDIO_URL || 'http://localhost:1234';
 
 const downloads = new Map();
 let nextDownloadId = 1;
@@ -23,24 +22,10 @@ async function checkOllama() {
     }
 }
 
-async function checkLMStudio() {
-    try {
-        const res = await fetch(LMSTUDIO_URL + '/v1/models', { signal: AbortSignal.timeout(3000) });
-        if (!res.ok) return { online: false };
-        const data = await res.json();
-        const models = Array.isArray(data.data) ? data.data : [];
-        const running = models.filter(m => m.state === 'running' || m.state === 'loaded');
-        return { online: true, models: models.length, running: running.length };
-    } catch {
-        return { online: false };
-    }
-}
-
 async function getProviders() {
-    const [ollama, lmstudio] = await Promise.all([checkOllama(), checkLMStudio()]);
+    const ollama = await checkOllama();
     return [
-        { id: 'ollama', name: 'Ollama', ...ollama },
-        { id: 'lmstudio', name: 'LM Studio', ...lmstudio }
+        { id: 'ollama', name: 'Ollama', ...ollama }
     ];
 }
 
@@ -65,31 +50,8 @@ async function getInstalledModelsOllama() {
     }
 }
 
-async function getInstalledModelsLMStudio() {
-    try {
-        const res = await fetch(LMSTUDIO_URL + '/v1/models', { signal: AbortSignal.timeout(5000) });
-        if (!res.ok) return [];
-        const data = await res.json();
-        return (data.data || []).map(m => ({
-            id: m.id,
-            displayName: m.id,
-            provider: 'lmstudio',
-            sizeBytes: 0,
-            sizeDisplay: 'Unknown',
-            state: m.state || 'unknown',
-            details: m
-        }));
-    } catch {
-        return [];
-    }
-}
-
 async function getAllInstalledModels() {
-    const [ollama, lmstudio] = await Promise.all([
-        getInstalledModelsOllama(),
-        getInstalledModelsLMStudio()
-    ]);
-    return [...ollama, ...lmstudio];
+    return getInstalledModelsOllama();
 }
 
 /* ---------- Download (Ollama pull) ---------- */
@@ -196,24 +158,6 @@ function getActiveDownloads() {
     return Array.from(downloads.values()).filter(d => d.state === 'downloading' || d.state === 'starting');
 }
 
-/* ---------- Download (LM Studio — not natively supported) ---------- */
-
-function downloadModelLMStudio(catalogModelId) {
-    const downloadId = nextDownloadId++;
-    const status = {
-        id: downloadId,
-        modelId: catalogModelId,
-        provider: 'lmstudio',
-        state: 'error',
-        progress: 0,
-        status: 'LM Studio does not support programmatic downloads. Please download the model in LM Studio directly.',
-        startedAt: Date.now(),
-        error: 'LM Studio API does not support model downloads'
-    };
-    downloads.set(downloadId, status);
-    return status;
-}
-
 /* ---------- Remove (Uninstall) ---------- */
 
 async function removeModel(provider, model) {
@@ -234,9 +178,6 @@ async function removeModel(provider, model) {
         }
         return { removed: true, model };
     }
-    if (provider === 'lmstudio') {
-        throw new Error('LM Studio does not support programmatic model removal. Please delete the model in LM Studio directly.');
-    }
     throw new Error('Unknown provider: ' + provider);
 }
 
@@ -252,18 +193,6 @@ async function loadModel(provider, model) {
         if (!res.ok) {
             const err = await res.text();
             throw new Error('Ollama load error ' + res.status + ': ' + err);
-        }
-        return { loaded: true, model };
-    }
-    if (provider === 'lmstudio') {
-        const res = await fetch(LMSTUDIO_URL + '/v1/models/load', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model })
-        });
-        if (!res.ok) {
-            const err = await res.text();
-            throw new Error('LM Studio load error ' + res.status + ': ' + err);
         }
         return { loaded: true, model };
     }
@@ -284,21 +213,6 @@ async function unloadModel(provider, model) {
         }
         return { unloaded: true, model };
     }
-    if (provider === 'lmstudio') {
-        if (!model) throw new Error('Model name is required');
-        const res = await fetch(LMSTUDIO_URL + '/api/v1/models/unload', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ instance_id: model })
-        });
-        if (!res.ok) {
-            const err = await res.text();
-            throw new Error('LM Studio unload error ' + res.status + ': ' + err);
-        }
-        let data = {};
-        try { data = await res.json(); } catch {}
-        return { unloaded: true, model, instance_id: data.instance_id };
-    }
     throw new Error('Unknown provider: ' + provider);
 }
 
@@ -315,7 +229,6 @@ module.exports = {
     getProviders,
     getAllInstalledModels,
     downloadModelOllama,
-    downloadModelLMStudio,
     getDownloadStatus,
     getActiveDownloads,
     loadModel,

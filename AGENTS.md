@@ -14,7 +14,7 @@
 
 `not-so-jarvis` is a local AI assistant dashboard ("JARVIS") built with **plain Node.js** (no framework, zero npm dependencies) and **vanilla HTML/CSS/JS** (no bundler). It runs entirely on the user's machine with no cloud dependency. It provides:
 
-- Chat with local AI providers (Ollama, LM Studio)
+- Chat with local AI providers (Ollama)
 - System monitoring widgets (CPU, RAM, VRAM/GPU)
 - A model library with hardware-compatibility detection
 - AI image generation via a local ComfyUI instance using the **Krea2** text-to-image workflow
@@ -31,7 +31,7 @@ server/               Backend services (server-side logic, not an HTTP framework
   conversation-service.js  Conversation + message persistence to data/conversations.json
   models.js             Static model catalog + hardware estimates
   provider-manager.js   Detects providers, discovers/downloads/loads/unloads models
-  providers.js          Ollama & LM Studio chat/stream/summarize implementations
+  providers.js          Ollama chat/stream/summarize implementations
 services/             Independent services (monitoring, image generation, ComfyUI)
   system-monitor.js     CPU/RAM/VRAM/GPU telemetry (nvidia-smi), live polling
   comfyui.js            All ComfyUI HTTP communication (health, queue, wait, download)
@@ -64,7 +64,7 @@ data/                 Runtime data (persisted JSON + generated media)
 
 ## Important services and integrations
 
-- **Ollama** (`http://localhost:11434`) and **LM Studio** (`http://localhost:1234`) — chat providers via `server/providers.js`.
+- **Ollama** (`http://localhost:11434`) — chat provider via `server/providers.js`.
 - **ComfyUI** (`http://127.0.0.1:8188`, overridable via `COMFYUI_URL`) — image generation via `services/comfyui.js`.
 - **Krea2 workflow** — assembled in `services/image-generator.js` (`buildKrea2T2IGraph`), using UNET/CLIP/VAE models configured through settings or env vars (`KREA2_*` in `.env.example`).
 - **VRAM manager** — `services/vram-manager.js` unloads the chat model before image generation (and vice versa) when GPU VRAM exceeds a threshold (`VRAM_UNLOAD_THRESHOLD`, default 80%).

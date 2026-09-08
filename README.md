@@ -8,7 +8,7 @@ A lightweight, locally-hosted AI assistant dashboard built with **plain Node.js*
 
 ## Features
 
-- **Chat** with local AI providers (Ollama, LM Studio) — SSE streaming, markdown rendering, conversation history
+- **Chat** with local [Ollama](https://ollama.com) provider — SSE streaming, markdown rendering, conversation history
 - **AI image generation** via Krea2 / ComfyUI — type a prompt and see the result inline in chat
 - **Image upscaling** — SeedVR2 (tiled diffusion) or Ultimate SD engines, before/after comparison viewer
 - **LoRA stack** — attach multiple LoRAs with per-model strength, on/off toggle, and trigger words
@@ -20,16 +20,6 @@ A lightweight, locally-hosted AI assistant dashboard built with **plain Node.js*
 - **Weather widget** — browser geolocation + Open-Meteo (no API key needed)
 - **Settings panel** — provider selection, image generation config, upscale engine tuning, widget visibility
 - **Zero dependencies** — even .env loading, markdown parsing, and PNG dimension reading are hand-rolled
-
-## Screenshots
-
-| Dashboard | Chat | Image Generation |
-|-----------|------|------------------|
-| ![Dashboard](screenshots/dashboard.png) | ![Chat](screenshots/chat.png) | ![Image Generation](screenshots/image-generation.png) |
-
-| Model Library | Settings | Gallery |
-|---------------|----------|---------|
-| ![Model Library](screenshots/model-library.png) | ![Settings](screenshots/settings.png) | ![Gallery](screenshots/gallery.png) |
 
 ## Project structure
 
@@ -44,7 +34,7 @@ server/                   Backend services
   conversation-service.js   Conversation + message persistence to data/conversations.json
   models.js                 Static model catalog + hardware estimates
   provider-manager.js       Detects providers, discovers/downloads/loads/unloads models
-  providers.js              Ollama & LM Studio chat/stream/summarize implementations
+  providers.js              Ollama chat/stream/summarize implementation
 
 services/                 Independent / cross-cutting services
   system-monitor.js         CPU/RAM/VRAM/GPU telemetry (nvidia-smi), live polling
@@ -83,7 +73,7 @@ Then open `http://localhost:3001` in your browser.
 ### Requirements
 
 - **Node.js** (no npm install needed — zero dependencies)
-- **At least one chat provider**: [Ollama](https://ollama.com) (`localhost:11434`) or [LM Studio](https://lmstudio.ai) (`localhost:1234`)
+- **[Ollama](https://ollama.com)** running at `localhost:11434`
 - **For image generation** (optional): [ComfyUI](https://github.com/comfyanonymous/ComfyUI) with the Krea2 custom nodes and models
 
 ## Environment variables
@@ -105,7 +95,6 @@ Copy `.env.example` to `.env` and configure as needed:
 | `KREA2_CFG` | `1` | Ksampler CFG |
 | `VRAM_UNLOAD_THRESHOLD` | `80` | % VRAM to trigger model unloading |
 | `OLLAMA_URL` | `http://localhost:11434` | Ollama endpoint |
-| `LMSTUDIO_URL` | `http://localhost:1234` | LM Studio endpoint |
 
 ## Image generation
 
