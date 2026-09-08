@@ -136,6 +136,81 @@ const Chat = (() => {
 
     // --- Message rendering ---
 
+    // Group an upscaled image with its original so they render as a single
+    // comparison card instead of two stacked images. Returns { original,
+    // upscaled } when the two markdown image URLs look like an upscaled pair
+    // (same hex prefix, exactly one carries the "_up_" marker), else null.
+    function pairMatch(a, b) {
+        const nameA = lastSegment(a);
+        const nameB = lastSegment(b);
+        let up, orig;
+        if (nameA.indexOf('_up_') !== -1 && nameB.indexOf('_up_') === -1) {
+            up = nameA; orig = nameB;
+        } else if (nameB.indexOf('_up_') !== -1 && nameA.indexOf('_up_') === -1) {
+            up = nameB; orig = nameA;
+        } else {
+            return null;
+        }
+        const ext = (n) => n.lastIndexOf('.') === -1 ? '' : n.slice(n.lastIndexOf('.')).toLowerCase();
+        if (ext(nameA) !== ext(nameB)) return null;
+        if (up.split('_up_')[0] !== orig.split('_')[0]) return null;
+        const originalUrl = up === nameA ? b : a;
+        const upscaledUrl = up === nameA ? a : b;
+        return { original: originalUrl, upscaled: upscaledUrl };
+    }
+
+    function lastSegment(src) {
+        const decoded = decodeURIComponent(String(src || ''));
+        const idx = decoded.lastIndexOf('/');
+        return idx === -1 ? decoded : decoded.slice(idx + 1);
+    }
+
+    // When an original + upscaled pair is rendered, keep only the upscaled image
+    // and drop its original so it shows exactly like any other chat image (same
+    // md-image styling, no compare container). The original is only reachable
+    // through the compare overlay opened from the image's preview lightbox.
+    function collapseUpscalePairs(container) {
+        const images = Array.from(container.querySelectorAll('img.md-image'));
+        if (images.length < 2) return;
+
+        const used = new Set();
+        for (let i = 0; i < images.length; i++) {
+            const imgA = images[i];
+            if (used.has(imgA)) continue;
+            for (let j = i + 1; j < images.length; j++) {
+                const imgB = images[j];
+                if (used.has(imgB)) continue;
+                const pair = pairMatch(imgA.getAttribute('src'), imgB.getAttribute('src'));
+                if (!pair) continue;
+
+                const upscaledImg = (pair.upscaled === imgA.getAttribute('src')) ? imgA : imgB;
+                const originalImg = (upscaledImg === imgA) ? imgB : imgA;
+
+                const originalP = originalImg.closest('p');
+                if (originalP) originalP.remove();
+
+                // Drop now-empty paragraphs (blank separators) left behind.
+                Array.from(container.querySelectorAll('p')).forEach((p) => {
+                    if (!p.textContent.trim() && p !== upscaledImg.closest('p')) p.remove();
+                });
+                // Drop the "Original:" / "Upscaled:" label paragraphs around the pair.
+                Array.from(container.querySelectorAll('p')).forEach((p) => {
+                    if (/^(Original|Upscaled|Before|After):\s*$/i.test(p.textContent) && !p.querySelector('img')) p.remove();
+                });
+                used.add(imgA);
+                used.add(imgB);
+                break;
+            }
+        }
+    }
+
+    // Render assistant markdown into a content element and collapse any
+    // original + upscaled image pairs (keeping just the upscaled image).
+    function setAiContent(contentEl, markdown) {
+        contentEl.innerHTML = Markdown.parse(markdown);
+        collapseUpscalePairs(contentEl);
+    }
+
     function renderMessages(messages) {
         chatMessagesEl.innerHTML = '';
 
@@ -167,7 +242,7 @@ const Chat = (() => {
 
         // Use markdown parser for AI messages, plain text for user messages
         if (role === 'assistant') {
-            contentEl.innerHTML = Markdown.parse(content);
+            setAiContent(contentEl, content);
         } else {
             contentEl.textContent = content;
         }
@@ -271,7 +346,7 @@ const Chat = (() => {
                         const data = JSON.parse(line.slice(6));
                         if (data.error) {
                             if (generatingEl) { generatingEl.remove(); generatingEl = null; }
-                            contentEl.innerHTML = Markdown.parse(data.error);
+                            setAiContent(contentEl, data.error);
                             fullReply = data.error;
                             aiMessageEl.classList.add('message--error');
                             continue;
@@ -288,14 +363,14 @@ const Chat = (() => {
                         if (data.image) {
                             fullReply = data.image.content;
                             if (generatingEl) generatingEl.remove();
-                            contentEl.innerHTML = Markdown.parse(data.image.content);
+                            setAiContent(contentEl, data.image.content);
                             chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
                             if (window.Gallery) window.Gallery.refresh();
                         }
                         if (data.chunk) {
                             if (generatingEl) generatingEl.remove();
                             fullReply += data.chunk;
-                            contentEl.innerHTML = Markdown.parse(fullReply);
+                            setAiContent(contentEl, fullReply);
                             chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
                         }
                         if (data.stats) {

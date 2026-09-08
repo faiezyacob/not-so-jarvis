@@ -14,6 +14,23 @@ const generatedHistory = require('./generated-history');
 
 const GENERATED_DIR = path.join(__dirname, '..', 'data', 'generated');
 
+// --- Upscaling constants -------------------------------------------------------
+//
+// Adapted from Mix Studio's upscale pipeline (lib/upscale-workflows.js and
+// server.js buildUpscale). SeedVR2 is the default engine: a tiled diffusion
+// upscaler with sharp/balanced detail profiles and a configurable input noise
+// level. The Ultimate SD engine is a prompt-guided tiled upscale that reuses
+// the Krea2 pipeline's own UNET/CLIP/VAE models.
+
+const LEGACY_KREA_SEEDVR2_DIT = 'seedvr2_ema_3b_fp16.safetensors';
+const DEFAULT_SEEDVR2_DIT = 'seedvr2_ema_7b_fp8_e4m3fn_mixed_block35_fp16.safetensors';
+const SHARP_SEEDVR2_DIT = 'seedvr2_ema_7b_sharp_fp8_e4m3fn_mixed_block35_fp16.safetensors';
+const DEFAULT_SEEDVR2_VAE = 'ema_vae_fp16.safetensors';
+const DEFAULT_SEEDVR2_ATTENTION = 'sdpa';
+const NVIDIA_ONLY_SEEDVR2_ATTENTION = new Set(['sageattn_2', 'sageattn_3', 'flash_attn_2', 'flash_attn_3']);
+const ULTIMATE_SD_UPSCALE_MODEL = '4x_foolhardy_Remacri.pth';
+const SEEDVR2_NOISE_LEVELS = { off: 0, low: 0.06, medium: 0.15 };
+
 // --- One generation at a time -------------------------------------------------
 
 const MAX_GENERATIONS = 1;
@@ -607,11 +624,28 @@ const DEFAULT_SETTINGS = {
     // Remembered trigger words keyed by LoRA name. Kept separate from the
     // active stack so a removed LoRA keeps its trigger word if re-added later.
     loraTriggerWords: {},
+    // Image upscaling (SeedVR2 default, Ultimate SD alternative). Profile is
+    // "sharp" (sharp DiT variant) or "balanced"; noise is off/low/medium detail
+    // input noise; mode is "target" (target short-side resolution) or
+    // "multiplier" (scale factor on the source short side); preScale applies an
+    // optional lanczos pre-resize before SeedVR2 (1 = off).
+    upscaleEngine: 'seedvr2',
+    upscaleMode: 'target',
+    upscaleResolution: 2160,
+    upscaleMultiplier: 2,
+    upscaleProfile: 'sharp',
+    upscaleNoise: 'low',
+    upscalePreScale: 1,
+    seedvr2Dit: DEFAULT_SEEDVR2_DIT,
+    seedvr2Vae: DEFAULT_SEEDVR2_VAE,
+    seedvr2Attention: DEFAULT_SEEDVR2_ATTENTION
 };
 
 // Fields the user may override through the settings panel / API. Kept
 // separate from DEFAULT_SETTINGS so we only persist explicit overrides.
-const CONFIGURABLE_KEYS = ['unet', 'clip', 'clipType', 'vae', 'aspectRatio', 'imageSize', 'width', 'height', 'steps', 'cfg', 'loras', 'loraTriggerWords'];
+const CONFIGURABLE_KEYS = ['unet', 'clip', 'clipType', 'vae', 'aspectRatio', 'imageSize', 'width', 'height', 'steps', 'cfg', 'loras', 'loraTriggerWords',
+    'upscaleEngine', 'upscaleMode', 'upscaleResolution', 'upscaleMultiplier', 'upscaleProfile', 'upscaleNoise', 'upscalePreScale',
+    'seedvr2Dit', 'seedvr2Vae', 'seedvr2Attention'];
 
 // Effective settings = env-driven defaults merged with any globally stored
 // overrides from data/config.json (see config-manager). Width/height are
@@ -695,6 +729,27 @@ function sanitizeSettings(patch) {
         } else if (key === 'cfg') {
             const n = Number(value);
             if (Number.isFinite(n) && n >= 0) out[key] = n;
+        } else if (key === 'upscaleEngine') {
+            const v = String(value || '').toLowerCase();
+            if (v === 'seedvr2' || v === 'ultimate') out[key] = v;
+        } else if (key === 'upscaleMode') {
+            const v = String(value || '').toLowerCase();
+            if (v === 'target' || v === 'multiplier') out[key] = v;
+        } else if (key === 'upscaleResolution') {
+            const n = Math.round(Number(value));
+            if ([1080, 1440, 2160, 3840].includes(n)) out[key] = n;
+        } else if (key === 'upscaleMultiplier') {
+            const n = Number(value);
+            if (Number.isFinite(n)) out[key] = Math.max(1, Math.min(4, Math.round(n * 10) / 10));
+        } else if (key === 'upscaleProfile') {
+            const v = String(value || '').toLowerCase();
+            if (v === 'sharp' || v === 'balanced') out[key] = v;
+        } else if (key === 'upscaleNoise') {
+            const v = String(value || '').toLowerCase();
+            if (v === 'off' || v === 'low' || v === 'medium') out[key] = v;
+        } else if (key === 'upscalePreScale') {
+            const n = Math.round(Number(value));
+            if (n === 1 || n === 2) out[key] = n;
         } else if (typeof value === 'string') {
             const s = value.trim();
             out[key] = s || null;
@@ -858,6 +913,430 @@ async function validateGraphAgainstComfy(info, graph) {
     }
 }
 
+// --- Upscaling -----------------------------------------------------------------
+//
+// Two engines mirroring Mix Studio's upscale pipeline:
+//   - SeedVR2 (default): a tiled diffusion upscaler. "sharp" profile uses the
+//     sharp 7B DiT variant (falls back to balanced when not installed), and the
+//     noise level controls the detail input noise (off/low/medium).
+//   - Ultimate SD: a prompt-guided tiled upscaler (UltimateSDUpscale custom
+//     node) driven by the same Krea2 UNET/CLIP/VAE models as generation.
+//
+// The source image lives in data/generated/ and is uploaded into ComfyUI's
+// input folder so a LoadImage node can reference it; the finished upscale is
+// downloaded back into data/generated/ and recorded in generated-history.
+
+function isSeedVr2SevenB(model) {
+    return /(?:^|[_-])7b(?:[_-]|$)/i.test(String(model || ''));
+}
+
+// Some attention modes (sageattn / flash attn v2+) are NVIDIA-only; downgrade
+// them to sdpa on non-NVIDIA GPUs so graph construction never hard-fails.
+function seedVr2AttentionForVendor(value, vendor) {
+    const attention = String(value || DEFAULT_SEEDVR2_ATTENTION);
+    const normalizedVendor = String(vendor || '').toLowerCase();
+    if (normalizedVendor && normalizedVendor !== 'nvidia' && NVIDIA_ONLY_SEEDVR2_ATTENTION.has(attention)) {
+        return DEFAULT_SEEDVR2_ATTENTION;
+    }
+    return attention;
+}
+
+function seedVr2DitInputs(settings) {
+    const model = settings.seedvr2Dit || DEFAULT_SEEDVR2_DIT;
+    return {
+        model,
+        device: 'cuda:0',
+        blocks_to_swap: isSeedVr2SevenB(model) ? 32 : 0,
+        swap_io_components: true,
+        offload_device: 'cpu',
+        cache_model: false,
+        attention_mode: seedVr2AttentionForVendor(settings.seedvr2Attention, settings.gpuVendor || '')
+    };
+}
+
+function seedVr2NoiseLevel(requested) {
+    return Object.prototype.hasOwnProperty.call(SEEDVR2_NOISE_LEVELS, requested) ? requested : 'low';
+}
+
+function seedVr2Profile(settings, requestedProfile, availableModels, requestedNoise) {
+    const noise = seedVr2NoiseLevel(requestedNoise);
+    const balanced = {
+        key: 'balanced',
+        ditModel: settings.seedvr2Dit || DEFAULT_SEEDVR2_DIT,
+        colorCorrection: 'lab',
+        noise,
+        inputNoiseScale: SEEDVR2_NOISE_LEVELS[noise]
+    };
+    const hasSharp = !Array.isArray(availableModels) || availableModels.includes(SHARP_SEEDVR2_DIT);
+    if (requestedProfile === 'sharp' && hasSharp) {
+        return {
+            key: 'sharp',
+            ditModel: SHARP_SEEDVR2_DIT,
+            colorCorrection: 'wavelet',
+            noise,
+            inputNoiseScale: SEEDVR2_NOISE_LEVELS[noise]
+        };
+    }
+    return balanced;
+}
+
+// List the SeedVR2 DiT/VAE checkpoint files ComfyUI currently has on disk, so
+// the sharp profile can detect whether its 7B-sharp DiT is installed.
+function installedSeedVr2Models(dirs) {
+    const models = new Set();
+    for (const dir of dirs || []) {
+        if (!dir) continue;
+        let entries = [];
+        try { entries = fs.readdirSync(dir); } catch { continue; }
+        for (const name of entries) {
+            if (!name || name.endsWith('.download')) continue;
+            const ext = path.extname(name).toLowerCase();
+            if (ext === '.safetensors' || ext === '.gguf') models.add(name);
+        }
+    }
+    return [...models];
+}
+
+// Directories to scan for installed SeedVR2 checkpoints: explicit env
+// overrides first (KREA2_SEEDVR2_DIR / COMFYUI_SEEDVR2_DIR), then ComfyUI's
+// models/seedvr2 (or models/SEEDVR2) folder.
+async function seedVr2ModelDirs() {
+    const dirs = [];
+    for (const value of [process.env.KREA2_SEEDVR2_DIR, process.env.COMFYUI_SEEDVR2_DIR]) {
+        if (value) dirs.push(path.resolve(value));
+    }
+    const modelRoot = await comfyui.resolveModelRoot().catch(() => null);
+    if (modelRoot) {
+        for (const dir of [path.join(modelRoot, 'seedvr2'), path.join(modelRoot, 'SEEDVR2')]) {
+            if (fs.existsSync(dir)) dirs.push(dir);
+        }
+    }
+    return dirs;
+}
+
+// Read width/height straight from a PNG or JPEG header (no dependencies). JPEG
+// dimensions come from the SOF marker. Returns { width: 0, height: 0 } for
+// unknown formats so multiplier mode can fall back to the target resolution.
+function readImageDimensions(filePath) {
+    try {
+        const buf = fs.readFileSync(filePath);
+        if (buf.length > 24 && buf.toString('ascii', 1, 4) === 'PNG') {
+            return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+        }
+        if (buf[0] === 0xFF && buf[1] === 0xD8) {
+            let i = 2;
+            while (i < buf.length - 9) {
+                if (buf[i] !== 0xFF) { i += 1; continue; }
+                const marker = buf[i + 1];
+                if (marker === 0xD8 || (marker >= 0xD0 && marker <= 0xD7) || marker === 0x01) { i += 2; continue; }
+                const len = buf.readUInt16BE(i + 2);
+                if (marker >= 0xC0 && marker <= 0xCF && marker !== 0xC4 && marker !== 0xC8 && marker !== 0xCC) {
+                    return { width: buf.readUInt16BE(i + 7), height: buf.readUInt16BE(i + 5) };
+                }
+                i += 2 + len;
+            }
+        }
+    } catch (err) {
+        // Fall through to unknown dimensions.
+    }
+    return { width: 0, height: 0 };
+}
+
+// Turn the configured upscale mode into a concrete SeedVR2 target resolution.
+// "target" uses the configured short-side resolution; "multiplier" scales the
+// source short side by the multiplier (clamped to 512..8192).
+function resolveUpscaleResolution(sourceWidth, sourceHeight, settings, requested) {
+    const mode = (requested && requested.mode) || settings.upscaleMode || 'target';
+    if (mode === 'multiplier') {
+        const factor = clampNumber((requested && requested.multiplier) || settings.upscaleMultiplier, 1, 4, 2);
+        if (sourceWidth > 0 && sourceHeight > 0) {
+            return Math.max(512, Math.min(8192, Math.round(Math.min(sourceWidth, sourceHeight) * factor)));
+        }
+    }
+    return clampNumber((requested && requested.resolution) || settings.upscaleResolution, 512, 8192, 2160);
+}
+
+function findHistoryMeta(rawFilename) {
+    if (!rawFilename) return null;
+    const decoded = decodeURIComponent(String(rawFilename)).split('/').pop();
+    return generatedHistory.list().find((e) =>
+        e.rawFilename === decoded || String(e.file).split('/').pop() === decoded) || null;
+}
+
+// --- Upscale intent detection -------------------------------------------------
+//
+// A narrow, deterministic intent — no LLM needed. Normalizes the message
+// (lowercase, dashes/underscores to spaces) then looks for an explicit upscale
+// signal AND an image/pronoun reference, so "upscale this image" fires while
+// concept questions ("what is upscaling?") and passing mentions ("upscaling is
+// slow") do not.
+
+const UPSCALE_SIGNAL_RE = /\b(?:up\s*scale\w*|up\s*res\w*|super\s*res\w*|higher\s*res\w*|hi\s*res\b|increase\w*\s+(?:the\s+)?res\w*|improve\w*\s+(?:the\s+)?(?:res\w*|image\w*|picture\w*|photo\w*)|make\s+(?:it|this|that)\s+(?:bigger|larger|sharper|crisper|clearer|higher\s*res)|sharpen\w*|enlarge\w*)\b/i;
+const UPSCALE_REF_RE = /\b(?:image\w*|pict\w*|pic\b|photo\w*|artw?o?r?k?|illustr\w*|paint\w*|render\w*|screenshot\w*|wallpaper\w*|poster\w*|logo\w*|avatar\w*|graphic\w*|shot\b|this\b|that\b|it\b|them\b|one\b|the last\b|previous\b|generated\b)\b/i;
+
+function detectUpscaleIntent(message) {
+    const text = String(message || '');
+    if (!text.trim()) return null;
+    if (isConceptQuestion(text)) return null;
+    const norm = text.toLowerCase().replace(/[-_]/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!UPSCALE_SIGNAL_RE.test(norm)) return null;
+    if (!UPSCALE_REF_RE.test(norm)) return null;
+    return { intent: 'image_upscale' };
+}
+
+// --- Upscale graph builders -----------------------------------------------------
+
+function buildSeedVr2ImageUpscaleGraph(imageName, options = {}) {
+    const settings = Object.assign({}, DEFAULT_SETTINGS, options.settings || {});
+    const profile = seedVr2Profile(settings, options.profile || 'sharp', options.availableModels, options.noise || 'low');
+    const seed = Number.isInteger(options.seed) && options.seed >= 0 ? options.seed : Math.floor(Math.random() * 2 ** 31);
+
+    const graph = {};
+    graph.load = { class_type: 'LoadImage', inputs: { image: imageName } };
+    let imgRef = ['load', 0];
+
+    const preScale = clampNumber(options.preScale, 1, 4, 1);
+    if (preScale !== 1) {
+        graph.prescale = {
+            class_type: 'ImageScaleBy',
+            inputs: { image: imgRef, upscale_method: 'lanczos', scale_by: preScale }
+        };
+        imgRef = ['prescale', 0];
+    }
+
+    graph.dit = {
+        class_type: 'SeedVR2LoadDiTModel',
+        inputs: seedVr2DitInputs(Object.assign({}, settings, {
+            seedvr2Dit: profile.ditModel,
+            gpuVendor: options.gpuVendor || settings.gpuVendor || ''
+        }))
+    };
+    graph.svvae = {
+        class_type: 'SeedVR2LoadVAEModel',
+        inputs: {
+            model: settings.seedvr2Vae || DEFAULT_SEEDVR2_VAE,
+            device: 'cuda:0',
+            encode_tiled: true,
+            encode_tile_size: 1024,
+            encode_tile_overlap: 256,
+            decode_tiled: true,
+            decode_tile_size: 1024,
+            decode_tile_overlap: 256,
+            tile_debug: 'false',
+            offload_device: 'cpu',
+            cache_model: false
+        }
+    };
+    graph.upscale = {
+        class_type: 'SeedVR2VideoUpscaler',
+        inputs: {
+            image: imgRef,
+            dit: ['dit', 0],
+            vae: ['svvae', 0],
+            seed,
+            resolution: clampNumber(options.resolution, 512, 8192, 2160),
+            max_resolution: 0,
+            batch_size: 1,
+            uniform_batch_size: false,
+            color_correction: profile.colorCorrection,
+            temporal_overlap: 0,
+            prepend_frames: 0,
+            input_noise_scale: profile.inputNoiseScale,
+            latent_noise_scale: 0,
+            offload_device: 'cpu',
+            enable_debug: false
+        }
+    };
+    graph.save = { class_type: 'SaveImage', inputs: { images: ['upscale', 0], filename_prefix: 'not-so-jarvis/upscale' } };
+
+    return { graph, profile };
+}
+
+function buildUltimateSdUpscaleGraph(imageName, options = {}) {
+    const settings = Object.assign({}, DEFAULT_SETTINGS, options.settings || {});
+    const scaleFactor = clampNumber(options.scaleFactor, 1, 4, 2);
+    const seed = Number.isInteger(options.seed) && options.seed >= 0 ? options.seed : Math.floor(Math.random() * 2 ** 31);
+    const prompt = String(options.prompt || '').trim() || 'a faithful, highly detailed upscale of the source image';
+
+    const graph = {};
+    graph.load = { class_type: 'LoadImage', inputs: { image: imageName } };
+    graph.unet = diffusionModelLoader(settings.unet);
+    graph.clip = { class_type: 'CLIPLoader', inputs: { clip_name: settings.clip, type: settings.clipType, device: 'default' } };
+    graph.vae = { class_type: 'VAELoader', inputs: { vae_name: settings.vae } };
+    const chain = buildLoraChain(graph, settings.loras);
+    graph.upscale_model = { class_type: 'UpscaleModelLoader', inputs: { model_name: options.upscaleModel || ULTIMATE_SD_UPSCALE_MODEL } };
+    graph.pos = { class_type: 'CLIPTextEncode', inputs: { clip: chain.clip, text: prompt } };
+    graph.neg = { class_type: 'ConditioningZeroOut', inputs: { conditioning: ['pos', 0] } };
+    graph.ultimate = {
+        class_type: 'UltimateSDUpscale',
+        inputs: {
+            image: ['load', 0],
+            model: chain.model,
+            positive: ['pos', 0],
+            negative: ['neg', 0],
+            vae: ['vae', 0],
+            upscale_by: scaleFactor,
+            seed,
+            steps: 12,
+            cfg: 1,
+            sampler_name: 'euler',
+            scheduler: 'beta',
+            denoise: 0.22,
+            upscale_model: ['upscale_model', 0],
+            mode_type: 'Chess',
+            tile_width: 768,
+            tile_height: 768,
+            mask_blur: 8,
+            tile_padding: 64,
+            seam_fix_mode: 'None',
+            seam_fix_denoise: 0.1,
+            seam_fix_width: 64,
+            seam_fix_mask_blur: 8,
+            seam_fix_padding: 16,
+            force_uniform_tiles: true,
+            tiled_decode: true,
+            batch_size: 1
+        }
+    };
+    graph.save = { class_type: 'SaveImage', inputs: { images: ['ultimate', 0], filename_prefix: 'not-so-jarvis/upscale' } };
+
+    return graph;
+}
+
+// --- Upscale execution ----------------------------------------------------------
+//
+// Upscale the image file at data/generated/<rawFilename> and write the result
+// into data/generated/. Shares the single-generation lock with generateImage so
+// ComfyUI never runs two jobs at once. Returns { url, filename, width, height,
+// sourceWidth, sourceHeight, engine, profile, noise, resolution, meta }.
+async function upscaleImage(rawFilename, options = {}) {
+    return withGenerationLock(async () => {
+        await ensureGeneratedDir();
+
+        const safeName = path.basename(String(rawFilename || ''));
+        if (!safeName) {
+            const error = new Error('No source image specified.');
+            error.code = 'upscale_source_missing';
+            throw error;
+        }
+        const filePath = path.join(GENERATED_DIR, safeName);
+        if (!fs.existsSync(filePath)) {
+            const error = new Error('Upscale source not found on disk: ' + safeName);
+            error.code = 'upscale_source_missing';
+            throw error;
+        }
+        const buffer = fs.readFileSync(filePath);
+
+        const settings = effectiveSettings();
+        const engine = String(options.engine || settings.upscaleEngine || 'seedvr2').toLowerCase() === 'ultimate' ? 'ultimate' : 'seedvr2';
+        const sourceMeta = findHistoryMeta(safeName);
+        const { width: sourceWidth, height: sourceHeight } = readImageDimensions(filePath);
+        const resolution = resolveUpscaleResolution(sourceWidth, sourceHeight, settings, options);
+        const scaleFactor = clampNumber(options.scaleFactor || options.multiplier || settings.upscaleMultiplier, 1, 4, 2);
+        const seed = Math.floor(Math.random() * 2 ** 32);
+        const profile = engine === 'seedvr2' ? (options.profile || settings.upscaleProfile || 'sharp') : null;
+        const noise = engine === 'seedvr2' ? (options.noise || settings.upscaleNoise || 'low') : null;
+
+        // Make the source available to ComfyUI's LoadImage node, then always
+        // clean it up afterwards so the input folder does not accumulate files.
+        const uploadName = 'jarvis_upscale_' + Date.now() + '_' + safeName;
+        const uploaded = await comfyui.uploadImage(buffer, uploadName);
+        const loadName = (uploaded && uploaded.name) || uploadName;
+
+        let graph;
+        let basename;
+        let effectiveProfile = null;
+        try {
+            if (engine === 'seedvr2') {
+                const availableModels = installedSeedVr2Models(await seedVr2ModelDirs());
+                const built = buildSeedVr2ImageUpscaleGraph(loadName, {
+                    settings,
+                    profile,
+                    noise,
+                    resolution,
+                    preScale: options.preScale || settings.upscalePreScale || 1,
+                    seed,
+                    availableModels
+                });
+                graph = built.graph;
+                effectiveProfile = built.profile;
+            } else {
+                const prompt = String(options.prompt || '').trim()
+                    || (sourceMeta && sourceMeta.prompt) || '';
+                graph = buildUltimateSdUpscaleGraph(loadName, {
+                    settings,
+                    scaleFactor,
+                    seed,
+                    prompt
+                });
+            }
+
+            const info = await comfyui.getObjectInfo();
+            await validateGraphAgainstComfy(info, graph);
+
+            const pid = await comfyui.queuePrompt(graph);
+            console.log('[image-generator] queued upscale (' + engine + ') workflow:', pid);
+
+            const history = await comfyui.waitForPrompt(pid, { timeoutMs: options.timeoutMs });
+            const files = comfyui.findOutputFiles(history.outputs || {}, /\.(?:png|jpg|jpeg|webp)$/i);
+            if (!files.length) {
+                const error = new Error('ComfyUI finished but produced no upscaled image file.');
+                error.code = 'comfyui_output_not_found';
+                throw error;
+            }
+
+            const entry = files[files.length - 1];
+            const outBuffer = await comfyui.downloadImage(entry);
+
+            const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+            const extension = path.extname(entry.filename).toLowerCase() || '.png';
+            basename = safeFilename(outBuffer.toString('hex', 0, 4)) + '_up_' + stamp + extension;
+            fs.writeFileSync(path.join(GENERATED_DIR, basename), outBuffer);
+            console.log('[image-generator] saved upscaled image:', basename, '(' + outBuffer.length + ' bytes)');
+
+            // The image is safely on disk — remove the ComfyUI original.
+            await comfyui.deleteOutputFile(entry, { history: pid });
+        } finally {
+            await comfyui.deleteInputFile(loadName).catch(() => {});
+        }
+
+        const { width, height } = readImageDimensions(path.join(GENERATED_DIR, basename));
+        const modelLabel = engine === 'seedvr2' ? 'SeedVR2' : 'UltimateSD';
+        const meta = generatedHistory.add({
+            file: '/generated/' + encodeURIComponent(basename),
+            rawFilename: basename,
+            prompt: String(options.prompt || (sourceMeta && sourceMeta.prompt) || '').trim() || 'Upscaled image',
+            model: modelLabel,
+            width,
+            height,
+            upscale: {
+                engine,
+                profile: effectiveProfile ? effectiveProfile.key : null,
+                noise: effectiveProfile ? effectiveProfile.noise : null,
+                resolution,
+                source: safeName
+            }
+        });
+
+        return {
+            url: meta.file,
+            filename: basename,
+            width,
+            height,
+            sourceWidth,
+            sourceHeight,
+            engine,
+            profile: effectiveProfile ? effectiveProfile.key : null,
+            noise: effectiveProfile ? effectiveProfile.noise : null,
+            resolution,
+            source: safeName,
+            sourceMeta,
+            prompt: meta.prompt,
+            meta
+        };
+    });
+}
+
 // --- Generation ----------------------------------------------------------------
 
 function ensureGeneratedDir() {
@@ -973,5 +1452,19 @@ module.exports = {
     effectiveSettings,
     getDefaults,
     saveSettings,
-    getModelChoices
+    getModelChoices,
+    detectUpscaleIntent,
+    upscaleImage,
+    buildSeedVr2ImageUpscaleGraph,
+    buildUltimateSdUpscaleGraph,
+    seedVr2Profile,
+    resolveUpscaleResolution,
+    readImageDimensions,
+    UPSCALE_SIGNAL_RE,
+    UPSCALE_REF_RE,
+    DEFAULT_SEEDVR2_DIT,
+    SHARP_SEEDVR2_DIT,
+    DEFAULT_SEEDVR2_VAE,
+    DEFAULT_SEEDVR2_ATTENTION,
+    ULTIMATE_SD_UPSCALE_MODEL
 };

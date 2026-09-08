@@ -124,7 +124,8 @@ function publicMeta(entry) {
         model: entry.model || 'Krea2',
         width: entry.width || null,
         height: entry.height || null,
-        createdAt: entry.createdAt
+        createdAt: entry.createdAt,
+        upscale: entry.upscale || null
     };
 }
 
@@ -140,6 +141,7 @@ function add(meta) {
         model: meta.model || 'Krea2',
         width: meta.width || null,
         height: meta.height || null,
+        upscale: meta.upscale || null,
         createdAt
     };
     // Replace an existing entry with the same id (idempotent re-add).

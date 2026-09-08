@@ -306,6 +306,23 @@ async function downloadImage(entry) {
 // ComfyUI's --output-directory CLI arg (from /system_stats argv), and a
 // .../ComfyUI/main.py script path (again from argv) with an output/ sibling.
 // Returns null when the directory cannot be determined.
+async function resolveComfyRoot() {
+    let argv = [];
+    try {
+        const stats = await getSystemStats();
+        argv = (stats && stats.system && stats.system.argv) || [];
+    } catch {}
+
+    for (const arg of argv) {
+        const script = String(arg || '');
+        if (!/[\\/]main\.py$/i.test(script)) continue;
+        const root = path.resolve(path.dirname(script));
+        if (fs.existsSync(root)) return root;
+    }
+
+    return null;
+}
+
 async function resolveOutputDir() {
     if (process.env.COMFYUI_OUTPUT_DIR) {
         return path.resolve(process.env.COMFYUI_OUTPUT_DIR);
@@ -375,6 +392,64 @@ async function deleteOutputFile(entry, options = {}) {
     return true;
 }
 
+// Resolve ComfyUI's models directory (default <ComfyUI>/models) so services can
+// discover installed models (SeedVR2 DiT/VAE, upscale models, ...). Tries an
+// explicit COMFYUI_MODEL_DIR override, then the resolved output/input directory
+// siblings (covers Comfy Desktop's shared-data layout, where <shared>/models
+// sits next to <shared>/output), then the root-derived path. Returns null when
+// unknown.
+async function resolveModelRoot() {
+    if (process.env.COMFYUI_MODEL_DIR) {
+        return path.resolve(process.env.COMFYUI_MODEL_DIR);
+    }
+
+    for (const sibling of [await resolveOutputDir(), await resolveInputDir()]) {
+        if (!sibling) continue;
+        const candidate = path.join(path.dirname(sibling), 'models');
+        if (fs.existsSync(candidate)) return candidate;
+    }
+
+    const root = await resolveComfyRoot();
+    if (!root) return null;
+    const candidate = path.join(root, 'models');
+    return fs.existsSync(candidate) ? candidate : null;
+}
+
+// Resolve ComfyUI's input directory (default <ComfyUI>/input) so files uploaded
+// for upscaling can be cleaned up afterwards. Tries an explicit COMFYUI_INPUT_DIR
+// override, then ComfyUI's --input-directory CLI arg (from /system_stats argv),
+// then derives it from the resolved ComfyUI root. Returns null when unknown.
+async function resolveInputDir() {
+    if (process.env.COMFYUI_INPUT_DIR) {
+        return path.resolve(process.env.COMFYUI_INPUT_DIR);
+    }
+
+    let argv = [];
+    try {
+        const stats = await getSystemStats();
+        argv = (stats && stats.system && stats.system.argv) || [];
+    } catch {}
+
+    for (let i = 0; i < argv.length; i += 1) {
+        const arg = String(argv[i] || '');
+        let dir = null;
+        if (arg === '--input-directory' || arg === '--input_directory') {
+            dir = String(argv[i + 1] || '');
+        } else if (/^--input-(?:directory|_directory)=/.test(arg)) {
+            dir = arg.split('=').slice(1).join('=');
+        }
+        if (dir) {
+            const resolved = path.resolve(dir);
+            if (fs.existsSync(resolved)) return resolved;
+        }
+    }
+
+    const root = await resolveComfyRoot();
+    if (!root) return null;
+    const candidate = path.join(root, 'input');
+    return fs.existsSync(candidate) ? candidate : null;
+}
+
 async function resolveOutputFilePath(entry) {
     const outputDir = await resolveOutputDir();
     if (!outputDir) return null;
@@ -422,6 +497,53 @@ async function downloadSourceImage(imageName) {
     return Buffer.from(await res.arrayBuffer());
 }
 
+// Upload a source image into ComfyUI's input folder so a LoadImage node can
+// reference it (used by the upscale pipeline). Returns ComfyUI's
+// { name, subfolder, type } entry.
+async function uploadImage(buffer, filename, options = {}) {
+    const form = new FormData();
+    form.append('image', new Blob([buffer], { type: 'image/png' }), filename);
+    form.append('type', 'input');
+    form.append('overwrite', 'true');
+    if (options.subfolder) form.append('subfolder', options.subfolder);
+    const res = await comfyFetch('/upload/image', {
+        method: 'POST',
+        body: form,
+        timeout: 60000
+    });
+    return res.json();
+}
+
+// Best-effort removal of a file previously uploaded to ComfyUI's input folder.
+// ComfyUI ships no HTTP delete for input files, so when it runs on the same
+// machine we unlink the file directly. Never throws.
+async function deleteInputFile(filename) {
+    if (!filename) return false;
+    let inputDir;
+    try {
+        inputDir = await resolveInputDir();
+    } catch {
+        inputDir = null;
+    }
+    if (!inputDir) return false;
+    const target = path.resolve(path.join(inputDir, path.basename(filename)));
+    const root = path.resolve(inputDir) + path.sep;
+    if (target !== path.resolve(inputDir) && target.indexOf(root) !== 0) {
+        console.warn('[comfyui] refusing to delete path outside input dir: ' + target);
+        return false;
+    }
+    try {
+        await fs.promises.unlink(target);
+        console.log('[comfyui] removed ComfyUI input:', target);
+        return true;
+    } catch (err) {
+        if (err.code !== 'ENOENT') {
+            console.warn('[comfyui] could not remove ComfyUI input ' + target + ': ' + err.message);
+        }
+        return false;
+    }
+}
+
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -447,5 +569,9 @@ module.exports = {
     deleteOutputFile,
     deleteHistory,
     downloadSourceImage,
+    uploadImage,
+    deleteInputFile,
+    resolveModelRoot,
+    resolveInputDir,
     sleep
 };

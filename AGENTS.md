@@ -117,13 +117,14 @@ data/                 Runtime data (persisted JSON + generated media)
 
 ## Current major features and their locations
 
-- **Chat** — `server.js` `handleChat`/`handleChatStream`, `server/providers.js`, `server/context-builder.js`, `server/conversation-service.js`; UI in `public/js/chat.js`, `public/js/conversations.js`, `public/js/db.js`.
+- **Chat** — `server.js` `handleChat`/`handleChatStream`, `server/providers.js`, `server/context-builder.js`, `server/conversation-service.js`; UI in `public/js/chat.js`, `public/js/conversations.js`, `public/js/db.js`. When an upscaled pair is found, the original image is dropped and only the upscaled image remains (`collapseUpscalePairs`/`setAiContent`), rendered identically to any other chat image (no extra compare container). The original is accessible via the Compare button inside the image's preview lightbox; pair detection keys on the `_up_` filename marker.
 - **Image generation (Krea2/ComfyUI)** — `server.js` image intent branch + `handleImageGenerationStream`; `services/image-generator.js`, `services/comfyui.js`, `services/vram-manager.js`.
+- **Image upscaling** — "upscale this image" routes through `task-router` (`image_upscale` intent) to `handleImageUpscaleStream` → `imageGenerator.upscaleImage` (shares the single-generation lock). Two engines (SeedVR2 default, Ultimate SD); source is the last generated image in the conversation (`resolveUpscaleSource` scans assistant messages for `/generated/<file>`). Pipeline uploads the source into ComfyUI input via `comfyui.uploadImage`, then cleans it up via `deleteInputFile`. Settings (engine, mode, resolution/multiplier, profile, noise, pre-resize, seedvr2 models) live in `imageGeneration.*` in the IMAGE UPSCALE tab of the settings panel; `POST /api/upscale` exposes the same path for the gallery.
 - **LoRA stack** (attach, strength, on/off, trigger word) — backend `image-generator.js` (`DEFAULT_SETTINGS`, `sanitizeLoras`, `buildLoraChain`); frontend `public/app.js` (`initLoraStack`, `loraRow`, `renderLoraStack`, `saveLoraStack`, `initLoraSettings`); styles in `public/style.css` (`.lora-*`); settings API at `/api/settings/image` (GET/POST).
 - **System monitoring widgets** — `services/system-monitor.js`, `public/app.js` (system stats section), `public/style.css`.
 - **Model library / hardware compatibility** — `server/models.js`, `server/provider-manager.js`; UI in `public/js/model-library.js`, `public/js/hardware-compat.js`; API `/api/ai/*`.
-- **Generated image gallery** — `services/generated-history.js`; UI in `public/js/gallery.js`; API `/api/generated`.
-- **Settings panel** — `public/index.html` settings markup; `public/app.js` `initSettings` / `initImageGenSettings` / `initLoraSettings`.
+- **Generated image gallery** — `services/generated-history.js`; UI in `public/js/gallery.js`; API `/api/generated`. Upscaled outputs are grouped with their original (child tile hidden, `⇋` badge on the parent, grouped delete) in both the widget and View-All gallery; clicking the original opens a preview with a Compare button, and `Gallery.openCompare` shows the before/after slider overlay (draggable divider + wheel/button zoom).
+- **Settings panel** — `public/index.html` settings markup; `public/app.js` `initSettings` / `initImageGenSettings` / `initUpscaleSettings` / `initLoraSettings`.
 
 ## Important relationships between components
 

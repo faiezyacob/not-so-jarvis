@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>JARVIS — Local AI Assistant</title>
+    <title>NOT-SO-JARVIS — Local AI Assistant</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -27,6 +27,7 @@
                     <button class="settings-nav-item active" data-panel="general">GENERAL</button>
                     <button class="settings-nav-item" data-panel="chat">CHAT</button>
                     <button class="settings-nav-item" data-panel="image">IMAGE</button>
+                    <button class="settings-nav-item" data-panel="upscale">IMAGE UPSCALE</button>
                 </div>
                 <div class="settings-panels" id="settingsPanels">
                     <!-- General -->
@@ -136,6 +137,81 @@
                         </div>
                         <div class="settings-field">
                             <button class="settings-free-btn" id="freeComfyBtn" type="button">Free comfy</button>
+                        </div>
+                    </div>
+
+                    <!-- Image Upscale -->
+                    <div class="settings-panel" data-panel="upscale">
+                        <div class="settings-dropdown-title">IMAGE UPSCALE</div>
+                        <div class="settings-field">
+                            <label class="settings-field-label" for="upscaleEngine">Engine</label>
+                            <select class="settings-select" id="upscaleEngine">
+                                <option value="seedvr2">SeedVR2</option>
+                                <option value="ultimate">Ultimate SD</option>
+                            </select>
+                        </div>
+                        <div class="settings-field">
+                            <label class="settings-field-label" for="upscaleMode">Mode</label>
+                            <select class="settings-select" id="upscaleMode">
+                                <option value="target">Target resolution</option>
+                                <option value="multiplier">Multiplier</option>
+                            </select>
+                        </div>
+                        <div class="settings-field" id="upscaleResolutionField">
+                            <label class="settings-field-label" for="upscaleResolution">Target resolution</label>
+                            <select class="settings-select" id="upscaleResolution">
+                                <option value="1080">1080p</option>
+                                <option value="1440">1440p</option>
+                                <option value="2160">2160p</option>
+                            </select>
+                        </div>
+                        <div class="settings-field" id="upscaleMultiplierField">
+                            <label class="settings-field-label" for="upscaleMultiplier">Multiplier</label>
+                            <select class="settings-select" id="upscaleMultiplier">
+                                <option value="1.5">1.5x</option>
+                                <option value="2">2x</option>
+                                <option value="3">3x</option>
+                                <option value="4">4x</option>
+                            </select>
+                        </div>
+                        <div class="settings-field" id="upscaleProfileField">
+                            <label class="settings-field-label" for="upscaleProfile">Detail profile</label>
+                            <select class="settings-select" id="upscaleProfile">
+                                <option value="sharp">Sharp</option>
+                                <option value="balanced">Balanced</option>
+                            </select>
+                        </div>
+                        <div class="settings-field" id="upscaleNoiseField">
+                            <label class="settings-field-label" for="upscaleNoise">Detail noise</label>
+                            <select class="settings-select" id="upscaleNoise">
+                                <option value="off">Off</option>
+                                <option value="low">Low</option>
+                                <option value="medium">Medium</option>
+                            </select>
+                        </div>
+                        <div class="settings-field" id="upscalePreScaleField">
+                            <label class="settings-field-label" for="upscalePreScale">Pre-resize (lanczos)</label>
+                            <select class="settings-select" id="upscalePreScale">
+                                <option value="1">Off</option>
+                                <option value="2">2x</option>
+                            </select>
+                        </div>
+                        <div class="settings-field" id="upscaleDiTField">
+                            <label class="settings-field-label" for="upscaleDiT">SeedVR2 DiT Model</label>
+                            <input type="text" class="settings-input" id="upscaleDiT"
+                                placeholder="Loading..." autocomplete="off">
+                        </div>
+                        <div class="settings-field" id="upscaleVaeField">
+                            <label class="settings-field-label" for="upscaleVae">SeedVR2 VAE Model</label>
+                            <input type="text" class="settings-input" id="upscaleVae"
+                                placeholder="Loading..." autocomplete="off">
+                        </div>
+                        <div class="settings-field">
+                            <span class="settings-hint">Ask JARVIS to "upscale this image" and it will upscale the last generated image in the conversation.</span>
+                        </div>
+                        <div class="settings-field">
+                            <span class="settings-hint">Blank = use default. Leave a field and press Enter to save. Clear a field and press Enter to revert.</span>
+                            <span class="settings-save-status" id="upscaleSettingsStatus"></span>
                         </div>
                     </div>
                 </div>

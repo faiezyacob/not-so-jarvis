@@ -28,7 +28,10 @@ const ROUTER_SYSTEM_PROMPT =
     'router — you never reply to the user and the user does not see your JSON. ' +
     'You are the ONLY authority on tool execution; the chat model is not.\n\n' +
     'Available tool: image_generation (Krea2/ComfyUI local image pipeline). ' +
-    'It can generate a brand-new image or modify the current image concept.\n\n' +
+    'It can generate a brand-new image or modify the current image concept. ' +
+    'Another tool: image_upscale — when the user asks to upscale / enhance the ' +
+    'resolution of an image ("upscale this image", "make it higher res"), set ' +
+    'task "image_upscale", action "upscale", shouldExecuteTool true.\n\n' +
     'Respond with ONLY a single JSON object, no markdown, no commentary:\n' +
     '{"intent": "...", "task": "...", "action": "...", "shouldExecuteTool": bool, ' +
     '"updatedPrompt": "..."}\n\n' +
@@ -150,6 +153,19 @@ function normalizeDecision(parsed) {
 // activeTask can be null to indicate no active task; conversationId is used to
 // fetch recent messages for the compact context.
 async function routeMessage({ message, provider, model, conversationId }) {
+    // Upscale requests are a narrow, deterministic intent. Detect them with a
+    // heuristic before the LLM router so "upscale this image" always routes to
+    // the upscale pipeline regardless of the active task.
+    if (imageGenerator.detectUpscaleIntent(message)) {
+        return {
+            intent: 'new_task',
+            task: 'image_upscale',
+            action: 'upscale',
+            shouldExecuteTool: true,
+            updatedPrompt: ''
+        };
+    }
+
     const activeTask = taskState.getTask(conversationId);
     const messages = conversationService.getMessages(conversationId)
         .slice(-RECENT_MESSAGES_FOR_ROUTER);

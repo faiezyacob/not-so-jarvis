@@ -25,6 +25,21 @@ const Markdown = (() => {
             return '<code class="md-inline-code">' + escapeHtml(code) + '</code>';
         });
 
+        // Shield the URLs inside image/link markdown so the inline emphasis
+        // rules below don't corrupt them (e.g. italic underscores inside a
+        // filename like ..._up_2026....png). The label text stays in place so
+        // bold/italic formatting inside it still works, then the real URLs are
+        // swapped back in before the tags are built.
+        const urlTokens = [];
+        result = result.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, url) => {
+            urlTokens.push(url);
+            return '![' + alt + '](\x00URL' + (urlTokens.length - 1) + '\x00)';
+        });
+        result = result.replace(/(?<!!)\[([^\]]+)\]\(([^)]+)\)/g, (match, label, url) => {
+            urlTokens.push(url);
+            return '[' + label + '](\x00URL' + (urlTokens.length - 1) + '\x00)';
+        });
+
         // Bold (** ... ** or __ ... __)
         result = result.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
         result = result.replace(/__([^_]+)__/g, '<strong>$1</strong>');
@@ -35,6 +50,9 @@ const Markdown = (() => {
 
         // Strikethrough (~~ ... ~~)
         result = result.replace(/~~([^~]+)~~/g, '<del>$1</del>');
+
+        // Restore the real URLs now that emphasis is done.
+        result = result.replace(/\x00URL(\d+)\x00/g, (match, index) => urlTokens[Number(index)] ?? '');
 
         // Images ![alt](url) - handle before links so they don't match as links
         result = result.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, url) => {

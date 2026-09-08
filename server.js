@@ -279,6 +279,35 @@ async function handleAPI(req, res, urlPath) {
         return true;
     }
 
+    // POST /api/upscale — upscale the last generated image in a conversation
+    // (or an explicit data/generated filename). Used by the chat pipeline and
+    // available for the gallery. Optional body overrides: engine, profile,
+    // noise, mode, resolution, multiplier, prompt.
+    if (urlPath === '/api/upscale' && req.method === 'POST') {
+        try {
+            const body = await readBody(req);
+            const source = resolveUpscaleSource(body.conversationId, body.filename);
+            if (!source) {
+                json(res, 404, { error: 'No generated image found to upscale. Generate an image first, then upscale it.' });
+                return true;
+            }
+            const result = await imageGenerator.upscaleImage(source.rawFilename, {
+                engine: body.engine,
+                profile: body.profile,
+                noise: body.noise,
+                mode: body.mode,
+                resolution: body.resolution,
+                multiplier: body.multiplier,
+                preScale: body.preScale,
+                prompt: body.prompt
+            });
+            json(res, 200, { ok: true, image: result });
+        } catch (err) {
+            json(res, 502, { error: friendlyImageError(err) });
+        }
+        return true;
+    }
+
     // POST /api/comfyui/free — unload all ComfyUI models and free cached memory
     if (urlPath === '/api/comfyui/free' && req.method === 'POST') {
         try {
@@ -627,6 +656,17 @@ async function handleChatStream(req, res) {
             conversationId
         });
 
+        // Upscale the last generated image in this conversation. Only the
+        // deterministic "upscale" intent routes here, so the user-facing reply
+        // can reference the exact before/after it produced.
+        if (decision.shouldExecuteTool && decision.task === 'image_upscale') {
+            await vramManager.freeVRAMBeforeImage();
+            await handleImageUpscaleStream(req, res, {
+                provider, model, conversationId, message
+            });
+            return;
+        }
+
         if (decision.shouldExecuteTool && decision.task === 'image_generation') {
             const activeTask = taskState.getTask(conversationId);
             const isNew = decision.intent === 'new_task' || decision.intent === 'switch_task';
@@ -837,8 +877,120 @@ function friendlyImageError(err) {
             return 'ComfyUI finished but did not produce an image. Check the ComfyUI console, then try again.';
         case 'generation_busy':
             return err.message;
+        case 'upscale_source_missing':
+            return 'The image to upscale could not be found on disk. It may have been deleted.';
         default:
             return 'Image generation failed: ' + (err.message || 'unknown error');
+    }
+}
+
+// Find the generated image to upscale for a conversation: the last
+// /generated/<file> link in the assistant messages (so consecutive upscales
+// chain), falling back to the active task's latest generated asset. An explicit
+// filename short-circuits the scan. Returns { rawFilename, meta } or null.
+function resolveUpscaleSource(conversationId, explicitFilename) {
+    if (explicitFilename) {
+        const safeName = path.basename(String(explicitFilename || '').split('?')[0]);
+        if (!safeName) return null;
+        return { rawFilename: safeName, meta: findGeneratedMeta(safeName) };
+    }
+    if (!conversationId) return null;
+
+    const messages = conversationService.getMessages(conversationId) || [];
+    const urlRe = /\/generated\/([^\s)\]}"']+)/g;
+    let last = null;
+    for (const m of messages) {
+        if (!m || m.role !== 'assistant') continue;
+        const content = String(m.content || '');
+        let match;
+        while ((match = urlRe.exec(content))) last = match[1];
+    }
+    if (!last) {
+        const asset = taskState.getTask(conversationId).generatedAsset;
+        if (asset) last = String(asset).split('/').pop();
+    }
+    if (!last) return null;
+    const rawFilename = decodeURIComponent(last);
+    return { rawFilename, meta: findGeneratedMeta(rawFilename) };
+}
+
+function findGeneratedMeta(rawFilename) {
+    const name = decodeURIComponent(String(rawFilename || '')).split('/').pop();
+    return generatedHistory.list().find((e) =>
+        e.rawFilename === name || String(e.file).split('/').pop() === name) || null;
+}
+
+// Handle an upscale chat request over SSE. Emits a "generating" status event,
+// an "image" event with the before/after payload, or an "error" event. The
+// conversation's previously generated image is always the source.
+async function handleImageUpscaleStream(req, res, opts) {
+    const { provider, model, conversationId, message } = opts;
+
+    try {
+        if (!imageGenerator.canStartGeneration()) {
+            res.write(`data: ${JSON.stringify({ error: 'An image generation is already in progress. Please wait for it to finish.' })}\n\n`);
+            res.end();
+            return;
+        }
+
+        const source = resolveUpscaleSource(conversationId);
+        if (!source) {
+            taskState.setTask(conversationId, { status: 'failed' });
+            res.write(`data: ${JSON.stringify({ error: "I couldn't find a generated image in this conversation to upscale. Generate an image first, then ask me to upscale it." })}\n\n`);
+            res.end();
+            return;
+        }
+
+        const prevTask = taskState.getTask(conversationId);
+        taskState.setTask(conversationId, {
+            type: 'image',
+            operation: 'upscale',
+            prompt: (source.meta && source.meta.prompt) || prevTask.prompt || message,
+            originalPrompt: prevTask.originalPrompt || (source.meta && source.meta.prompt) || message,
+            lastAction: 'upscale',
+            status: 'running'
+        });
+
+        res.write(`data: ${JSON.stringify({ generating: 'Upscaling image...' })}\n\n`);
+
+        const result = await imageGenerator.upscaleImage(source.rawFilename, { provider, model });
+
+        // The effective prompt stays the source image's generation prompt so a
+        // follow-up modification builds on the same visual concept.
+        const existingParams = taskState.getTask(conversationId).parameters || {};
+        taskState.setTask(conversationId, {
+            prompt: (source.meta && source.meta.prompt) || prevTask.prompt || message,
+            generatedAsset: result.url,
+            parameters: Object.assign({}, existingParams, {
+                width: result.width,
+                height: result.height,
+                upscale: {
+                    engine: result.engine,
+                    profile: result.profile,
+                    noise: result.noise,
+                    resolution: result.resolution,
+                    source: source.rawFilename
+                }
+            }),
+            status: 'completed',
+            lastAction: 'upscale'
+        });
+
+        const sourceUrl = '/generated/' + encodeURIComponent(source.rawFilename);
+        const engineLabel = result.engine === 'ultimate' ? 'Ultimate SD' : 'SeedVR2';
+        const content =
+            'Upscaled your image from ' + (result.sourceWidth || '?') + 'x' + (result.sourceHeight || '?') +
+            ' to **' + result.width + 'x' + result.height + '** (' + engineLabel + ').\n\n' +
+            '**Original:**\n![original](' + sourceUrl + ')\n\n' +
+            '**Upscaled:**\n![upscaled](' + result.url + ')';
+
+        res.write(`data: ${JSON.stringify({ image: { url: result.url, content, meta: result.meta || null } })}\n\n`);
+        res.end();
+    } catch (err) {
+        console.error('[image-generator] Upscale failed:', err.message, '\n', err.stack);
+        taskState.setTask(conversationId, { status: 'failed' });
+        res.write(`data: ${JSON.stringify({ error: friendlyImageError(err) })}\n\n`);
+        res.end();
     }
 }
 

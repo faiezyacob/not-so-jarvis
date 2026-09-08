@@ -45,8 +45,14 @@
         }
         if (emptyEl) emptyEl.style.display = 'none';
 
-        const visible = widgetImages.slice(0, 6);
-        visible.forEach((img) => {
+        const children = upscaleChildMap(widgetImages);
+        let count = 0;
+        for (const img of widgetImages) {
+            if (count >= 6) break;
+            // An upscaled output replaces its original in the grid — hide the
+            // original tile and show the upscaled output with a compare badge.
+            if (!img.upscale && children.has(lastSegment(img.file))) continue;
+
             const cell = document.createElement('div');
             cell.className = 'generated-thumb';
             cell.title = img.prompt || img.id;
@@ -65,11 +71,13 @@
                 cell.textContent = 'IMG';
             });
             cell.appendChild(thumb);
+            if (img.upscale && img.upscale.source) cell.appendChild(makeCompareBadge('generated-compare-badge'));
             cell.appendChild(makeDeleteButton(img, cell));
             gridEl.appendChild(cell);
-        });
+            count += 1;
+        }
 
-        infoEl.textContent = widgetImages.length + ' image' + (widgetImages.length === 1 ? '' : 's') + ' · ' + todayLabel(widgetImages);
+        infoEl.textContent = widgetImages.length + ' image' + (widgetImages.length === 1 ? '' : 's') + ' \u00b7 ' + todayLabel(widgetImages);
     }
 
     function todayLabel(images) {
@@ -154,6 +162,49 @@
         return idx === -1 ? decoded : decoded.slice(idx + 1);
     }
 
+    // Map original filename → the upscaled entry that references it (entries
+    // recorded with an "upscale.source" field pointing at the original file).
+    function upscaleChildMap(images) {
+        const map = new Map();
+        images.forEach((img) => {
+            if (img.upscale && img.upscale.source) {
+                map.set(lastSegment(img.upscale.source), img);
+            }
+        });
+        return map;
+    }
+
+    // Resolve the { original, upscaled } URLs for a gallery entry: either the
+    // entry IS the upscaled one (has .upscale.source) or it has an upscaled
+    // child in the list. Returns null when no pairing exists.
+    function compareTargetFor(img, images) {
+        if (img.upscale && img.upscale.source) {
+            const originalMeta = (images || []).find((x) =>
+                lastSegment(x.file) === lastSegment(img.upscale.source)) || null;
+            return {
+                original: '/generated/' + encodeURIComponent(lastSegment(img.upscale.source)),
+                upscaled: img.url,
+                originalMeta: originalMeta,
+                upscaledMeta: img
+            };
+        }
+        const child = (images || []).find((x) =>
+            x.upscale && x.upscale.source && lastSegment(x.upscale.source) === lastSegment(img.url));
+        if (child) {
+            return { original: img.url, upscaled: child.url, originalMeta: img, upscaledMeta: child };
+        }
+        return null;
+    }
+
+    // Badge shown on tiles that have an upscaled version.
+    function makeCompareBadge(className) {
+        const badge = document.createElement('span');
+        badge.className = className;
+        badge.textContent = '\u21c4';
+        badge.title = 'Has an upscaled version \u2014 compare in preview';
+        return badge;
+    }
+
     // Open the same preview lightbox for an image referenced by URL (e.g. a
     // markdown image in chat). Resolves the file to its history metadata so
     // the widget-style preview (prompt, copy, delete) is shown; falls back to
@@ -184,7 +235,6 @@
     function openRawPreview(src) {
         const { container, body, closeBtn } = buildModalShell('GENERATED IMAGE');
         const modal = openModal(container);
-        const close = modal.close;
 
         const imgWrap = document.createElement('div');
         imgWrap.className = 'gallery-preview-image';
@@ -196,8 +246,22 @@
             imgWrap.textContent = 'Image file is missing.';
         });
         imgWrap.appendChild(imgEl);
-        makeZoomButton(imgWrap, imgEl);
+        const zoomApi = attachInlineZoom(imgWrap, imgEl);
         body.appendChild(imgWrap);
+
+        function close() {
+            document.removeEventListener('keydown', onPreviewKey);
+            modal.close();
+        }
+
+        const onPreviewKey = (e) => {
+            const openOverlays = document.querySelectorAll('.modal-overlay.open');
+            if (openOverlays.length && openOverlays[openOverlays.length - 1] !== modal.overlay) return;
+            if (e.key === '+' || e.key === '=') { e.preventDefault(); zoomApi.setZoom(zoomApi.scale * 1.25); }
+            else if (e.key === '-' || e.key === '_') { e.preventDefault(); zoomApi.setZoom(zoomApi.scale / 1.25); }
+            else if (e.key === '0') { e.preventDefault(); zoomApi.reset(); }
+        };
+        document.addEventListener('keydown', onPreviewKey);
 
         const footer = document.createElement('div');
         footer.className = 'modal-footer';
@@ -213,221 +277,662 @@
         closeBtn.addEventListener('click', close);
     }
 
-    function makeZoomButton(imgWrap, imgEl) {
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'gallery-zoom-btn';
-        btn.setAttribute('aria-label', 'Zoom image');
-        btn.innerHTML =
-            '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
-            '<circle cx="11" cy="11" r="8"></circle>' +
-            '<line x1="21" y1="21" x2="16.65" y2="16.65"></line>' +
-            '<line x1="11" y1="8" x2="11" y2="14"></line>' +
-            '<line x1="8" y1="11" x2="14" y2="11"></line></svg>';
-        btn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            openZoom(imgEl.src);
-        });
-        imgEl.addEventListener('error', () => { btn.style.display = 'none'; });
-        imgWrap.appendChild(btn);
-        return btn;
-    }
+    // --- Inline preview zoom (Mix Studio lightbox style) ---
+    //
+    // The preview image supports wheel zoom immediately on open — no button
+    // required. Zoom is anchored at the cursor (scale 1 = fit), and once
+    // zoomed in the image can be dragged (or trackpad-scrolled) to pan. A
+    // small pill in the corner shows the current scale.
 
-    function zoomIconButton(svg, label) {
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'gallery-zoom-btn-icon';
-        btn.setAttribute('aria-label', label);
-        btn.innerHTML = svg;
-        return btn;
-    }
-
-    // Fullscreen zoom lightbox with wheel/button zoom, drag-to-pan, and a
-    // fit-scale reset. The image scales about its center inside a clipped
-    // viewport; a separate "mover" layer carries 1:1 panning offsets.
-    function openZoom(src) {
-        const overlay = document.createElement('div');
-        overlay.className = 'modal-overlay gallery-overlay gallery-zoom-overlay open';
-
-        const stage = document.createElement('div');
-        stage.className = 'gallery-zoom-stage';
-
-        const viewport = document.createElement('div');
-        viewport.className = 'gallery-zoom-viewport';
-        const mover = document.createElement('div');
-        mover.className = 'gallery-zoom-mover';
-        const img = document.createElement('img');
-        img.className = 'gallery-zoom-image';
-        img.alt = 'Zoomed image';
-        mover.appendChild(img);
-        viewport.appendChild(mover);
-
-        const controls = document.createElement('div');
-        controls.className = 'gallery-zoom-controls';
-
-        const zoomOutBtn = zoomIconButton(
-            '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
-            '<circle cx="11" cy="11" r="8"></circle>' +
-            '<line x1="21" y1="21" x2="16.65" y2="16.65"></line>' +
-            '<line x1="8" y1="11" x2="14" y2="11"></line></svg>',
-            'Zoom out'
-        );
+    function attachInlineZoom(wrap, imgEl) {
         const pct = document.createElement('span');
-        pct.className = 'gallery-zoom-percent';
+        pct.className = 'gallery-zoom-pill';
         pct.textContent = '100%';
+        wrap.appendChild(pct);
 
-        const zoomInBtn = zoomIconButton(
-            '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
-            '<circle cx="11" cy="11" r="8"></circle>' +
-            '<line x1="21" y1="21" x2="16.65" y2="16.65"></line>' +
-            '<line x1="11" y1="8" x2="11" y2="14"></line>' +
-            '<line x1="8" y1="11" x2="14" y2="11"></line></svg>',
-            'Zoom in'
-        );
+        const state = { active: false, scale: 1, x: 50, y: 50, panX: 0, panY: 0 };
+        const ZOOM_MIN = 1;
+        const ZOOM_MAX = 4;
+        let panPointer = null;
+        let wheelGesture = null;
+        let wheelTimer = 0;
 
-        const resetBtn = zoomIconButton(
-            '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
-            '<polyline points="15 3 21 3 21 9"></polyline>' +
-            '<polyline points="9 21 3 21 3 15"></polyline>' +
-            '<line x1="21" y1="3" x2="14" y2="10"></line>' +
-            '<line x1="3" y1="21" x2="10" y2="14"></line></svg>',
-            'Reset zoom'
-        );
+        // The visible ("object-fit: contain") rect of the image inside the wrap,
+        // used to anchor zoom origins and clamp panning to the content.
+        function containedContent() {
+            const rect = wrap.getBoundingClientRect();
+            const width = Math.max(0, rect.width || 0);
+            const height = Math.max(0, rect.height || 0);
+            const naturalWidth = Number(imgEl.naturalWidth) || width || 1;
+            const naturalHeight = Number(imgEl.naturalHeight) || height || 1;
+            const fit = Math.min(width / naturalWidth, height / naturalHeight);
+            const contentWidth = naturalWidth * fit;
+            const contentHeight = naturalHeight * fit;
+            return {
+                width, height,
+                left: (width - contentWidth) / 2,
+                top: (height - contentHeight) / 2,
+                contentWidth, contentHeight
+            };
+        }
 
-        const closeBtn = zoomIconButton(
-            '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">' +
+        function render() {
+            wrap.classList.toggle('gallery-preview-zoomed', state.active);
+            imgEl.style.setProperty('--zoom-x', state.x + '%');
+            imgEl.style.setProperty('--zoom-y', state.y + '%');
+            imgEl.style.setProperty('--zoom-scale', String(state.scale));
+            imgEl.style.setProperty('--zoom-pan-x', state.panX + 'px');
+            imgEl.style.setProperty('--zoom-pan-y', state.panY + 'px');
+            pct.textContent = Math.round(state.scale * 100) + '%';
+            pct.classList.toggle('gallery-zoom-pill--active', state.active);
+        }
+
+        function panBounds() {
+            const c = containedContent();
+            const scale = state.scale;
+            const originX = (state.x / 100) * c.width;
+            const originY = (state.y / 100) * c.height;
+            const left = originX + (c.left - originX) * scale;
+            const right = originX + (c.left + c.contentWidth - originX) * scale;
+            const top = originY + (c.top - originY) * scale;
+            const bottom = originY + (c.top + c.contentHeight - originY) * scale;
+            const horizontal = c.contentWidth * scale <= c.width
+                ? [c.width / 2 - (left + right) / 2, c.width / 2 - (left + right) / 2]
+                : [c.width - right, -left];
+            const vertical = c.contentHeight * scale <= c.height
+                ? [c.height / 2 - (top + bottom) / 2, c.height / 2 - (top + bottom) / 2]
+                : [c.height - bottom, -top];
+            return { minX: horizontal[0], maxX: horizontal[1], minY: vertical[0], maxY: vertical[1] };
+        }
+
+        function setPan(x, y) {
+            if (!state.active) {
+                state.panX = 0;
+                state.panY = 0;
+                render();
+                return false;
+            }
+            const b = panBounds();
+            state.panX = Math.round(Math.max(b.minX, Math.min(b.maxX, Number(x) || 0)) * 100) / 100;
+            state.panY = Math.round(Math.max(b.minY, Math.min(b.maxY, Number(y) || 0)) * 100) / 100;
+            render();
+            return true;
+        }
+
+        function setZoom(scale, clientX, clientY) {
+            const next = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, Number(scale) || ZOOM_MIN));
+            const snapped = next < 1.015 ? 1 : Math.round(next * 1000) / 1000;
+            if (snapped > 1 && state.scale <= 1) {
+                // First zoom-in anchors the origin at the pointer.
+                const rect = wrap.getBoundingClientRect();
+                const c = containedContent();
+                const localX = Number.isFinite(clientX)
+                    ? Math.max(c.left, Math.min(c.left + c.contentWidth, clientX - rect.left))
+                    : c.width / 2;
+                const localY = Number.isFinite(clientY)
+                    ? Math.max(c.top, Math.min(c.top + c.contentHeight, clientY - rect.top))
+                    : c.height / 2;
+                state.x = c.width ? (localX / c.width) * 100 : 50;
+                state.y = c.height ? (localY / c.height) * 100 : 50;
+                state.panX = 0;
+                state.panY = 0;
+            }
+            state.scale = snapped;
+            state.active = snapped > 1;
+            if (!state.active) {
+                state.x = 50;
+                state.y = 50;
+                state.panX = 0;
+                state.panY = 0;
+            } else {
+                const b = panBounds();
+                state.panX = Math.max(b.minX, Math.min(b.maxX, state.panX));
+                state.panY = Math.max(b.minY, Math.min(b.maxY, state.panY));
+            }
+            render();
+            return state.active;
+        }
+
+        function adjustZoom(deltaY, clientX, clientY, deltaMode) {
+            const rawDelta = Number(deltaY);
+            if (!Number.isFinite(rawDelta) || rawDelta === 0) return state.active;
+            const pixels = rawDelta * (deltaMode === 1 ? 16 : (deltaMode === 2 ? Math.max(1, wrap.clientHeight) : 1));
+            const bounded = Math.max(-160, Math.min(160, pixels));
+            return setZoom(state.scale * Math.exp(-bounded * 0.002), clientX, clientY);
+        }
+
+        function wheelMode(event) {
+            const now = performance.now();
+            if (event.ctrlKey || (state.active && event.shiftKey)) {
+                wheelGesture = { mode: event.ctrlKey ? 'zoom' : 'pan', at: now };
+                return wheelGesture.mode;
+            }
+            if (wheelGesture && now - wheelGesture.at < 180) {
+                wheelGesture.at = now;
+                return wheelGesture.mode;
+            }
+            const deltaX = Math.abs(Number(event.deltaX) || 0);
+            const deltaY = Math.abs(Number(event.deltaY) || 0);
+            const trackpadLike = event.deltaMode === 0 && Math.max(deltaX, deltaY) < 50;
+            wheelGesture = { mode: state.active && (deltaX > 0 || trackpadLike) ? 'pan' : 'zoom', at: now };
+            return wheelGesture.mode;
+        }
+
+        wrap.addEventListener('wheel', (event) => {
+            const mode = wheelMode(event);
+            if (mode === 'zoom' && !event.deltaY) return;
+            event.preventDefault();
+            if (mode === 'pan') {
+                const horizontal = event.shiftKey && !event.deltaX ? event.deltaY : event.deltaX;
+                const vertical = event.shiftKey ? 0 : event.deltaY;
+                setPan(state.panX - horizontal, state.panY - vertical);
+                wrap.classList.add('gallery-preview-wheel-panning');
+                clearTimeout(wheelTimer);
+                wheelTimer = setTimeout(() => wrap.classList.remove('gallery-preview-wheel-panning'), 120);
+                return;
+            }
+            adjustZoom(event.deltaY, event.clientX, event.clientY, event.deltaMode);
+        }, { passive: false });
+
+        // Drag to pan once zoomed in (mouse or touch).
+        wrap.addEventListener('pointerdown', (event) => {
+            if (!state.active || !event.isPrimary || (event.button !== undefined && event.button !== 0)) return;
+            panPointer = { id: event.pointerId, startX: event.clientX, startY: event.clientY, panX: state.panX, panY: state.panY, moved: false };
+            try { wrap.setPointerCapture(event.pointerId); } catch (err) {}
+        });
+        wrap.addEventListener('pointermove', (event) => {
+            const pan = panPointer;
+            if (!pan || pan.id !== event.pointerId) return;
+            const deltaX = event.clientX - pan.startX;
+            const deltaY = event.clientY - pan.startY;
+            if (!pan.moved && Math.hypot(deltaX, deltaY) < 5) return;
+            if (!pan.moved) {
+                pan.moved = true;
+                wrap.classList.add('gallery-preview-panning');
+            }
+            event.preventDefault();
+            setPan(pan.panX + deltaX, pan.panY + deltaY);
+        });
+        function endPan(event) {
+            const pan = panPointer;
+            if (!pan || (event && event.pointerId != null && pan.id !== event.pointerId)) return;
+            panPointer = null;
+            wrap.classList.remove('gallery-preview-panning');
+            try { if (wrap.hasPointerCapture(pan.id)) wrap.releasePointerCapture(pan.id); } catch (err) {}
+        }
+        wrap.addEventListener('pointerup', endPan);
+        wrap.addEventListener('pointercancel', endPan);
+
+        wrap.addEventListener('dblclick', (event) => {
+            event.preventDefault();
+            setZoom(state.scale > 1.15 ? 1 : 2, event.clientX, event.clientY);
+        });
+
+        function resetZoom() { setZoom(1); }
+
+        return { setZoom, reset: resetZoom, get scale() { return state.scale; } };
+    }
+
+    function formatResolution(img) {
+        if (img.width && img.height) return img.width + ' × ' + img.height;
+        return '—';
+    }
+
+    // --- Before/after compare lightbox ---
+    //
+    // Mirrors Mix Studio's detail-comparison viewer: the original fills the
+    // stage and the upscaled version is clipped inside a mask revealed by the
+    // divider. "Reveal" mode drags the divider, "Move" mode pans when zoomed.
+    // Wheel / pinch / keyboard zoom is cursor-anchored and works immediately
+    // at 100% fit — no zoom button required.
+
+    function openCompare(pair) {
+        const original = pair.original;
+        const upscaled = pair.upscaled;
+        const sameSource = lastSegment(original) === lastSegment(upscaled);
+
+        const overlay = document.createElement('div');
+        overlay.className = 'modal-overlay gallery-overlay compare-overlay open';
+
+        const shell = document.createElement('div');
+        shell.className = 'compare-shell';
+
+        // Header
+        const header = document.createElement('div');
+        header.className = 'compare-header';
+        const heading = document.createElement('div');
+        heading.className = 'compare-heading';
+        const title = document.createElement('div');
+        title.className = 'compare-title';
+        title.textContent = 'DETAIL COMPARISON';
+        const dims = document.createElement('div');
+        dims.className = 'compare-dims';
+        dims.textContent = 'Original \u2194 Upscaled';
+        heading.appendChild(title);
+        heading.appendChild(dims);
+        header.appendChild(heading);
+        const closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.className = 'compare-close';
+        closeBtn.setAttribute('aria-label', 'Close');
+        closeBtn.innerHTML =
+            '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">' +
             '<line x1="18" y1="6" x2="6" y2="18"></line>' +
-            '<line x1="6" y1="6" x2="18" y2="18"></line></svg>',
-            'Close'
-        );
+            '<line x1="6" y1="6" x2="18" y2="18"></line></svg>';
+        header.appendChild(closeBtn);
+        shell.appendChild(header);
 
-        controls.appendChild(zoomOutBtn);
-        controls.appendChild(pct);
-        controls.appendChild(zoomInBtn);
-        controls.appendChild(resetBtn);
-        controls.appendChild(closeBtn);
+        // Stage: both images stack full-stage; the upscaled sits inside a
+        // clipped mask, and only the images transform (never the mask), so the
+        // divider stays aligned at any zoom level.
+        const stage = document.createElement('div');
+        stage.className = 'compare-stage';
+        stage.setAttribute('role', 'application');
+        stage.setAttribute('aria-label', 'Compare original and upscaled image');
+        stage.tabIndex = 0;
 
-        stage.appendChild(viewport);
-        stage.appendChild(controls);
-        overlay.appendChild(stage);
+        const imgOriginal = document.createElement('img');
+        imgOriginal.className = 'compare-img';
+        imgOriginal.src = original;
+        imgOriginal.alt = 'Original';
+        imgOriginal.draggable = false;
+
+        const mask = document.createElement('div');
+        mask.className = 'compare-mask';
+        const imgUpscaled = document.createElement('img');
+        imgUpscaled.className = 'compare-img';
+        imgUpscaled.src = upscaled;
+        imgUpscaled.alt = 'Upscaled';
+        imgUpscaled.draggable = false;
+        mask.appendChild(imgUpscaled);
+
+        const divider = document.createElement('div');
+        divider.className = 'compare-divider';
+        divider.innerHTML =
+            '<span class="compare-handle">' +
+            '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">' +
+            '<path d="M15 18l-6-6 6-6"></path><path d="M13 18l-6-6 6-6"></path></svg>' +
+            '</span>';
+
+        stage.appendChild(imgOriginal);
+        stage.appendChild(mask);
+        stage.appendChild(divider);
+
+        const tagOriginal = document.createElement('span');
+        tagOriginal.className = 'compare-tag compare-tag--a';
+        tagOriginal.textContent = 'Original';
+        const tagUpscaled = document.createElement('span');
+        tagUpscaled.className = 'compare-tag compare-tag--b';
+        tagUpscaled.textContent = 'Upscaled';
+
+        stage.appendChild(tagOriginal);
+        stage.appendChild(tagUpscaled);
+
+        if (sameSource) {
+            const notice = document.createElement('div');
+            notice.className = 'compare-stage-missing';
+            notice.textContent = 'Both sides are the same file \u2014 the upscaled output was not found.';
+            stage.appendChild(notice);
+        }
+        shell.appendChild(stage);
+
+        // Console: Reveal/Move modes + zoom controls + hint/reveal readout.
+        const consoleEl = document.createElement('div');
+        consoleEl.className = 'compare-console';
+
+        const consoleRow = document.createElement('div');
+        consoleRow.className = 'compare-console-row';
+
+        const modeGroup = document.createElement('div');
+        modeGroup.className = 'compare-mode';
+        const revealModeBtn = document.createElement('button');
+        revealModeBtn.type = 'button';
+        revealModeBtn.className = 'active';
+        revealModeBtn.setAttribute('aria-pressed', 'true');
+        revealModeBtn.innerHTML =
+            '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round">' +
+            '<path d="M4 5h7v14H4z"></path><path d="M13 5h7v14h-7z"></path></svg>' +
+            '<span>Reveal</span>';
+        const moveModeBtn = document.createElement('button');
+        moveModeBtn.type = 'button';
+        moveModeBtn.setAttribute('aria-pressed', 'false');
+        moveModeBtn.innerHTML =
+            '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+            '<path d="M9 3l-6 6h4v6H3l6 6 6-6h-4V9h4z"></path></svg>' +
+            '<span>Move</span>';
+        modeGroup.appendChild(revealModeBtn);
+        modeGroup.appendChild(moveModeBtn);
+
+        const zoomGroup = document.createElement('div');
+        zoomGroup.className = 'compare-zoom';
+        const zoomOutBtn = document.createElement('button');
+        zoomOutBtn.type = 'button';
+        zoomOutBtn.textContent = '\u2212';
+        zoomOutBtn.setAttribute('aria-label', 'Zoom out');
+        const zoomValue = document.createElement('output');
+        zoomValue.textContent = '100%';
+        const zoomInBtn = document.createElement('button');
+        zoomInBtn.type = 'button';
+        zoomInBtn.textContent = '+';
+        zoomInBtn.setAttribute('aria-label', 'Zoom in');
+        const fitBtn = document.createElement('button');
+        fitBtn.type = 'button';
+        fitBtn.className = 'compare-text-btn';
+        fitBtn.textContent = 'Fit';
+        const actualBtn = document.createElement('button');
+        actualBtn.type = 'button';
+        actualBtn.className = 'compare-text-btn';
+        actualBtn.textContent = '1:1';
+        zoomGroup.appendChild(zoomOutBtn);
+        zoomGroup.appendChild(zoomValue);
+        zoomGroup.appendChild(zoomInBtn);
+        zoomGroup.appendChild(fitBtn);
+        zoomGroup.appendChild(actualBtn);
+
+        consoleRow.appendChild(modeGroup);
+        consoleRow.appendChild(zoomGroup);
+
+        const consoleMeta = document.createElement('div');
+        consoleMeta.className = 'compare-console-meta';
+        const hint = document.createElement('span');
+        hint.className = 'compare-hint';
+        hint.textContent = 'Drag the divider \u00b7 scroll to zoom';
+        const revealValue = document.createElement('span');
+        revealValue.className = 'compare-reveal-value';
+        revealValue.textContent = '50% reveal';
+        consoleMeta.appendChild(hint);
+        consoleMeta.appendChild(revealValue);
+
+        consoleEl.appendChild(consoleRow);
+        consoleEl.appendChild(consoleMeta);
+        shell.appendChild(consoleEl);
+
+        overlay.appendChild(shell);
         document.body.appendChild(overlay);
 
-        const MAX = 8;
-        let scale = 1;
-        let fit = 1;
-        let tx = 0;
-        let ty = 0;
+        const state = { split: 50, zoom: 1, x: 0, y: 0, mode: 'reveal' };
+        const ZOOM_MIN = 1;
+        const ZOOM_MAX = 6;
 
-        function applyZoom() {
-            mover.style.transform = 'translate(' + tx + 'px, ' + ty + 'px)';
-            img.style.transform = 'scale(' + scale + ')';
-            pct.textContent = Math.round(scale * 100) + '%';
+        // Fit scale: how the upscaled image's natural size maps onto the stage.
+        function fitSize() {
+            const rect = stage.getBoundingClientRect();
+            const naturalWidth = imgUpscaled.naturalWidth || rect.width || 1;
+            const naturalHeight = imgUpscaled.naturalHeight || rect.height || 1;
+            const scale = Math.min(rect.width / naturalWidth, rect.height / naturalHeight);
+            return {
+                stageWidth: rect.width,
+                stageHeight: rect.height,
+                width: naturalWidth * scale,
+                height: naturalHeight * scale,
+                naturalWidth,
+                naturalHeight
+            };
         }
 
-        img.addEventListener('load', () => {
-            const availW = overlay.clientWidth - 40;
-            const availH = overlay.clientHeight - 40;
-            const nw = img.naturalWidth || availW;
-            const nh = img.naturalHeight || availH;
-            fit = Math.min(availW / nw, availH / nh, 1);
-            scale = fit;
-            tx = 0;
-            ty = 0;
-            applyZoom();
+        function clampPan() {
+            const fit = fitSize();
+            const maxX = Math.max(0, (fit.width * state.zoom - fit.stageWidth) / 2);
+            const maxY = Math.max(0, (fit.height * state.zoom - fit.stageHeight) / 2);
+            state.x = Math.max(-maxX, Math.min(maxX, state.x));
+            state.y = Math.max(-maxY, Math.min(maxY, state.y));
+        }
+
+        function renderTransform() {
+            clampPan();
+            const transform = 'translate3d(' + state.x + 'px, ' + state.y + 'px, 0) scale(' + state.zoom + ')';
+            imgOriginal.style.transform = transform;
+            imgUpscaled.style.transform = transform;
+            zoomValue.textContent = Math.round(state.zoom * 100) + '%';
+            zoomOutBtn.disabled = state.zoom <= 1.001;
+            zoomInBtn.disabled = state.zoom >= ZOOM_MAX - 0.001;
+            stage.classList.toggle('compare-zoomed', state.zoom > 1.001);
+        }
+
+        function setSplit(pct) {
+            state.split = Math.max(0, Math.min(100, pct));
+            mask.style.clipPath = 'inset(0 0 0 ' + state.split + '%)';
+            divider.style.left = state.split + '%';
+            revealValue.textContent = Math.round(state.split) + '% reveal';
+        }
+
+        function setMode(mode) {
+            state.mode = mode === 'pan' ? 'pan' : 'reveal';
+            const reveal = state.mode === 'reveal';
+            revealModeBtn.classList.toggle('active', reveal);
+            moveModeBtn.classList.toggle('active', !reveal);
+            revealModeBtn.setAttribute('aria-pressed', String(reveal));
+            moveModeBtn.setAttribute('aria-pressed', String(!reveal));
+            stage.classList.toggle('mode-pan', !reveal);
+            hint.textContent = reveal
+                ? 'Drag the divider \u00b7 pinch or scroll to zoom'
+                : (state.zoom > 1 ? 'Drag to inspect \u00b7 pinch or scroll to zoom' : 'Zoom in, then drag to inspect details');
+        }
+
+        function setZoom(value, clientX, clientY) {
+            const next = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, Number(value) || ZOOM_MIN));
+            const previous = state.zoom;
+            if (Math.abs(next - previous) < 0.001) return;
+            const rect = stage.getBoundingClientRect();
+            const anchorX = Number.isFinite(clientX) ? clientX - rect.left - rect.width / 2 : 0;
+            const anchorY = Number.isFinite(clientY) ? clientY - rect.top - rect.height / 2 : 0;
+            const ratio = next / previous;
+            state.x = anchorX - (anchorX - state.x) * ratio;
+            state.y = anchorY - (anchorY - state.y) * ratio;
+            state.zoom = next;
+            renderTransform();
+            setMode(state.mode);
+        }
+
+        function fitCompare() {
+            state.zoom = 1;
+            state.x = 0;
+            state.y = 0;
+            renderTransform();
+            setMode(state.mode);
+        }
+
+        function actualSizeCompare() {
+            const fit = fitSize();
+            const pixelZoom = fit.width ? fit.naturalWidth / fit.width : 1;
+            setZoom(Math.max(1, Math.min(ZOOM_MAX, pixelZoom)));
+            if (state.zoom > 1) setMode('pan');
+        }
+
+        // --- Gestures: single-pointer divider/pan, two-pointer pinch ---
+
+        const pointers = new Map();
+        let gesture = null;
+        let lastTouchTap = null;
+        let ignoreDoubleClickUntil = 0;
+
+        function pointerCenter(values) {
+            return {
+                x: values.reduce((sum, p) => sum + p.x, 0) / values.length,
+                y: values.reduce((sum, p) => sum + p.y, 0) / values.length
+            };
+        }
+
+        function pointerDistance(values) {
+            return Math.hypot(values[0].x - values[1].x, values[0].y - values[1].y);
+        }
+
+        function beginSingle(point) {
+            gesture = {
+                kind: state.mode,
+                startX: point.x,
+                startY: point.y,
+                panX: state.x,
+                panY: state.y
+            };
+        }
+
+        function beginPinch() {
+            const values = Array.from(pointers.values()).slice(0, 2);
+            const rect = stage.getBoundingClientRect();
+            const center = pointerCenter(values);
+            gesture = {
+                kind: 'pinch',
+                distance: Math.max(1, pointerDistance(values)),
+                zoom: state.zoom,
+                panX: state.x,
+                panY: state.y,
+                anchorX: center.x - rect.left - rect.width / 2,
+                anchorY: center.y - rect.top - rect.height / 2
+            };
+        }
+
+        stage.addEventListener('pointerdown', (event) => {
+            if (event.button !== undefined && event.button !== 0) return;
+            event.preventDefault();
+            try { stage.setPointerCapture(event.pointerId); } catch (err) {}
+            pointers.set(event.pointerId, {
+                x: event.clientX, y: event.clientY,
+                downX: event.clientX, downY: event.clientY,
+                at: performance.now(), type: event.pointerType
+            });
+            stage.classList.add('interacting');
+            if (pointers.size === 1) {
+                beginSingle(Array.from(pointers.values())[0]);
+                if (state.mode === 'reveal') {
+                    const rect = stage.getBoundingClientRect();
+                    setSplit(((event.clientX - rect.left) / rect.width) * 100);
+                }
+            } else if (pointers.size === 2) {
+                beginPinch();
+            }
         });
 
-        function zoomIn() {
-            scale = Math.min(scale * 1.5, MAX);
-            applyZoom();
-        }
-
-        function zoomOut() {
-            if (scale / 1.5 < fit) {
-                scale = fit;
-                tx = 0;
-                ty = 0;
-            } else {
-                scale = scale / 1.5;
+        stage.addEventListener('pointermove', (event) => {
+            if (!pointers.has(event.pointerId)) return;
+            event.preventDefault();
+            const previous = pointers.get(event.pointerId);
+            pointers.set(event.pointerId, Object.assign({}, previous, { x: event.clientX, y: event.clientY }));
+            if (pointers.size >= 2 && gesture && gesture.kind === 'pinch') {
+                const values = Array.from(pointers.values()).slice(0, 2);
+                const center = pointerCenter(values);
+                const rect = stage.getBoundingClientRect();
+                const nextZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, gesture.zoom * (pointerDistance(values) / gesture.distance)));
+                const currentX = center.x - rect.left - rect.width / 2;
+                const currentY = center.y - rect.top - rect.height / 2;
+                const localX = (gesture.anchorX - gesture.panX) / gesture.zoom;
+                const localY = (gesture.anchorY - gesture.panY) / gesture.zoom;
+                state.zoom = nextZoom;
+                state.x = currentX - localX * nextZoom;
+                state.y = currentY - localY * nextZoom;
+                renderTransform();
+                return;
             }
-            applyZoom();
-        }
+            if (pointers.size !== 1 || !gesture) return;
+            if (gesture.kind === 'pan') {
+                state.x = gesture.panX + event.clientX - gesture.startX;
+                state.y = gesture.panY + event.clientY - gesture.startY;
+                renderTransform();
+            } else {
+                const rect = stage.getBoundingClientRect();
+                setSplit(((event.clientX - rect.left) / rect.width) * 100);
+            }
+        });
 
-        function resetZoom() {
-            scale = fit;
-            tx = 0;
-            ty = 0;
-            applyZoom();
+        function endPointer(event) {
+            const point = pointers.get(event.pointerId);
+            pointers.delete(event.pointerId);
+            if (point && point.type === 'touch' && performance.now() - point.at < 280
+                && Math.hypot(event.clientX - point.downX, event.clientY - point.downY) < 10) {
+                const now = performance.now();
+                if (lastTouchTap && now - lastTouchTap.at < 330
+                    && Math.hypot(event.clientX - lastTouchTap.x, event.clientY - lastTouchTap.y) < 28) {
+                    setZoom(state.zoom > 1.15 ? 1 : 2, event.clientX, event.clientY);
+                    ignoreDoubleClickUntil = now + 500;
+                    lastTouchTap = null;
+                } else {
+                    lastTouchTap = { at: now, x: event.clientX, y: event.clientY };
+                }
+            }
+            if (pointers.size === 1) beginSingle(Array.from(pointers.values())[0]);
+            else if (!pointers.size) {
+                gesture = null;
+                stage.classList.remove('interacting');
+            }
         }
+        stage.addEventListener('pointerup', endPointer);
+        stage.addEventListener('pointercancel', endPointer);
+
+        stage.addEventListener('wheel', (event) => {
+            event.preventDefault();
+            setZoom(state.zoom * (event.deltaY < 0 ? 1.16 : 0.86), event.clientX, event.clientY);
+        }, { passive: false });
+
+        stage.addEventListener('dblclick', (event) => {
+            event.preventDefault();
+            if (performance.now() < ignoreDoubleClickUntil) return;
+            setZoom(state.zoom > 1.15 ? 1 : 2, event.clientX, event.clientY);
+        });
 
         function close() {
             document.removeEventListener('keydown', onKey);
             overlay.remove();
         }
 
-        // Drag to pan when zoomed in.
-        let dragging = false;
-        let startX = 0;
-        let startY = 0;
-        let origTx = 0;
-        let origTy = 0;
-
-        viewport.addEventListener('pointerdown', (e) => {
-            if (scale <= fit) return;
-            dragging = true;
-            startX = e.clientX;
-            startY = e.clientY;
-            origTx = tx;
-            origTy = ty;
-            viewport.classList.add('gallery-zoom-dragging');
-            try { viewport.setPointerCapture(e.pointerId); } catch (err) {}
-        });
-        viewport.addEventListener('pointermove', (e) => {
-            if (!dragging) return;
-            tx = origTx + (e.clientX - startX);
-            ty = origTy + (e.clientY - startY);
-            applyZoom();
-        });
-        function endDrag(e) {
-            dragging = false;
-            viewport.classList.remove('gallery-zoom-dragging');
-            try { viewport.releasePointerCapture(e.pointerId); } catch (err) {}
-        }
-        viewport.addEventListener('pointerup', endDrag);
-        viewport.addEventListener('pointercancel', endDrag);
-
-        viewport.addEventListener('wheel', (e) => {
-            e.preventDefault();
-            if (e.deltaY < 0) zoomIn(); else zoomOut();
-        }, { passive: false });
-
-        overlay.addEventListener('click', (e) => {
-            if (e.target === overlay) close();
-        });
         const onKey = (e) => {
-            if (e.key !== 'Escape') return;
             const openOverlays = document.querySelectorAll('.modal-overlay.open');
             if (openOverlays.length && openOverlays[openOverlays.length - 1] !== overlay) return;
-            close();
+            const key = e.key;
+            if (key === 'Escape') { close(); return; }
+            if (['+', '=', '-', '_', '0', '1', 'f', 'F', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].indexOf(key) !== -1) e.preventDefault();
+            if (key === '+' || key === '=') setZoom(state.zoom * 1.25);
+            else if (key === '-' || key === '_') setZoom(state.zoom / 1.25);
+            else if (key === '0' || key === 'f' || key === 'F') fitCompare();
+            else if (key === '1') actualSizeCompare();
+            else if (state.mode === 'reveal' && key === 'ArrowLeft') setSplit(state.split - 2);
+            else if (state.mode === 'reveal' && key === 'ArrowRight') setSplit(state.split + 2);
+            else if (state.mode === 'pan' && key.indexOf('Arrow') === 0) {
+                if (key === 'ArrowLeft') state.x -= 28;
+                else if (key === 'ArrowRight') state.x += 28;
+                else if (key === 'ArrowUp') state.y -= 28;
+                else if (key === 'ArrowDown') state.y += 28;
+                renderTransform();
+            }
         };
         document.addEventListener('keydown', onKey);
 
-        zoomInBtn.addEventListener('click', zoomIn);
-        zoomOutBtn.addEventListener('click', zoomOut);
-        resetBtn.addEventListener('click', resetZoom);
         closeBtn.addEventListener('click', close);
-
-        img.addEventListener('error', () => {
-            viewport.classList.add('gallery-preview-broken');
-            viewport.textContent = 'Image file is missing.';
-            controls.style.display = 'none';
+        overlay.addEventListener('click', (e) => {
+            if (e.target === overlay) close();
         });
+        revealModeBtn.addEventListener('click', () => setMode('reveal'));
+        moveModeBtn.addEventListener('click', () => setMode('pan'));
+        zoomOutBtn.addEventListener('click', () => setZoom(state.zoom / 1.35));
+        zoomInBtn.addEventListener('click', () => setZoom(state.zoom * 1.35));
+        fitBtn.addEventListener('click', fitCompare);
+        actualBtn.addEventListener('click', actualSizeCompare);
 
-        img.src = src;
-    }
+        // Fill in the real dimensions once both images are loaded.
+        function updateDims() {
+            if (imgOriginal.naturalWidth && imgUpscaled.naturalWidth) {
+                dims.textContent =
+                    imgOriginal.naturalWidth + ' \u00d7 ' + imgOriginal.naturalHeight +
+                    ' \u2194 ' + imgUpscaled.naturalWidth + ' \u00d7 ' + imgUpscaled.naturalHeight;
+            }
+        }
+        imgOriginal.addEventListener('load', updateDims);
+        imgUpscaled.addEventListener('load', updateDims);
 
-    function formatResolution(img) {
-        if (img.width && img.height) return img.width + ' × ' + img.height;
-        return '—';
+        // Name which side failed instead of silently showing the surviving
+        // image on both halves (which reads as "the same image").
+        function onStageError(side) {
+            if (stage.querySelector('.compare-stage-missing')) return;
+            const missing = document.createElement('div');
+            missing.className = 'compare-stage-missing';
+            missing.textContent = side + ' image file is missing.';
+            stage.appendChild(missing);
+        }
+        imgOriginal.addEventListener('error', () => onStageError('Original'));
+        imgUpscaled.addEventListener('error', () => onStageError('Upscaled'));
+
+        setSplit(50);
+        setMode('reveal');
+        renderTransform();
     }
 
     function formatGeneratedAt(img) {
@@ -474,8 +979,15 @@
             if (!window.confirm('Delete this generated image permanently?')) return;
             btn.disabled = true;
             try {
+                const pair = compareTargetFor(img, widgetImages);
+                const partner = pair && (img.upscale ? pair.originalMeta : pair.upscaledMeta);
+                const removedIds = [img.id];
+                if (partner && partner.id !== img.id) {
+                    await deleteImage(partner);
+                    removedIds.push(partner.id);
+                }
                 await deleteImage(img);
-                widgetImages = widgetImages.filter((w) => w.id !== img.id);
+                widgetImages = widgetImages.filter((w) => removedIds.indexOf(w.id) === -1);
                 renderWidget();
                 if (cell && cell.parentNode) cell.remove();
             } catch (err) {
@@ -487,9 +999,10 @@
     }
 
     function openPreview(img) {
+        const compare = compareTargetFor(img, widgetImages);
+
         const { container, body, closeBtn } = buildModalShell('GENERATED IMAGE');
         const modal = openModal(container);
-        const close = modal.close;
 
         const imgWrap = document.createElement('div');
         imgWrap.className = 'gallery-preview-image';
@@ -501,8 +1014,22 @@
             imgWrap.textContent = 'Image file is missing.';
         });
         imgWrap.appendChild(imgEl);
-        makeZoomButton(imgWrap, imgEl);
+        const zoomApi = attachInlineZoom(imgWrap, imgEl);
         body.appendChild(imgWrap);
+
+        function close() {
+            document.removeEventListener('keydown', onPreviewKey);
+            modal.close();
+        }
+
+        const onPreviewKey = (e) => {
+            const openOverlays = document.querySelectorAll('.modal-overlay.open');
+            if (openOverlays.length && openOverlays[openOverlays.length - 1] !== modal.overlay) return;
+            if (e.key === '+' || e.key === '=') { e.preventDefault(); zoomApi.setZoom(zoomApi.scale * 1.25); }
+            else if (e.key === '-' || e.key === '_') { e.preventDefault(); zoomApi.setZoom(zoomApi.scale / 1.25); }
+            else if (e.key === '0') { e.preventDefault(); zoomApi.reset(); }
+        };
+        document.addEventListener('keydown', onPreviewKey);
 
         const meta = document.createElement('div');
         meta.className = 'gallery-preview-meta';
@@ -510,6 +1037,13 @@
             '<div class="gallery-preview-row"><span class="gallery-preview-label">Model</span><span class="gallery-preview-value">' + escapeHtml(img.model || 'Krea2') + '</span></div>' +
             '<div class="gallery-preview-row"><span class="gallery-preview-label">Resolution</span><span class="gallery-preview-value">' + escapeHtml(formatResolution(img)) + '</span></div>' +
             '<div class="gallery-preview-row"><span class="gallery-preview-label">Time</span><span class="gallery-preview-value">' + escapeHtml(formatGeneratedAt(img)) + '</span></div>';
+        if (compare) {
+            const originalMeta = img.upscale ? compare.originalMeta : img;
+            const upscaledMeta = img.upscale ? img : compare.upscaledMeta;
+            const baseDims = formatResolution(originalMeta);
+            const otherDims = formatResolution(upscaledMeta);
+            meta.innerHTML += '<div class="gallery-preview-row"><span class="gallery-preview-label">Upscale</span><span class="gallery-preview-value">' + escapeHtml(baseDims + ' \u2192 ' + otherDims) + '</span></div>';
+        }
         body.appendChild(meta);
 
         if (img.prompt) {
@@ -521,6 +1055,15 @@
 
         const footer = document.createElement('div');
         footer.className = 'modal-footer';
+
+        if (compare) {
+            const compareBtn = document.createElement('button');
+            compareBtn.type = 'button';
+            compareBtn.className = 'modal-btn modal-btn-primary';
+            compareBtn.textContent = '\u21c4 Compare';
+            compareBtn.addEventListener('click', () => openCompare(compare));
+            footer.appendChild(compareBtn);
+        }
 
         if (img.prompt) {
             const copyBtn = document.createElement('button');
@@ -545,6 +1088,13 @@
             if (!window.confirm('Delete this generated image permanently?')) return;
             deleteBtn.disabled = true;
             try {
+                // Deleting either side of a group also deletes its partner, so
+                // the tile (now the upscaled output) removes the pair as one.
+                const partner = compare && (img.upscale ? compare.originalMeta : compare.upscaledMeta);
+                if (partner && partner.id !== img.id) {
+                    await deleteImage(partner);
+                    widgetImages = widgetImages.filter((w) => w.id !== partner.id);
+                }
                 await deleteImage(img);
                 widgetImages = widgetImages.filter((w) => w.id !== img.id);
                 renderWidget();
@@ -590,7 +1140,12 @@
                 body.appendChild(empty);
                 return;
             }
+            const children = upscaleChildMap(images);
             images.forEach((img) => {
+                // An upscaled output replaces its original in the grid — hide
+                // the original tile and show the upscaled output instead.
+                if (!img.upscale && children.has(lastSegment(img.file))) return;
+
                 const cell = document.createElement('div');
                 cell.className = 'gallery-cell';
                 cell.title = img.prompt || img.id;
@@ -609,6 +1164,7 @@
                     cell.textContent = 'IMG';
                 });
                 cell.appendChild(thumb);
+                if (img.upscale && img.upscale.source) cell.appendChild(makeCompareBadge('gallery-compare-badge'));
                 cell.appendChild(makeDeleteButton(img, cell));
                 grid.appendChild(cell);
             });
@@ -639,6 +1195,7 @@
     Gallery.init = init;
     Gallery.refresh = refreshWidget;
     Gallery.openFromUrl = openFromUrl;
+    Gallery.openCompare = openCompare;
 
     window.Gallery = Gallery;
 })(window, document);

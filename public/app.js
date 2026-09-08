@@ -231,6 +231,7 @@ function initSettings() {
 
     initChatProviderSettings();
     initImageGenSettings();
+    initUpscaleSettings();
     initFreeComfyButton();
     initRestartServerButton();
 }
@@ -616,6 +617,147 @@ function initImageGenSettings() {
             }
         });
     });
+}
+
+// --- Image Upscaling Settings ---
+
+const UPSCALE_SELECT_FIELDS = [
+    { key: 'upscaleEngine', id: 'upscaleEngine' },
+    { key: 'upscaleMode', id: 'upscaleMode' },
+    { key: 'upscaleResolution', id: 'upscaleResolution' },
+    { key: 'upscaleMultiplier', id: 'upscaleMultiplier' },
+    { key: 'upscaleProfile', id: 'upscaleProfile' },
+    { key: 'upscaleNoise', id: 'upscaleNoise' },
+    { key: 'upscalePreScale', id: 'upscalePreScale' }
+];
+
+const UPSCALE_TEXT_FIELDS = [
+    { key: 'seedvr2Dit', id: 'upscaleDiT' },
+    { key: 'seedvr2Vae', id: 'upscaleVae' }
+];
+
+function initUpscaleSettings() {
+    const statusEl = document.getElementById('upscaleSettingsStatus');
+    if (statusEl) statusEl.style.display = 'none';
+    const setStatus = (text, isError) => {
+        if (!statusEl) return;
+        statusEl.textContent = text;
+        statusEl.classList.toggle('settings-save-status--error', !!isError);
+        statusEl.style.display = text ? '' : 'none';
+    };
+
+    const syncVisibility = () => {
+        const engineSel = document.getElementById('upscaleEngine');
+        const modeSel = document.getElementById('upscaleMode');
+        const engine = engineSel ? engineSel.value : 'seedvr2';
+        const mode = modeSel ? modeSel.value : 'target';
+
+        const resField = document.getElementById('upscaleResolutionField');
+        const multField = document.getElementById('upscaleMultiplierField');
+        if (resField) resField.style.display = mode === 'target' ? '' : 'none';
+        if (multField) multField.style.display = mode === 'multiplier' ? '' : 'none';
+
+        ['upscaleProfileField', 'upscaleNoiseField', 'upscalePreScaleField', 'upscaleDiTField', 'upscaleVaeField'].forEach((id) => {
+            const el = document.getElementById(id);
+            if (el) el.style.display = engine === 'seedvr2' ? '' : 'none';
+        });
+    };
+
+    const persistSelect = async (key, select) => {
+        setStatus('Saving...');
+        try {
+            const res = await fetch('/api/settings/image', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ [key]: select.value })
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                setStatus('Save failed: ' + (data.error || 'Unknown error'), true);
+                return;
+            }
+            setStatus('Saved: ' + select.value);
+        } catch {
+            setStatus('Save failed: connection error', true);
+        }
+        setTimeout(() => setStatus(''), 3000);
+    };
+
+    const persistText = async (key, input) => {
+        const value = input.value.trim();
+        setStatus('Saving...');
+        try {
+            const res = await fetch('/api/settings/image', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ [key]: value })
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                setStatus('Save failed: ' + (data.error || 'Unknown error'), true);
+                return;
+            }
+            setStatus(value ? 'Saved: ' + value : 'Reverted to default');
+        } catch {
+            setStatus('Save failed: connection error', true);
+        }
+        setTimeout(() => setStatus(''), 3000);
+    };
+
+    const engineSel = document.getElementById('upscaleEngine');
+    const modeSel = document.getElementById('upscaleMode');
+
+    UPSCALE_SELECT_FIELDS.forEach(({ key, id }) => {
+        const select = document.getElementById(id);
+        if (!select) return;
+        select.addEventListener('change', () => persistSelect(key, select));
+    });
+
+    UPSCALE_TEXT_FIELDS.forEach(({ key, id }) => {
+        const input = document.getElementById(id);
+        if (!input) return;
+        input.addEventListener('change', () => persistText(key, input));
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                input.blur();
+            }
+        });
+    });
+
+    if (engineSel) engineSel.addEventListener('change', syncVisibility);
+    if (modeSel) modeSel.addEventListener('change', syncVisibility);
+
+    (async () => {
+        try {
+            const res = await fetch('/api/settings/image');
+            if (!res.ok) throw new Error('API error');
+            const data = await res.json();
+            const defaults = data.defaults || {};
+            const settings = data.settings || {};
+
+            UPSCALE_SELECT_FIELDS.forEach(({ key, id }) => {
+                const select = document.getElementById(id);
+                if (!select) return;
+                const stored = settings[key];
+                select.value = (stored !== undefined && stored !== null && stored !== '')
+                    ? stored
+                    : (defaults[key] !== undefined && defaults[key] !== null ? defaults[key] : select.value);
+            });
+
+            UPSCALE_TEXT_FIELDS.forEach(({ key, id }) => {
+                const input = document.getElementById(id);
+                if (!input) return;
+                const stored = settings[key];
+                input.value = (stored !== undefined && stored !== null && stored !== '') ? stored : '';
+                input.placeholder = defaults[key] || (key === 'seedvr2Dit' ? 'SeedVR2 DiT model' : 'SeedVR2 VAE model');
+            });
+
+            syncVisibility();
+        } catch {
+            setStatus('Could not load upscale settings', true);
+        }
+    })();
 }
 
 // --- Chat Provider Settings ---
