@@ -220,13 +220,36 @@ async function askRouter(routerPrompt, provider, model) {
 
 // --- Prompt modification ---------------------------------------------------------
 
+
 const PROMPT_MODIFIER_SYSTEM_PROMPT =
-    'You are an image prompt editor. You are given the CURRENT image prompt and a user\'s ' +
-    'modification request. Produce the NEW full image prompt that incorporates ONLY the ' +
-    'requested change, preserving everything else (subject, style, location, existing details).\n' +
-    'Do not drop prior details unless the user explicitly changes them. Append the new detail ' +
-    'naturally to the existing prompt.\n' +
-    'Output ONLY the new prompt text. No explanations, no quotes, no markdown.';
+    'You are an image prompt editor. You are given the CURRENT image prompt and a USER MODIFICATION. ' +
+    'Rewrite the current prompt into a NEW complete image prompt that applies the requested change.\n\n' +
+
+    'IMPORTANT RULES:\n' +
+    '- Apply the user modification as an actual replacement or update, not as an instruction appended to the prompt.\n' +
+    '- Preserve every existing detail that the user did not ask to change.\n' +
+    '- If the user changes clothing, replace the old clothing with the new clothing. Do not mention both.\n' +
+    '- If the user changes the pose, replace the old pose with the new pose.\n' +
+    '- If the user changes the setting, replace the old setting with the new setting.\n' +
+    '- If the user changes the expression, replace the old expression with the new expression.\n' +
+    '- If the user changes the time or lighting, update only those elements.\n' +
+    '- Do not literally include phrases such as "change her outfit to..." or "make her..." in the resulting prompt.\n' +
+    '- Do not add unrelated creative details.\n' +
+    '- Do not remove existing details unless the user explicitly changes them.\n' +
+    '- The result must describe the final image, not describe the editing operation.\n\n' +
+
+    'EXAMPLE:\n' +
+    'CURRENT PROMPT: A young Korean woman with long wavy black hair, wearing an emerald green silk blouse and tailored trousers, walking through a cherry blossom garden in golden hour sunlight.\n' +
+    'USER MODIFICATION: change her outfit to a traditional kimono\n' +
+    'CORRECT RESULT: A young Korean woman with long wavy black hair, wearing a traditional kimono, walking through a cherry blossom garden in golden hour sunlight.\n\n' +
+
+    'Another example:\n' +
+    'CURRENT PROMPT: A young Korean woman with long black hair, wearing a cream sweater and blue jeans, standing on a Seoul street in the afternoon.\n' +
+    'USER MODIFICATION: change her pose to sitting on a bench\n' +
+    'CORRECT RESULT: A young Korean woman with long black hair, wearing a cream sweater and blue jeans, sitting on a bench on a Seoul street in the afternoon.\n\n' +
+
+    'Output ONLY the new full image prompt. No explanations, no quotes, no markdown.';
+
 
 // Apply the user's modification to the current effective prompt. Falls back to
 // a simple append of the raw message on failure.
@@ -246,9 +269,12 @@ async function applyPromptModification(currentPrompt, userMessage, provider, mod
     } catch (err) {
         console.warn('[task-router] Prompt modifier failed, appending:', err.message);
     }
-    return currentPrompt
-        ? String(currentPrompt).trim() + ', ' + String(userMessage).trim()
-        : String(userMessage).trim();
+    if (currentPrompt) {
+        console.warn('[task-router] Prompt modifier failed; keeping current prompt unchanged.');
+        return String(currentPrompt).trim();
+    }
+
+    return String(userMessage).trim();
 }
 
 // --- Reporting ---------------------------------------------------------------
