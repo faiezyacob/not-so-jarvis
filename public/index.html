@@ -29,6 +29,7 @@
                     <button class="settings-nav-item" data-panel="image">IMAGE</button>
                     <button class="settings-nav-item" data-panel="upscale">IMAGE UPSCALE</button>
                     <button class="settings-nav-item" data-panel="video">VIDEO</button>
+                    <button class="settings-nav-item" data-panel="videoUpscale">VIDEO UPSCALE</button>
                 </div>
                 <div class="settings-panels" id="settingsPanels">
                     <!-- General -->
@@ -276,14 +277,31 @@
                             </select>
                             <span class="settings-hint">SageAttention patches the guider for speed (needs the KJNodes sageattention package). SLA uses sparse attention (experimental).</span>
                         </div>
-                        <div class="settings-dropdown-title settings-section-slim">RTX 4K PASS (Video Upscale)</div>
+                        <div class="settings-dropdown-title settings-section-slim">LORA STACK</div>
+                        <div class="settings-field">
+                            <div class="lora-list" id="videoLoraList"></div>
+                            <select class="settings-select" id="videoLoraAddSelect">
+                                <option value="">— Add LoRA —</option>
+                            </select>
+                            <span class="settings-hint">Attach LoRAs to every video generation. Stacked in order (model-only), each with its own strength.</span>
+                            <span class="settings-save-status" id="videoLoraStatus"></span>
+                        </div>
+                        <div class="settings-field">
+                            <span class="settings-hint">Leave blank = use default. Press Enter to save. Clear and Enter to revert.</span>
+                            <span class="settings-save-status" id="videoSettingsStatus"></span>
+                        </div>
+                    </div>
+
+                    <!-- Video Upscale -->
+                    <div class="settings-panel" data-panel="videoUpscale">
+                        <div class="settings-dropdown-title">VIDEO UPSCALE (RTX 4K Pass)</div>
                         <div class="settings-field">
                             <label class="settings-field-label" for="videoUpscaleEnabled">Enable 4K Pass</label>
                             <select class="settings-select" id="videoUpscaleEnabled">
                                 <option value="false">Disabled</option>
                                 <option value="true">Enabled</option>
                             </select>
-                            <span class="settings-hint">When enabled, generated videos are automatically upscaled to 4K using SeedVR2. Requires SeedVR2 custom nodes in ComfyUI.</span>
+                            <span class="settings-hint">When enabled, generated videos are automatically upscaled to the target resolution using SeedVR2. Requires SeedVR2 custom nodes in ComfyUI.</span>
                         </div>
                         <div class="settings-field" id="videoUpscaleResolutionField">
                             <label class="settings-field-label" for="videoUpscaleResolution">Target Resolution</label>
@@ -337,18 +355,9 @@
                                 placeholder="Loading..." autocomplete="off">
                             <span class="settings-hint">Default: sdpa. Options: sdpa, sageattn_2, sageattn_3, flash_attn_2, flash_attn_3 (NVIDIA only).</span>
                         </div>
-                        <div class="settings-dropdown-title settings-section-slim">LORA STACK</div>
                         <div class="settings-field">
-                            <div class="lora-list" id="videoLoraList"></div>
-                            <select class="settings-select" id="videoLoraAddSelect">
-                                <option value="">— Add LoRA —</option>
-                            </select>
-                            <span class="settings-hint">Attach LoRAs to every video generation. Stacked in order (model-only), each with its own strength.</span>
-                            <span class="settings-save-status" id="videoLoraStatus"></span>
-                        </div>
-                        <div class="settings-field">
-                            <span class="settings-hint">Leave blank = use default. Press Enter to save. Clear and Enter to revert.</span>
-                            <span class="settings-save-status" id="videoSettingsStatus"></span>
+                            <span class="settings-hint">Blank = use default. Leave a field and press Enter to save. Clear a field and press Enter to revert.</span>
+                            <span class="settings-save-status" id="videoUpscaleSettingsStatus"></span>
                         </div>
                     </div>
                 </div>
