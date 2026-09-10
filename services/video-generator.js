@@ -56,11 +56,24 @@ const H3_DEFAULTS = {
         : 'standard',
     loras: [],
     loraTriggerWords: {},
+    // Video upscaling / RTX 4K pass settings (SeedVR2 video upscaler)
+    videoUpscaleEnabled: false,
+    videoUpscaleEngine: 'seedvr2',
+    videoUpscaleResolution: 2160,
+    videoUpscaleProfile: 'sharp',
+    videoUpscaleNoise: 'low',
+    videoUpscalePreScale: 1,
+    videoUpscaleDit: process.env.VIDEO_UPSCALE_DIT || 'seedvr2_ema_7b_fp8_e4m3fn_mixed_block35_fp16.safetensors',
+    videoUpscaleVae: process.env.VIDEO_UPSCALE_VAE || 'ema_vae_fp16.safetensors',
+    videoUpscaleAttention: process.env.VIDEO_UPSCALE_ATTENTION || 'sdpa',
 };
 
 const H3_CONFIGURABLE_KEYS = [
     'h3Unet', 'h3Clip', 'h3VideoVae', 'h3AudioVae',
-    'h3Duration', 'h3Size', 'attentionBackend', 'loras', 'loraTriggerWords'
+    'h3Duration', 'h3Size', 'attentionBackend', 'loras', 'loraTriggerWords',
+    'videoUpscaleEnabled', 'videoUpscaleEngine', 'videoUpscaleResolution',
+    'videoUpscaleProfile', 'videoUpscaleNoise', 'videoUpscalePreScale',
+    'videoUpscaleDit', 'videoUpscaleVae', 'videoUpscaleAttention'
 ];
 
 // --- Frame / Dimension helpers (adapted from Mix Studio) ----------------------
@@ -210,50 +223,96 @@ function videoRequestStrength(message) {
 // --- H3 Video Director System Prompt (Ollama) --------------------------------
 
 const H3_DIRECTOR_SYSTEM_PROMPT =
-    'You are JARVIS\'s H3 Video Director. You convert video requests into MiniMax H3 ' +
-    'compliant prompts following the official H3 Video Prompt Writing Guide.\n\n' +
+    'You are JARVIS\'s H3 Video Director. You convert video requests into MiniMax H3 compliant ' +
+    'prompts following the official H3 Video Prompt Writing Guide.\\n\\n' +
 
-    'OUTPUT FORMAT — always output a JSON object:\n' +
-    '{"mode": "t2va"|"i2va", "prompt": "...", "duration": 5-15, "width": ..., "height": ...}\n\n' +
+    'OUTPUT FORMAT — always output a JSON object:\\n' +
+    '{"mode": "t2va"|"i2va", "prompt": "..."}\\n\\n' +
 
-    'MODE RULES:\n' +
-    '- "t2va": Text-to-Video-Audio. No reference image. The video is generated purely from text.\n' +
-    '- "i2va": Image-to-Video-Audio. A reference image is provided as the first frame.\n' +
-    '  The prompt MUST reference <Picture 1> and describe how the video extends from that frame.\n' +
-    '  Include the alignment line: "For the target video, at 0.00 seconds into the target video, ' +
-    '<Picture 1> (from [Shot 1]) is fully referenced."\n\n' +
+    'MODE RULES:\\n' +
+    '- "t2va": Text-to-Video-Audio. No reference image.\\n' +
+    '- "i2va": Image-to-Video-Audio. A reference image is provided as the first frame.\\n' +
+    '- For I2VA, the prompt MUST reference <Picture 1>.\\n' +
+    '- For I2VA, always include this exact alignment line:\\n' +
+    '"For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced."\\n' +
+    '- Never leave <Picture 1> empty or replace it with a blank space.\\n\\n' +
 
-    'PROMPT STRUCTURE (for both T2VA and I2VA):\n\n' +
+    'SHOT RULE — CRITICAL:\\n' +
+    '- Use ONLY [Shot 1] by default.\\n' +
+    '- Do NOT create [Shot 2], [Shot 3], or any additional shots unless the user explicitly requests ' +
+    'multiple shots, a scene change, a cut, a transition to another scene, or separate shots.\\n' +
+    '- A continuous action MUST remain entirely inside [Shot 1].\\n' +
+    '- Do NOT use timestamps to divide a continuous action into multiple shots.\\n' +
+    '- Do NOT create additional shots simply because the action changes over time.\\n' +
+    '- If the user does not specify a shot change, assume the entire video is one continuous shot.\\n\\n' +
 
-    'integrated_multimodal_description:\n' +
-    '[Shot 1] Detailed visual description: subject appearance, action, expression, ' +
-    'environment, lighting, composition, camera angle.\n' +
-    'At MM:SS.mmm, [Shot 2] Subsequent action or scene evolution.\n' +
-    'Use timestamps only for shots after [Shot 1].\n\n' +
+    'PROMPT STRUCTURE:\\n\\n' +
 
-    'overall_soundscape:\n' +
-    'Describe the environmental sounds and ambient audio that match the visual.\n' +
-    'Include: ambient noise, footsteps, wind, rain, traffic, crowd, etc.\n\n' +
+    'integrated_multimodal_description:\\n' +
+    '[Shot 1] Describe the complete continuous sequence: starting visual state, subject appearance, ' +
+    'environment, composition, lighting, camera position, action, movement, reactions, and natural ' +
+    'visual evolution throughout the video.\\n' +
+    'For I2VA, describe the reference image as the starting state and explain how the action naturally ' +
+    'continues from that frame.\\n\\n' +
 
-    'non_diegetic_music:\n' +
-    'Describe background music style/mood or write "N/A" if no music.\n\n' +
+    'overall_soundscape:\\n' +
+    'Describe environmental and diegetic sounds that naturally match the visual action. Include relevant ' +
+    'ambience such as footsteps, wind, rain, traffic, crowd noise, object movement, or other physical sounds.\\n\\n' +
 
-    'CREATIVE RULES:\n' +
-    '- When the user says "be creative", act as a director: decide movement, pacing, ' +
-    'camera motion, soundscape, and music that serve the visual concept.\n' +
-    '- For I2VA: preserve the subject identity, clothing, hairstyle, environment, ' +
-    'composition, and visual style from <Picture 1>. Only animate what is natural.\n' +
-    '- Never change the subject\'s identity, clothing, or setting unless explicitly asked.\n' +
-    '- When the user gives a specific action ("make her walk toward the camera"), ' +
-    'center the video on that action while preserving the reference image.\n' +
-    '- Avoid generic filler: "highly detailed", "stunning visuals", "cinematic masterpiece", ' +
-    '"8K", "professional quality", "beautiful lighting".\n' +
-    '- Prefer concrete, specific visual descriptions over abstract praise.\n\n' +
+    'non_diegetic_music:\\n' +
+    'Describe suitable background music when appropriate, or write "N/A" when no music is needed.\\n\\n' +
 
-    'DURATION: suggested duration in seconds (5-15). Default 5 if not specified.\n' +
-    'WIDTH/HEIGHT: reasonable video dimensions (multiples of 32, short side 768 max). ' +
-    'For I2VA: MUST match the source image aspect ratio (e.g. 768x1024 for portrait, 1024x768 for landscape). ' +
-    'For T2VA: default landscape 1024x768 if not specified.\n\n' +
+    'I2VA ACTION TIMING — CRITICAL:\\n' +
+    '- The reference image is the first frame, not a static introductory pause.\\n' +
+    '- Unless the user explicitly requests a delay, the requested action MUST begin at 0.00 seconds.\\n' +
+    '- NEVER invent a 2-5 second pause before the action.\\n' +
+    '- NEVER delay the action simply to separate the reference image from the motion.\\n' +
+    '- The reference image establishes the starting state at 0.00 seconds.\\n' +
+    '- Describe the action beginning immediately from that starting state.\\n' +
+    '- Only introduce delayed timing when the user explicitly specifies it.\\n\\n' +
+
+    'CONTINUOUS ACTION:\\n' +
+    '- Describe how the action develops naturally from beginning to end within [Shot 1].\\n' +
+    '- You may describe progression such as "begins", "then", "continues", "gradually", and "ends" ' +
+    'without creating additional shots.\\n' +
+    '- Use timestamps only when the user explicitly specifies timing or when timing is essential to a ' +
+    'specific requested event.\\n\\n' +
+
+    'CREATIVE RULES:\\n' +
+    '- When the user says "be creative", act as a director: decide natural movement, pacing, camera ' +
+    'motion, soundscape, and music that serve the visual concept.\\n' +
+    '- For I2VA, preserve the subject identity, clothing, hairstyle, environment, composition, colors, ' +
+    'key objects, and visual style from <Picture 1>.\\n' +
+    '- Never change the subject\'s identity, clothing, hairstyle, setting, or important objects unless ' +
+    'the user explicitly asks for the change.\\n' +
+    '- When the user gives a specific action, center the video on that action while preserving the reference image.\\n' +
+    '- Camera movement should be concrete and purposeful: push in, pull out, pan, tilt, tracking, arc, ' +
+    'static, handheld, etc.\\n' +
+    '- Do not invent dialogue. Preserve user-provided dialogue exactly.\\n' +
+    '- Do not invent on-screen text. Preserve user-provided on-screen text exactly.\\n' +
+    '- Avoid generic filler such as "highly detailed", "stunning visuals", "cinematic masterpiece", ' +
+    '"8K", "professional quality", or "beautiful lighting".\\n' +
+    '- Prefer concrete, observable visual and audio descriptions over abstract praise.\\n\\n' +
+
+    'I2VA FIRST-FRAME RULE:\\n' +
+    'When a reference image is available, the first-frame alignment line must explicitly identify ' +
+    '<Picture 1>. The visual description must describe what happens FROM that starting frame. Do not ' +
+    'describe a separate introductory scene before the requested action.\\n\\n' +
+
+    'TECHNICAL SETTINGS & VIDEO DURATION:\\n' +
+    '- The target video duration is determined by application settings and provided in the request context.\\n' +
+    '- Craft the pacing, continuous action, movement speed, and audio evolution to fit naturally within this duration.\\n' +
+    '- Do NOT override or invent technical generation parameters.\\n' +
+    '- Your responsibility is the H3 mode and creative prompt only.\\n\\n' +
+
+    'FINAL CHECK BEFORE OUTPUT:\\n' +
+    '- Default to exactly ONE shot: [Shot 1].\\n' +
+    '- Only use additional shots when explicitly requested by the user.\\n' +
+    '- If I2VA, confirm the exact <Picture 1> alignment line is present.\\n' +
+    '- Confirm the requested action begins at 0.00 seconds unless the user explicitly requested a delay.\\n' +
+    '- Confirm there is no artificial introductory pause.\\n' +
+    '- Confirm unrelated reference-image details are preserved.\\n' +
+    '- Output ONLY the JSON object.\\n\\n' +
 
     'Respond with ONLY the JSON object.';
 
@@ -401,6 +460,9 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
         }
     }
 
+    const videoSettings = effectiveVideoSettings();
+    const durationSeconds = h3DurationSeconds(videoSettings.h3Duration);
+
     let userMessage;
     let userMessageImages = null;
     if (isModify) {
@@ -410,6 +472,7 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
             'creative_mode: "' + creative_mode + '"\n' +
             'explicit_constraints: ' + JSON.stringify(explicit_constraints || []) + '\n\n' +
             'Mode: ' + (has_reference_image ? 'i2va' : 't2va') + '\n' +
+            'Video duration: ' + durationSeconds + ' seconds\n' +
             'Output ONLY the JSON described in the system prompt.';
     } else {
         const mode = has_reference_image ? 'i2va' : 't2va';
@@ -435,6 +498,7 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
             'creative_mode: "' + creative_mode + '"\n' +
             'has_reference_image: ' + JSON.stringify(has_reference_image) + '\n' +
             'explicit_constraints: ' + JSON.stringify(explicit_constraints || []) + '\n\n' +
+            'Video duration: ' + durationSeconds + ' seconds\n' +
             'Output ONLY the JSON described in the system prompt.';
         if (visionAvailable && sourceImageBase64) {
             userMessageImages = [sourceImageBase64];
@@ -562,6 +626,61 @@ function clampNumber(value, min, max, fallback) {
     return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : fallback;
 }
 
+// --- Video Upscale / RTX 4K Pass Settings ---------------------------------------
+//
+// RTX 4K pass for video using SeedVR2 video upscaler (same engine as image upscale
+// but with SeedVR2VideoUpscaler node). When enabled, the generated video is
+// upscaled to the target resolution (default 4K / 2160p short side).
+
+const VIDEO_UPSCALE_RESOLUTIONS = [1080, 1440, 2160, 3840];
+const VIDEO_UPSCALE_PROFILES = ['sharp', 'balanced'];
+const VIDEO_UPSCALE_NOISE_LEVELS = { off: 0, low: 0.06, medium: 0.15 };
+const VIDEO_UPSCALE_ENGINES = ['seedvr2'];
+
+function sanitizeVideoUpscaleEnabled(value) {
+    return value === true || value === 'true' || value === 1 || value === '1';
+}
+
+function sanitizeVideoUpscaleEngine(value) {
+    const v = String(value || '').toLowerCase();
+    return VIDEO_UPSCALE_ENGINES.includes(v) ? v : 'seedvr2';
+}
+
+function sanitizeVideoUpscaleResolution(value) {
+    const n = Math.round(Number(value));
+    return VIDEO_UPSCALE_RESOLUTIONS.includes(n) ? n : 2160;
+}
+
+function sanitizeVideoUpscaleProfile(value) {
+    const v = String(value || '').toLowerCase();
+    return VIDEO_UPSCALE_PROFILES.includes(v) ? v : 'sharp';
+}
+
+function sanitizeVideoUpscaleNoise(value) {
+    const v = String(value || '').toLowerCase();
+    return Object.prototype.hasOwnProperty.call(VIDEO_UPSCALE_NOISE_LEVELS, v) ? v : 'low';
+}
+
+function sanitizeVideoUpscalePreScale(value) {
+    const n = Math.round(Number(value));
+    return (n === 1 || n === 2) ? n : 1;
+}
+
+function sanitizeVideoUpscaleDit(value) {
+    const s = String(value || '').trim();
+    return s || null;
+}
+
+function sanitizeVideoUpscaleVae(value) {
+    const s = String(value || '').trim();
+    return s || null;
+}
+
+function sanitizeVideoUpscaleAttention(value) {
+    const s = String(value || '').trim();
+    return s || null;
+}
+
 function getVideoDefaults() {
     return { ...H3_DEFAULTS };
 }
@@ -585,6 +704,24 @@ function saveVideoSettings(patch) {
             if (Object.prototype.hasOwnProperty.call(H3_IMAGE_SIZES, s)) out[key] = s;
         } else if (key === 'attentionBackend') {
             out[key] = normalizeH3AttentionBackend(value);
+        } else if (key === 'videoUpscaleEnabled') {
+            out[key] = sanitizeVideoUpscaleEnabled(value);
+        } else if (key === 'videoUpscaleEngine') {
+            out[key] = sanitizeVideoUpscaleEngine(value);
+        } else if (key === 'videoUpscaleResolution') {
+            out[key] = sanitizeVideoUpscaleResolution(value);
+        } else if (key === 'videoUpscaleProfile') {
+            out[key] = sanitizeVideoUpscaleProfile(value);
+        } else if (key === 'videoUpscaleNoise') {
+            out[key] = sanitizeVideoUpscaleNoise(value);
+        } else if (key === 'videoUpscalePreScale') {
+            out[key] = sanitizeVideoUpscalePreScale(value);
+        } else if (key === 'videoUpscaleDit') {
+            out[key] = sanitizeVideoUpscaleDit(value);
+        } else if (key === 'videoUpscaleVae') {
+            out[key] = sanitizeVideoUpscaleVae(value);
+        } else if (key === 'videoUpscaleAttention') {
+            out[key] = sanitizeVideoUpscaleAttention(value);
         } else if (typeof value === 'string') {
             out[key] = value.trim() || null;
         }
@@ -1035,6 +1172,280 @@ async function generateVideo(prompt, options = {}) {
     });
 }
 
+// --- Video Upscale / RTX 4K Pass ------------------------------------------------
+//
+// Uses SeedVR2VideoUpscaler (same as image upscale but for video). When
+// videoUpscaleEnabled is true in settings, the generated video is automatically
+// upscaled to the target resolution. Can also be invoked manually via API.
+
+const VIDEO_UPSCALE_DEFAULT_TIMEOUT_MS = 60 * 60 * 1000; // 60 min for upscale
+
+function seedVr2VideoUpscaleDitInputs(settings) {
+    const model = settings.videoUpscaleDit || H3_DEFAULTS.videoUpscaleDit;
+    const vendor = String(settings.gpuVendor || '').toLowerCase();
+    const isSevenB = /(?:^|[_-])7b(?:[_-]|$)/i.test(model);
+    const attention = String(settings.videoUpscaleAttention || H3_DEFAULTS.videoUpscaleAttention);
+    const nvidiaOnly = new Set(['sageattn_2', 'sageattn_3', 'flash_attn_2', 'flash_attn_3']);
+    let attentionMode = attention;
+    if (vendor && vendor !== 'nvidia' && nvidiaOnly.has(attention)) {
+        attentionMode = 'sdpa';
+    }
+    return {
+        model,
+        device: 'cuda:0',
+        blocks_to_swap: isSevenB ? 32 : 0,
+        swap_io_components: true,
+        offload_device: 'cpu',
+        cache_model: false,
+        attention_mode: attentionMode
+    };
+}
+
+function seedVr2VideoUpscaleNoiseLevel(requested) {
+    return Object.prototype.hasOwnProperty.call(VIDEO_UPSCALE_NOISE_LEVELS, requested) ? requested : 'low';
+}
+
+function seedVr2VideoUpscaleProfile(settings, requestedProfile, requestedNoise) {
+    const noise = seedVr2VideoUpscaleNoiseLevel(requestedNoise);
+    const balanced = {
+        key: 'balanced',
+        ditModel: settings.videoUpscaleDit || H3_DEFAULTS.videoUpscaleDit,
+        colorCorrection: 'lab',
+        noise,
+        inputNoiseScale: VIDEO_UPSCALE_NOISE_LEVELS[noise]
+    };
+    const sharpDit = 'seedvr2_ema_7b_sharp_fp8_e4m3fn_mixed_block35_fp16.safetensors';
+    const availableModels = installedSeedVr2ModelsSync();
+    const hasSharp = availableModels.includes(sharpDit);
+    if (requestedProfile === 'sharp' && hasSharp) {
+        return {
+            key: 'sharp',
+            ditModel: sharpDit,
+            colorCorrection: 'wavelet',
+            noise,
+            inputNoiseScale: VIDEO_UPSCALE_NOISE_LEVELS[noise]
+        };
+    }
+    return balanced;
+}
+
+function installedSeedVr2ModelsSync() {
+    const models = new Set();
+    const dirs = [];
+    for (const value of [process.env.KREA2_SEEDVR2_DIR, process.env.COMFYUI_SEEDVR2_DIR]) {
+        if (value) dirs.push(path.resolve(value));
+    }
+    try {
+        const modelRoot = require('./comfyui').resolveModelRoot ? null : null;
+    } catch {}
+    // Fallback to common locations
+    const commonDirs = [
+        path.join(__dirname, '..', '..', 'ComfyUI', 'models', 'seedvr2'),
+        path.join(__dirname, '..', '..', 'ComfyUI', 'models', 'SEEDVR2'),
+        path.join(process.env.APPDATA || '', 'ComfyUI', 'models', 'seedvr2'),
+        path.join(process.env.APPDATA || '', 'ComfyUI', 'models', 'SEEDVR2'),
+        path.join(process.env.USERPROFILE || '', 'ComfyUI', 'models', 'seedvr2'),
+        path.join(process.env.USERPROFILE || '', 'ComfyUI', 'models', 'SEEDVR2'),
+    ];
+    for (const d of commonDirs) {
+        if (fs.existsSync(d)) dirs.push(d);
+    }
+    for (const dir of dirs) {
+        if (!dir) continue;
+        let entries = [];
+        try { entries = fs.readdirSync(dir); } catch { continue; }
+        for (const name of entries) {
+            if (!name || name.endsWith('.download')) continue;
+            const ext = path.extname(name).toLowerCase();
+            if (ext === '.safetensors' || ext === '.gguf') models.add(name);
+        }
+    }
+    return [...models];
+}
+
+function buildSeedVr2VideoUpscaleGraph(videoName, options = {}) {
+    const settings = Object.assign({}, H3_DEFAULTS, options.settings || {});
+    const profile = seedVr2VideoUpscaleProfile(settings, options.profile || 'sharp', options.noise || 'low');
+    const seed = Number.isInteger(options.seed) && options.seed >= 0 ? options.seed : Math.floor(Math.random() * 2 ** 31);
+    const resolution = clampNumber(options.resolution, 512, 8192, 2160);
+    const preScale = clampNumber(options.preScale, 1, 4, 1);
+
+    const graph = {};
+    graph.load = { class_type: 'LoadVideo', inputs: { video: videoName } };
+    let vidRef = ['load', 0];
+
+    if (preScale !== 1) {
+        graph.prescale = {
+            class_type: 'VideoScaleBy',
+            inputs: { video: vidRef, upscale_method: 'lanczos', scale_by: preScale }
+        };
+        vidRef = ['prescale', 0];
+    }
+
+    graph.dit = {
+        class_type: 'SeedVR2LoadDiTModel',
+        inputs: seedVr2VideoUpscaleDitInputs(Object.assign({}, settings, {
+            videoUpscaleDit: profile.ditModel
+        }))
+    };
+    graph.svvae = {
+        class_type: 'SeedVR2LoadVAEModel',
+        inputs: {
+            model: settings.videoUpscaleVae || H3_DEFAULTS.videoUpscaleVae,
+            device: 'cuda:0',
+            encode_tiled: true,
+            encode_tile_size: 1024,
+            encode_tile_overlap: 256,
+            decode_tiled: true,
+            decode_tile_size: 1024,
+            decode_tile_overlap: 256,
+            tile_debug: 'false',
+            offload_device: 'cpu',
+            cache_model: false
+        }
+    };
+    graph.upscale = {
+        class_type: 'SeedVR2VideoUpscaler',
+        inputs: {
+            video: vidRef,
+            dit: ['dit', 0],
+            vae: ['svvae', 0],
+            seed,
+            resolution,
+            max_resolution: 0,
+            batch_size: 1,
+            uniform_batch_size: false,
+            color_correction: profile.colorCorrection,
+            temporal_overlap: 8,
+            prepend_frames: 0,
+            input_noise_scale: profile.inputNoiseScale,
+            latent_noise_scale: 0,
+            offload_device: 'cpu',
+            enable_debug: false
+        }
+    };
+    graph.save = { class_type: 'SaveVideo', inputs: { video: ['upscale', 0], filename_prefix: 'not-so-jarvis/video_upscale', format: 'auto', codec: 'auto' } };
+
+    return { graph, profile };
+}
+
+async function upscaleVideo(rawFilename, options = {}) {
+    return withGenerationLock(async () => {
+        await ensureGeneratedDir();
+
+        const safeName = path.basename(String(rawFilename || ''));
+        if (!safeName) {
+            const error = new Error('No source video specified.');
+            error.code = 'upscale_source_missing';
+            throw error;
+        }
+        const filePath = path.join(GENERATED_DIR, safeName);
+        if (!fs.existsSync(filePath)) {
+            const error = new Error('Upscale source not found on disk: ' + safeName);
+            error.code = 'upscale_source_missing';
+            throw error;
+        }
+        const buffer = fs.readFileSync(filePath);
+
+        const settings = effectiveVideoSettings();
+        const engine = String(options.engine || settings.videoUpscaleEngine || 'seedvr2').toLowerCase();
+        if (engine !== 'seedvr2') {
+            const error = new Error('Only SeedVR2 engine is supported for video upscale.');
+            error.code = 'unsupported_engine';
+            throw error;
+        }
+
+        const sourceMeta = generatedHistory.list().find((e) => e.rawFilename === safeName);
+        const resolution = clampNumber(options.resolution || settings.videoUpscaleResolution, 512, 8192, 2160);
+        const seed = Math.floor(Math.random() * 2 ** 32);
+        const profile = options.profile || settings.videoUpscaleProfile || 'sharp';
+        const noise = options.noise || settings.videoUpscaleNoise || 'low';
+        const preScale = options.preScale || settings.videoUpscalePreScale || 1;
+
+        // Upload source video to ComfyUI input for LoadVideo node.
+        const uploadName = 'jarvis_video_upscale_' + Date.now() + '_' + safeName;
+        const uploaded = await comfyui.uploadImage(buffer, uploadName); // uploadImage works for video too
+        const loadName = (uploaded && uploaded.name) || uploadName;
+
+        let graph;
+        let basename;
+        let effectiveProfile = null;
+        try {
+            const built = buildSeedVr2VideoUpscaleGraph(loadName, {
+                settings,
+                profile,
+                noise,
+                resolution,
+                preScale,
+                seed
+            });
+            graph = built.graph;
+            effectiveProfile = built.profile;
+
+            const info = await comfyui.getObjectInfo();
+            await validateH3Graph(info, graph);
+
+            const pid = await comfyui.queuePrompt(graph);
+            console.log('[video-generator] queued video upscale (SeedVR2) workflow:', pid);
+
+            const timeoutMs = options.timeoutMs || VIDEO_UPSCALE_DEFAULT_TIMEOUT_MS;
+            const history = await comfyui.waitForPrompt(pid, { timeoutMs });
+
+            const videoFiles = comfyui.findOutputFiles(history.outputs || {}, /\.(?:mp4|webm|avi|mov)$/i);
+            if (!videoFiles.length) {
+                const error = new Error('ComfyUI finished but produced no upscaled video file.');
+                error.code = 'comfyui_output_not_found';
+                throw error;
+            }
+
+            const entry = videoFiles[videoFiles.length - 1];
+            const outBuffer = await comfyui.downloadImage(entry);
+
+            const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+            const extension = path.extname(entry.filename).toLowerCase() || '.mp4';
+            basename = safeFilename(outBuffer.toString('hex', 0, 4)) + '_up_' + stamp + extension;
+            fs.writeFileSync(path.join(GENERATED_DIR, basename), outBuffer);
+            console.log('[video-generator] saved upscaled video:', basename, '(' + outBuffer.length + ' bytes)');
+
+            await comfyui.deleteOutputFile(entry, { history: pid });
+        } finally {
+            await comfyui.deleteInputFile(loadName).catch(() => {});
+        }
+
+        const meta = generatedHistory.add({
+            file: '/generated/' + encodeURIComponent(basename),
+            rawFilename: basename,
+            prompt: (sourceMeta && sourceMeta.prompt) || 'Upscaled video',
+            model: 'SeedVR2 Video Upscale',
+            width: 0, // Video dimensions not easily readable without ffprobe
+            height: 0,
+            upscale: {
+                engine,
+                profile: effectiveProfile ? effectiveProfile.key : null,
+                noise: effectiveProfile ? effectiveProfile.noise : null,
+                resolution,
+                source: safeName
+            },
+            video: {
+                upscaled: true,
+                source: safeName
+            }
+        });
+
+        return {
+            url: meta.file,
+            filename: basename,
+            engine,
+            profile: effectiveProfile ? effectiveProfile.key : null,
+            noise: effectiveProfile ? effectiveProfile.noise : null,
+            resolution,
+            source: safeName,
+            sourceMeta,
+            meta
+        };
+    });
+}
+
 // --- Helpers ------------------------------------------------------------------
 
 function stripVideoLoraTriggerWords(prompt) {
@@ -1090,10 +1501,17 @@ module.exports = {
     saveVideoSettings,
     getVideoModelChoices,
     generateVideo,
+    upscaleVideo,
+    buildSeedVr2VideoUpscaleGraph,
     resolveVideoSourceImage,
     resolveVideoMode,
     stripVideoLoraTriggerWords,
     VIDEO_SIGNAL_RE,
     VIDEO_WORD_RE,
     I2V_REF_RE,
+    VIDEO_UPSCALE_RESOLUTIONS,
+    VIDEO_UPSCALE_PROFILES,
+    VIDEO_UPSCALE_NOISE_LEVELS,
+    VIDEO_UPSCALE_ENGINES,
+    VIDEO_UPSCALE_DEFAULT_TIMEOUT_MS,
 };

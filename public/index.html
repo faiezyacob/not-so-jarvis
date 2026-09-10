@@ -276,6 +276,67 @@
                             </select>
                             <span class="settings-hint">SageAttention patches the guider for speed (needs the KJNodes sageattention package). SLA uses sparse attention (experimental).</span>
                         </div>
+                        <div class="settings-dropdown-title settings-section-slim">RTX 4K PASS (Video Upscale)</div>
+                        <div class="settings-field">
+                            <label class="settings-field-label" for="videoUpscaleEnabled">Enable 4K Pass</label>
+                            <select class="settings-select" id="videoUpscaleEnabled">
+                                <option value="false">Disabled</option>
+                                <option value="true">Enabled</option>
+                            </select>
+                            <span class="settings-hint">When enabled, generated videos are automatically upscaled to 4K using SeedVR2. Requires SeedVR2 custom nodes in ComfyUI.</span>
+                        </div>
+                        <div class="settings-field" id="videoUpscaleResolutionField">
+                            <label class="settings-field-label" for="videoUpscaleResolution">Target Resolution</label>
+                            <select class="settings-select" id="videoUpscaleResolution">
+                                <option value="1080">1080p</option>
+                                <option value="1440">1440p</option>
+                                <option value="2160">2160p (4K)</option>
+                                <option value="3840">3840p</option>
+                            </select>
+                        </div>
+                        <div class="settings-field" id="videoUpscaleProfileField">
+                            <label class="settings-field-label" for="videoUpscaleProfile">Detail Profile</label>
+                            <select class="settings-select" id="videoUpscaleProfile">
+                                <option value="sharp">Sharp</option>
+                                <option value="balanced">Balanced</option>
+                            </select>
+                            <span class="settings-hint">Sharp uses the 7B-sharp DiT variant (wavelet color correction). Balanced uses lab color correction.</span>
+                        </div>
+                        <div class="settings-field" id="videoUpscaleNoiseField">
+                            <label class="settings-field-label" for="videoUpscaleNoise">Detail Noise</label>
+                            <select class="settings-select" id="videoUpscaleNoise">
+                                <option value="off">Off</option>
+                                <option value="low">Low</option>
+                                <option value="medium">Medium</option>
+                            </select>
+                            <span class="settings-hint">Input noise level for detail synthesis. Off = no noise injection.</span>
+                        </div>
+                        <div class="settings-field" id="videoUpscalePreScaleField">
+                            <label class="settings-field-label" for="videoUpscalePreScale">Pre-resize (lanczos)</label>
+                            <select class="settings-select" id="videoUpscalePreScale">
+                                <option value="1">Off</option>
+                                <option value="2">2x</option>
+                            </select>
+                            <span class="settings-hint">Optional lanczos pre-upscale before SeedVR2 processing.</span>
+                        </div>
+                        <div class="settings-field" id="videoUpscaleDiTField">
+                            <label class="settings-field-label" for="videoUpscaleDiT">SeedVR2 DiT Model</label>
+                            <input type="text" class="settings-input" id="videoUpscaleDiT"
+                                placeholder="Loading..." autocomplete="off">
+                            <span class="settings-hint">Default: seedvr2_ema_7b_fp8_e4m3fn_mixed_block35_fp16.safetensors. Sharp profile uses seedvr2_ema_7b_sharp_fp8_e4m3fn_mixed_block35_fp16.safetensors.</span>
+                        </div>
+                        <div class="settings-field" id="videoUpscaleVaeField">
+                            <label class="settings-field-label" for="videoUpscaleVae">SeedVR2 VAE Model</label>
+                            <input type="text" class="settings-input" id="videoUpscaleVae"
+                                placeholder="Loading..." autocomplete="off">
+                            <span class="settings-hint">Default: ema_vae_fp16.safetensors</span>
+                        </div>
+                        <div class="settings-field" id="videoUpscaleAttentionField">
+                            <label class="settings-field-label" for="videoUpscaleAttention">Attention Backend</label>
+                            <input type="text" class="settings-input" id="videoUpscaleAttention"
+                                placeholder="Loading..." autocomplete="off">
+                            <span class="settings-hint">Default: sdpa. Options: sdpa, sageattn_2, sageattn_3, flash_attn_2, flash_attn_3 (NVIDIA only).</span>
+                        </div>
                         <div class="settings-dropdown-title settings-section-slim">LORA STACK</div>
                         <div class="settings-field">
                             <div class="lora-list" id="videoLoraList"></div>

@@ -771,14 +771,22 @@ function initUpscaleSettings() {
 const VIDEO_SELECT_FIELDS = [
     { key: 'h3Size', id: 'videoSizeScale' },
     { key: 'h3Duration', id: 'videoDuration' },
-    { key: 'attentionBackend', id: 'videoAttentionBackend' }
+    { key: 'attentionBackend', id: 'videoAttentionBackend' },
+    { key: 'videoUpscaleEnabled', id: 'videoUpscaleEnabled' },
+    { key: 'videoUpscaleResolution', id: 'videoUpscaleResolution' },
+    { key: 'videoUpscaleProfile', id: 'videoUpscaleProfile' },
+    { key: 'videoUpscaleNoise', id: 'videoUpscaleNoise' },
+    { key: 'videoUpscalePreScale', id: 'videoUpscalePreScale' }
 ];
 
 const VIDEO_TEXT_FIELDS = [
     { key: 'h3Unet', id: 'videoUnet' },
     { key: 'h3Clip', id: 'videoClip' },
     { key: 'h3VideoVae', id: 'videoVae' },
-    { key: 'h3AudioVae', id: 'videoAudioVae' }
+    { key: 'h3AudioVae', id: 'videoAudioVae' },
+    { key: 'videoUpscaleDiT', id: 'videoUpscaleDiT' },
+    { key: 'videoUpscaleVae', id: 'videoUpscaleVae' },
+    { key: 'videoUpscaleAttention', id: 'videoUpscaleAttention' }
 ];
 
 function initVideoSettings() {
@@ -858,11 +866,39 @@ function initVideoSettings() {
         });
     });
 
+    // Sync visibility of video upscale fields based on enabled state
+    const syncVideoUpscaleVisibility = () => {
+        const enabled = document.getElementById('videoUpscaleEnabled');
+        if (!enabled) return;
+        const isEnabled = enabled.value === 'true';
+        const upscaleFields = [
+            'videoUpscaleResolutionField',
+            'videoUpscaleProfileField',
+            'videoUpscaleNoiseField',
+            'videoUpscalePreScaleField',
+            'videoUpscaleDiTField',
+            'videoUpscaleVaeField',
+            'videoUpscaleAttentionField'
+        ];
+        upscaleFields.forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.style.display = isEnabled ? '' : 'none';
+        });
+    };
+
+    const enabledSelect = document.getElementById('videoUpscaleEnabled');
+    if (enabledSelect) {
+        enabledSelect.addEventListener('change', syncVideoUpscaleVisibility);
+    }
+
     const videoHints = {
         videoUnet: 'minimax_h3_fl2va_pruned_int8_convrot.safetensors',
         videoClip: 'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors',
         videoVae: 'minimax_h3_video_vae_fp16.safetensors',
-        videoAudioVae: 'minimax_h3_audio_vae_fp32.safetensors'
+        videoAudioVae: 'minimax_h3_audio_vae_fp32.safetensors',
+        videoUpscaleDiT: 'seedvr2_ema_7b_fp8_e4m3fn_mixed_block35_fp16.safetensors',
+        videoUpscaleVae: 'ema_vae_fp16.safetensors',
+        videoUpscaleAttention: 'sdpa'
     };
 
     (async () => {
@@ -890,6 +926,9 @@ function initVideoSettings() {
                 input.placeholder = defaults[key] || videoHints[id] || key;
                 input.title = 'Default: ' + (defaults[key] || videoHints[id] || '');
             });
+
+            // Sync visibility after loading settings
+            syncVideoUpscaleVisibility();
 
             // Load the LoRA stack (attached list + available scan from ComfyUI)
             // and the remembered per-LoRA trigger words.

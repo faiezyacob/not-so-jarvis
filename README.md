@@ -144,7 +144,7 @@ Upscaled images are grouped with their original in the gallery — click the ori
 
 ## License
 
-This project includes adaptations from **Mix Studio** (https://github.com/mix-framework/mix), which is licensed under the **GNU General Public License v3.0**. Specifically, the image generation and upscaling pipeline components in `services/image-generator.js` were adapted from Mix Studio's Krea2 workflow implementations and upscale pipelines.
+This project includes adaptations from **Mix Studio** (https://github.com/BlackMixture/Mix-Studio), which is licensed under the **GNU General Public License v3.0**. Specifically, the image generation and upscaling pipeline components in `services/image-generator.js` were adapted from Mix Studio's Krea2 workflow implementations and upscale pipelines.
 
 Mix Studio code is used under the terms of the GPL v3.0 license. While this project is primarily distributed under the MIT license below, the Mix Studio-derived components remain subject to the GPL v3.0 terms, which require:
 

@@ -339,6 +339,31 @@ async function handleAPI(req, res, urlPath) {
         return true;
     }
 
+    // POST /api/video/upscale — upscale the last generated video in a conversation
+    // (or an explicit data/generated filename). Used by the chat pipeline and
+    // available for the gallery. Optional body overrides: resolution, profile,
+    // noise, preScale.
+    if (urlPath === '/api/video/upscale' && req.method === 'POST') {
+        try {
+            const body = await readBody(req);
+            const source = resolveVideoUpscaleSource(body.conversationId, body.filename);
+            if (!source) {
+                json(res, 404, { error: 'No generated video found to upscale. Generate a video first, then upscale it.' });
+                return true;
+            }
+            const result = await videoGenerator.upscaleVideo(source.rawFilename, {
+                resolution: body.resolution,
+                profile: body.profile,
+                noise: body.noise,
+                preScale: body.preScale
+            });
+            json(res, 200, { ok: true, video: result });
+        } catch (err) {
+            json(res, 502, { error: friendlyVideoError(err) });
+        }
+        return true;
+    }
+
     // POST /api/comfyui/free — unload all ComfyUI models and free cached memory
     if (urlPath === '/api/comfyui/free' && req.method === 'POST') {
         try {
@@ -1088,14 +1113,43 @@ async function handleVideoGenerationStream(req, res, opts) {
 
         const result = await videoGenerator.generateVideo(videoPrompt, opts2);
 
+        // Auto-upscale to 4K if enabled in settings
+        let finalResult = result;
+        let upscaleInfo = null;
+        const videoSettings = videoGenerator.effectiveVideoSettings();
+        if (videoSettings.videoUpscaleEnabled) {
+            try {
+                res.write(`data: ${JSON.stringify({ generating: 'Upscaling video to 4K...' })}\n\n`);
+                const upscaleResult = await videoGenerator.upscaleVideo(result.filename, {
+                    resolution: videoSettings.videoUpscaleResolution,
+                    profile: videoSettings.videoUpscaleProfile,
+                    noise: videoSettings.videoUpscaleNoise,
+                    preScale: videoSettings.videoUpscalePreScale
+                });
+                finalResult = { ...result, ...upscaleResult, url: upscaleResult.url, filename: upscaleResult.filename };
+                upscaleInfo = {
+                    originalUrl: result.url,
+                    originalFilename: result.filename,
+                    upscaledUrl: upscaleResult.url,
+                    upscaledFilename: upscaleResult.filename,
+                    resolution: upscaleResult.resolution,
+                    profile: upscaleResult.profile,
+                    noise: upscaleResult.noise
+                };
+                console.log('[video] Auto-upscaled to 4K:', upscaleResult.filename);
+            } catch (upscaleErr) {
+                console.warn('[video] Auto-upscale failed, keeping original:', upscaleErr.message);
+            }
+        }
+
         // Mark the task completed with the video result.
         const existingParams = taskState.getTask(conversationId).parameters || {};
         taskState.setTask(conversationId, {
             prompt: videoPrompt,
-            generatedAsset: result.url,
-            videoMode: result.mode || opts2.mode || 't2va',
+            generatedAsset: finalResult.url,
+            videoMode: finalResult.mode || opts2.mode || 't2va',
             sourceImage: opts2.sourceImageRawFilename || null,
-            parameters: Object.assign({}, existingParams, result.metadata || {}),
+            parameters: Object.assign({}, existingParams, finalResult.metadata || {}, upscaleInfo ? { upscale: upscaleInfo } : {}),
             status: 'completed',
             lastAction: message || action || 'generate'
         });
@@ -1109,12 +1163,15 @@ async function handleVideoGenerationStream(req, res, opts) {
             taskType: 'video'
         });
 
-        const content =
+        let content =
             summary + '\n\n' +
             '**Prompt:** ' + videoPrompt + '\n\n' +
-            '<video controls src="' + result.url + '"></video>';
+            '<video controls src="' + finalResult.url + '"></video>';
+        if (upscaleInfo) {
+            content += '\n\n**RTX 4K Pass:** Upscaled to ' + upscaleInfo.resolution + 'p (' + upscaleInfo.profile + ', noise: ' + upscaleInfo.noise + ')';
+        }
 
-        res.write(`data: ${JSON.stringify({ video: { url: result.url, content, meta: result.metadata || null } })}\n\n`);
+        res.write(`data: ${JSON.stringify({ video: { url: finalResult.url, content, meta: finalResult.metadata || null, upscale: upscaleInfo } })}\n\n`);
         res.end();
     } catch (err) {
         console.error('[video-generator] Generation failed:', err.message, '\n', err.stack);
@@ -1175,6 +1232,43 @@ function findGeneratedMeta(rawFilename) {
     const name = decodeURIComponent(String(rawFilename || '')).split('/').pop();
     return generatedHistory.list().find((e) =>
         e.rawFilename === name || String(e.file).split('/').pop() === name) || null;
+}
+
+// Find the generated video to upscale for a conversation: the last
+// /generated/<file> link in the assistant messages that points to a video file
+// (mp4, webm, avi, mov), falling back to the active task's latest generated
+// asset. An explicit filename short-circuits the scan. Returns { rawFilename, meta } or null.
+function resolveVideoUpscaleSource(conversationId, explicitFilename) {
+    if (explicitFilename) {
+        const safeName = path.basename(String(explicitFilename || '').split('?')[0]);
+        if (!safeName) return null;
+        return { rawFilename: safeName, meta: findGeneratedMeta(safeName) };
+    }
+    if (!conversationId) return null;
+
+    const messages = conversationService.getMessages(conversationId) || [];
+    const urlRe = /\/generated\/([^\s)\]}"']+)/g;
+    let last = null;
+    for (const m of messages) {
+        if (!m || m.role !== 'assistant') continue;
+        const content = String(m.content || '');
+        let match;
+        while ((match = urlRe.exec(content))) {
+            const filename = match[1];
+            if (/\.(?:mp4|webm|avi|mov)$/i.test(filename)) {
+                last = filename;
+            }
+        }
+    }
+    if (!last) {
+        const asset = taskState.getTask(conversationId).generatedAsset;
+        if (asset && /\.(?:mp4|webm|avi|mov)$/i.test(String(asset))) {
+            last = String(asset).split('/').pop();
+        }
+    }
+    if (!last) return null;
+    const rawFilename = decodeURIComponent(last);
+    return { rawFilename, meta: findGeneratedMeta(rawFilename) };
 }
 
 // Handle an upscale chat request over SSE. Emits a "generating" status event,
