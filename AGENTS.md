@@ -37,7 +37,7 @@ services/             Independent services (monitoring, image generation, ComfyU
   comfyui.js            All ComfyUI HTTP communication (health, queue, wait, download)
   image-generator.js    Image intent detection, prompt building, Krea2 workflow graph
   task-router.js        Context-aware intent/action router (ActiveTask continuation routing)
-  task-state.js         Per-conversation ActiveTask/TaskContext store (in-memory)
+  task-state.js         Per-conversation ActiveTask/TaskContext store (persisted to data/task-state.json)
   generated-history.js  Metadata store for generated images (data/generated-history.json)
   vram-manager.js       Orchestrates unloading chat<->image models based on VRAM pressure
 public/               Frontend
@@ -85,6 +85,7 @@ data/                 Runtime data (persisted JSON + generated media)
 
 - **Server config**: `data/config.json`, managed by `server/config-manager.js` (`getConfig`, `setModelConfig`, `getImageSettings`, `setImageSettings`). The `imageGeneration` key stores global image settings overrides (unet, clip, vae, aspectRatio, imageSize, steps, cfg, loras; width/height are derived from aspectRatio + imageSize via `resolveDimensions`).
 - **Conversations/messages**: `data/conversations.json`, managed by `server/conversation-service.js`. In-memory cache reloaded at startup.
+- **Active task state**: `data/task-state.json`, managed by `services/task-state.js`. Per-conversation task context (type, prompt, generatedAsset, parameters), reloaded at startup.
 - **Generated image metadata**: `data/generated-history.json`, managed by `services/generated-history.js` (cached in memory, flushed on change).
 - **LoRA stack**: part of global image settings (`imageGeneration.loras`). Each entry is `{ name, strength, on, triggerWord }`. Trigger words from active LoRAs are prepended to the image prompt at generation time.
 - **Frontend settings**: `localStorage` for widget visibility and device settings; IndexedDB for conversations/messages.
@@ -129,7 +130,7 @@ data/                 Runtime data (persisted JSON + generated media)
 ## Important relationships between components
 
 - **Chat → Image**: In `handleChatStream`, `task-router.routeMessage()` decides (before any tool runs) whether the message should start a new task, continue/modify the active image task, answer a question about the active task, or is unrelated. Only when the router says `shouldExecuteTool` does the app build a prompt, free VRAM via `vram-manager.freeVRAMBeforeImage()`, and run the pipeline. Otherwise it streams a normal chat reply (after `freeVRAMBeforeChat()`).
-- **ActiveTask lifecycle**: per-conversation task state lives in `services/task-state.js` (typed as `image`/`video`/`audio`). It stays active across turns and is only cleared when the user starts a different non-tool task or the application clears it. Tool execution sets `status: running` before running and `completed`/`failed` only after the tool actually finishes.
+- **ActiveTask lifecycle**: per-conversation task state lives in `services/task-state.js` (typed as `image`/`video`/`audio`), persisted to `data/task-state.json`. It stays active across turns and survives server restarts. It is only cleared when the user starts a different non-tool task or the application clears it. Tool execution sets `status: running` before running and `completed`/`failed` only after the tool actually finishes.
 - **Image pipeline**: `generateImage()` reads global settings (`effectiveSettings`), prepends active LoRA trigger words to the prompt, builds the Krea2 graph, validates against ComfyUI's object info, queues it, waits, downloads the output, saves to `data/generated/`, and records metadata in `generated-history`.
 - **Config flow**: Settings UI → `POST /api/settings/image` → `imageGenerator.saveSettings` → `sanitizeSettings`/`sanitizeLoras` → `config-manager.setImageSettings` → `data/config.json`. At generation time `effectiveSettings()` merges defaults with stored overrides.
 - **VRAM orchestration**: `vram-manager` connects chat providers and ComfyUI, unloading whichever model isn't needed to fit the next one in GPU memory.

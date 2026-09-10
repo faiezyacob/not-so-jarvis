@@ -692,16 +692,22 @@ async function handleChatStream(req, res) {
                 };
                 enhanced = await imageGenerator.buildImagePrompt(structuredRequest, providers, provider, model);
             } else {
-                // Continue / modify the active task. The stored full prompt and
-                // attribute breakdown are the source of truth; only the targeted
-                // attribute changes, everything else is preserved verbatim.
+                // Continue / modify the active task. The stored full prompt is
+                // the source of truth. The dedicated prompt editor rewrites it
+                // into a new full prompt (plain-text editing survives smaller
+                // local chat models that struggle with structured JSON rewrites),
+                // then the enhancer refreshes the attribute breakdown using the
+                // previous prompt as context so untouched details are preserved.
+                const rewrittenPrompt = await taskRouter.applyPromptModification(
+                    activeTask.prompt || '',
+                    message,
+                    provider,
+                    model
+                );
                 structuredRequest = {
                     intent: 'image_generation',
-                    action: 'modify',
-                    user_prompt: decision.updatedPrompt || activeTask.prompt || message,
-                    base_prompt: activeTask.prompt || '',
-                    modification: message,
-                    base_attributes: (activeTask.parameters && activeTask.parameters.attributes) || null,
+                    user_prompt: rewrittenPrompt,
+                    previous_prompt: activeTask.prompt || '',
                     creative_mode: (activeTask.parameters && activeTask.parameters.creative_mode) || 'none',
                     explicit_constraints: (activeTask.parameters && activeTask.parameters.explicit_constraints) || []
                 };

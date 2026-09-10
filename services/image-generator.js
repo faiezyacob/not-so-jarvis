@@ -536,10 +536,9 @@ async function buildImagePrompt(structuredRequest, providers, provider, model) {
     }
 
     if (isModify) {
+        console.warn('[image-generator] Prompt builder modify failed; keeping current prompt unchanged.');
         return {
-            prompt: String(base_prompt || '').trim()
-                ? String(base_prompt).trim() + ', ' + String(modification || '').trim()
-                : String(modification || user_prompt || '').trim(),
+            prompt: String(base_prompt || user_prompt || '').trim(),
             attributes: base_attributes || null
         };
     }

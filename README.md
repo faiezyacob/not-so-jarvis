@@ -41,7 +41,7 @@ services/                 Independent / cross-cutting services
   comfyui.js                All ComfyUI HTTP communication (health, queue, wait, download)
   image-generator.js        Image intent detection, prompt building, Krea2 workflow graph
   task-router.js            Context-aware intent/action router (ActiveTask continuation)
-  task-state.js             Per-conversation ActiveTask/TaskContext store (in-memory)
+  task-state.js             Per-conversation ActiveTask/TaskContext store (persisted to data/task-state.json)
   generated-history.js      Metadata store for generated images
   vram-manager.js           Orchestrates unloading chat <-> image models based on VRAM pressure
 

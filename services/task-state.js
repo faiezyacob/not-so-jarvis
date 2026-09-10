@@ -3,11 +3,42 @@
    Holds the per-conversation active task /
    task context so a task can persist across
    multiple turns. Tasks are keyed by
-   conversation id and live in memory for the
-   lifetime of the server session.
+   conversation id and persisted to disk so
+   they survive server restarts.
    ============================================ */
 
-const tasks = new Map();
+const fs = require('fs');
+const path = require('path');
+
+const DATA_DIR = path.join(__dirname, '..', 'data');
+const DATA_FILE = path.join(DATA_DIR, 'task-state.json');
+
+function loadStore() {
+    try {
+        if (!fs.existsSync(DATA_FILE)) return {};
+        return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+    } catch (e) {
+        console.error('Failed to load task state:', e.message);
+        return {};
+    }
+}
+
+function saveStore() {
+    try {
+        if (!fs.existsSync(DATA_DIR)) {
+            fs.mkdirSync(DATA_DIR, { recursive: true });
+        }
+        const obj = {};
+        for (const [id, task] of tasks) {
+            obj[id] = task;
+        }
+        fs.writeFileSync(DATA_FILE, JSON.stringify(obj, null, 2), 'utf8');
+    } catch (e) {
+        console.error('Failed to save task state:', e.message);
+    }
+}
+
+const tasks = new Map(Object.entries(loadStore()));
 
 function createEmptyTask() {
     return {
@@ -36,11 +67,13 @@ function setTask(conversationId, patch) {
         Object.assign(task, patch);
     }
     tasks.set(conversationId, task);
+    saveStore();
     return task;
 }
 
 function clearTask(conversationId) {
     tasks.set(conversationId, createEmptyTask());
+    saveStore();
     return tasks.get(conversationId);
 }
 
