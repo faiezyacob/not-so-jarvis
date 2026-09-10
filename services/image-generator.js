@@ -1348,6 +1348,27 @@ function safeFilename(name) {
     return String(name || 'x').replace(/[^a-z0-9._-]/gi, '_').replace(/_+/g, '_').slice(0, 100) || 'x';
 }
 
+// LoRA trigger words are prepended automatically at generation time, so a
+// prompt that already carries a trigger-word prefix (e.g. the finalPrompt
+// recorded in generated-history metadata, or a task-state prompt grafted from
+// it) must be stripped before it is stored or re-grafted. Otherwise the next
+// generation prepends the words again and they accumulate across modify turns.
+function stripLoraTriggerWords(prompt) {
+    const text = String(prompt || '').trim();
+    if (!text) return text;
+    const settings = effectiveSettings();
+    const triggerWords = (settings.loras || [])
+        .filter((l) => l && l.on && l.name && l.triggerWord && String(l.triggerWord).trim())
+        .map((l) => String(l.triggerWord).trim());
+    if (!triggerWords.length) return text;
+    const prefix = triggerWords.join(', ') + ', ';
+    let stripped = text;
+    while (stripped.startsWith(prefix)) {
+        stripped = stripped.slice(prefix.length).trim();
+    }
+    return stripped || text;
+}
+
 // Generate an image from a text prompt and write it into data/generated.
 // Returns { url, filename, width, height }.
 async function generateImage(prompt, options = {}) {
@@ -1361,13 +1382,17 @@ async function generateImage(prompt, options = {}) {
         // the settings panel take effect without restarting the server.
         const settings = effectiveSettings();
 
-        // Prepend trigger words from active LoRAs to the prompt.
+        // Prepend trigger words from active LoRAs to the prompt. The incoming
+        // prompt is normalized first so a value that already carries a
+        // trigger-word prefix (e.g. from task state or generated metadata) is
+        // stripped — the words are prepended exactly once, never duplicated.
+        const cleanPrompt = stripLoraTriggerWords(prompt);
         const triggerWords = (settings.loras || [])
             .filter((l) => l && l.on && l.name && l.triggerWord)
             .map((l) => l.triggerWord);
         const finalPrompt = triggerWords.length
-            ? triggerWords.join(', ') + ', ' + String(prompt || '')
-            : String(prompt || '');
+            ? triggerWords.join(', ') + ', ' + String(cleanPrompt || '')
+            : String(cleanPrompt || '');
 
         const graph = buildKrea2T2IGraph(finalPrompt, Object.assign({}, options, { seed, settings }));
 
@@ -1445,6 +1470,7 @@ module.exports = {
     stripCreativeMetaInstructions,
     resolveDimensions,
     generateImage,
+    stripLoraTriggerWords,
     buildKrea2T2IGraph,
     buildLoraChain,
     validateGraphAgainstComfy,

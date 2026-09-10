@@ -946,11 +946,18 @@ async function handleImageUpscaleStream(req, res, opts) {
         }
 
         const prevTask = taskState.getTask(conversationId);
+        // The metadata prompt is the final prompt sent to ComfyUI, which
+        // includes the auto-prepended LoRA trigger words. Trigger words are
+        // re-added at generation time, so store the clean version — otherwise
+        // a follow-up modification prepends them again and they duplicate.
+        const basePrompt = imageGenerator.stripLoraTriggerWords(
+            (source.meta && source.meta.prompt) || prevTask.prompt || message
+        );
         taskState.setTask(conversationId, {
             type: 'image',
             operation: 'upscale',
-            prompt: (source.meta && source.meta.prompt) || prevTask.prompt || message,
-            originalPrompt: prevTask.originalPrompt || (source.meta && source.meta.prompt) || message,
+            prompt: basePrompt,
+            originalPrompt: prevTask.originalPrompt || basePrompt,
             lastAction: 'upscale',
             status: 'running'
         });
@@ -963,7 +970,7 @@ async function handleImageUpscaleStream(req, res, opts) {
         // follow-up modification builds on the same visual concept.
         const existingParams = taskState.getTask(conversationId).parameters || {};
         taskState.setTask(conversationId, {
-            prompt: (source.meta && source.meta.prompt) || prevTask.prompt || message,
+            prompt: basePrompt,
             generatedAsset: result.url,
             parameters: Object.assign({}, existingParams, {
                 width: result.width,
