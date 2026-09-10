@@ -17,6 +17,10 @@
         return Object.assign({}, meta, { url: meta.file });
     }
 
+    function isVideo(meta) {
+        return /\.(mp4|webm|mov)$/i.test(meta.file || '');
+    }
+
     // --- Fetching ---
 
     async function fetchImages() {
@@ -62,22 +66,40 @@
             cell.addEventListener('keydown', (e) => {
                 if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openPreview(img); }
             });
-            const thumb = document.createElement('img');
-            thumb.src = img.url;
-            thumb.alt = img.prompt || 'Generated image';
-            thumb.loading = 'lazy';
-            thumb.addEventListener('error', () => {
-                cell.classList.add('generated-thumb--broken');
-                cell.textContent = 'IMG';
-            });
-            cell.appendChild(thumb);
+            if (isVideo(img)) {
+                const vid = document.createElement('video');
+                vid.src = img.url;
+                vid.preload = 'metadata';
+                vid.muted = true;
+                vid.playsInline = true;
+                vid.addEventListener('error', () => {
+                    cell.classList.add('generated-thumb--broken');
+                    cell.textContent = 'VID';
+                });
+                cell.appendChild(vid);
+            } else {
+                const thumb = document.createElement('img');
+                thumb.src = img.url;
+                thumb.alt = img.prompt || 'Generated image';
+                thumb.loading = 'lazy';
+                thumb.addEventListener('error', () => {
+                    cell.classList.add('generated-thumb--broken');
+                    cell.textContent = 'IMG';
+                });
+                cell.appendChild(thumb);
+            }
             if (img.upscale && img.upscale.source) cell.appendChild(makeCompareBadge('generated-compare-badge'));
             cell.appendChild(makeDeleteButton(img, cell));
             gridEl.appendChild(cell);
             count += 1;
         }
 
-        infoEl.textContent = widgetImages.length + ' image' + (widgetImages.length === 1 ? '' : 's') + ' \u00b7 ' + todayLabel(widgetImages);
+        const imgCount = widgetImages.filter((i) => !isVideo(i)).length;
+        const vidCount = widgetImages.filter(isVideo).length;
+        const parts = [];
+        if (imgCount) parts.push(imgCount + ' image' + (imgCount === 1 ? '' : 's'));
+        if (vidCount) parts.push(vidCount + ' video' + (vidCount === 1 ? '' : 's'));
+        infoEl.textContent = (parts.join(' · ') || '0 items') + ' · ' + todayLabel(widgetImages);
     }
 
     function todayLabel(images) {
@@ -233,21 +255,34 @@
     }
 
     function openRawPreview(src) {
-        const { container, body, closeBtn } = buildModalShell('GENERATED IMAGE');
+        const video = /\.(mp4|webm|mov)$/i.test(src);
+        const { container, body, closeBtn } = buildModalShell(video ? 'GENERATED VIDEO' : 'GENERATED IMAGE');
         const modal = openModal(container);
 
         const imgWrap = document.createElement('div');
         imgWrap.className = 'gallery-preview-image';
-        const imgEl = document.createElement('img');
-        imgEl.src = src;
-        imgEl.alt = 'Generated image';
-        imgEl.addEventListener('error', () => {
-            imgWrap.classList.add('gallery-preview-broken');
-            imgWrap.textContent = 'Image file is missing.';
-        });
-        imgWrap.appendChild(imgEl);
-        const zoomApi = attachInlineZoom(imgWrap, imgEl);
+        if (video) {
+            const vidEl = document.createElement('video');
+            vidEl.src = src;
+            vidEl.controls = true;
+            vidEl.addEventListener('error', () => {
+                imgWrap.classList.add('gallery-preview-broken');
+                imgWrap.textContent = 'Video file is missing.';
+            });
+            imgWrap.appendChild(vidEl);
+        } else {
+            const imgEl = document.createElement('img');
+            imgEl.src = src;
+            imgEl.alt = 'Generated image';
+            imgEl.addEventListener('error', () => {
+                imgWrap.classList.add('gallery-preview-broken');
+                imgWrap.textContent = 'Image file is missing.';
+            });
+            imgWrap.appendChild(imgEl);
+        }
         body.appendChild(imgWrap);
+
+        const zoomApi = video ? null : attachInlineZoom(imgWrap, imgWrap.querySelector('img'));
 
         function close() {
             document.removeEventListener('keydown', onPreviewKey);
@@ -257,9 +292,11 @@
         const onPreviewKey = (e) => {
             const openOverlays = document.querySelectorAll('.modal-overlay.open');
             if (openOverlays.length && openOverlays[openOverlays.length - 1] !== modal.overlay) return;
-            if (e.key === '+' || e.key === '=') { e.preventDefault(); zoomApi.setZoom(zoomApi.scale * 1.25); }
-            else if (e.key === '-' || e.key === '_') { e.preventDefault(); zoomApi.setZoom(zoomApi.scale / 1.25); }
-            else if (e.key === '0') { e.preventDefault(); zoomApi.reset(); }
+            if (zoomApi) {
+                if (e.key === '+' || e.key === '=') { e.preventDefault(); zoomApi.setZoom(zoomApi.scale * 1.25); }
+                else if (e.key === '-' || e.key === '_') { e.preventDefault(); zoomApi.setZoom(zoomApi.scale / 1.25); }
+                else if (e.key === '0') { e.preventDefault(); zoomApi.reset(); }
+            }
         };
         document.addEventListener('keydown', onPreviewKey);
 
@@ -1000,22 +1037,35 @@
 
     function openPreview(img) {
         const compare = compareTargetFor(img, widgetImages);
+        const video = isVideo(img);
 
-        const { container, body, closeBtn } = buildModalShell('GENERATED IMAGE');
+        const { container, body, closeBtn } = buildModalShell(video ? 'GENERATED VIDEO' : 'GENERATED IMAGE');
         const modal = openModal(container);
 
         const imgWrap = document.createElement('div');
         imgWrap.className = 'gallery-preview-image';
-        const imgEl = document.createElement('img');
-        imgEl.src = img.url;
-        imgEl.alt = img.prompt || 'Generated image';
-        imgEl.addEventListener('error', () => {
-            imgWrap.classList.add('gallery-preview-broken');
-            imgWrap.textContent = 'Image file is missing.';
-        });
-        imgWrap.appendChild(imgEl);
-        const zoomApi = attachInlineZoom(imgWrap, imgEl);
+        if (video) {
+            const vidEl = document.createElement('video');
+            vidEl.src = img.url;
+            vidEl.controls = true;
+            vidEl.addEventListener('error', () => {
+                imgWrap.classList.add('gallery-preview-broken');
+                imgWrap.textContent = 'Video file is missing.';
+            });
+            imgWrap.appendChild(vidEl);
+        } else {
+            const imgEl = document.createElement('img');
+            imgEl.src = img.url;
+            imgEl.alt = img.prompt || 'Generated image';
+            imgEl.addEventListener('error', () => {
+                imgWrap.classList.add('gallery-preview-broken');
+                imgWrap.textContent = 'Image file is missing.';
+            });
+            imgWrap.appendChild(imgEl);
+        }
         body.appendChild(imgWrap);
+
+        const zoomApi = video ? null : attachInlineZoom(imgWrap, imgWrap.querySelector('img'));
 
         function close() {
             document.removeEventListener('keydown', onPreviewKey);
@@ -1025,9 +1075,11 @@
         const onPreviewKey = (e) => {
             const openOverlays = document.querySelectorAll('.modal-overlay.open');
             if (openOverlays.length && openOverlays[openOverlays.length - 1] !== modal.overlay) return;
-            if (e.key === '+' || e.key === '=') { e.preventDefault(); zoomApi.setZoom(zoomApi.scale * 1.25); }
-            else if (e.key === '-' || e.key === '_') { e.preventDefault(); zoomApi.setZoom(zoomApi.scale / 1.25); }
-            else if (e.key === '0') { e.preventDefault(); zoomApi.reset(); }
+            if (zoomApi) {
+                if (e.key === '+' || e.key === '=') { e.preventDefault(); zoomApi.setZoom(zoomApi.scale * 1.25); }
+                else if (e.key === '-' || e.key === '_') { e.preventDefault(); zoomApi.setZoom(zoomApi.scale / 1.25); }
+                else if (e.key === '0') { e.preventDefault(); zoomApi.reset(); }
+            }
         };
         document.addEventListener('keydown', onPreviewKey);
 
@@ -1155,15 +1207,28 @@
                 cell.addEventListener('keydown', (e) => {
                     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openPreview(img); }
                 });
-                const thumb = document.createElement('img');
-                thumb.src = img.url;
-                thumb.alt = img.prompt || 'Generated image';
-                thumb.loading = 'lazy';
-                thumb.addEventListener('error', () => {
-                    cell.classList.add('gallery-cell--broken');
-                    cell.textContent = 'IMG';
-                });
-                cell.appendChild(thumb);
+                if (isVideo(img)) {
+                    const vid = document.createElement('video');
+                    vid.src = img.url;
+                    vid.preload = 'metadata';
+                    vid.muted = true;
+                    vid.playsInline = true;
+                    vid.addEventListener('error', () => {
+                        cell.classList.add('gallery-cell--broken');
+                        cell.textContent = 'VID';
+                    });
+                    cell.appendChild(vid);
+                } else {
+                    const thumb = document.createElement('img');
+                    thumb.src = img.url;
+                    thumb.alt = img.prompt || 'Generated image';
+                    thumb.loading = 'lazy';
+                    thumb.addEventListener('error', () => {
+                        cell.classList.add('gallery-cell--broken');
+                        cell.textContent = 'IMG';
+                    });
+                    cell.appendChild(thumb);
+                }
                 if (img.upscale && img.upscale.source) cell.appendChild(makeCompareBadge('gallery-compare-badge'));
                 cell.appendChild(makeDeleteButton(img, cell));
                 grid.appendChild(cell);

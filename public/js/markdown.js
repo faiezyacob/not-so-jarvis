@@ -168,7 +168,11 @@ const Markdown = (() => {
             }
 
             // Regular paragraph line
-            html += '<p class="md-paragraph">' + parseInline(line) + '</p>';
+            if (/^<video\b/i.test(line.trim())) {
+                html += line.replace(/<video(\s)/i, '<video class="md-video"$1');
+            } else {
+                html += '<p class="md-paragraph">' + parseInline(line) + '</p>';
+            }
         }
 
         // Close any open list

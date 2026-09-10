@@ -28,6 +28,7 @@
                     <button class="settings-nav-item" data-panel="chat">CHAT</button>
                     <button class="settings-nav-item" data-panel="image">IMAGE</button>
                     <button class="settings-nav-item" data-panel="upscale">IMAGE UPSCALE</button>
+                    <button class="settings-nav-item" data-panel="video">VIDEO</button>
                 </div>
                 <div class="settings-panels" id="settingsPanels">
                     <!-- General -->
@@ -211,6 +212,82 @@
                         <div class="settings-field">
                             <span class="settings-hint">Blank = use default. Leave a field and press Enter to save. Clear a field and press Enter to revert.</span>
                             <span class="settings-save-status" id="upscaleSettingsStatus"></span>
+                        </div>
+                    </div>
+
+                    <!-- Video -->
+                    <div class="settings-panel" data-panel="video">
+                        <div class="settings-dropdown-title">VIDEO GENERATION (MiniMax H3)</div>
+                        <div class="settings-field">
+                            <label class="settings-field-label" for="videoUnet">UNET Model</label>
+                            <input type="text" class="settings-input" id="videoUnet"
+                                placeholder="Loading..." autocomplete="off">
+                            <span class="settings-hint">Default: minimax_h3_fl2va_pruned_int8_convrot.safetensors (T2VA). Pick minimax_h3_ref2va_pruned_int8_convrot.safetensors for image-to-video.</span>
+                        </div>
+                        <div class="settings-field">
+                            <label class="settings-field-label" for="videoClip">CLIP Model</label>
+                            <input type="text" class="settings-input" id="videoClip"
+                                placeholder="Loading..." autocomplete="off">
+                            <span class="settings-hint">Default: qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors. Must match the UNET variant (nvfp4 for int8 UNETs, nvfp8 for fp16).</span>
+                        </div>
+                        <div class="settings-field">
+                            <label class="settings-field-label" for="videoVae">Video VAE</label>
+                            <input type="text" class="settings-input" id="videoVae"
+                                placeholder="Loading..." autocomplete="off">
+                            <span class="settings-hint">Default: minimax_h3_video_vae_fp16.safetensors</span>
+                        </div>
+                        <div class="settings-field">
+                            <label class="settings-field-label" for="videoAudioVae">Audio VAE</label>
+                            <input type="text" class="settings-input" id="videoAudioVae"
+                                placeholder="Loading..." autocomplete="off">
+                            <span class="settings-hint">Default: minimax_h3_audio_vae_fp32.safetensors</span>
+                        </div>
+                        <div class="settings-field">
+                            <label class="settings-field-label" for="videoDuration">Duration</label>
+                            <select class="settings-select" id="videoDuration">
+                                <option value="5">5s</option>
+                                <option value="6">6s</option>
+                                <option value="7">7s</option>
+                                <option value="8">8s</option>
+                                <option value="9">9s</option>
+                                <option value="10">10s</option>
+                                <option value="11">11s</option>
+                                <option value="12">12s</option>
+                                <option value="13">13s</option>
+                                <option value="14">14s</option>
+                                <option value="15">15s</option>
+                            </select>
+                        </div>
+                        <div class="settings-field">
+                            <label class="settings-field-label" for="videoSizeScale">Size</label>
+                            <select class="settings-select" id="videoSizeScale">
+                                <option value="S">S (768 short)</option>
+                                <option value="M">M (1024 short)</option>
+                                <option value="L">L (1536 short)</option>
+                            </select>
+                            <span class="settings-hint">Short edge pixel count. Matches image S/M/L scale.</span>
+                        </div>
+                        <div class="settings-field">
+                            <label class="settings-field-label" for="videoAttentionBackend">Attention</label>
+                            <select class="settings-select" id="videoAttentionBackend">
+                                <option value="standard">Standard PyTorch</option>
+                                <option value="sageattention">SageAttention</option>
+                                <option value="sla">SLA Sparse (experimental)</option>
+                            </select>
+                            <span class="settings-hint">SageAttention patches the guider for speed (needs the KJNodes sageattention package). SLA uses sparse attention (experimental).</span>
+                        </div>
+                        <div class="settings-dropdown-title settings-section-slim">LORA STACK</div>
+                        <div class="settings-field">
+                            <div class="lora-list" id="videoLoraList"></div>
+                            <select class="settings-select" id="videoLoraAddSelect">
+                                <option value="">— Add LoRA —</option>
+                            </select>
+                            <span class="settings-hint">Attach LoRAs to every video generation. Stacked in order (model-only), each with its own strength.</span>
+                            <span class="settings-save-status" id="videoLoraStatus"></span>
+                        </div>
+                        <div class="settings-field">
+                            <span class="settings-hint">Leave blank = use default. Press Enter to save. Clear and Enter to revert.</span>
+                            <span class="settings-save-status" id="videoSettingsStatus"></span>
                         </div>
                     </div>
                 </div>

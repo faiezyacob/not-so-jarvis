@@ -49,7 +49,10 @@ const MIME_TYPES = {
     '.woff': 'font/woff',
     '.woff2': 'font/woff2',
     '.ttf': 'font/ttf',
-    '.map': 'application/json'
+    '.map': 'application/json',
+    '.mp4': 'video/mp4',
+    '.webm': 'video/webm',
+    '.mov': 'video/quicktime'
 };
 
 // --- Services ---
@@ -61,12 +64,16 @@ const providers = require('./server/providers');
 const models = require('./server/models');
 const providerManager = require('./server/provider-manager');
 const imageGenerator = require('./services/image-generator');
+const videoGenerator = require('./services/video-generator');
 const generatedHistory = require('./services/generated-history');
 const comfyui = require('./services/comfyui');
 const vramManager = require('./services/vram-manager');
 const taskRouter = require('./services/task-router');
 const taskState = require('./services/task-state');
 const GENERATED_DIR = path.join(__dirname, 'data', 'generated');
+
+// Share the single-generation lock between image and video pipelines.
+videoGenerator.registerGenerationLock(imageGenerator);
 
 function readBody(req) {
     return new Promise((resolve, reject) => {
@@ -251,6 +258,32 @@ async function handleAPI(req, res, urlPath) {
         try {
             const body = await readBody(req);
             const settings = imageGenerator.saveSettings(body || {});
+            json(res, 200, { ok: true, settings });
+        } catch (err) {
+            json(res, 400, { error: err.message });
+        }
+        return true;
+    }
+
+    // GET /api/settings/video — current H3 video generation settings
+    if (urlPath === '/api/settings/video' && req.method === 'GET') {
+        try {
+            const settings = videoGenerator.effectiveVideoSettings();
+            const defaults = videoGenerator.getVideoDefaults();
+            const choices = await videoGenerator.getVideoModelChoices();
+            const comfyAvailable = choices !== null;
+            json(res, 200, { settings, defaults, choices, comfyAvailable });
+        } catch (err) {
+            json(res, 500, { error: err.message });
+        }
+        return true;
+    }
+
+    // POST /api/settings/video — persist H3 video generation overrides
+    if (urlPath === '/api/settings/video' && req.method === 'POST') {
+        try {
+            const body = await readBody(req);
+            const settings = videoGenerator.saveVideoSettings(body || {});
             json(res, 200, { ok: true, settings });
         } catch (err) {
             json(res, 400, { error: err.message });
@@ -755,6 +788,138 @@ async function handleChatStream(req, res) {
             return;
         }
 
+        // Video generation via MiniMax H3. Follows the same pattern as image
+        // generation but routes through the video pipeline and emits a 'video'
+        // SSE event instead of 'image'.
+        if (decision.shouldExecuteTool && decision.task === 'video_generation') {
+            const activeTask = taskState.getTask(conversationId);
+            const isNew = decision.intent === 'new_task' || decision.intent === 'switch_task';
+
+            let videoPrompt;
+            let structuredRequest;
+            let parameters;
+            let videoMode;
+            let sourceImageRawFilename;
+            let directorDimensions;
+
+            if (isNew && decision.structuredRequest) {
+                structuredRequest = decision.structuredRequest;
+                const defaults = videoGenerator.getVideoDefaults();
+                parameters = Object.assign({}, defaults, structuredRequest.parameters || {});
+            } else if (isNew && decision.updatedPrompt) {
+                structuredRequest = {
+                    action: 'generate',
+                    user_prompt: decision.updatedPrompt,
+                    previous_prompt: activeTask.prompt || '',
+                    creative_mode: 'none',
+                    has_reference_image: false,
+                    explicit_constraints: [],
+                    parameters: {}
+                };
+                const defaults = videoGenerator.getVideoDefaults();
+                parameters = Object.assign({}, defaults, structuredRequest.parameters || {});
+            } else {
+                // Continue / modify: pass the user's modification instruction
+                // as a modifier prompt; the video director handles the rewrite.
+                structuredRequest = {
+                    action: 'modify',
+                    modifier: message,
+                    previous_prompt: activeTask.prompt || '',
+                    parameters: activeTask.parameters || {}
+                };
+                parameters = structuredRequest.parameters;
+            }
+
+            const action = isNew ? 'generate' : 'modify';
+
+            if (action === 'generate') {
+                // Decide I2VA vs T2VA BEFORE the H3 workflow is selected. I2VA
+                // requires BOTH image-referencing wording AND a resolvable image;
+                // otherwise the request is plain T2VA. The mode decision is based
+                // on the previously resolved generated image (never a re-upload).
+                const modeInfo = videoGenerator.resolveVideoMode(conversationId, message, structuredRequest);
+                videoMode = modeInfo.videoMode;
+                sourceImageRawFilename = modeInfo.sourceImage ? modeInfo.sourceImage.rawFilename : null;
+
+                console.log('[video] source image:', sourceImageRawFilename);
+                console.log('[video] mode:', videoMode);
+                console.log('[video] user request:', message);
+
+                // Always run the H3 Video Director LLM so the text sent to H3 is
+                // a real H3-compliant I2VA/T2VA prompt (with the <Picture 1>
+                // first-frame alignment for I2VA), never the raw user request or
+                // the original image prompt.
+                const director = await videoGenerator.buildH3VideoPrompt(
+                    Object.assign({}, structuredRequest, {
+                        has_reference_image: videoMode === 'i2va'
+                    }),
+                    providers,
+                    provider,
+                    model,
+                    sourceImageRawFilename,
+                    conversationId
+                );
+                videoPrompt = director.prompt;
+                directorDimensions = { duration: director.duration, width: director.width, height: director.height };
+
+                console.log('[video] H3 director prompt generated:', videoPrompt);
+            } else {
+                // Continue / modify the active video task. Preserve the I2VA
+                // source image and let the H3 prompt modifier rewrite the whole
+                // H3 prompt from the stored one (never the raw modifier text).
+                videoMode = activeTask.videoMode ||
+                    (activeTask.parameters && activeTask.parameters.videoMode) || 't2va';
+                sourceImageRawFilename = activeTask.sourceImage ||
+                    (activeTask.parameters && activeTask.parameters.sourceImage) || null;
+                videoPrompt = await videoGenerator.modifyH3VideoPrompt(
+                    activeTask.prompt || '',
+                    message,
+                    providers,
+                    provider,
+                    model
+                );
+            }
+
+            // Set ActiveTask to running, then free VRAM for ComfyUI.
+            const ctxPreviousPrompt = activeTask.prompt || null;
+            taskState.setTask(conversationId, {
+                type: 'video',
+                operation: action,
+                prompt: videoPrompt,
+                videoMode,
+                sourceImage: sourceImageRawFilename,
+                lastAction: message || action,
+                status: 'running'
+            });
+            if (action === 'generate') {
+                taskState.setTask(conversationId, {
+                    originalPrompt: videoPrompt,
+                    parameters: Object.assign({}, taskState.getTask(conversationId).parameters, parameters, {
+                        videoMode,
+                        sourceImage: sourceImageRawFilename,
+                        duration: directorDimensions ? directorDimensions.duration : undefined,
+                        width: directorDimensions ? directorDimensions.width : undefined,
+                        height: directorDimensions ? directorDimensions.height : undefined
+                    })
+                });
+            }
+
+            await vramManager.freeVRAMBeforeImage();
+            await handleVideoGenerationStream(req, res, {
+                provider, model, conversationId, message,
+                videoPrompt,
+                structuredRequest,
+                action,
+                previousPrompt: ctxPreviousPrompt,
+                videoMode,
+                sourceImageRawFilename,
+                duration: directorDimensions ? directorDimensions.duration : undefined,
+                width: directorDimensions ? directorDimensions.width : undefined,
+                height: directorDimensions ? directorDimensions.height : undefined
+            });
+            return;
+        }
+
         // Chat response — remember this chat model, then free VRAM by unloading
         // ComfyUI's models if the GPU is nearly full.
         vramManager.rememberChatModel(provider, model);
@@ -885,6 +1050,94 @@ function friendlyImageError(err) {
             return 'The image to upscale could not be found on disk. It may have been deleted.';
         default:
             return 'Image generation failed: ' + (err.message || 'unknown error');
+    }
+}
+
+async function handleVideoGenerationStream(req, res, opts) {
+    const {
+        provider, model, conversationId, message, videoPrompt,
+        structuredRequest, action, previousPrompt, videoMode, sourceImageRawFilename,
+        duration, width, height
+    } = opts;
+
+    try {
+        if (!imageGenerator.canStartGeneration()) {
+            res.write(`data: ${JSON.stringify({ error: 'A generation is already in progress. Please wait for it to finish.' })}\n\n`);
+            res.end();
+            return;
+        }
+
+        res.write(`data: ${JSON.stringify({ generating: 'Generating video...' })}\n\n`);
+
+        const opts2 = { provider, model };
+        if (structuredRequest) {
+            if (structuredRequest.parameters) opts2.parameters = structuredRequest.parameters;
+            if (structuredRequest.modifier) opts2.modifier = structuredRequest.modifier;
+            if (previousPrompt) opts2.previousPrompt = previousPrompt;
+        }
+        if (videoMode) opts2.mode = videoMode;
+        if (sourceImageRawFilename) opts2.sourceImageRawFilename = sourceImageRawFilename;
+        if (duration) opts2.duration = duration;
+        if (width) opts2.width = width;
+        if (height) opts2.height = height;
+
+        console.log('[video] source image:', opts2.sourceImageRawFilename || null);
+        console.log('[video] mode:', opts2.mode || 't2va');
+        console.log('[video] user request:', message);
+        console.log('[video] H3 director prompt generated:', videoPrompt);
+
+        const result = await videoGenerator.generateVideo(videoPrompt, opts2);
+
+        // Mark the task completed with the video result.
+        const existingParams = taskState.getTask(conversationId).parameters || {};
+        taskState.setTask(conversationId, {
+            prompt: videoPrompt,
+            generatedAsset: result.url,
+            videoMode: result.mode || opts2.mode || 't2va',
+            sourceImage: opts2.sourceImageRawFilename || null,
+            parameters: Object.assign({}, existingParams, result.metadata || {}),
+            status: 'completed',
+            lastAction: message || action || 'generate'
+        });
+
+        const summary = await taskRouter.buildSuccessReply({
+            action: action || 'generate',
+            prompt: videoPrompt,
+            previousPrompt: previousPrompt || null,
+            provider,
+            model,
+            taskType: 'video'
+        });
+
+        const content =
+            summary + '\n\n' +
+            '**Prompt:** ' + videoPrompt + '\n\n' +
+            '<video controls src="' + result.url + '"></video>';
+
+        res.write(`data: ${JSON.stringify({ video: { url: result.url, content, meta: result.metadata || null } })}\n\n`);
+        res.end();
+    } catch (err) {
+        console.error('[video-generator] Generation failed:', err.message, '\n', err.stack);
+        taskState.setTask(conversationId, { status: 'failed' });
+        res.write(`data: ${JSON.stringify({ error: friendlyVideoError(err) })}\n\n`);
+        res.end();
+    }
+}
+
+function friendlyVideoError(err) {
+    switch (err.code) {
+        case 'comfyui_unavailable':
+            return 'ComfyUI is not running. Start ComfyUI, then try again.';
+        case 'comfyui_missing_nodes':
+            return err.message;
+        case 'comfyui_timeout':
+            return 'Video generation timed out. ComfyUI may be overloaded — please try again.';
+        case 'comfyui_output_not_found':
+            return 'ComfyUI finished but did not produce a video. Check the ComfyUI console, then try again.';
+        case 'generation_busy':
+            return err.message;
+        default:
+            return 'Video generation failed: ' + (err.message || 'unknown error');
     }
 }
 

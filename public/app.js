@@ -232,6 +232,7 @@ function initSettings() {
     initChatProviderSettings();
     initImageGenSettings();
     initUpscaleSettings();
+    initVideoSettings();
     initFreeComfyButton();
     initRestartServerButton();
 }
@@ -288,14 +289,19 @@ const LORA_STRENGTH_STEP = 0.05;
 
 // --- LoRA stack helpers ---
 
-function initLoraStack() {
+function initLoraStack(opts) {
+    const o = opts || {};
     return {
         loras: [],          // [{ name, strength, on, triggerWord }] current attached stack
         triggerMemory: {},  // { [loraName]: triggerWord } remembered even after removal
         available: [],      // lora filenames ComfyUI reports
         listEl: null,
         addSelect: null,
-        statusEl: null
+        statusEl: null,
+        endpoint: o.endpoint || '/api/settings/image',  // where the stack is persisted
+        listId: o.listId || 'loraList',
+        addSelectId: o.addSelectId || 'loraAddSelect',
+        statusId: o.statusId || 'loraStatus'
     };
 }
 
@@ -427,7 +433,7 @@ function renderLoraStack(state) {
 async function saveLoraStack(state) {
     loraStatus(state, 'Saving...');
     try {
-        const res = await fetch('/api/settings/image', {
+        const res = await fetch(state.endpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -451,9 +457,9 @@ async function saveLoraStack(state) {
 }
 
 function initLoraSettings(state) {
-    const listEl = document.getElementById('loraList');
-    const addSelect = document.getElementById('loraAddSelect');
-    const statusEl = document.getElementById('loraStatus');
+    const listEl = document.getElementById(state.listId);
+    const addSelect = document.getElementById(state.addSelectId);
+    const statusEl = document.getElementById(state.statusId);
     if (!listEl || !addSelect) return;
 
     state.listEl = listEl;
@@ -756,6 +762,158 @@ function initUpscaleSettings() {
             syncVisibility();
         } catch {
             setStatus('Could not load upscale settings', true);
+        }
+    })();
+}
+
+// --- Video Generation Settings ---
+
+const VIDEO_SELECT_FIELDS = [
+    { key: 'h3Size', id: 'videoSizeScale' },
+    { key: 'h3Duration', id: 'videoDuration' },
+    { key: 'attentionBackend', id: 'videoAttentionBackend' }
+];
+
+const VIDEO_TEXT_FIELDS = [
+    { key: 'h3Unet', id: 'videoUnet' },
+    { key: 'h3Clip', id: 'videoClip' },
+    { key: 'h3VideoVae', id: 'videoVae' },
+    { key: 'h3AudioVae', id: 'videoAudioVae' }
+];
+
+function initVideoSettings() {
+    const statusEl = document.getElementById('videoSettingsStatus');
+    if (statusEl) statusEl.style.display = 'none';
+    const setStatus = (text, isError) => {
+        if (!statusEl) return;
+        statusEl.textContent = text;
+        statusEl.classList.toggle('settings-save-status--error', !!isError);
+        statusEl.style.display = text ? '' : 'none';
+    };
+
+    const loraState = initLoraStack({
+        endpoint: '/api/settings/video',
+        listId: 'videoLoraList',
+        addSelectId: 'videoLoraAddSelect',
+        statusId: 'videoLoraStatus'
+    });
+    initLoraSettings(loraState);
+
+    const persistSelect = async (key, select) => {
+        setStatus('Saving...');
+        try {
+            const res = await fetch('/api/settings/video', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ [key]: select.value })
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                setStatus('Save failed: ' + (data.error || 'Unknown error'), true);
+                return;
+            }
+            setStatus('Saved: ' + select.value);
+        } catch {
+            setStatus('Save failed: connection error', true);
+        }
+        setTimeout(() => setStatus(''), 3000);
+    };
+
+    const persistText = async (key, input) => {
+        const value = input.value.trim();
+        setStatus('Saving...');
+        try {
+            const res = await fetch('/api/settings/video', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ [key]: value })
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                setStatus('Save failed: ' + (data.error || 'Unknown error'), true);
+                return;
+            }
+            setStatus(value ? 'Saved: ' + value : 'Reverted to default');
+        } catch {
+            setStatus('Save failed: connection error', true);
+        }
+        setTimeout(() => setStatus(''), 3000);
+    };
+
+    VIDEO_SELECT_FIELDS.forEach(({ key, id }) => {
+        const select = document.getElementById(id);
+        if (!select) return;
+        select.addEventListener('change', () => persistSelect(key, select));
+    });
+
+    VIDEO_TEXT_FIELDS.forEach(({ key, id }) => {
+        const input = document.getElementById(id);
+        if (!input) return;
+        input.addEventListener('change', () => persistText(key, input));
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                input.blur();
+            }
+        });
+    });
+
+    const videoHints = {
+        videoUnet: 'minimax_h3_fl2va_pruned_int8_convrot.safetensors',
+        videoClip: 'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors',
+        videoVae: 'minimax_h3_video_vae_fp16.safetensors',
+        videoAudioVae: 'minimax_h3_audio_vae_fp32.safetensors'
+    };
+
+    (async () => {
+        try {
+            const res = await fetch('/api/settings/video');
+            if (!res.ok) throw new Error('API error');
+            const data = await res.json();
+            const defaults = data.defaults || {};
+            const settings = data.settings || {};
+
+            VIDEO_SELECT_FIELDS.forEach(({ key, id }) => {
+                const select = document.getElementById(id);
+                if (!select) return;
+                const stored = settings[key];
+                select.value = (stored !== undefined && stored !== null && stored !== '')
+                    ? stored
+                    : (defaults[key] !== undefined && defaults[key] !== null ? defaults[key] : select.value);
+            });
+
+            VIDEO_TEXT_FIELDS.forEach(({ key, id }) => {
+                const input = document.getElementById(id);
+                if (!input) return;
+                const stored = settings[key];
+                input.value = (stored !== undefined && stored !== null && stored !== '') ? stored : '';
+                input.placeholder = defaults[key] || videoHints[id] || key;
+                input.title = 'Default: ' + (defaults[key] || videoHints[id] || '');
+            });
+
+            // Load the LoRA stack (attached list + available scan from ComfyUI)
+            // and the remembered per-LoRA trigger words.
+            const choices = data.choices || {};
+            loraState.available = Array.isArray(choices.loras) ? choices.loras : [];
+            loraState.triggerMemory = (settings.loraTriggerWords && typeof settings.loraTriggerWords === 'object')
+                ? settings.loraTriggerWords
+                : {};
+            loraState.loras = Array.isArray(settings.loras) ? settings.loras.map((l) => ({
+                name: l.name,
+                strength: clampLoraStrength(l.strength),
+                on: l.on !== false,
+                triggerWord: (l.triggerWord !== undefined && l.triggerWord !== null)
+                    ? String(l.triggerWord)
+                    : (loraState.triggerMemory[l.name] || '')
+            })) : [];
+            renderLoraStack(loraState);
+
+            if (!data.comfyAvailable) {
+                setStatus('ComfyUI unreachable — showing defaults only', true);
+                loraStatus(loraState, 'ComfyUI unreachable — LoRAs unavailable', true);
+            }
+        } catch {
+            setStatus('Could not load video settings', true);
         }
     })();
 }

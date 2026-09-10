@@ -31,10 +31,12 @@ const Chat = (() => {
         // lightbox as clicking a thumbnail in the GENERATED widget.
         chatMessagesEl.addEventListener('click', (e) => {
             const imgEl = e.target.closest('.md-image');
-            if (!imgEl) return;
+            const vidEl = e.target.closest('.md-video');
+            const el = imgEl || vidEl;
+            if (!el) return;
             if (window.Gallery && typeof window.Gallery.openFromUrl === 'function') {
                 e.preventDefault();
-                window.Gallery.openFromUrl(imgEl.getAttribute('src'));
+                window.Gallery.openFromUrl(el.getAttribute('src'));
             }
         });
 
@@ -364,6 +366,13 @@ const Chat = (() => {
                             fullReply = data.image.content;
                             if (generatingEl) generatingEl.remove();
                             setAiContent(contentEl, data.image.content);
+                            chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+                            if (window.Gallery) window.Gallery.refresh();
+                        }
+                        if (data.video) {
+                            fullReply = data.video.content;
+                            if (generatingEl) generatingEl.remove();
+                            setAiContent(contentEl, data.video.content);
                             chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
                             if (window.Gallery) window.Gallery.refresh();
                         }

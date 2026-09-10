@@ -17,6 +17,7 @@
 
 const taskState = require('./task-state');
 const imageGenerator = require('./image-generator');
+const videoGenerator = require('./video-generator');
 const providers = require('../server/providers');
 const conversationService = require('../server/conversation-service');
 
@@ -27,34 +28,35 @@ const ROUTER_SYSTEM_PROMPT =
     'user\'s latest message, whether a tool should execute. You are an internal ' +
     'router — you never reply to the user and the user does not see your JSON. ' +
     'You are the ONLY authority on tool execution; the chat model is not.\n\n' +
-    'Available tool: image_generation (Krea2/ComfyUI local image pipeline). ' +
-    'It can generate a brand-new image or modify the current image concept. ' +
-    'Another tool: image_upscale — when the user asks to upscale / enhance the ' +
-    'resolution of an image ("upscale this image", "make it higher res"), set ' +
-    'task "image_upscale", action "upscale", shouldExecuteTool true.\n\n' +
+    'Available tools:\n' +
+    '- image_generation (Krea2/ComfyUI local image pipeline). Generate or modify images.\n' +
+    '- video_generation (MiniMax H3/ComfyUI local video pipeline). Generate or modify videos.\n' +
+    '  Supports T2VA (text-to-video) and I2VA (image-to-video, using a reference image).\n' +
+    '- image_upscale — upscale/enhance image resolution.\n\n' +
     'Respond with ONLY a single JSON object, no markdown, no commentary:\n' +
     '{"intent": "...", "task": "...", "action": "...", "shouldExecuteTool": bool, ' +
     '"updatedPrompt": "..."}\n\n' +
     'intent (one of):\n' +
     '- "new_task": user starts a brand new generation or unrelated task that should execute.\n' +
     '- "continue_task": user continues the active task, e.g. a follow-up modification ' +
-    '("make her wear a red dress", "make it nighttime", "okay, use that camera"). Executes the tool.\n' +
+    '("make her walk faster", "make it nighttime", "okay, use that"). Executes the tool.\n' +
     '- "task_question": user asks a factual / advisory question ABOUT the active task ' +
     '("what camera works best for this?", "which lighting style would look best?"). Does NOT execute the tool.\n' +
     '- "unrelated": user message is ordinary conversation unrelated to any tool. Does not execute.\n' +
     '- "switch_task": user explicitly starts a different task/workflow while one is active. Executes if that is a generation.\n\n' +
-    'task (one of): "image_generation" | "chat" | null\n' +
+    'task (one of): "image_generation" | "video_generation" | "chat" | null\n' +
     'action (one of): "generate" | "modify" | "respond" | null\n' +
-    'shouldExecuteTool: true ONLY when image generation should actually run.\n' +
-    'updatedPrompt: when the user modifies the active image task, the new effective image ' +
-    'concept built on top of the CURRENT PROMPT (do not restart from scratch). Otherwise empty string.\n\n' +
+    'shouldExecuteTool: true ONLY when generation should actually run.\n' +
+    'updatedPrompt: when the user modifies the active task, the new effective prompt ' +
+    'built on top of the CURRENT PROMPT (do not restart from scratch). Otherwise empty string.\n\n' +
     'Rules:\n' +
-    '- A modification like "make her wear a red dress" while an image task is active is ' +
+    '- A modification like "make her walk faster" while a video task is active is ' +
     'continue_task with action modify and shouldExecuteTool true; updatedPrompt extends the current prompt.\n' +
+    '- A modification like "make her wear a red dress" while an image task is active is ' +
+    'continue_task with action modify and shouldExecuteTool true.\n' +
     '- A question about the active task is task_question with shouldExecuteTool false — ' +
-    'even if it is phrased as an offer or suggestion. Example: after generating an image, ' +
-    '"which lighting style would look best?" is task_question, NOT a generation.' +
-    '- If there is an active image task and the user references "it"/"that"/"this" or makes ' +
+    'even if it is phrased as an offer or suggestion.\n' +
+    '- If there is an active task and the user references "it"/"that"/"this" or makes ' +
     'an incremental change, treat it as continuing the task.\n' +
     '- Follow-up phrases like "okay, do it", "use that camera", "yes exactly" that reference ' +
     'the active task continue it when the prior turn implied a generation action.\n' +
@@ -122,7 +124,8 @@ function normalizeDecision(parsed) {
     let shouldExecuteTool = false;
 
     if (intent === 'new_task' || intent === 'continue_task' || intent === 'switch_task') {
-        task = String(parsed.task || 'image_generation');
+        const rawTask = String(parsed.task || '').toLowerCase();
+        task = (rawTask === 'video_generation') ? 'video_generation' : (rawTask === 'image_generation' ? 'image_generation' : 'image_generation');
         action = intent === 'new_task' ? String(parsed.action || 'generate')
             : String(parsed.action || 'modify');
         shouldExecuteTool = parsed.shouldExecuteTool !== false;
@@ -170,8 +173,51 @@ async function routeMessage({ message, provider, model, conversationId }) {
     const messages = conversationService.getMessages(conversationId)
         .slice(-RECENT_MESSAGES_FOR_ROUTER);
 
-    // No active task: fall back to the existing new-task detector.
+    // Cross-task I2VA: when a non-video task is active (e.g. a just-generated
+    // image) and the user asks for a video made from an existing image, route
+    // deterministically to the video pipeline so "use this image to generate a
+    // video" is always I2VA, never misread as an image modification or T2VA.
+    // The gate covers explicit video words plus the free-form I2V phrasings from
+    // the spec ("use this image", "make it rain", "make her walk", ...); the LLM
+    // intent classifier remains the final authority on whether it is a video.
+    if (activeTask.type && activeTask.type !== 'video' &&
+        /\b(?:video|film|clip|movie|animation|to\s+life|turn\s+.{0,24}into|animat\w*|use\s+(?:this|that|the)\s+image)\b/i.test(message)) {
+        const videoIntent = await videoGenerator.detectVideoIntent(message, providers, provider, model);
+        if (videoIntent.intent === 'video_generation') {
+            const modeInfo = videoGenerator.resolveVideoMode(conversationId, message, videoIntent);
+            videoIntent.videoMode = modeInfo.videoMode;
+            videoIntent.sourceImageRawFilename = modeInfo.sourceImage ? modeInfo.sourceImage.rawFilename : null;
+            return {
+                intent: 'switch_task',
+                task: 'video_generation',
+                action: 'generate',
+                shouldExecuteTool: true,
+                updatedPrompt: videoIntent.user_prompt,
+                structuredRequest: videoIntent
+            };
+        }
+    }
+
+    // No active task: detect whether this is a new image or video request.
     if (!activeTask.type) {
+        // Check video intent first — video requests are a superset of image
+        // requests (both use generation verbs), so video should take priority
+        // when the user clearly asks for a video.
+        const videoIntent = await videoGenerator.detectVideoIntent(message, providers, provider, model);
+        if (videoIntent.intent === 'video_generation') {
+            const modeInfo = videoGenerator.resolveVideoMode(conversationId, message, videoIntent);
+            videoIntent.videoMode = modeInfo.videoMode;
+            videoIntent.sourceImageRawFilename = modeInfo.sourceImage ? modeInfo.sourceImage.rawFilename : null;
+            return {
+                intent: 'new_task',
+                task: 'video_generation',
+                action: videoIntent.action,
+                shouldExecuteTool: true,
+                updatedPrompt: videoIntent.user_prompt,
+                structuredRequest: videoIntent
+            };
+        }
+
         const intent = await imageGenerator.detectIntent(message, providers, provider, model);
         if (intent.intent === 'image_generation') {
             return {
@@ -196,8 +242,8 @@ async function routeMessage({ message, provider, model, conversationId }) {
 
     const decision = normalizeDecision(parsed);
 
-    // Only keep an updated prompt for image-generation executions.
-    if (!(decision.shouldExecuteTool && decision.task === 'image_generation')) {
+    // Only keep an updated prompt for generation executions.
+    if (!(decision.shouldExecuteTool && (decision.task === 'image_generation' || decision.task === 'video_generation'))) {
         decision.updatedPrompt = '';
     }
 
@@ -280,20 +326,22 @@ async function applyPromptModification(currentPrompt, userMessage, provider, mod
 // --- Reporting ---------------------------------------------------------------
 
 const SUCCESS_REPLY_SYSTEM_PROMPT =
-    'You are JARVIS. The user\'s image task just completed successfully in the local ' +
-    'image pipeline. Write ONE short, natural assistant message (1-2 sentences) that ' +
-    'confirms the image was generated and summarizes what changed/showed. Do not claim ' +
+    'You are JARVIS. The user\'s task just completed successfully in the local ' +
+    'pipeline. Write ONE short, natural assistant message (1-2 sentences) that ' +
+    'confirms the result and summarizes what was generated. Do not claim ' +
     'anything that did not happen. Refer to the actual task. Output ONLY the message text.';
 
 // Generate a concise, truthful assistant confirmation based on the actual result.
-async function buildSuccessReply({ action, prompt, previousPrompt, provider, model }) {
+async function buildSuccessReply({ action, prompt, previousPrompt, provider, model, taskType }) {
+    const isVideo = taskType === 'video';
+    const mediaType = isVideo ? 'video' : 'image';
     const change = action === 'modify'
-        ? ('You updated the image.' + (previousPrompt && previousPrompt !== prompt ? ' You changed the prompt from "' + previousPrompt + '" to "' + prompt + '".' : ''))
-        : 'Your image was generated.';
+        ? ('You updated the ' + mediaType + '.' + (previousPrompt && previousPrompt !== prompt ? ' You changed the prompt from "' + previousPrompt + '" to "' + prompt + '".' : ''))
+        : ('Your ' + mediaType + ' was generated.');
     try {
         const raw = await providers.chat(provider, [
             { role: 'system', content: SUCCESS_REPLY_SYSTEM_PROMPT },
-            { role: 'user', content: 'Action: ' + action + '\nPrompt: "' + prompt + '"\n' + change }
+            { role: 'user', content: 'Action: ' + action + '\nType: ' + mediaType + '\nPrompt: "' + prompt + '"\n' + change }
         ], model);
         const text = String(raw || '').trim();
         if (text) return text;

@@ -48,7 +48,7 @@ function seedFromDisk() {
         return entries;
     }
     for (const name of files) {
-        if (!/\.(?:png|jpg|jpeg|webp)$/i.test(name)) continue;
+        if (!/\.(?:png|jpg|jpeg|webp|mp4|webm|mov)$/i.test(name)) continue;
         const abs = path.join(GENERATED_DIR, name);
         let mtime;
         try { mtime = fs.statSync(abs).mtime; } catch { continue; }
@@ -125,7 +125,8 @@ function publicMeta(entry) {
         width: entry.width || null,
         height: entry.height || null,
         createdAt: entry.createdAt,
-        upscale: entry.upscale || null
+        upscale: entry.upscale || null,
+        video: entry.video || null
     };
 }
 
@@ -142,6 +143,7 @@ function add(meta) {
         width: meta.width || null,
         height: meta.height || null,
         upscale: meta.upscale || null,
+        video: meta.video || null,
         createdAt
     };
     // Replace an existing entry with the same id (idempotent re-add).

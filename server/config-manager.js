@@ -37,6 +37,7 @@ function setModelConfig(provider, model) {
 }
 
 const IMAGE_SETTINGS_KEY = 'imageGeneration';
+const VIDEO_SETTINGS_KEY = 'videoGeneration';
 
 function getImageSettings() {
     const config = loadConfig();
@@ -59,4 +60,25 @@ function setImageSettings(patch) {
     return current;
 }
 
-module.exports = { getConfig, setModelConfig, getImageSettings, setImageSettings };
+function getVideoSettings() {
+    const config = loadConfig();
+    const stored = config[VIDEO_SETTINGS_KEY];
+    return stored && typeof stored === 'object' ? stored : {};
+}
+
+function setVideoSettings(patch) {
+    const config = loadConfig();
+    const current = { ...(config[VIDEO_SETTINGS_KEY] || {}) };
+    for (const [key, value] of Object.entries(patch || {})) {
+        if (value === null || value === undefined || value === '') {
+            delete current[key];
+        } else {
+            current[key] = value;
+        }
+    }
+    config[VIDEO_SETTINGS_KEY] = current;
+    saveConfig(config);
+    return current;
+}
+
+module.exports = { getConfig, setModelConfig, getImageSettings, setImageSettings, getVideoSettings, setVideoSettings };
