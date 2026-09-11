@@ -62,6 +62,7 @@ const MIME_TYPES = {
 const systemMonitor = require('./services/system-monitor');
 const conversationService = require('./server/conversation-service');
 const contextBuilder = require('./server/context-builder');
+const configManager = require('./server/config-manager');
 const providers = require('./server/providers');
 const models = require('./server/models');
 const providerManager = require('./server/provider-manager');
@@ -85,6 +86,18 @@ const CHAT_IMAGES_MAX = 3;
 
 // Share the single-generation lock between image and video pipelines.
 videoGenerator.registerGenerationLock(imageGenerator);
+
+// Resolve the Ollama `think` flag for a chat request. An explicit per-request
+// boolean wins; otherwise the persisted global setting applies (on by
+// default). Returns true/false (never undefined) so callers can forward it.
+function resolveChatThink(body) {
+    if (body && typeof body.think === 'boolean') return body.think;
+    try {
+        return configManager.getReasoningEnabled();
+    } catch {
+        return true;
+    }
+}
 
 // Safe SSE write that never throws after the client detached.
 function sseWrite(res, obj) {
@@ -208,7 +221,7 @@ async function handleAPI(req, res, urlPath) {
         const provider = (body.provider || 'ollama').trim();
         if (!modelId) { json(res, 400, { error: 'modelId is required' }); return true; }
         try {
-            require('./config-manager').setModelConfig(provider, modelId);
+            configManager.setModelConfig(provider, modelId);
             json(res, 200, { ok: true, provider, model: modelId });
         } catch (err) {
             json(res, 500, { error: err.message });
@@ -255,6 +268,30 @@ async function handleAPI(req, res, urlPath) {
     // POST /api/chat/stream
     if (urlPath === '/api/chat/stream' && req.method === 'POST') {
         handleChatStream(req, res);
+        return true;
+    }
+
+    // GET /api/settings/chat — global chat settings (reasoning toggle for
+    // thinking-capable models, on by default).
+    if (urlPath === '/api/settings/chat' && req.method === 'GET') {
+        try {
+            json(res, 200, { reasoningEnabled: configManager.getReasoningEnabled() });
+        } catch (err) {
+            json(res, 500, { error: err.message });
+        }
+        return true;
+    }
+
+    // POST /api/settings/chat — persist global chat settings
+    // ({ reasoningEnabled: boolean }).
+    if (urlPath === '/api/settings/chat' && req.method === 'POST') {
+        try {
+            const body = await readBody(req);
+            const reasoningEnabled = configManager.setReasoningEnabled(body && body.reasoningEnabled);
+            json(res, 200, { ok: true, reasoningEnabled });
+        } catch (err) {
+            json(res, 400, { error: err.message });
+        }
         return true;
     }
 
@@ -835,7 +872,7 @@ async function handleSummarize(req, res, id) {
             json(res, 200, { summary: '' });
             return;
         }
-        const summary = await providers.summarize(provider, model, messages);
+        const summary = await providers.summarize(provider, model, messages, { think: resolveChatThink(body) });
         conversationService.setSummary(id, summary);
         json(res, 200, { summary });
     } catch (err) {
@@ -877,7 +914,7 @@ async function handleChat(req, res) {
         await vramManager.freeVRAMBeforeChat();
 
         const contextMessages = contextBuilder.buildContext(conversationId, message, provider, model, '', chatImages);
-        const reply = await providers.chat(provider, contextMessages, model);
+        const reply = await providers.chat(provider, contextMessages, model, { think: resolveChatThink(body) });
 
         json(res, 200, { reply });
     } catch (err) {
@@ -915,6 +952,11 @@ async function handleChatStream(req, res) {
             return;
         }
 
+        // Reasoning flag for thinking-capable chat models (on by default).
+        // Threaded through the router, prompt builders, and chat replies so
+        // the whole turn honors one setting.
+        const think = resolveChatThink(body);
+
         // Set up SSE headers
         res.writeHead(200, {
             'Content-Type': 'text/event-stream',
@@ -933,7 +975,8 @@ async function handleChatStream(req, res) {
             provider,
             model,
             conversationId,
-            hasAttachedImage: chatImages.length > 0
+            hasAttachedImage: chatImages.length > 0,
+            think
         });
 
         // Upscale the last generated image in this conversation. Only the
@@ -980,7 +1023,8 @@ async function handleChatStream(req, res) {
                 provider, model, conversationId, message,
                 instruction,
                 action,
-                previousPrompt: activeTask.prompt || null
+                previousPrompt: activeTask.prompt || null,
+                think
             });
             return;
         }
@@ -999,35 +1043,13 @@ async function handleChatStream(req, res) {
                 ? (String(decision.updatedPrompt || '').trim() || (regenInfo && regenInfo.delta) || message)
                 : message;
 
-            // Follow-up tweak of the active image task: a true pixel edit of
-            // the latest output via the identity-edit LoRA (not a from-scratch
-            // regen), when the edit stack is available and the latest asset is
-            // an image. Bare regenerates skip this (no instruction to apply)
-            // and fall through to a full regen of the same prompt. Falls
-            // through to the legacy regen path otherwise.
-            if (!isNew && !isBareRegen) {
-                const editSource = resolveGeneratedEditSource(conversationId);
-                if (editSource && (await imageGenerator.checkEditAvailability()).ok) {
-                    const instruction = stripImageRefs(modifyDelta);
-                    const ctxPreviousPrompt = activeTask.prompt || null;
-                    taskState.setTask(conversationId, {
-                        type: 'image',
-                        operation: 'edit',
-                        prompt: instruction,
-                        lastAction: 'edit',
-                        status: 'running'
-                    });
-                    await vramManager.freeVRAMBeforeImage();
-                    await handleImageEditStream(req, res, {
-                        provider, model, conversationId, message,
-                        instruction,
-                        action: 'modify',
-                        previousPrompt: ctxPreviousPrompt,
-                        sourceOverride: editSource
-                    });
-                    return;
-                }
-            }
+            // Follow-up tweaks of the active image task always run as a full
+            // regen of the rewritten prompt (see below). Identity edits only
+            // run through the explicit image_edit branch above — i.e. when the
+            // user attaches an upload or explicitly asks to "edit this image".
+            // Vague follow-ups ("make her ...", "change her top ...") must not
+            // trigger an edit: the edit LoRA returns the source unchanged for
+            // such instructions, which looks like "the same exact image".
 
             // Determine the effective prompt for this generation run.
             let imagePrompt;
@@ -1038,7 +1060,7 @@ async function handleChatStream(req, res) {
             if (isNew && decision.structuredRequest) {
                 // Brand-new task detected through the intent pipeline.
                 structuredRequest = decision.structuredRequest;
-                enhanced = await imageGenerator.buildImagePrompt(structuredRequest, providers, provider, model);
+                enhanced = await imageGenerator.buildImagePrompt(structuredRequest, providers, provider, model, think);
             } else if (isNew && decision.updatedPrompt) {
                 // Brand-new / switched task reported by the router. Pass the
                 // active task's prompt as context so a tweak the router treats
@@ -1050,7 +1072,7 @@ async function handleChatStream(req, res) {
                     creative_mode: 'none',
                     explicit_constraints: []
                 };
-                enhanced = await imageGenerator.buildImagePrompt(structuredRequest, providers, provider, model);
+                enhanced = await imageGenerator.buildImagePrompt(structuredRequest, providers, provider, model, think);
             } else if (isBareRegen) {
                 // Bare "generate the image again": reuse the stored full
                 // prompt verbatim (new random seed at generation time gives
@@ -1079,7 +1101,8 @@ async function handleChatStream(req, res) {
                     activeTask.prompt || '',
                     modifyDelta,
                     provider,
-                    model
+                    model,
+                    think
                 );
                 structuredRequest = {
                     intent: 'image_generation',
@@ -1088,7 +1111,7 @@ async function handleChatStream(req, res) {
                     creative_mode: (activeTask.parameters && activeTask.parameters.creative_mode) || 'none',
                     explicit_constraints: (activeTask.parameters && activeTask.parameters.explicit_constraints) || []
                 };
-                enhanced = await imageGenerator.buildImagePrompt(structuredRequest, providers, provider, model);
+                enhanced = await imageGenerator.buildImagePrompt(structuredRequest, providers, provider, model, think);
             }
 
             imagePrompt = enhanced ? enhanced.prompt : imagePrompt;
@@ -1129,7 +1152,8 @@ async function handleChatStream(req, res) {
                 provider, model, conversationId, message,
                 imagePrompt,
                 action,
-                previousPrompt: ctxPreviousPrompt
+                previousPrompt: ctxPreviousPrompt,
+                think
             });
             return;
         }
@@ -1215,7 +1239,8 @@ async function handleChatStream(req, res) {
                     provider,
                     model,
                     sourceImageRawFilename,
-                    conversationId
+                    conversationId,
+                    think
                 );
                 videoPrompt = director.prompt;
                 directorDimensions = { duration: director.duration, width: director.width, height: director.height };
@@ -1246,7 +1271,7 @@ async function handleChatStream(req, res) {
                     providers,
                     provider,
                     model,
-                    { sourceImageRawFilename }
+                    { sourceImageRawFilename, think }
                 );
             }
 
@@ -1285,7 +1310,8 @@ async function handleChatStream(req, res) {
                 sourceImageRawFilename,
                 duration: directorDimensions ? directorDimensions.duration : undefined,
                 width: directorDimensions ? directorDimensions.width : undefined,
-                height: directorDimensions ? directorDimensions.height : undefined
+                height: directorDimensions ? directorDimensions.height : undefined,
+                think
             });
             return;
         }
@@ -1317,7 +1343,7 @@ async function handleChatStream(req, res) {
         let fullReply = '';
 
         try {
-            for await (const chunk of providers.chatStream(provider, contextMessages, model)) {
+            for await (const chunk of providers.chatStream(provider, contextMessages, model, { think })) {
                 if (chunk.type === 'content') {
                     fullReply += chunk.text;
                     res.write(`data: ${JSON.stringify({ chunk: chunk.text })}\n\n`);
@@ -1349,7 +1375,7 @@ async function handleChatStream(req, res) {
 // "error" event on failure. The active task is only marked completed after the
 // tool actually finishes — never before.
 async function handleImageGenerationStream(req, res, opts) {
-    const { provider, model, conversationId, message, imagePrompt, action, previousPrompt } = opts;
+    const { provider, model, conversationId, message, imagePrompt, action, previousPrompt, think } = opts;
 
     let queueId = null;
     const onClose = () => {
@@ -1390,7 +1416,8 @@ async function handleImageGenerationStream(req, res, opts) {
             prompt: imagePrompt,
             previousPrompt: previousPrompt || null,
             provider,
-            model
+            model,
+            think
         });
 
         const content =
@@ -1448,7 +1475,7 @@ function resolveGeneratedEditSource(conversationId) {
 // Handle an identity-edit chat request over SSE. Emits a "generating" status
 // event, then an "image" event with the edited result, or an "error" event.
 async function handleImageEditStream(req, res, opts) {
-    const { provider, model, conversationId, message, instruction, action, previousPrompt, sourceOverride } = opts;
+    const { provider, model, conversationId, message, instruction, action, previousPrompt, sourceOverride, think } = opts;
 
     let queueId = null;
     const onClose = () => {
@@ -1502,7 +1529,8 @@ async function handleImageEditStream(req, res, opts) {
             prompt: instruction,
             previousPrompt: previousPrompt || null,
             provider,
-            model
+            model,
+            think
         });
 
         const content =
@@ -1559,7 +1587,7 @@ async function handleVideoGenerationStream(req, res, opts) {
     const {
         provider, model, conversationId, message, videoPrompt,
         structuredRequest, action, previousPrompt, videoMode, sourceImageRawFilename,
-        duration, width, height
+        duration, width, height, think
     } = opts;
 
     let queueId = null;
@@ -1619,7 +1647,8 @@ async function handleVideoGenerationStream(req, res, opts) {
             previousPrompt: previousPrompt || null,
             provider,
             model,
-            taskType: 'video'
+            taskType: 'video',
+            think
         });
 
         const content =

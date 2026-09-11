@@ -89,7 +89,7 @@
                 });
                 cell.appendChild(thumb);
             }
-            if (img.upscale && img.upscale.source) cell.appendChild(makeCompareBadge('generated-compare-badge'));
+            if (!isVideo(img) && img.upscale && img.upscale.source) cell.appendChild(makeCompareBadge('generated-compare-badge'));
             cell.appendChild(makeDeleteButton(img, cell));
             gridEl.appendChild(cell);
             count += 1;
@@ -187,6 +187,9 @@
 
     // Map original filename → the upscaled entry that references it (entries
     // recorded with an "upscale.source" field pointing at the original file).
+    // Used to hide the original tile so the grid only shows the upscaled
+    // output. Videos included here too so legacy video pairs also collapse to
+    // just the upscaled video (compare UI itself stays image-only below).
     function upscaleChildMap(images) {
         const map = new Map();
         images.forEach((img) => {
@@ -199,8 +202,10 @@
 
     // Resolve the { original, upscaled } URLs for a gallery entry: either the
     // entry IS the upscaled one (has .upscale.source) or it has an upscaled
-    // child in the list. Returns null when no pairing exists.
+    // child in the list. Returns null when no pairing exists. Videos never
+    // compare — upscales replace the original file instead.
     function compareTargetFor(img, images) {
+        if (isVideo(img)) return null;
         if (img.upscale && img.upscale.source) {
             const originalMeta = (images || []).find((x) =>
                 lastSegment(x.file) === lastSegment(img.upscale.source)) || null;
@@ -212,7 +217,7 @@
             };
         }
         const child = (images || []).find((x) =>
-            x.upscale && x.upscale.source && lastSegment(x.upscale.source) === lastSegment(img.url));
+            !isVideo(x) && x.upscale && x.upscale.source && lastSegment(x.upscale.source) === lastSegment(img.url));
         if (child) {
             return { original: img.url, upscaled: child.url, originalMeta: img, upscaledMeta: child };
         }
@@ -1006,6 +1011,20 @@
         }
     }
 
+    // Find the linked partner for grouped delete (either side of an
+    // original ↔ upscaled pair). Separate from compareTargetFor so videos —
+    // which never show compare UI — still clean up their hidden original.
+    function deletePartnerFor(img, images) {
+        const list = images || [];
+        if (img.upscale && img.upscale.source) {
+            return list.find((x) =>
+                x.id !== img.id && lastSegment(x.file) === lastSegment(img.upscale.source)) || null;
+        }
+        return list.find((x) =>
+            x.id !== img.id && x.upscale && x.upscale.source &&
+            lastSegment(x.upscale.source) === lastSegment(img.file)) || null;
+    }
+
     // Build a delete button wired to img.id. On success it removes the image
     // from the in-memory widget list and re-renders the grid; the cell DOM
     // node is also removed when present (e.g. inside the View All overlay).
@@ -1025,8 +1044,7 @@
             if (!window.confirm('Delete this generated image permanently?')) return;
             btn.disabled = true;
             try {
-                const pair = compareTargetFor(img, widgetImages);
-                const partner = pair && (img.upscale ? pair.originalMeta : pair.upscaledMeta);
+                const partner = deletePartnerFor(img, widgetImages);
                 const removedIds = [img.id];
                 if (partner && partner.id !== img.id) {
                     await deleteImage(partner);
@@ -1156,7 +1174,8 @@
             try {
                 // Deleting either side of a group also deletes its partner, so
                 // the tile (now the upscaled output) removes the pair as one.
-                const partner = compare && (img.upscale ? compare.originalMeta : compare.upscaledMeta);
+                // Videos use the same cleanup without any compare UI.
+                const partner = deletePartnerFor(img, widgetImages);
                 if (partner && partner.id !== img.id) {
                     await deleteImage(partner);
                     widgetImages = widgetImages.filter((w) => w.id !== partner.id);
@@ -1244,7 +1263,7 @@
                     });
                     cell.appendChild(thumb);
                 }
-                if (img.upscale && img.upscale.source) cell.appendChild(makeCompareBadge('gallery-compare-badge'));
+                if (!isVideo(img) && img.upscale && img.upscale.source) cell.appendChild(makeCompareBadge('gallery-compare-badge'));
                 cell.appendChild(makeDeleteButton(img, cell));
                 grid.appendChild(cell);
             });

@@ -7,7 +7,7 @@ const fs = require('fs');
 const path = require('path');
 
 const CONFIG_PATH = path.join(__dirname, '..', 'data', 'config.json');
-const DEFAULT_CONFIG = { provider: 'ollama', model: 'llama3.2' };
+const DEFAULT_CONFIG = { provider: 'ollama', model: 'llama3.2', reasoningEnabled: true };
 
 function loadConfig() {
     try {
@@ -34,6 +34,19 @@ function setModelConfig(provider, model) {
     if (model) config.model = model;
     saveConfig(config);
     return config;
+}
+
+function getReasoningEnabled() {
+    const config = loadConfig();
+    // On by default: only an explicit false disables reasoning.
+    return config.reasoningEnabled !== false;
+}
+
+function setReasoningEnabled(enabled) {
+    const config = loadConfig();
+    config.reasoningEnabled = enabled !== false;
+    saveConfig(config);
+    return config.reasoningEnabled;
 }
 
 const IMAGE_SETTINGS_KEY = 'imageGeneration';
@@ -81,4 +94,4 @@ function setVideoSettings(patch) {
     return current;
 }
 
-module.exports = { getConfig, setModelConfig, getImageSettings, setImageSettings, getVideoSettings, setVideoSettings };
+module.exports = { getConfig, setModelConfig, getReasoningEnabled, setReasoningEnabled, getImageSettings, setImageSettings, getVideoSettings, setVideoSettings };

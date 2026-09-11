@@ -1904,6 +1904,75 @@ em {
     text-transform: uppercase;
 }
 
+/* --- Reasoning Toggle on Card --- */
+
+.ml-reasoning-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 6px 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 5px;
+    background: var(--accent-faint);
+}
+
+.ml-reasoning-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+}
+
+.ml-reasoning-toggle input[type="checkbox"] {
+    appearance: none;
+    width: 32px;
+    height: 18px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 9px;
+    position: relative;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    flex-shrink: 0;
+}
+
+.ml-reasoning-toggle input[type="checkbox"]::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 12px;
+    height: 12px;
+    background: var(--text-dim);
+    border-radius: 50%;
+    transition: all 0.2s ease;
+}
+
+.ml-reasoning-toggle input[type="checkbox"]:checked {
+    background: rgba(108, 255, 154, 0.15);
+    border-color: rgba(108, 255, 154, 0.3);
+}
+
+.ml-reasoning-toggle input[type="checkbox"]:checked::after {
+    transform: translateX(14px);
+    background: var(--accent);
+}
+
+.ml-reasoning-label {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.5px;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+}
+
+.ml-reasoning-hint {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-dim);
+}
+
 /* --- Hardware Info on Card --- */
 
 .ml-card-hardware {

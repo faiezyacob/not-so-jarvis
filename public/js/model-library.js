@@ -170,6 +170,21 @@ const ModelLibrary = (function () {
                 + '</div>';
         }
 
+        var supportsReasoning = Boolean(model.capabilities) && model.capabilities.indexOf('thinking') !== -1;
+        var reasoningOn = true;
+        try {
+            reasoningOn = typeof getReasoningEnabled === 'function' ? getReasoningEnabled() : true;
+        } catch (e) { reasoningOn = true; }
+        var reasoningHtml = supportsReasoning
+            ? '<div class="ml-reasoning-row">'
+                + '<label class="ml-reasoning-toggle">'
+                + '<input type="checkbox" class="ml-reasoning-checkbox"' + (reasoningOn ? ' checked' : '') + '>'
+                + '<span class="ml-reasoning-label">Reasoning</span>'
+                + '</label>'
+                + '<span class="ml-reasoning-hint">Off is faster</span>'
+                + '</div>'
+            : '';
+
         var categoryBadge = model.category
             ? '<span class="ml-category-badge">' + model.category + '</span>'
             : '';
@@ -191,6 +206,7 @@ const ModelLibrary = (function () {
             + '</div>'
             + '<div class="ml-card-description">' + model.description + '</div>'
             + capabilitiesHtml
+            + reasoningHtml
             + notesHtml
             + '<div class="ml-card-hardware">'
             + '<div class="ml-card-hardware-row">' + vramLine + '</div>'
@@ -217,6 +233,15 @@ const ModelLibrary = (function () {
             card.querySelector('.ml-download-btn').addEventListener('click', function () {
                 handleDownloadClick(model);
             });
+        }
+
+        if (supportsReasoning) {
+            var reasoningBox = card.querySelector('.ml-reasoning-checkbox');
+            if (reasoningBox) {
+                reasoningBox.addEventListener('change', function () {
+                    setReasoning(reasoningBox.checked);
+                });
+            }
         }
 
         return card;
@@ -507,6 +532,29 @@ const ModelLibrary = (function () {
         }
     }
 
+    // Shared reasoning state for thinking-capable models (on by default).
+    // Persists to localStorage + the server so chat requests honor it.
+    function setReasoning(enabled) {
+        try {
+            if (typeof setReasoningEnabled === 'function') setReasoningEnabled(enabled);
+        } catch (e) {}
+        try {
+            fetch('/api/settings/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ reasoningEnabled: enabled })
+            }).catch(function () {});
+        } catch (e) {}
+        syncReasoningToggles(enabled);
+        var chatToggle = document.getElementById('chatReasoningToggle');
+        if (chatToggle) chatToggle.checked = enabled;
+    }
+
+    function syncReasoningToggles(enabled) {
+        var boxes = document.querySelectorAll('.ml-reasoning-checkbox');
+        boxes.forEach(function (box) { box.checked = enabled; });
+    }
+
     async function applyModel(model) {
         var provider = model.provider || 'ollama';
         var modelId = model.id;
@@ -543,6 +591,7 @@ const ModelLibrary = (function () {
         init: init,
         open: open,
         close: close,
-        refreshLibrary: refreshLibrary
+        refreshLibrary: refreshLibrary,
+        syncReasoningToggles: syncReasoningToggles
     };
 })();

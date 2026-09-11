@@ -5,14 +5,31 @@
 
 const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
 
-async function callOllama(messages, model) {
+const configManager = require('./config-manager');
+
+// Resolve the Ollama `think` flag for a chat request. An explicit per-request
+// boolean wins; otherwise the persisted global setting applies (on by
+// default). The flag is always sent explicitly — Ollama ignores it for
+// non-thinking models, and it makes on/off deterministic for thinking ones.
+function resolveThink(model, options) {
+    const explicit = options && typeof options.think === 'boolean' ? options.think : null;
+    if (explicit !== null) return explicit;
+    try {
+        return configManager.getReasoningEnabled();
+    } catch {
+        return true;
+    }
+}
+
+async function callOllama(messages, model, options) {
     const res = await fetch(OLLAMA_URL + '/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
             model: model || 'llama3.2',
             messages: messages,
-            stream: false
+            stream: false,
+            think: resolveThink(model, options)
         })
     });
 
@@ -26,14 +43,15 @@ async function callOllama(messages, model) {
 }
 
 // Streaming versions
-async function* streamOllama(messages, model) {
+async function* streamOllama(messages, model, options) {
     const res = await fetch(OLLAMA_URL + '/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
             model: model || 'llama3.2',
             messages: messages,
-            stream: true
+            stream: true,
+            think: resolveThink(model, options)
         })
     });
 
@@ -80,19 +98,19 @@ async function* streamOllama(messages, model) {
 }
 
 // Provider router for chat
-async function chat(provider, messages, model) {
-    if (provider === 'ollama') return callOllama(messages, model);
+async function chat(provider, messages, model, options) {
+    if (provider === 'ollama') return callOllama(messages, model, options);
     throw new Error('Unknown provider: ' + provider);
 }
 
 // Provider router for streaming chat
-async function* chatStream(provider, messages, model) {
-    if (provider === 'ollama') yield* streamOllama(messages, model);
+async function* chatStream(provider, messages, model, options) {
+    if (provider === 'ollama') yield* streamOllama(messages, model, options);
     else throw new Error('Unknown provider: ' + provider);
 }
 
 // Provider router for summarization
-async function summarize(provider, model, messagesToSummarize) {
+async function summarize(provider, model, messagesToSummarize, options) {
     const content = messagesToSummarize
         .map((m) => (m.role === 'user' ? 'User: ' : 'Assistant: ') + m.content)
         .join('\n');
@@ -107,7 +125,7 @@ async function summarize(provider, model, messagesToSummarize) {
     };
 
     if (provider === 'ollama') {
-        return callOllama([sysPrompt, { role: 'user', content: content }], model);
+        return callOllama([sysPrompt, { role: 'user', content: content }], model, options);
     }
     throw new Error('Unknown provider: ' + provider);
 }

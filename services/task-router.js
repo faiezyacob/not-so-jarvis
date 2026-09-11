@@ -76,8 +76,9 @@ const ROUTER_SYSTEM_PROMPT =
     'video_generation and action modify; the same source image is reused.\n' +
     '- A still-image change while an image task is active ("make her wear a red ' +
     'dress", "change the background") is continue_task with task image_generation ' +
-    'and action modify. (The server executes it as an identity edit of the latest ' +
-    'output — never report task image_edit for follow-up tweaks.)\n' +
+    'and action modify. (The server executes it as a full regen of the rewritten ' +
+    'prompt — never report task image_edit for follow-up tweaks. image_edit is ' +
+    'only for explicit "edit this image" phrasing or an attached upload.)\n' +
     '- A still-image change while a VIDEO task is active ("change her dress", ' +
     '"make the background a beach") modifies the video, not the image: ' +
     'continue_task with task video_generation and action modify.\n' +
@@ -263,7 +264,7 @@ function normalizeDecision(parsed) {
 // activeTask can be null to indicate no active task; conversationId is used to
 // fetch recent messages for the compact context. hasAttachedImage marks a
 // freshly uploaded photo on this message (vision source for image_edit).
-async function routeMessage({ message, provider, model, conversationId, hasAttachedImage }) {
+async function routeMessage({ message, provider, model, conversationId, hasAttachedImage, think }) {
     // Upscale requests are narrow, deterministic intents. Detect them with
     // heuristics before the LLM router so "upscale this video" always routes
     // to the video upscale pipeline and "upscale this image" always routes to
@@ -425,7 +426,7 @@ async function routeMessage({ message, provider, model, conversationId, hasAttac
         // Skip the cross-task I2VA gate — fall through to the LLM router.
     } else if (activeTask.type && activeTask.type !== 'video' &&
         (videoGenerator.VIDEO_WORD_RE.test(message) || videoGenerator.I2V_REF_RE.test(message))) {
-        const videoIntent = await videoGenerator.detectVideoIntent(message, providers, provider, model);
+        const videoIntent = await videoGenerator.detectVideoIntent(message, providers, provider, model, think);
         if (videoIntent.intent === 'video_generation') {
             const modeInfo = videoGenerator.resolveVideoMode(conversationId, message, videoIntent);
             videoIntent.videoMode = modeInfo.videoMode;
@@ -453,7 +454,7 @@ async function routeMessage({ message, provider, model, conversationId, hasAttac
                 'RECENT CONVERSATION:\n' + buildRouterContext(activeTask, messages) + '\n\n' +
                 'USER LATEST MESSAGE:\n"' + message + '"\n\n' +
                 'Output the JSON classification only.';
-            const uploadDecision = normalizeDecision(await askRouter(uploadPrompt, provider, model));
+            const uploadDecision = normalizeDecision(await askRouter(uploadPrompt, provider, model, think));
             if (uploadDecision.task === 'image_edit' && uploadDecision.shouldExecuteTool) {
                 uploadDecision.updatedPrompt = message;
                 return uploadDecision;
@@ -463,7 +464,7 @@ async function routeMessage({ message, provider, model, conversationId, hasAttac
         // Check video intent first — video requests are a superset of image
         // requests (both use generation verbs), so video should take priority
         // when the user clearly asks for a video.
-        const videoIntent = await videoGenerator.detectVideoIntent(message, providers, provider, model);
+        const videoIntent = await videoGenerator.detectVideoIntent(message, providers, provider, model, think);
         if (videoIntent.intent === 'video_generation') {
             const modeInfo = videoGenerator.resolveVideoMode(conversationId, message, videoIntent);
             videoIntent.videoMode = modeInfo.videoMode;
@@ -478,7 +479,7 @@ async function routeMessage({ message, provider, model, conversationId, hasAttac
             };
         }
 
-        const intent = await imageGenerator.detectIntent(message, providers, provider, model);
+        const intent = await imageGenerator.detectIntent(message, providers, provider, model, think);
         if (intent.intent === 'image_generation') {
             return {
                 intent: 'new_task',
@@ -499,7 +500,7 @@ async function routeMessage({ message, provider, model, conversationId, hasAttac
         'USER LATEST MESSAGE:\n"' + message + '"\n\n' +
         'Output the JSON classification only.';
 
-    const parsed = await askRouter(routerPrompt, provider, model);
+    const parsed = await askRouter(routerPrompt, provider, model, think);
 
     const decision = normalizeDecision(parsed);
 
@@ -518,7 +519,7 @@ async function routeMessage({ message, provider, model, conversationId, hasAttac
     if (decision.shouldExecuteTool && (decision.intent === 'switch_task' || decision.intent === 'new_task')) {
         if (decision.task === 'video_generation' && activeTask.type !== 'video') {
             try {
-                const videoIntent = await videoGenerator.detectVideoIntent(message, providers, provider, model);
+        const videoIntent = await videoGenerator.detectVideoIntent(message, providers, provider, model, think);
                 if (videoIntent.intent === 'video_generation') {
                     const modeInfo = videoGenerator.resolveVideoMode(conversationId, message, videoIntent);
                     videoIntent.videoMode = modeInfo.videoMode;
@@ -531,7 +532,7 @@ async function routeMessage({ message, provider, model, conversationId, hasAttac
             }
         } else if (decision.task === 'image_generation' && activeTask.type === 'video') {
             try {
-                const imgIntent = await imageGenerator.detectIntent(message, providers, provider, model);
+                const imgIntent = await imageGenerator.detectIntent(message, providers, provider, model, think);
                 if (imgIntent.intent === 'image_generation') {
                     if (imgIntent.user_prompt) decision.updatedPrompt = imgIntent.user_prompt;
                     decision.structuredRequest = imgIntent;
@@ -545,12 +546,12 @@ async function routeMessage({ message, provider, model, conversationId, hasAttac
     return decision;
 }
 
-async function askRouter(routerPrompt, provider, model) {
+async function askRouter(routerPrompt, provider, model, think) {
     try {
         const raw = await providers.chat(provider, [
             { role: 'system', content: ROUTER_SYSTEM_PROMPT },
             { role: 'user', content: routerPrompt }
-        ], model);
+        ], model, { think });
         const parsed = parseRouterJson(raw);
         if (parsed) return parsed;
     } catch (err) {
@@ -594,7 +595,7 @@ const PROMPT_MODIFIER_SYSTEM_PROMPT =
 
 // Apply the user's modification to the current effective prompt. Falls back to
 // a simple append of the raw message on failure.
-async function applyPromptModification(currentPrompt, userMessage, provider, model) {
+async function applyPromptModification(currentPrompt, userMessage, provider, model, think) {
     const modifierMessage =
         'CURRENT PROMPT:\n"' + currentPrompt + '"\n\n' +
         'USER MODIFICATION:\n"' + userMessage + '"\n\n' +
@@ -604,7 +605,7 @@ async function applyPromptModification(currentPrompt, userMessage, provider, mod
         const raw = await providers.chat(provider, [
             { role: 'system', content: PROMPT_MODIFIER_SYSTEM_PROMPT },
             { role: 'user', content: modifierMessage }
-        ], model);
+        ], model, { think });
         const updated = String(raw || '').trim();
         if (updated) return updated;
     } catch (err) {
@@ -627,7 +628,7 @@ const SUCCESS_REPLY_SYSTEM_PROMPT =
     'anything that did not happen. Refer to the actual task. Output ONLY the message text.';
 
 // Generate a concise, truthful assistant confirmation based on the actual result.
-async function buildSuccessReply({ action, prompt, previousPrompt, provider, model, taskType }) {
+async function buildSuccessReply({ action, prompt, previousPrompt, provider, model, taskType, think }) {
     const isVideo = taskType === 'video';
     const mediaType = isVideo ? 'video' : 'image';
     const change = action === 'modify'
@@ -637,7 +638,7 @@ async function buildSuccessReply({ action, prompt, previousPrompt, provider, mod
         const raw = await providers.chat(provider, [
             { role: 'system', content: SUCCESS_REPLY_SYSTEM_PROMPT },
             { role: 'user', content: 'Action: ' + action + '\nType: ' + mediaType + '\nPrompt: "' + prompt + '"\n' + change }
-        ], model);
+        ], model, { think });
         const text = String(raw || '').trim();
         if (text) return text;
     } catch (err) {

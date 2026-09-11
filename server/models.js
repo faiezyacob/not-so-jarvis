@@ -112,4 +112,9 @@ function getCatalogIds() {
     return MODEL_CATALOG.map(m => m.id);
 }
 
-module.exports = { MODEL_CATALOG, MODEL_HARDWARE_ESTIMATES, getModelById, getAllModels, getCatalogIds };
+function modelSupportsThinking(id) {
+    const model = MODEL_CATALOG.find(m => m.id === id) || null;
+    return Boolean(model && Array.isArray(model.capabilities) && model.capabilities.includes('thinking'));
+}
+
+module.exports = { MODEL_CATALOG, MODEL_HARDWARE_ESTIMATES, getModelById, getAllModels, getCatalogIds, modelSupportsThinking };

@@ -257,7 +257,10 @@ const Chat = (() => {
     // comparison card instead of two stacked images. Returns { original,
     // upscaled } when the two markdown image URLs look like an upscaled pair
     // (same hex prefix, exactly one carries the "_up_" marker), else null.
+    // Image-only: video upscales replace the original file, so videos never pair.
     function pairMatch(a, b) {
+        if (/\.(mp4|webm|mov|avi)(\?.*)?$/i.test(String(a || '')) ||
+            /\.(mp4|webm|mov|avi)(\?.*)?$/i.test(String(b || ''))) return null;
         const nameA = lastSegment(a);
         const nameB = lastSegment(b);
         let up, orig;
@@ -457,6 +460,7 @@ const Chat = (() => {
 
         const provider = getChatProvider();
         const model = getChatModel();
+        const think = typeof getReasoningEnabled === 'function' ? getReasoningEnabled() : true;
 
         setSendingState(true);
         showTypingIndicator();
@@ -473,6 +477,7 @@ const Chat = (() => {
                     conversationId,
                     provider,
                     model,
+                    think,
                     message: userText || text,
                     images: visionImages
                 }),

@@ -943,6 +943,84 @@ function setChatModel(model) {
     localStorage.setItem(CHAT_MODEL_KEY, model);
 }
 
+// --- Chat Reasoning Toggle (thinking-capable models, on by default) ---
+
+const CHAT_REASONING_KEY = 'jarvis-chat-reasoning';
+let chatThinkingModels = null;
+
+function getReasoningEnabled() {
+    try {
+        return localStorage.getItem(CHAT_REASONING_KEY) !== 'false';
+    } catch {
+        return true;
+    }
+}
+
+function setReasoningEnabled(enabled) {
+    try { localStorage.setItem(CHAT_REASONING_KEY, enabled ? 'true' : 'false'); } catch {}
+}
+
+function modelSupportsThinking(modelId) {
+    if (!modelId) return false;
+    if (!Array.isArray(chatThinkingModels)) return false;
+    return chatThinkingModels.indexOf(modelId) !== -1;
+}
+
+async function fetchThinkingModels() {
+    if (Array.isArray(chatThinkingModels)) return chatThinkingModels;
+    try {
+        const res = await fetch('/api/ai/models');
+        const data = await res.json();
+        const list = (data.models || []).filter(function (m) {
+            return m.capabilities && m.capabilities.indexOf('thinking') !== -1;
+        }).map(function (m) { return m.id; });
+        chatThinkingModels = list;
+    } catch {
+        chatThinkingModels = [];
+    }
+    return chatThinkingModels;
+}
+
+function refreshReasoningVisibility(modelInput) {
+    const field = document.getElementById('chatReasoningField');
+    if (!field || !modelInput) return;
+    const supported = modelSupportsThinking(modelInput.value.trim());
+    field.style.display = supported ? '' : 'none';
+}
+
+function initChatReasoningToggle(providerSelect, modelInput) {
+    const toggle = document.getElementById('chatReasoningToggle');
+    if (!toggle) return;
+
+    toggle.checked = getReasoningEnabled();
+
+    // Sync with the persisted server setting (on by default).
+    fetch('/api/settings/chat').then(function (res) {
+        return res.json();
+    }).then(function (data) {
+        if (data && typeof data.reasoningEnabled === 'boolean') {
+            setReasoningEnabled(data.reasoningEnabled);
+            toggle.checked = data.reasoningEnabled;
+        }
+    }).catch(function () {});
+
+    toggle.addEventListener('change', function () {
+        setReasoningEnabled(toggle.checked);
+        fetch('/api/settings/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ reasoningEnabled: toggle.checked })
+        }).catch(function () {});
+        if (typeof ModelLibrary !== 'undefined' && ModelLibrary.syncReasoningToggles) {
+            ModelLibrary.syncReasoningToggles(toggle.checked);
+        }
+    });
+
+    fetchThinkingModels().then(function () {
+        refreshReasoningVisibility(modelInput);
+    });
+}
+
 function initChatProviderSettings() {
     const providerSelect = document.getElementById('chatProvider');
     const modelInput = document.getElementById('chatModel');
@@ -958,8 +1036,10 @@ function initChatProviderSettings() {
 
     modelInput.addEventListener('change', () => {
         setChatModel(modelInput.value.trim());
+        refreshReasoningVisibility(modelInput);
     });
 
+    initChatReasoningToggle(providerSelect, modelInput);
     initUnloadModelButton(providerSelect, modelInput);
 }
 

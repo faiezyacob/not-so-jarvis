@@ -434,7 +434,7 @@ function parseIntentJson(raw) {
     try { return JSON.parse(text); } catch { return null; }
 }
 
-async function detectVideoIntent(message, providers, provider, model) {
+async function detectVideoIntent(message, providers, provider, model, think) {
     const strength = videoRequestStrength(message);
     if (strength === null) {
         return { intent: 'chat', related_task: null, message };
@@ -448,7 +448,7 @@ async function detectVideoIntent(message, providers, provider, model) {
         const raw = await providers.chat(provider, [
             { role: 'system', content: H3_INTENT_SYSTEM_PROMPT },
             { role: 'user', content: cluesPrompt }
-        ], model);
+        ], model, { think });
 
         const parsed = parseIntentJson(raw);
         if (parsed && parsed.intent === 'video_generation') {
@@ -514,7 +514,7 @@ function detectVideoUpscaleIntent(message) {
 
 // --- H3 Prompt Building -------------------------------------------------------
 
-async function buildH3VideoPrompt(structuredRequest, providers, provider, model, sourceImageRawFilename, conversationId) {
+async function buildH3VideoPrompt(structuredRequest, providers, provider, model, sourceImageRawFilename, conversationId, think) {
     const { user_prompt, creative_mode, has_reference_image, previous_prompt, explicit_constraints } = structuredRequest;
     const isModify = Boolean(previous_prompt && structuredRequest.modification);
 
@@ -592,7 +592,7 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
         const raw = await providers.chat(provider, [
             { role: 'system', content: H3_DIRECTOR_SYSTEM_PROMPT },
             userMsg
-        ], model);
+        ], model, { think });
 
         const parsed = parseIntentJson(raw);
         if (parsed && parsed.prompt) {
@@ -669,7 +669,7 @@ async function modifyH3VideoPrompt(currentPrompt, userMessage, providers, provid
         const raw = await providers.chat(provider, [
             { role: 'system', content: H3_MODIFIER_SYSTEM_PROMPT },
             userMsg
-        ], model);
+        ], model, { think: opts && opts.think });
         const updated = String(raw || '').trim();
         if (updated) return updated;
     } catch (err) {
@@ -1637,14 +1637,29 @@ async function upscaleVideo(rawFilename, options = {}) {
                 resolution,
                 scale: effectiveScale,
                 quality: effectiveQuality,
-                fps,
-                source: safeName
+                fps
             },
             video: {
-                upscaled: true,
-                source: safeName
+                upscaled: true
             }
         });
+
+        // Video upscales replace the original: no gallery comparison, so drop
+        // the source file and its history entry once the upscaled output is
+        // safely recorded. generatedHistory.remove() also deletes the file.
+        if (safeName && safeName !== basename) {
+            try {
+                const sourceEntry = generatedHistory.list().find((e) => e.rawFilename === safeName);
+                if (sourceEntry && sourceEntry.id) {
+                    generatedHistory.remove(sourceEntry.id);
+                } else {
+                    const abs = path.join(GENERATED_DIR, safeName);
+                    if (abs.startsWith(GENERATED_DIR) && fs.existsSync(abs)) {
+                        try { fs.unlinkSync(abs); } catch (err) { /* ignore */ }
+                    }
+                }
+            } catch (err) { /* replacement is best-effort */ }
+        }
 
         return {
             url: meta.file,

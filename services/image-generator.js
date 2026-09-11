@@ -178,7 +178,7 @@ function imageRequestStrength(message) {
 // The heuristic decides WHEN the LLM is consulted and supplies the fallback;
 // the structured LLM classification (extension of the schema, not the chat
 // model's natural-language reply) adds action / creative_mode / constraints.
-async function detectIntent(message, providers, provider, model) {
+async function detectIntent(message, providers, provider, model, think) {
     const strength = imageRequestStrength(message);
 
     if (strength === null) {
@@ -197,7 +197,7 @@ async function detectIntent(message, providers, provider, model) {
         const raw = await providers.chat(provider, [
             { role: 'system', content: IMAGE_INTENT_SYSTEM_PROMPT },
             { role: 'user', content: cluesPrompt }
-        ], model);
+        ], model, { think });
 
         const parsed = parseIntentJson(raw);
         if (parsed) {
@@ -480,7 +480,7 @@ function mergeVisualAttributes(base, updated, changedKeys) {
 // prompt + current attributes are the source of truth: only the targeted fields
 // change and every other field is copied verbatim from the stored attributes.
 // Falls back to the raw concept + prior attributes on failure.
-async function buildImagePrompt(structuredRequest, providers, provider, model) {
+async function buildImagePrompt(structuredRequest, providers, provider, model, think) {
     const { user_prompt, creative_mode, explicit_constraints, base_prompt, modification, previous_prompt, base_attributes } = structuredRequest;
     const isModify = Boolean(base_prompt && modification);
     // Escalate to "full" when the modification itself grants creative freedom,
@@ -520,7 +520,7 @@ async function buildImagePrompt(structuredRequest, providers, provider, model) {
         const raw = await providers.chat(provider, [
             { role: 'system', content: PROMPT_BUILDER_SYSTEM_PROMPT },
             { role: 'user', content: userMessage }
-        ], model);
+        ], model, { think });
 
         const parsed = parseEnhancerJson(raw);
         const prompt = parsed && typeof parsed.prompt === 'string' ? parsed.prompt.trim() : '';
