@@ -555,6 +555,51 @@ async function interrupt() {
     return true;
 }
 
+// Clear ComfyUI's native pending queue (prompts waiting behind the running
+// one). ComfyUI's /queue endpoint accepts { "clear": true } for this.
+// Best-effort: never throws for an empty queue, throws only when ComfyUI
+// is unreachable or rejects the request.
+async function clearQueue() {
+    const res = await comfyFetch('/queue', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clear: true }),
+        timeout: 15000
+    });
+    await res.text().catch(() => '');
+    return true;
+}
+
+// Cancel whatever ComfyUI is doing right now: interrupt the running prompt
+// and drop any pending prompts so the GPU goes idle. Used by the ComfyUI
+// widget's Cancel button. Both steps are best-effort — interrupting an idle
+// instance is a no-op and ComfyUI answers 200 either way.
+async function cancelCurrentJob() {
+    let interrupted = false;
+    let cleared = false;
+    let interruptError = null;
+    let clearError = null;
+    try {
+        await interrupt();
+        interrupted = true;
+    } catch (err) {
+        interruptError = err;
+    }
+    try {
+        await clearQueue();
+        cleared = true;
+    } catch (err) {
+        clearError = err;
+    }
+    if (!interrupted && !cleared) {
+        const detail = (interruptError && interruptError.message) || (clearError && clearError.message) || 'cancel failed';
+        const error = new Error(detail);
+        error.code = (interruptError && interruptError.code) || (clearError && clearError.code) || 'comfyui_api_error';
+        throw error;
+    }
+    return { interrupted, cleared };
+}
+
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -573,6 +618,8 @@ module.exports = {
     unsubscribeProgress,
     freeModels,
     interrupt,
+    clearQueue,
+    cancelCurrentJob,
     queuePrompt,
     waitForPrompt,
     findOutputFiles,

@@ -30,10 +30,13 @@ const ROUTER_SYSTEM_PROMPT =
     'You are the ONLY authority on tool execution; the chat model is not.\n\n' +
     'Available tools:\n' +
     '- image_generation (Krea2/ComfyUI local image pipeline). Generate or modify images.\n' +
+    '- image_edit (Krea2 identity-edit LoRA). Edit a SOURCE image from a plain-language ' +
+    'instruction while preserving the rest. Source is either an attached upload or a ' +
+    'previously generated image. NOT for questions about an image.\n' +
     '- video_generation (MiniMax H3/ComfyUI local video pipeline). Generate or modify videos.\n' +
     '  Supports T2VA (text-to-video) and I2VA (image-to-video, using a reference image).\n' +
     '- image_upscale — upscale/enhance image resolution.\n' +
-    '- video_upscale — upscale/enhance video resolution (RTX 4K pass).\n\n' +
+    '- video_upscale — upscale/enhance video resolution (SeedVR2 quality or fast RTX).\n\n' +
     'Respond with ONLY a single JSON object, no markdown, no commentary:\n' +
     '{"intent": "...", "task": "...", "action": "...", "shouldExecuteTool": bool, ' +
     '"updatedPrompt": "..."}\n\n' +
@@ -45,8 +48,8 @@ const ROUTER_SYSTEM_PROMPT =
     '("what camera works best for this?", "which lighting style would look best?"). Does NOT execute the tool.\n' +
     '- "unrelated": user message is ordinary conversation unrelated to any tool. Does not execute.\n' +
     '- "switch_task": user explicitly starts a different task/workflow while one is active. Executes if that is a generation.\n\n' +
-    'task (one of): "image_generation" | "video_generation" | "image_upscale" | "video_upscale" | "chat" | null\n' +
-    'action (one of): "generate" | "modify" | "respond" | null\n' +
+    'task (one of): "image_generation" | "image_edit" | "video_generation" | "image_upscale" | "video_upscale" | "chat" | null\n' +
+    'action (one of): "generate" | "modify" | "edit" | "respond" | null\n' +
     'shouldExecuteTool: true ONLY when generation should actually run.\n' +
     'updatedPrompt: when the user modifies the active task, the new effective prompt ' +
     'built on top of the CURRENT PROMPT (do not restart from scratch). Otherwise empty string.\n' +
@@ -55,6 +58,14 @@ const ROUTER_SYSTEM_PROMPT =
     '(e.g. "a woman walking through rain"), NOT the image prompt merged with motion ' +
     'words. The video director rebuilds the full prompt from the source image.\n\n' +
     'Rules:\n' +
+    '- A message with an attached image that ASKS about it ("what is this?", ' +
+    '"describe this photo", "what color is...") is task_question/unrelated with ' +
+    'shouldExecuteTool false. It is NEVER image_edit — questions never execute.\n' +
+    '- A message with an attached image that INSTRUCTS a visual change ("make the ' +
+    'sky darker", "remove the car", "turn it into a watercolor") is new_task with ' +
+    'task image_edit, action edit, and shouldExecuteTool true.\n' +
+    '- "edit this image/photo", "retouch this" with no attachment edits the latest ' +
+    'generated image: new_task with task image_edit, action edit, shouldExecuteTool true.\n' +
     '- An image task is active and the user asks to animate / bring it to life / ' +
     'turn it into a video / use the image for a video, OR describes motion for ' +
     'the pictured subject ("make her walk", "make it rain", "make him wave"), ' +
@@ -64,7 +75,9 @@ const ROUTER_SYSTEM_PROMPT =
     'it nighttime", "change it to rain") is continue_task with task ' +
     'video_generation and action modify; the same source image is reused.\n' +
     '- A still-image change while an image task is active ("make her wear a red ' +
-    'dress", "change the background") is continue_task with task image_generation.\n' +
+    'dress", "change the background") is continue_task with task image_generation ' +
+    'and action modify. (The server executes it as an identity edit of the latest ' +
+    'output — never report task image_edit for follow-up tweaks.)\n' +
     '- A still-image change while a VIDEO task is active ("change her dress", ' +
     '"make the background a beach") modifies the video, not the image: ' +
     'continue_task with task video_generation and action modify.\n' +
@@ -72,6 +85,14 @@ const ROUTER_SYSTEM_PROMPT =
     'continue_task with action modify and shouldExecuteTool true; updatedPrompt extends the current prompt.\n' +
     '- A modification like "make her wear a red dress" while an image task is active is ' +
     'continue_task with action modify and shouldExecuteTool true.\n' +
+    '- A bare regenerate ("generate the video again", "generate the image again", ' +
+    '"do it again", "one more time", "redo it") re-runs the ACTIVE task with the ' +
+    'SAME prompt (new random seed): continue_task with action generate, ' +
+    'shouldExecuteTool true, updatedPrompt empty string.\n' +
+    '- A regenerate with a change ("generate the video again but make her walk ' +
+    'faster", "generate the image again with a red dress") is continue_task with ' +
+    'action modify and shouldExecuteTool true; updatedPrompt must be ONLY the ' +
+    'change ("make her walk faster"), never the "generate ... again" preamble.\n' +
     '- A question about the active task is task_question with shouldExecuteTool false — ' +
     'even if it is phrased as an offer or suggestion.\n' +
     '- If there is an active task and the user references "it"/"that"/"this" or makes ' +
@@ -88,6 +109,61 @@ const ROUTER_FALLBACK = {
     shouldExecuteTool: false,
     updatedPrompt: ''
 };
+
+// --- Deterministic regenerate handling ---------------------------------------
+// "generate the video again" / "generate the image again" must always execute
+// (same prompt, new seed), and "generate the video again but make her ..."
+// must execute as a modification whose delta excludes the regenerate preamble.
+// The LLM router is not trusted with these: "again" would otherwise leak into
+// the rewritten prompt ("a woman walking, generate again") or be misread as
+// chat. This gate runs before the LLM router whenever an active task exists.
+
+const REGENERATE_WORD_RE = /\b(?:again|redo|redone|retry|retake|remake|regenerat\w*|repeat|one more time|same\s+(?:one|thing|prompt|video|image|picture|photo))\b/i;
+const REGENERATE_VERB_RE = /\b(?:generat|regenerat|creat|recreat|mak|remak|render|rerender|produc|reproduc|do|redo|shoot|record)\w*\b/i;
+// Local image-noun matcher (mirrors image-generator's IMAGE_MEDIA_WORDS so this
+// module stays dependency-free for the gate).
+const REGEN_IMAGE_NOUN_RE = /\b(?:images?|pictures?|photos?|photographs?|portraits?|art(?:work)?|illustrations?|drawings?|paintings?|comics?|shots?|scenes?|views?|screenshots?|wallpapers?|posters?|logos?|avatars?|memes?|graphics?|landscapes?|interiors?)\b/i;
+
+function parseRegenerateRequest(message, activeTaskType) {
+    const text = String(message || '');
+    if (!text.trim() || !REGENERATE_WORD_RE.test(text)) return null;
+    const hasVideoNoun = videoGenerator.VIDEO_WORD_RE.test(text);
+    const hasImageNoun = REGEN_IMAGE_NOUN_RE.test(text);
+    let media = null;
+    if (hasVideoNoun && !hasImageNoun) media = 'video';
+    else if (hasImageNoun && !hasVideoNoun) media = 'image';
+    else if (hasVideoNoun && hasImageNoun) {
+        // Both nouns present ("regenerate the image as a video again"):
+        // the LAST media noun wins — it names the requested output.
+        const videoIdx = text.search(videoGenerator.VIDEO_WORD_RE);
+        const imageIdx = text.search(REGEN_IMAGE_NOUN_RE);
+        media = videoIdx > imageIdx ? 'video' : 'image';
+    } else if (activeTaskType === 'video' || activeTaskType === 'image') {
+        // Pronoun-only ("do it again", "again", "one more time"): only a
+        // regenerate when a generation verb or a bare-again turn is present.
+        if (!REGENERATE_VERB_RE.test(text) && text.trim().length > 24) return null;
+        media = activeTaskType;
+    } else {
+        return null;
+    }
+    // Media mismatch (e.g. "generate the video again ..." while an image task
+    // is active) is a cross-modal regenerate — still extract the delta so the
+    // caller can build an I2VA video from the last image with the change.
+    const crossModal = Boolean(activeTaskType && media !== activeTaskType);
+    const match = text.match(REGENERATE_WORD_RE);
+    let after = match ? text.slice(match.index + match[0].length) : '';
+    // Strip the connectors between "again" and the actual change.
+    for (let i = 0; i < 3; i++) {
+        const next = after.replace(/^\s*(?:[,.!;:]+|\b(?:but|and|with|where|except|though|however|now|please|just|also)\b|\b(?:change(?:s|d)?|chang(?:e|ing)\s+(?:it|that|this|her|him|them)?(?:\s+to)?|to)\b)+\s*/i, '');
+        if (next === after) break;
+        after = next;
+    }
+    after = after.replace(/^(?:it|this|that)\s+(?:to\s+)?/i, '').trim();
+    if (!after || /^(?:please|thanks|thank\s*you)[.!]*$/i.test(after)) {
+        return { media, crossModal, bare: true, delta: '' };
+    }
+    return { media, crossModal, bare: false, delta: after };
+}
 
 // Build a token-efficient compact context for the router: current active task,
 // effective prompt, last generated asset, parameters, and a few recent messages.
@@ -144,12 +220,16 @@ function normalizeDecision(parsed) {
     if (intent === 'new_task' || intent === 'continue_task' || intent === 'switch_task') {
         const rawTask = String(parsed.task || '').toLowerCase();
         if (rawTask === 'video_generation') task = 'video_generation';
+        else if (rawTask === 'image_edit') task = 'image_edit';
         else if (rawTask === 'image_generation') task = 'image_generation';
         else if (rawTask === 'video_upscale') task = 'video_upscale';
         else if (rawTask === 'image_upscale') task = 'image_upscale';
         else task = 'image_generation';
         if (task === 'video_upscale' || task === 'image_upscale') {
             action = 'upscale';
+            shouldExecuteTool = parsed.shouldExecuteTool !== false;
+        } else if (task === 'image_edit') {
+            action = 'edit';
             shouldExecuteTool = parsed.shouldExecuteTool !== false;
         } else {
             action = intent === 'new_task' ? String(parsed.action || 'generate')
@@ -181,8 +261,9 @@ function normalizeDecision(parsed) {
 // --- Public: route a message ---------------------------------------------------
 
 // activeTask can be null to indicate no active task; conversationId is used to
-// fetch recent messages for the compact context.
-async function routeMessage({ message, provider, model, conversationId }) {
+// fetch recent messages for the compact context. hasAttachedImage marks a
+// freshly uploaded photo on this message (vision source for image_edit).
+async function routeMessage({ message, provider, model, conversationId, hasAttachedImage }) {
     // Upscale requests are narrow, deterministic intents. Detect them with
     // heuristics before the LLM router so "upscale this video" always routes
     // to the video upscale pipeline and "upscale this image" always routes to
@@ -225,6 +306,105 @@ async function routeMessage({ message, provider, model, conversationId }) {
     const messages = conversationService.getMessages(conversationId)
         .slice(-RECENT_MESSAGES_FOR_ROUTER);
 
+    // Deterministic regenerate gate: "generate the video/image again" re-runs
+    // the active task verbatim; "... again but <change>" runs it as a
+    // modification with ONLY the change as the delta. Runs before the edit
+    // gate and the LLM router so "again" never leaks into a rewritten prompt.
+    if (activeTask.type === 'video' || activeTask.type === 'image') {
+        const regen = parseRegenerateRequest(message, activeTask.type);
+        if (regen && !regen.crossModal && activeTask.prompt) {
+            if (regen.media === 'video' && activeTask.type === 'video') {
+                if (regen.bare) {
+                    return {
+                        intent: 'continue_task',
+                        task: 'video_generation',
+                        action: 'generate',
+                        shouldExecuteTool: true,
+                        updatedPrompt: '',
+                        regenerateBare: true
+                    };
+                }
+                return {
+                    intent: 'continue_task',
+                    task: 'video_generation',
+                    action: 'modify',
+                    shouldExecuteTool: true,
+                    updatedPrompt: regen.delta
+                };
+            }
+            if (regen.media === 'image' && activeTask.type === 'image') {
+                if (regen.bare) {
+                    return {
+                        intent: 'continue_task',
+                        task: 'image_generation',
+                        action: 'generate',
+                        shouldExecuteTool: true,
+                        updatedPrompt: '',
+                        regenerateBare: true
+                    };
+                }
+                return {
+                    intent: 'continue_task',
+                    task: 'image_generation',
+                    action: 'modify',
+                    shouldExecuteTool: true,
+                    updatedPrompt: regen.delta
+                };
+            }
+        }
+        // Cross-modal regenerate ("generate the video again ..." while an
+        // image task is active): build an I2VA video from the last generated
+        // image, applying the delta when one is present. This is what lets
+        // "generate the video again but make her wave" refer back to the last
+        // image instead of starting from text alone.
+        if (regen && regen.crossModal && regen.media === 'video' && activeTask.type === 'image') {
+            const sourceImage = videoGenerator.resolveVideoSourceImage(conversationId);
+            if (sourceImage) {
+                const userPrompt = regen.bare
+                    ? ('animate this image: ' + String(activeTask.prompt || message))
+                    : regen.delta;
+                const structuredRequest = {
+                    intent: 'video_generation',
+                    action: 'generate',
+                    user_prompt: userPrompt,
+                    previous_prompt: activeTask.prompt || '',
+                    creative_mode: 'none',
+                    has_reference_image: true,
+                    explicit_constraints: [],
+                    parameters: {}
+                };
+                const modeInfo = videoGenerator.resolveVideoMode(conversationId, message, structuredRequest);
+                structuredRequest.videoMode = modeInfo.videoMode;
+                structuredRequest.sourceImageRawFilename = modeInfo.sourceImage
+                    ? modeInfo.sourceImage.rawFilename
+                    : sourceImage.rawFilename;
+                return {
+                    intent: 'switch_task',
+                    task: 'video_generation',
+                    action: 'generate',
+                    shouldExecuteTool: true,
+                    updatedPrompt: userPrompt,
+                    structuredRequest
+                };
+            }
+        }
+    }
+
+    // Explicit "edit this image" phrasing without an upload edits the latest
+    // generated image. Skipped for video tasks and video requests (the video
+    // pipeline owns those) — the LLM router handles everything vaguer.
+    if (activeTask.type !== 'video' && !videoGenerator.VIDEO_WORD_RE.test(message)) {
+        if (imageGenerator.detectEditIntent(message)) {
+            return {
+                intent: 'new_task',
+                task: 'image_edit',
+                action: 'edit',
+                shouldExecuteTool: true,
+                updatedPrompt: message
+            };
+        }
+    }
+
     // Cross-task I2VA: when a non-video task is active (e.g. a just-generated
     // image) and the user asks for a video made from an existing image, route
     // deterministically to the video pipeline so "use this image to generate a
@@ -234,9 +414,16 @@ async function routeMessage({ message, provider, model, conversationId }) {
     // "use this image", "make it rain", "make her walk", ...); the LLM
     // intent classifier remains the final authority on whether it is a video.
     // Falling through on a non-video verdict is safe: still-image tweaks like
-    // "make her wear a red dress" match the "make her" prefix but are rejected
-    // by the classifier and continue to the LLM router as image modifications.
+    // "make her wear a red dress" no longer match the pronoun+motion gate at
+    // all (the motion verb is required) and are rejected by the classifier and
+    // continue to the LLM router as image modifications. As defense-in-depth,
+    // still-image-only clothing/appearance changes skip the video gate
+    // entirely even if a broad matcher fires.
     if (activeTask.type && activeTask.type !== 'video' &&
+        typeof videoGenerator.isStillImageOnlyChange === 'function' &&
+        videoGenerator.isStillImageOnlyChange(message)) {
+        // Skip the cross-task I2VA gate — fall through to the LLM router.
+    } else if (activeTask.type && activeTask.type !== 'video' &&
         (videoGenerator.VIDEO_WORD_RE.test(message) || videoGenerator.I2V_REF_RE.test(message))) {
         const videoIntent = await videoGenerator.detectVideoIntent(message, providers, provider, model);
         if (videoIntent.intent === 'video_generation') {
@@ -256,6 +443,23 @@ async function routeMessage({ message, provider, model, conversationId }) {
 
     // No active task: detect whether this is a new image or video request.
     if (!activeTask.type) {
+        // Attached photo: the LLM router decides question (chat) vs edit
+        // instruction (image_edit). Anything else falls back to chat —
+        // video-from-upload is not supported yet.
+        if (hasAttachedImage) {
+            const uploadPrompt =
+                'ACTIVE TASK:\nnone\n\n' +
+                'ATTACHED IMAGE:\nyes (a photo the user just uploaded)\n\n' +
+                'RECENT CONVERSATION:\n' + buildRouterContext(activeTask, messages) + '\n\n' +
+                'USER LATEST MESSAGE:\n"' + message + '"\n\n' +
+                'Output the JSON classification only.';
+            const uploadDecision = normalizeDecision(await askRouter(uploadPrompt, provider, model));
+            if (uploadDecision.task === 'image_edit' && uploadDecision.shouldExecuteTool) {
+                uploadDecision.updatedPrompt = message;
+                return uploadDecision;
+            }
+            return ROUTER_FALLBACK;
+        }
         // Check video intent first — video requests are a superset of image
         // requests (both use generation verbs), so video should take priority
         // when the user clearly asks for a video.
@@ -290,6 +494,7 @@ async function routeMessage({ message, provider, model, conversationId }) {
 
     const routerPrompt =
         'ACTIVE TASK:\n' + activeTaskSummary(activeTask) + '\n\n' +
+        'ATTACHED IMAGE:\n' + (hasAttachedImage ? 'yes (a photo the user just uploaded)' : 'no') + '\n\n' +
         'RECENT CONVERSATION:\n' + buildRouterContext(activeTask, messages) + '\n\n' +
         'USER LATEST MESSAGE:\n"' + message + '"\n\n' +
         'Output the JSON classification only.';
@@ -299,7 +504,7 @@ async function routeMessage({ message, provider, model, conversationId }) {
     const decision = normalizeDecision(parsed);
 
     // Only keep an updated prompt for generation executions.
-    if (!(decision.shouldExecuteTool && (decision.task === 'image_generation' || decision.task === 'video_generation'))) {
+    if (!(decision.shouldExecuteTool && (decision.task === 'image_generation' || decision.task === 'video_generation' || decision.task === 'image_edit'))) {
         decision.updatedPrompt = '';
     }
 
@@ -447,5 +652,6 @@ module.exports = {
     buildSuccessReply,
     buildRouterContext,
     renderActiveTaskContext,
+    parseRegenerateRequest,
     ROUTER_SYSTEM_PROMPT
 };

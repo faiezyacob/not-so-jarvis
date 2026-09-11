@@ -25,10 +25,13 @@ const GENERATED_DIR = path.join(__dirname, '..', 'data', 'generated');
 // --- Upscaling constants -------------------------------------------------------
 //
 // Adapted from Mix Studio's upscale pipeline (lib/upscale-workflows.js and
-// server.js buildUpscale). SeedVR2 is the default engine: a tiled diffusion
-// upscaler with sharp/balanced detail profiles and a configurable input noise
-// level. The Ultimate SD engine is a prompt-guided tiled upscale that reuses
-// the Krea2 pipeline's own UNET/CLIP/VAE models.
+// server.js buildUpscale). The shared engine selects the pipeline per media:
+// SeedVR2 is a tiled diffusion upscaler with sharp/balanced detail profiles
+// and a configurable input noise level; Ultimate SD is a prompt-guided tiled
+// upscale that reuses the Krea2 pipeline's own UNET/CLIP/VAE models (image
+// only); RTX is a fast single-pass super-resolution node (video only, adapted
+// from Mix Studio's rtxVideoSuperResolutionNode). Images map RTX -> SeedVR2,
+// videos map Ultimate SD -> RTX, so each medium always runs a valid graph.
 
 const LEGACY_KREA_SEEDVR2_DIT = 'seedvr2_ema_3b_fp16.safetensors';
 const DEFAULT_SEEDVR2_DIT = 'seedvr2_ema_7b_fp8_e4m3fn_mixed_block35_fp16.safetensors';
@@ -607,6 +610,11 @@ const DEFAULT_SETTINGS = {
     clip: process.env.KREA2_CLIP || 'Huihui-Qwen3-VL-4B-Instruct-abliterated-fp8_scaled.safetensors',
     clipType: process.env.KREA2_CLIP_TYPE || 'krea2',
     vae: process.env.KREA2_VAE || 'wan_2.1_vae.safetensors',
+    // Identity Edit LoRA for the Krea2 instruction-based edit pipeline
+    // (adapted from Mix Studio's krea2-identity-edit.js, community fine-tune
+    // conradlocke/krea2-identity-edit). Edits a source image from a
+    // plain-language instruction while preserving the rest.
+    editLora: process.env.KREA2_EDIT_LORA || 'krea2_identity_edit_v1_2.safetensors',
     // User-facing resolution controls. The UI exposes only these two
     // dropdowns — never raw pixels. Width/height below are always derived
     // from them via resolveDimensions(), so stored or env-provided pixel
@@ -624,12 +632,18 @@ const DEFAULT_SETTINGS = {
     // Remembered trigger words keyed by LoRA name. Kept separate from the
     // active stack so a removed LoRA keeps its trigger word if re-added later.
     loraTriggerWords: {},
-    // Image upscaling (SeedVR2 default, Ultimate SD alternative). Profile is
-    // "sharp" (sharp DiT variant) or "balanced"; noise is off/low/medium detail
-    // input noise; mode is "target" (target short-side resolution) or
-    // "multiplier" (scale factor on the source short side); preScale applies an
-    // optional lanczos pre-resize before SeedVR2 (1 = off).
-    upscaleEngine: 'seedvr2',
+    // Image upscaling (SeedVR2 / Ultimate SD for images, RTX fast path for
+    // video — adapted from Mix Studio, which defaults video post-upscale to
+    // RTX). Profile is "sharp" (sharp DiT variant) or "balanced"; noise is
+    // off/low/medium detail input noise; mode is "target" (target short-side
+    // resolution) or "multiplier" (scale factor on the source short side);
+    // preScale applies an optional lanczos pre-resize before SeedVR2 (1 = off).
+    // Engine is shared with video: images run SeedVR2/Ultimate SD (an RTX
+    // selection falls back to SeedVR2 for images); videos run SeedVR2/RTX (an
+    // Ultimate SD selection falls back to RTX for video). RTX video upscale
+    // uses upscaleMultiplier as its scale factor. Default is RTX so video
+    // upscales are fast like Mix Studio; image upscales are unaffected.
+    upscaleEngine: 'rtx',
     upscaleMode: 'target',
     upscaleResolution: 2160,
     upscaleMultiplier: 2,
@@ -643,7 +657,7 @@ const DEFAULT_SETTINGS = {
 
 // Fields the user may override through the settings panel / API. Kept
 // separate from DEFAULT_SETTINGS so we only persist explicit overrides.
-const CONFIGURABLE_KEYS = ['unet', 'clip', 'clipType', 'vae', 'aspectRatio', 'imageSize', 'width', 'height', 'steps', 'cfg', 'loras', 'loraTriggerWords',
+const CONFIGURABLE_KEYS = ['unet', 'clip', 'clipType', 'vae', 'editLora', 'aspectRatio', 'imageSize', 'width', 'height', 'steps', 'cfg', 'loras', 'loraTriggerWords',
     'upscaleEngine', 'upscaleMode', 'upscaleResolution', 'upscaleMultiplier', 'upscaleProfile', 'upscaleNoise', 'upscalePreScale',
     'seedvr2Dit', 'seedvr2Vae', 'seedvr2Attention'];
 
@@ -731,7 +745,7 @@ function sanitizeSettings(patch) {
             if (Number.isFinite(n) && n >= 0) out[key] = n;
         } else if (key === 'upscaleEngine') {
             const v = String(value || '').toLowerCase();
-            if (v === 'seedvr2' || v === 'ultimate') out[key] = v;
+            if (v === 'seedvr2' || v === 'ultimate' || v === 'rtx') out[key] = v;
         } else if (key === 'upscaleMode') {
             const v = String(value || '').toLowerCase();
             if (v === 'target' || v === 'multiplier') out[key] = v;
@@ -915,8 +929,9 @@ async function validateGraphAgainstComfy(info, graph) {
 
 // --- Upscaling -----------------------------------------------------------------
 //
-// Two engines mirroring Mix Studio's upscale pipeline:
-//   - SeedVR2 (default): a tiled diffusion upscaler. "sharp" profile uses the
+// Two image engines mirroring Mix Studio's upscale pipeline (video adds a
+// third, RTX — see services/video-generator.js):
+//   - SeedVR2: a tiled diffusion upscaler. "sharp" profile uses the
 //     sharp 7B DiT variant (falls back to balanced when not installed), and the
 //     noise level controls the detail input noise (off/low/medium).
 //   - Ultimate SD: a prompt-guided tiled upscaler (UltimateSDUpscale custom
@@ -1236,6 +1251,9 @@ async function upscaleImage(rawFilename, options = {}) {
         const buffer = fs.readFileSync(filePath);
 
         const settings = effectiveSettings();
+        // Images only run SeedVR2 or Ultimate SD: an RTX selection (the fast
+        // video path) falls back to SeedVR2 here, matching Mix Studio where
+        // the image pipeline never sees the RTX engine.
         const engine = String(options.engine || settings.upscaleEngine || 'seedvr2').toLowerCase() === 'ultimate' ? 'ultimate' : 'seedvr2';
         const sourceMeta = findHistoryMeta(safeName);
         const { width: sourceWidth, height: sourceHeight } = readImageDimensions(filePath);
@@ -1475,6 +1493,359 @@ async function generateImage(prompt, options = {}) {
     }, queueOpts);
 }
 
+// --- Krea2 identity edit --------------------------------------------------------
+//
+// Instruction-based, identity-preserving image editing adapted from Mix
+// Studio's lib/krea2-identity-edit.js (community LoRA
+// conradlocke/krea2-identity-edit + lbouaraba/comfyui-krea2edit nodes).
+// Give it a source image and a plain-language instruction; it edits while
+// preserving what the instruction does not change — people, objects,
+// recolor, restyle, removal. Single reference only (Mix Studio supports two).
+//
+// Graph: UNET/CLIP/VAE loaders → identity LoRA (LoraLoaderModelOnly) → user
+// LoRAs (model-only) → LoadImage/VAEEncode source latent →
+// Krea2EditModelPatch (fit geometry, ref_boost fidelity dial) →
+// Krea2EditGroundedEncode positive/negative → KSampler (euler/simple,
+// denoise 1) → VAEDecode → SaveImage (not-so-jarvis/edit).
+
+const MAX_IDENTITY_EDIT_PIXELS = 2000000;
+const EDIT_REQUIRED_NODES = ['Krea2EditModelPatch', 'Krea2EditGroundedEncode'];
+
+// Explicit edit phrasing aimed at an existing image ("edit this photo",
+// "retouch it"). A narrow deterministic gate like detectUpscaleIntent — the
+// LLM router stays the authority for everything vaguer.
+const EDIT_SIGNAL_RE = /\b(edit\w*|retouch\w*|recolor\w*|restyle\w*|redraw\w*|inpaint\w*|outpaint\w*|try\s*on)\b/i;
+const EDIT_REF_RE = /\b(this\b|that\b|it\b|them\b|the\s+(?:image|picture|photo|pic)|my\s+(?:image|picture|photo|pic)|your\s+(?:image|picture|photo)|image\w*|pict\w*|pic\b|photo\w*)\b/i;
+
+function detectEditIntent(message) {
+    const text = String(message || '');
+    if (!text.trim()) return null;
+    if (isConceptQuestion(text)) return null;
+    const norm = text.toLowerCase().replace(/[-_]/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!EDIT_SIGNAL_RE.test(norm)) return null;
+    if (!EDIT_REF_RE.test(norm)) return null;
+    return { intent: 'image_edit' };
+}
+
+function sameAssetName(a, b) {
+    const key = (v) => String(v || '').replace(/\\/g, '/').split('/').pop().toLowerCase();
+    return key(a) === key(b);
+}
+
+// Fit the output inside 2MP on a 16px grid (Mix Studio's
+// normalizeIdentityEditDimensions). Above 2MP the edit LoRA bleeds/duplicates.
+function normalizeIdentityEditDimensions(width, height) {
+    let w = Math.max(256, Math.round(Number(width) || 1024));
+    let h = Math.max(256, Math.round(Number(height) || 1024));
+    const pixels = w * h;
+    if (pixels > MAX_IDENTITY_EDIT_PIXELS) {
+        const scale = Math.sqrt(MAX_IDENTITY_EDIT_PIXELS / pixels);
+        w *= scale;
+        h *= scale;
+    }
+    w = Math.max(256, Math.round(w / 16) * 16);
+    h = Math.max(256, Math.round(h / 16) * 16);
+    while (w * h > MAX_IDENTITY_EDIT_PIXELS) {
+        if (w >= h) w -= 16;
+        else h -= 16;
+    }
+    return { width: w, height: h };
+}
+
+function editLoraChoices(info) {
+    const node = info && info.LoraLoaderModelOnly;
+    const input = (node && node.input) || {};
+    const list = (input.required && input.required.lora_name) || input.lora_name;
+    return Array.isArray(list) && Array.isArray(list[0]) ? list[0] : [];
+}
+
+// Fail fast with a friendly error when the edit stack is incomplete.
+function assertEditStackAvailable(info, settings) {
+    const missingNodes = EDIT_REQUIRED_NODES.filter((n) => !info[n]);
+    if (missingNodes.length) {
+        const error = new Error(
+            'ComfyUI is missing custom nodes: ' + missingNodes.join(', ') +
+            '. Install lbouaraba/comfyui-krea2edit (and restart ComfyUI), then try again.'
+        );
+        error.code = 'comfyui_missing_nodes';
+        error.missingNodes = missingNodes;
+        throw error;
+    }
+    const editLora = String(settings.editLora || '').trim();
+    if (!editLora || !editLoraChoices(info).some((n) => sameAssetName(n, editLora))) {
+        const error = new Error(
+            'Krea 2 Edit needs the Identity Edit LoRA in ComfyUI loras: ' +
+            (editLora || '(not configured)') + '.'
+        );
+        error.code = 'comfyui_edit_lora_missing';
+        throw error;
+    }
+}
+
+// Non-throwing availability probe for the modify-turn fallback. Never throws.
+async function checkEditAvailability() {
+    try {
+        if (!(await comfyui.isAvailable())) return { ok: false, reason: 'comfyui_unavailable' };
+        const info = await comfyui.getObjectInfo(15000);
+        assertEditStackAvailable(info, effectiveSettings());
+        return { ok: true };
+    } catch (err) {
+        return { ok: false, reason: err.code || 'unavailable' };
+    }
+}
+
+function buildKrea2IdentityEditGraph(instruction, loadName, options = {}) {
+    const settings = Object.assign({}, DEFAULT_SETTINGS, options.settings || {});
+    const editLora = String(options.editLora || settings.editLora || '').trim();
+    if (!editLora) {
+        const error = new Error('Krea 2 Edit needs the Identity Edit LoRA configured (image settings > Edit LoRA).');
+        error.code = 'comfyui_edit_lora_missing';
+        throw error;
+    }
+    if (!loadName) {
+        const error = new Error('Krea 2 Edit needs a source image.');
+        error.code = 'edit_source_missing';
+        throw error;
+    }
+    const seed = Number.isInteger(options.seed) && options.seed >= 0 ? options.seed : 0;
+    const steps = clampInt(options.steps || 10, 8, 12, 10);
+    const cfg = clampNumber(options.cfg, 1, 5, 1);
+    const refBoost = clampNumber(options.refBoost, 0, 20, 4);
+    const groundingPx = Math.round(clampNumber(options.groundingPx, 384, 1024, 768));
+    const dims = normalizeIdentityEditDimensions(options.width, options.height);
+
+    // The identity LoRA must be enabled — a disabled stack entry means the
+    // user turned the edit pipeline off, so refuse instead of running Unet
+    // without it. Its own strength is honored; user LoRAs stack model-only
+    // on top, same as Mix Studio.
+    const identityOverride = (settings.loras || [])
+        .find((l) => l && l.name && sameAssetName(l.name, editLora));
+    if (identityOverride && identityOverride.on === false) {
+        const error = new Error('Krea 2 Edit needs the Identity Edit LoRA enabled.');
+        error.code = 'comfyui_edit_lora_missing';
+        throw error;
+    }
+
+    const graph = {};
+    graph.unet = diffusionModelLoader(settings.unet);
+    graph.clip = { class_type: 'CLIPLoader', inputs: { clip_name: settings.clip, type: settings.clipType, device: 'default' } };
+    graph.vae = { class_type: 'VAELoader', inputs: { vae_name: settings.vae } };
+    graph.identity_lora = {
+        class_type: 'LoraLoaderModelOnly',
+        inputs: {
+            model: ['unet', 0],
+            lora_name: editLora,
+            strength_model: clampNumber(identityOverride && identityOverride.strength, -100, 100, 1)
+        }
+    };
+
+    let model = ['identity_lora', 0];
+    let n = 0;
+    for (const l of settings.loras || []) {
+        if (!l || l.on === false || !l.name || sameAssetName(l.name, editLora)) continue;
+        n += 1;
+        const key = 'user_lora_' + n;
+        graph[key] = {
+            class_type: 'LoraLoaderModelOnly',
+            inputs: {
+                model,
+                lora_name: l.name,
+                strength_model: clampNumber(l.strength, -100, 100, 1)
+            }
+        };
+        model = [key, 0];
+    }
+
+    graph.source = { class_type: 'LoadImage', inputs: { image: loadName } };
+    graph.source_latent = {
+        class_type: 'VAEEncode',
+        inputs: { pixels: ['source', 0], vae: ['vae', 0] }
+    };
+    graph.model_patch = {
+        class_type: 'Krea2EditModelPatch',
+        inputs: {
+            model,
+            source_latent: ['source_latent', 0],
+            ref_boost: refBoost,
+            ref_boost_a: 1,
+            fit_mode: 'fit',
+            vae: ['vae', 0],
+            source_image: ['source', 0]
+        }
+    };
+    graph.positive = {
+        class_type: 'Krea2EditGroundedEncode',
+        inputs: {
+            prompt: String(instruction || ''),
+            grounding_px: groundingPx,
+            clip: ['clip', 0],
+            image: ['source', 0]
+        }
+    };
+    graph.negative = {
+        class_type: 'Krea2EditGroundedEncode',
+        inputs: {
+            prompt: String(options.negativePrompt || ''),
+            grounding_px: groundingPx,
+            clip: ['clip', 0],
+            image: ['source', 0]
+        }
+    };
+    graph.latent = {
+        class_type: 'EmptySD3LatentImage',
+        inputs: { width: dims.width, height: dims.height, batch_size: 1 }
+    };
+    graph.sampler = {
+        class_type: 'KSampler',
+        inputs: {
+            model: ['model_patch', 0],
+            positive: ['positive', 0],
+            negative: ['negative', 0],
+            latent_image: ['latent', 0],
+            seed,
+            steps,
+            cfg,
+            sampler_name: 'euler',
+            scheduler: 'simple',
+            denoise: 1
+        }
+    };
+    graph.decode = { class_type: 'VAEDecode', inputs: { samples: ['sampler', 0], vae: ['vae', 0] } };
+    graph.save = { class_type: 'SaveImage', inputs: { images: ['decode', 0], filename_prefix: 'not-so-jarvis/edit' } };
+
+    return graph;
+}
+
+// Edit a local image file (data/images upload or data/generated output) from
+// a plain-language instruction. Shares the single-generation queue. Returns
+// { url, filename, width, height, prompt, generationMs, meta }.
+async function editImage(sourceAbsPath, instruction, options = {}) {
+    const queueOpts = {
+        label: options.label || 'image edit',
+        kind: options.kind || 'image_edit',
+        conversationId: options.conversationId || null,
+        onQueued: options.onQueued || null
+    };
+    return withGenerationLock(async () => {
+        await ensureGeneratedDir();
+        const startedAt = Date.now();
+
+        const abs = String(sourceAbsPath || '');
+        if (!abs || !fs.existsSync(abs)) {
+            const error = new Error('The image to edit could not be found on disk. It may have been deleted.');
+            error.code = 'edit_source_missing';
+            throw error;
+        }
+        const buffer = fs.readFileSync(abs);
+        if (!buffer.length) {
+            const error = new Error('The image to edit is empty.');
+            error.code = 'edit_source_missing';
+            throw error;
+        }
+
+        const seed = Number.isInteger(options.seed) && options.seed >= 0
+            ? options.seed
+            : Math.floor(Math.random() * 2 ** 32);
+        const settings = effectiveSettings();
+
+        // Output follows the source shape (fit inside 2MP); WebP and other
+        // dimension-unknown files fall back to the configured S/M/L canvas.
+        const srcDims = readImageDimensions(abs);
+        const dims = (srcDims.width > 0 && srcDims.height > 0)
+            ? normalizeIdentityEditDimensions(srcDims.width, srcDims.height)
+            : normalizeIdentityEditDimensions(settings.width, settings.height);
+
+        // LoRA trigger words are prepended exactly once, same as generation.
+        const cleanInstruction = stripLoraTriggerWords(instruction);
+        const triggerWords = (settings.loras || [])
+            .filter((l) => l && l.on && l.name && l.triggerWord)
+            .map((l) => l.triggerWord);
+        const finalInstruction = triggerWords.length
+            ? triggerWords.join(', ') + ', ' + String(cleanInstruction || '')
+            : String(cleanInstruction || '');
+        if (!finalInstruction.trim()) {
+            const error = new Error('Describe what to change in the image.');
+            error.code = 'edit_source_missing';
+            throw error;
+        }
+
+        // Make the source available to ComfyUI's LoadImage node, then always
+        // clean it up afterwards so the input folder does not accumulate files.
+        const uploadName = 'jarvis_edit_' + Date.now() + '_' + path.basename(abs);
+        const uploaded = await comfyui.uploadImage(buffer, uploadName);
+        const loadName = (uploaded && uploaded.name) || uploadName;
+
+        let basename;
+        try {
+            const graph = buildKrea2IdentityEditGraph(finalInstruction, loadName, {
+                settings,
+                seed,
+                width: dims.width,
+                height: dims.height,
+                steps: options.steps,
+                cfg: options.cfg,
+                refBoost: options.refBoost,
+                groundingPx: options.groundingPx,
+                negativePrompt: options.negativePrompt
+            });
+
+            const info = await comfyui.getObjectInfo();
+            await validateGraphAgainstComfy(info, graph);
+            assertEditStackAvailable(info, settings);
+
+            const pid = await comfyui.queuePrompt(graph);
+            console.log('[image-generator] queued Krea2 edit workflow:', pid);
+
+            const history = await comfyui.waitForPrompt(pid, { timeoutMs: options.timeoutMs });
+            const files = comfyui.findOutputFiles(history.outputs || {}, /\.(?:png|jpg|jpeg|webp)$/i);
+            if (!files.length) {
+                const error = new Error('ComfyUI finished but produced no edited image file.');
+                error.code = 'comfyui_output_not_found';
+                throw error;
+            }
+
+            const entry = files[files.length - 1];
+            const outBuffer = await comfyui.downloadImage(entry);
+
+            const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+            const extension = path.extname(entry.filename).toLowerCase() || '.png';
+            basename = safeFilename(outBuffer.toString('hex', 0, 4)) + '_edit_' + stamp + extension;
+            fs.writeFileSync(path.join(GENERATED_DIR, basename), outBuffer);
+            console.log('[image-generator] saved edited image:', basename, '(' + outBuffer.length + ' bytes)');
+
+            await comfyui.deleteOutputFile(entry, { history: pid });
+        } finally {
+            await comfyui.deleteInputFile(loadName).catch(() => {});
+        }
+
+        const { width, height } = readImageDimensions(path.join(GENERATED_DIR, basename));
+        const activeLoras = (settings.loras || [])
+            .filter((l) => l && l.on && l.name)
+            .map((l) => ({ name: l.name, strength: Number(l.strength) || 0, triggerWord: l.triggerWord || '' }));
+        const meta = generatedHistory.add({
+            file: '/generated/' + encodeURIComponent(basename),
+            rawFilename: basename,
+            prompt: finalInstruction,
+            model: 'Krea2 Edit',
+            loras: activeLoras,
+            width: width || dims.width,
+            height: height || dims.height,
+            generationMs: Date.now() - startedAt,
+            edit: { source: path.basename(abs) }
+        });
+
+        return {
+            url: meta.file,
+            filename: basename,
+            width: width || dims.width,
+            height: height || dims.height,
+            prompt: finalInstruction,
+            generationMs: meta.generationMs,
+            meta
+        };
+    }, queueOpts);
+}
+
 module.exports = {
     GENERATED_DIR,
     IMAGE_INTENT_SYSTEM_PROMPT,
@@ -1497,6 +1868,12 @@ module.exports = {
     stripLoraTriggerWords,
     buildKrea2T2IGraph,
     buildLoraChain,
+    buildKrea2IdentityEditGraph,
+    normalizeIdentityEditDimensions,
+    detectEditIntent,
+    checkEditAvailability,
+    editImage,
+    MAX_IDENTITY_EDIT_PIXELS,
     validateGraphAgainstComfy,
     effectiveSettings,
     getDefaults,

@@ -10,7 +10,9 @@ A lightweight, locally-hosted AI assistant dashboard built with **plain Node.js*
 
 - **Chat** with local [Ollama](https://ollama.com) provider — SSE streaming, markdown rendering, conversation history
 - **AI image generation** via Krea2 / ComfyUI — type a prompt and see the result inline in chat
+- **Identity edit** — attach a photo (or say *"edit this image"*) and describe the change; the Krea2 Identity Edit LoRA re-stages, recolors, adds/removes objects while preserving the rest
 - **Image upscaling** — SeedVR2 (tiled diffusion) or Ultimate SD engines, before/after comparison viewer
+- **Video upscaling** — fast RTX super-resolution (default) or SeedVR2 quality path, audio-preserving
 - **LoRA stack** — attach multiple LoRAs with per-model strength, on/off toggle, and trigger words
 - **Task router** — context-aware intent detection that continues/modifies active image sessions across turns
 - **System monitoring** — live CPU, RAM, VRAM/GPU widgets with canvas history charts (draggable, reorderable)
@@ -89,6 +91,7 @@ Copy `.env.example` to `.env` and configure as needed:
 | `KREA2_UNET` | `krea2_turbo_fp8_scaled.safetensors` | UNET model |
 | `KREA2_CLIP` | *(see .env.example)* | CLIP model |
 | `KREA2_VAE` | `wan_2.1_vae.safetensors` | VAE model |
+| `KREA2_EDIT_LORA` | `krea2_identity_edit_v1_2.safetensors` | Identity Edit LoRA |
 | `KREA2_ASPECT_RATIO` | `4:5` | Default aspect ratio |
 | `KREA2_IMAGE_SIZE` | `M` | Default size (S/M/L) |
 | `KREA2_STEPS` | `8` | Ksampler steps |
@@ -107,9 +110,20 @@ When you send a message like *"Generate an image of a futuristic city"*, JARVIS:
 5. Downloads the output to `data/generated/`
 6. Shows the image inline in the chat
 
-The task stays active across turns — say *"make the sky darker"* and it modifies the previous generation, preserving unchanged visual attributes.
+The task stays active across turns — say *"make the sky darker"* and it edits the previous image's pixels via the Identity Edit LoRA (falls back to full regeneration when the edit nodes/LoRA are unavailable), preserving unchanged visual attributes.
 
-Only one generation runs at a time. A second request gets a friendly "please wait" message.
+Only one generation runs at a time — extra requests queue and can be cancelled from chat.
+
+### Identity edit
+
+Attach a photo and describe the change (*"remove the car"*), or say *"edit this image, make it night"* to edit the last generated image. JARVIS:
+
+1. Resolves the source (fresh `/images/` upload wins, else the latest `/generated/` image)
+2. Builds the Krea2 identity-edit workflow (UNET + Identity Edit LoRA + user LoRAs, `Krea2EditModelPatch` with fit geometry and `ref_boost` 4, Euler/simple, ≤2MP)
+3. Submits it to ComfyUI (requires the `comfyui-krea2edit` custom nodes and `krea2_identity_edit_v1_2.safetensors` in ComfyUI's loras, configurable via Edit LoRA setting or `KREA2_EDIT_LORA`)
+4. Shows the edit inline; follow-up tweaks chain onto the latest output
+
+Edited files carry an `_edit_` filename marker, like upscales carry `_up_`.
 
 ### LoRA stack
 
@@ -124,10 +138,11 @@ Active LoRAs compose in order via chained `LoraLoader` nodes.
 
 One shared upscale configuration in the settings panel applies to both:
 
-- **SeedVR2** (default) — tiled diffusion upscaler with Sharp/Balanced profiles, noise control, optional pre-resize
+- **SeedVR2** — tiled diffusion upscaler with Sharp/Balanced profiles, noise control, optional pre-resize (slow quality path)
+- **RTX** (default, videos) — fast single-pass super-resolution at the multiplier scale factor, adapted from Mix Studio
 - **Ultimate SD** (images only) — prompt-guided tiled upscaler reusing your Krea2 models
 
-Trigger by saying *"upscale this image"* or *"upscale this video"* (also *"make it higher res"*). The source is automatically resolved from the conversation's last generated image or video. Video always uses SeedVR2 at the target resolution.
+Trigger by saying *"upscale this image"* or *"upscale this video"* (also *"make it higher res"*). The source is automatically resolved from the conversation's last generated image or video. Video runs SeedVR2 at the target resolution or fast RTX at the multiplier (Ultimate SD falls back to RTX for video; RTX falls back to SeedVR2 for images).
 
 Upscaled images are grouped with their original in the gallery — click the original to preview, then use the **Compare** button for a before/after slider.
 
@@ -148,4 +163,4 @@ This project is free software licensed under the **GNU General Public License v3
 
 Copyright (c) 2025 not-so-jarvis contributors.
 
-It includes adaptations from **Mix Studio** (https://github.com/BlackMixture/Mix-Studio), which is also licensed under GPL-3.0. Adapted components include the Krea2 text-to-image workflow graph, SeedVR2 / Ultimate SD upscale pipelines, and MiniMax H3 video workflow in `services/image-generator.js` and `services/video-generator.js` (plus related resolution-tier, LoRA-chain, and compare-viewer logic). The original Mix Studio copyright notices are preserved in the adapted source files. Changes vs. upstream: simplified to plain text-to-image / first-frame video paths (no region/edit/outpaint modes, no turbo/long-context/reference-video paths), chat-driven intent routing, and `not-so-jarvis/` output prefixes.
+It includes adaptations from **Mix Studio** (https://github.com/BlackMixture/Mix-Studio), which is also licensed under GPL-3.0. Adapted components include the Krea2 text-to-image workflow graph, SeedVR2 / Ultimate SD / RTX upscale pipelines, and MiniMax H3 video workflow in `services/image-generator.js` and `services/video-generator.js` (plus related resolution-tier, LoRA-chain, and compare-viewer logic). The original Mix Studio copyright notices are preserved in the adapted source files. Changes vs. upstream: simplified to plain text-to-image / first-frame video paths (no region/edit/outpaint modes, no turbo/long-context/reference-video paths), chat-driven intent routing, and `not-so-jarvis/` output prefixes.

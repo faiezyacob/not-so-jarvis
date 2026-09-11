@@ -979,6 +979,70 @@ em {
     transform: scale(0.95);
 }
 
+.chat-attach {
+    width: 40px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: all 0.2s ease;
+    flex-shrink: 0;
+}
+
+.chat-attach:hover {
+    border-color: var(--border-focus);
+    color: var(--accent);
+}
+
+.chat-attachments {
+    display: none;
+    gap: 8px;
+    padding: 10px 24px 0;
+    flex-wrap: wrap;
+}
+
+.chat-attachment {
+    position: relative;
+    width: 64px;
+    height: 64px;
+}
+
+.chat-attachment-thumb {
+    width: 64px;
+    height: 64px;
+    object-fit: cover;
+    border-radius: 6px;
+    border: 1px solid var(--border-color);
+    display: block;
+}
+
+.chat-attachment-remove {
+    position: absolute;
+    top: -6px;
+    right: -6px;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    border: 1px solid var(--border-color);
+    background: rgba(10, 12, 10, 0.9);
+    color: var(--text-primary);
+    font-size: 12px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0;
+}
+
+.message--user .md-image {
+    max-width: 320px;
+    border-radius: 6px;
+    margin-top: 6px;
+}
+
 /* --- System Monitor --- */
 
 .system-monitor {
@@ -1201,6 +1265,38 @@ em {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+
+.comfyui-cancel-btn {
+    width: 100%;
+    height: 28px;
+    margin-top: 2px;
+    background: transparent;
+    border: 1px solid var(--border-color);
+    border-radius: 5px;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.comfyui-cancel-btn:hover:not(:disabled) {
+    background: rgba(224, 122, 95, 0.12);
+    border-color: rgba(224, 122, 95, 0.5);
+    color: #e07a5f;
+}
+
+.comfyui-cancel-btn:active:not(:disabled) {
+    transform: scale(0.98);
+}
+
+.comfyui-cancel-btn:disabled {
+    opacity: 0.6;
+    cursor: default;
 }
 
 @keyframes comfyui-pulse {

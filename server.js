@@ -1,6 +1,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 // Minimal .env loader (no external dependencies). Reads KEY=VALUE lines from
 // a `.env` file next to server.js into process.env, without overwriting
@@ -50,6 +51,7 @@ const MIME_TYPES = {
     '.woff2': 'font/woff2',
     '.ttf': 'font/ttf',
     '.map': 'application/json',
+    '.webp': 'image/webp',
     '.mp4': 'video/mp4',
     '.webm': 'video/webm',
     '.mov': 'video/quicktime'
@@ -72,6 +74,14 @@ const taskRouter = require('./services/task-router');
 const taskState = require('./services/task-state');
 const generationQueue = require('./services/generation-queue');
 const GENERATED_DIR = path.join(__dirname, 'data', 'generated');
+const IMAGES_DIR = path.join(__dirname, 'data', 'images');
+const UPLOAD_MIME_TO_EXT = {
+    'image/png': '.png',
+    'image/jpeg': '.jpg',
+    'image/webp': '.webp'
+};
+const UPLOAD_MAX_BYTES = 10 * 1024 * 1024;
+const CHAT_IMAGES_MAX = 3;
 
 // Share the single-generation lock between image and video pipelines.
 videoGenerator.registerGenerationLock(imageGenerator);
@@ -356,8 +366,8 @@ async function handleAPI(req, res, urlPath) {
     // POST /api/video/upscale — upscale the last generated video in a conversation
     // (or an explicit data/generated filename). Used by the chat pipeline and
     // available for the gallery. Reads the shared upscale settings (same as
-    // image upscale); optional body overrides: resolution, profile,
-    // noise, preScale.
+    // image upscale); optional body overrides: engine (seedvr2|rtx), resolution,
+    // profile, noise, preScale (SeedVR2), scale, quality, fps (RTX).
     if (urlPath === '/api/video/upscale' && req.method === 'POST') {
         try {
             const body = await readBody(req);
@@ -367,10 +377,14 @@ async function handleAPI(req, res, urlPath) {
                 return true;
             }
             const result = await videoGenerator.upscaleVideo(source.rawFilename, {
+                engine: body.engine,
                 resolution: body.resolution,
                 profile: body.profile,
                 noise: body.noise,
                 preScale: body.preScale,
+                scale: body.scale,
+                quality: body.quality,
+                fps: body.fps,
                 conversationId: body.conversationId || null,
                 label: 'video upscale', kind: 'video_upscale'
             });
@@ -392,6 +406,25 @@ async function handleAPI(req, res, urlPath) {
             json(res, 200, { ok: true, freed: 'comfyui-models' });
         } catch (err) {
             json(res, 500, { error: err.message });
+        }
+        return true;
+    }
+
+    // POST /api/comfyui/cancel — interrupt the running ComfyUI prompt and
+    // clear its native pending queue so the GPU goes idle. Used by the
+    // ComfyUI widget's Cancel button. The JARVIS-side job waiting in
+    // waitForPrompt observes the interruption as a generation error and
+    // releases the shared generation slot on its own.
+    if (urlPath === '/api/comfyui/cancel' && req.method === 'POST') {
+        try {
+            if (!(await comfyui.isAvailable())) {
+                json(res, 409, { error: 'ComfyUI is unreachable' });
+                return true;
+            }
+            const result = await comfyui.cancelCurrentJob();
+            json(res, 200, { ok: true, interrupted: result.interrupted, cleared: result.cleared });
+        } catch (err) {
+            json(res, 502, { error: 'Cancel failed: ' + err.message });
         }
         return true;
     }
@@ -496,6 +529,19 @@ async function handleAPI(req, res, urlPath) {
         return true;
     }
 
+    // POST /api/uploads — store a user-attached image for vision chat.
+    // Body: { filename, mime, data (base64) }. Returns { url, filename, mime, size }.
+    if (urlPath === '/api/uploads' && req.method === 'POST') {
+        try {
+            const body = await readBody(req);
+            const result = saveUpload(body);
+            json(res, 201, result);
+        } catch (err) {
+            json(res, err.status || 400, { error: err.message });
+        }
+        return true;
+    }
+
     // GET /api/conversations
     if (urlPath === '/api/conversations' && req.method === 'GET') {
         json(res, 200, { conversations: conversationService.getAllConversations() });
@@ -564,6 +610,23 @@ async function handleAPI(req, res, urlPath) {
         return true;
     }
 
+    // GET /images/:file — serve user-uploaded vision images
+    const imagesMatch = urlPath.match(/^\/images\/([^/]+)$/);
+    if (imagesMatch && req.method === 'GET') {
+        const filename = decodeURIComponent(imagesMatch[1]);
+        const safeName = path.basename(filename);
+        const fullPath = path.join(IMAGES_DIR, safeName);
+        if (!fullPath.startsWith(IMAGES_DIR) || !fs.existsSync(fullPath)) {
+            send404(res);
+            return true;
+        }
+        const ext = path.extname(fullPath).toLowerCase();
+        const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+        res.writeHead(200, { 'Content-Type': contentType, 'Cache-Control': 'public, max-age=31536000, immutable' });
+        fs.createReadStream(fullPath).pipe(res);
+        return true;
+    }
+
     // Unknown API route
     if (urlPath.startsWith('/api/')) {
         json(res, 404, { error: 'Not found' });
@@ -571,6 +634,58 @@ async function handleAPI(req, res, urlPath) {
     }
 
     return false;
+}
+
+function badRequest(message) {
+    const err = new Error(message);
+    err.status = 400;
+    return err;
+}
+
+function saveUpload(body) {
+    const mime = String((body && body.mime) || '').toLowerCase();
+    const ext = UPLOAD_MIME_TO_EXT[mime];
+    if (!ext) throw badRequest('Unsupported image type. Use PNG, JPEG, or WebP.');
+    let data = String((body && body.data) || '');
+    const dataPrefix = data.match(/^data:[^;]+;base64,/);
+    if (dataPrefix) data = data.slice(dataPrefix[0].length);
+    data = data.trim();
+    if (!data || !/^[A-Za-z0-9+/=\s]+$/.test(data)) throw badRequest('Invalid base64 image data.');
+    let buffer;
+    try {
+        buffer = Buffer.from(data, 'base64');
+    } catch {
+        throw badRequest('Invalid base64 image data.');
+    }
+    if (!buffer.length) throw badRequest('Empty image upload.');
+    if (buffer.length > UPLOAD_MAX_BYTES) throw badRequest('Image is too large. Max 10 MB.');
+    if (!fs.existsSync(IMAGES_DIR)) fs.mkdirSync(IMAGES_DIR, { recursive: true });
+    const filename = crypto.randomUUID() + ext;
+    const fullPath = path.join(IMAGES_DIR, filename);
+    if (!fullPath.startsWith(IMAGES_DIR)) throw badRequest('Invalid upload path.');
+    fs.writeFileSync(fullPath, buffer);
+    return {
+        url: '/images/' + encodeURIComponent(filename),
+        filename,
+        mime,
+        size: buffer.length
+    };
+}
+
+function sanitizeChatImages(images) {
+    if (images === undefined || images === null) return [];
+    if (!Array.isArray(images)) throw badRequest('images must be an array.');
+    if (images.length > CHAT_IMAGES_MAX) throw badRequest('Too many images. Max 3 per message.');
+    return images.map((item) => {
+        let data = String(item || '');
+        const prefix = data.match(/^data:[^;]+;base64,/);
+        if (prefix) data = data.slice(prefix[0].length);
+        data = data.trim();
+        if (!data || !/^[A-Za-z0-9+/=\s]+$/.test(data)) throw badRequest('Invalid base64 image data.');
+        const size = Buffer.byteLength(data, 'base64');
+        if (size > UPLOAD_MAX_BYTES) throw badRequest('Image is too large. Max 10 MB.');
+        return data.replace(/\s+/g, '');
+    });
 }
 
 // --- Conversation handlers ---
@@ -741,7 +856,14 @@ async function handleChat(req, res) {
             json(res, 400, { error: 'conversationId is required' });
             return;
         }
-        if (!message || typeof message !== 'string' || !message.trim()) {
+        let chatImages = [];
+        try {
+            chatImages = sanitizeChatImages(body.images);
+        } catch (err) {
+            json(res, 400, { error: err.message });
+            return;
+        }
+        if ((!message || typeof message !== 'string' || !message.trim()) && chatImages.length === 0) {
             json(res, 400, { error: 'message is required' });
             return;
         }
@@ -754,7 +876,7 @@ async function handleChat(req, res) {
         vramManager.rememberChatModel(provider, model);
         await vramManager.freeVRAMBeforeChat();
 
-        const contextMessages = contextBuilder.buildContext(conversationId, message, provider, model);
+        const contextMessages = contextBuilder.buildContext(conversationId, message, provider, model, '', chatImages);
         const reply = await providers.chat(provider, contextMessages, model);
 
         json(res, 200, { reply });
@@ -776,7 +898,14 @@ async function handleChatStream(req, res) {
             json(res, 400, { error: 'conversationId is required' });
             return;
         }
-        if (!message || typeof message !== 'string' || !message.trim()) {
+        let chatImages = [];
+        try {
+            chatImages = sanitizeChatImages(body.images);
+        } catch (err) {
+            json(res, 400, { error: err.message });
+            return;
+        }
+        if ((!message || typeof message !== 'string' || !message.trim()) && chatImages.length === 0) {
             json(res, 400, { error: 'message is required' });
             return;
         }
@@ -803,7 +932,8 @@ async function handleChatStream(req, res) {
             message,
             provider,
             model,
-            conversationId
+            conversationId,
+            hasAttachedImage: chatImages.length > 0
         });
 
         // Upscale the last generated image in this conversation. Only the
@@ -828,9 +958,76 @@ async function handleChatStream(req, res) {
             return;
         }
 
+        // Krea2 identity edit: an attached upload or an explicit "edit this
+        // image" edits a source image from a plain-language instruction while
+        // preserving the rest (identity-edit LoRA, not a from-scratch regen).
+        if (decision.shouldExecuteTool && decision.task === 'image_edit') {
+            const instruction = stripImageRefs(decision.updatedPrompt || message);
+            const activeTask = taskState.getTask(conversationId);
+            const action = (decision.intent === 'new_task' || decision.intent === 'switch_task') ? 'generate' : 'modify';
+            taskState.setTask(conversationId, {
+                type: 'image',
+                operation: 'edit',
+                prompt: instruction,
+                lastAction: action,
+                status: 'running'
+            });
+            if (action === 'generate') {
+                taskState.setTask(conversationId, { originalPrompt: instruction });
+            }
+            await vramManager.freeVRAMBeforeImage();
+            await handleImageEditStream(req, res, {
+                provider, model, conversationId, message,
+                instruction,
+                action,
+                previousPrompt: activeTask.prompt || null
+            });
+            return;
+        }
+
         if (decision.shouldExecuteTool && decision.task === 'image_generation') {
             const activeTask = taskState.getTask(conversationId);
             const isNew = decision.intent === 'new_task' || decision.intent === 'switch_task';
+            // Regenerate insight: "generate the image again" re-runs the SAME
+            // prompt (new seed); "... again but <change>" edits with ONLY the
+            // change as the delta so "again" never leaks into the prompt.
+            const regenInfo = typeof taskRouter.parseRegenerateRequest === 'function'
+                ? taskRouter.parseRegenerateRequest(message, activeTask.type)
+                : null;
+            const isBareRegen = !isNew && regenInfo && regenInfo.bare && !regenInfo.crossModal && activeTask.prompt;
+            const modifyDelta = !isNew
+                ? (String(decision.updatedPrompt || '').trim() || (regenInfo && regenInfo.delta) || message)
+                : message;
+
+            // Follow-up tweak of the active image task: a true pixel edit of
+            // the latest output via the identity-edit LoRA (not a from-scratch
+            // regen), when the edit stack is available and the latest asset is
+            // an image. Bare regenerates skip this (no instruction to apply)
+            // and fall through to a full regen of the same prompt. Falls
+            // through to the legacy regen path otherwise.
+            if (!isNew && !isBareRegen) {
+                const editSource = resolveGeneratedEditSource(conversationId);
+                if (editSource && (await imageGenerator.checkEditAvailability()).ok) {
+                    const instruction = stripImageRefs(modifyDelta);
+                    const ctxPreviousPrompt = activeTask.prompt || null;
+                    taskState.setTask(conversationId, {
+                        type: 'image',
+                        operation: 'edit',
+                        prompt: instruction,
+                        lastAction: 'edit',
+                        status: 'running'
+                    });
+                    await vramManager.freeVRAMBeforeImage();
+                    await handleImageEditStream(req, res, {
+                        provider, model, conversationId, message,
+                        instruction,
+                        action: 'modify',
+                        previousPrompt: ctxPreviousPrompt,
+                        sourceOverride: editSource
+                    });
+                    return;
+                }
+            }
 
             // Determine the effective prompt for this generation run.
             let imagePrompt;
@@ -854,6 +1051,21 @@ async function handleChatStream(req, res) {
                     explicit_constraints: []
                 };
                 enhanced = await imageGenerator.buildImagePrompt(structuredRequest, providers, provider, model);
+            } else if (isBareRegen) {
+                // Bare "generate the image again": reuse the stored full
+                // prompt verbatim (new random seed at generation time gives
+                // the fresh variation). No LLM rewrite — rewriting would
+                // append "again" into the prompt or drift the subject.
+                imagePrompt = activeTask.prompt;
+                attributes = (activeTask.parameters && activeTask.parameters.attributes) || null;
+                structuredRequest = {
+                    intent: 'image_generation',
+                    user_prompt: imagePrompt,
+                    previous_prompt: activeTask.prompt || '',
+                    creative_mode: (activeTask.parameters && activeTask.parameters.creative_mode) || 'none',
+                    explicit_constraints: (activeTask.parameters && activeTask.parameters.explicit_constraints) || []
+                };
+                enhanced = null;
             } else {
                 // Continue / modify the active task. The stored full prompt is
                 // the source of truth. The dedicated prompt editor rewrites it
@@ -861,9 +1073,11 @@ async function handleChatStream(req, res) {
                 // local chat models that struggle with structured JSON rewrites),
                 // then the enhancer refreshes the attribute breakdown using the
                 // previous prompt as context so untouched details are preserved.
+                // modifyDelta is the stripped change ("make her ..."), never
+                // the "generate ... again" preamble.
                 const rewrittenPrompt = await taskRouter.applyPromptModification(
                     activeTask.prompt || '',
-                    message,
+                    modifyDelta,
                     provider,
                     model
                 );
@@ -877,10 +1091,12 @@ async function handleChatStream(req, res) {
                 enhanced = await imageGenerator.buildImagePrompt(structuredRequest, providers, provider, model);
             }
 
-            imagePrompt = enhanced.prompt;
-            attributes = enhanced.attributes;
+            imagePrompt = enhanced ? enhanced.prompt : imagePrompt;
+            attributes = enhanced ? enhanced.attributes : attributes;
 
-            const action = isNew ? 'generate' : 'modify';
+            // Bare regenerate re-runs the same prompt — report it as a fresh
+            // generation (new seed variation), not a modification.
+            const action = (isNew || isBareRegen) ? 'generate' : 'modify';
 
             // Track the task as running, then free VRAM and execute.
             const ctxPreviousPrompt = activeTask.prompt || null;
@@ -924,6 +1140,16 @@ async function handleChatStream(req, res) {
         if (decision.shouldExecuteTool && decision.task === 'video_generation') {
             const activeTask = taskState.getTask(conversationId);
             const isNew = decision.intent === 'new_task' || decision.intent === 'switch_task';
+            // Same regenerate insight as images: bare "again" reuses the
+            // stored H3 prompt verbatim; "... again but <change>" rewrites it
+            // from the stripped delta with the I2VA source image in context.
+            const videoRegenInfo = typeof taskRouter.parseRegenerateRequest === 'function'
+                ? taskRouter.parseRegenerateRequest(message, activeTask.type)
+                : null;
+            const isVideoBareRegen = !isNew && videoRegenInfo && videoRegenInfo.bare && !videoRegenInfo.crossModal && activeTask.prompt;
+            const videoModifier = !isNew
+                ? (String(decision.updatedPrompt || '').trim() || (videoRegenInfo && videoRegenInfo.delta) || message)
+                : message;
 
             let videoPrompt;
             let structuredRequest;
@@ -951,16 +1177,18 @@ async function handleChatStream(req, res) {
             } else {
                 // Continue / modify: pass the user's modification instruction
                 // as a modifier prompt; the video director handles the rewrite.
+                // Uses the stripped delta so "generate ... again" never leaks
+                // into the H3 prompt.
                 structuredRequest = {
                     action: 'modify',
-                    modifier: message,
+                    modifier: videoModifier,
                     previous_prompt: activeTask.prompt || '',
                     parameters: activeTask.parameters || {}
                 };
                 parameters = structuredRequest.parameters;
             }
 
-            const action = isNew ? 'generate' : 'modify';
+            const action = (isNew || isVideoBareRegen) ? 'generate' : 'modify';
 
             if (action === 'generate') {
                 // Decide I2VA vs T2VA BEFORE the H3 workflow is selected. I2VA
@@ -993,20 +1221,32 @@ async function handleChatStream(req, res) {
                 directorDimensions = { duration: director.duration, width: director.width, height: director.height };
 
                 console.log('[video] H3 director prompt generated:', videoPrompt);
+            } else if (isVideoBareRegen) {
+                // Bare "generate the video again": reuse the stored H3 prompt
+                // verbatim with the same I2VA source image (new seed at
+                // generation time gives the fresh variation). No LLM rewrite.
+                videoMode = activeTask.videoMode ||
+                    (activeTask.parameters && activeTask.parameters.videoMode) || 't2va';
+                sourceImageRawFilename = activeTask.sourceImage ||
+                    (activeTask.parameters && activeTask.parameters.sourceImage) || null;
+                videoPrompt = activeTask.prompt;
             } else {
                 // Continue / modify the active video task. Preserve the I2VA
                 // source image and let the H3 prompt modifier rewrite the whole
                 // H3 prompt from the stored one (never the raw modifier text).
+                // videoModifier is the stripped change, and the last generated
+                // image travels along so the LLM edits with eyes on the frame.
                 videoMode = activeTask.videoMode ||
                     (activeTask.parameters && activeTask.parameters.videoMode) || 't2va';
                 sourceImageRawFilename = activeTask.sourceImage ||
                     (activeTask.parameters && activeTask.parameters.sourceImage) || null;
                 videoPrompt = await videoGenerator.modifyH3VideoPrompt(
                     activeTask.prompt || '',
-                    message,
+                    videoModifier,
                     providers,
                     provider,
-                    model
+                    model,
+                    { sourceImageRawFilename }
                 );
             }
 
@@ -1070,7 +1310,8 @@ async function handleChatStream(req, res) {
             model,
             decision.intent === 'task_question'
                 ? taskRouter.renderActiveTaskContext(taskState.getTask(conversationId))
-                : ''
+                : '',
+            chatImages
         );
 
         let fullReply = '';
@@ -1171,6 +1412,118 @@ async function handleImageGenerationStream(req, res, opts) {
     }
 }
 
+// Strip attached-upload markdown refs from the user text so the edit
+// instruction is clean prose, not image markup.
+function stripImageRefs(text) {
+    return String(text || '')
+        .replace(/!\[[^\]]*\]\(\/images\/[^)]+\)/g, '')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+}
+
+// Resolve the source image for an identity edit: a fresh /images/ upload
+// referenced in the message wins, otherwise the conversation's latest
+// generated image. Returns { absPath, kind, rawFilename } or null.
+function resolveEditSource(userText, conversationId) {
+    const uploadMatch = String(userText || '').match(/\/images\/([^\s)\]}"']+)/);
+    if (uploadMatch) {
+        const safeName = path.basename(decodeURIComponent(uploadMatch[1]).split('?')[0]);
+        const fullPath = path.join(IMAGES_DIR, safeName);
+        if (safeName && fullPath.startsWith(IMAGES_DIR) && fs.existsSync(fullPath)) {
+            return { absPath: fullPath, kind: 'upload', rawFilename: safeName };
+        }
+    }
+    return resolveGeneratedEditSource(conversationId);
+}
+
+function resolveGeneratedEditSource(conversationId) {
+    const found = resolveUpscaleSource(conversationId);
+    if (!found) return null;
+    if (!/\.(?:png|jpe?g|webp)$/i.test(found.rawFilename)) return null;
+    const fullPath = path.join(GENERATED_DIR, path.basename(found.rawFilename));
+    if (!fullPath.startsWith(GENERATED_DIR) || !fs.existsSync(fullPath)) return null;
+    return { absPath: fullPath, kind: 'generated', rawFilename: path.basename(found.rawFilename) };
+}
+
+// Handle an identity-edit chat request over SSE. Emits a "generating" status
+// event, then an "image" event with the edited result, or an "error" event.
+async function handleImageEditStream(req, res, opts) {
+    const { provider, model, conversationId, message, instruction, action, previousPrompt, sourceOverride } = opts;
+
+    let queueId = null;
+    const onClose = () => {
+        if (queueId) imageGenerator.cancelQueued(queueId);
+    };
+    req.on('close', onClose);
+    const onQueued = (position, id) => {
+        queueId = id;
+        sseWrite(res, { queued: { position, queueId: id } });
+    };
+
+    try {
+        const source = sourceOverride || resolveEditSource(message, conversationId);
+        if (!source) {
+            taskState.setTask(conversationId, { status: 'failed' });
+            sseWrite(res, { error: "I couldn't find an image to edit. Attach a photo or generate an image first, then describe the change." });
+            res.end();
+            return;
+        }
+        if (!instruction || !instruction.trim()) {
+            taskState.setTask(conversationId, { status: 'failed' });
+            sseWrite(res, { error: 'Describe what to change in the image.' });
+            res.end();
+            return;
+        }
+
+        sseWrite(res, { generating: 'Editing image...' });
+
+        const promise = imageGenerator.editImage(source.absPath, instruction, {
+            provider, model, conversationId, onQueued,
+            label: 'image edit', kind: 'image_edit'
+        });
+        queueId = promise.queueId || null;
+        const result = await promise;
+
+        const existingParams = taskState.getTask(conversationId).parameters || {};
+        taskState.setTask(conversationId, {
+            prompt: instruction,
+            generatedAsset: result.url,
+            parameters: Object.assign({}, existingParams, {
+                width: result.width,
+                height: result.height,
+                edit: { source: source.rawFilename }
+            }),
+            status: 'completed',
+            lastAction: action || 'edit'
+        });
+
+        const summary = await taskRouter.buildSuccessReply({
+            action: action || 'generate',
+            prompt: instruction,
+            previousPrompt: previousPrompt || null,
+            provider,
+            model
+        });
+
+        const content =
+            summary + '\n\n' +
+            '**Edit:** ' + instruction + '\n\n' +
+            '![' + 'edited image' + '](' + result.url + ')';
+
+        sseWrite(res, { image: { url: result.url, content, meta: result.meta || null } });
+        res.end();
+    } catch (err) {
+        console.error('[image-generator] Edit failed:', err.message, '\n', err.stack);
+        if (err.code !== 'generation_cancelled') {
+            taskState.setTask(conversationId, { status: 'failed' });
+        }
+        sseWrite(res, { error: friendlyImageError(err) });
+        res.end();
+    } finally {
+        req.removeListener('close', onClose);
+    }
+}
+
 function friendlyImageError(err) {
     switch (err.code) {
         case 'comfyui_unavailable':
@@ -1191,6 +1544,10 @@ function friendlyImageError(err) {
             return err.message;
         case 'generation_cancelled':
             return 'Generation cancelled. It was removed from the queue before it started.';
+        case 'comfyui_edit_lora_missing':
+            return err.message;
+        case 'edit_source_missing':
+            return err.message;
         case 'upscale_source_missing':
             return 'The image to upscale could not be found on disk. It may have been deleted.';
         default:
@@ -1284,9 +1641,10 @@ async function handleVideoGenerationStream(req, res, opts) {
     }
 }
 
-// Handle a manual video-upscale chat request over SSE (RTX 4K pass).
-// Mirrors handleImageUpscaleStream: the conversation's previously generated
-// video is always the source; runs only when the user asks for it.
+// Handle a manual video-upscale chat request over SSE. Mirrors
+// handleImageUpscaleStream: the conversation's previously generated video is
+// always the source; runs only when the user asks for it. Engine comes from
+// the shared upscale settings (RTX fast path by default, like Mix Studio).
 async function handleVideoUpscaleStream(req, res, opts) {
     const { provider, model, conversationId, message } = opts;
 
@@ -1322,7 +1680,7 @@ async function handleVideoUpscaleStream(req, res, opts) {
             status: 'running'
         });
 
-        sseWrite(res, { generating: 'Upscaling video to 4K...' });
+        sseWrite(res, { generating: 'Upscaling video...' });
 
         const promise = videoGenerator.upscaleVideo(source.rawFilename, {
             conversationId, onQueued, label: 'video upscale', kind: 'video_upscale'
@@ -1336,7 +1694,10 @@ async function handleVideoUpscaleStream(req, res, opts) {
             originalFilename: source.rawFilename,
             upscaledUrl: result.url,
             upscaledFilename: result.filename,
+            engine: result.engine,
             resolution: result.resolution,
+            scale: result.scale,
+            quality: result.quality,
             profile: result.profile,
             noise: result.noise
         };
@@ -1351,11 +1712,15 @@ async function handleVideoUpscaleStream(req, res, opts) {
         });
 
         const content =
-            'Upscaled your video to **' + result.resolution + 'p** (' + result.profile + ', noise: ' + result.noise + ').\n\n' +
-            '**RTX 4K Pass:** SeedVR2 video upscale.\n\n' +
-            '<video class="md-video" preload="metadata" playsinline src="' + result.url + '"></video>';
+            result.engine === 'seedvr2'
+                ? 'Upscaled your video to **' + result.resolution + 'p** (' + result.profile + ', noise: ' + result.noise + ').\n\n' +
+                  '**SeedVR2 Pass:** diffusion detail restoration.\n\n' +
+                  '<video class="md-video" preload="metadata" playsinline src="' + result.url + '"></video>'
+                : 'Upscaled your video **' + result.scale + 'x** (RTX super-resolution, ' + result.quality + ').\n\n' +
+                  '**RTX Pass:** fast single-pass upscale.\n\n' +
+                  '<video class="md-video" preload="metadata" playsinline src="' + result.url + '"></video>';
 
-        console.log('[video] Manual upscale to 4K:', result.filename);
+        console.log('[video] Manual upscale (' + result.engine + '):', result.filename);
         sseWrite(res, { video: { url: result.url, content, meta: result.meta || null, upscale: upscaleInfo } });
         res.end();
     } catch (err) {
@@ -1377,6 +1742,8 @@ function friendlyVideoError(err) {
         case 'comfyui_unavailable':
             return 'ComfyUI is not running. Start ComfyUI, then try again.';
         case 'comfyui_missing_nodes':
+            return err.message;
+        case 'rtx_video_upscale_setup_required':
             return err.message;
         case 'comfyui_timeout':
             return 'Video generation timed out. ComfyUI may be overloaded — please try again.';

@@ -280,7 +280,8 @@ function initFreeComfyButton() {
 const IMAGE_GEN_FIELDS = [
     { key: 'unet', inputId: 'imageUnet', listId: 'imageUnetList' },
     { key: 'clip', inputId: 'imageClip', listId: 'imageClipList' },
-    { key: 'vae', inputId: 'imageVae', listId: 'imageVaeList' }
+    { key: 'vae', inputId: 'imageVae', listId: 'imageVaeList' },
+    { key: 'editLora', inputId: 'imageEditLora' }
 ];
 
 const LORA_STRENGTH_MIN = 0;
@@ -656,13 +657,15 @@ function initUpscaleSettings() {
     const syncVisibility = () => {
         const engineSel = document.getElementById('upscaleEngine');
         const modeSel = document.getElementById('upscaleMode');
-        const engine = engineSel ? engineSel.value : 'seedvr2';
+        const engine = engineSel ? engineSel.value : 'rtx';
         const mode = modeSel ? modeSel.value : 'target';
 
         const resField = document.getElementById('upscaleResolutionField');
         const multField = document.getElementById('upscaleMultiplierField');
         if (resField) resField.style.display = mode === 'target' ? '' : 'none';
-        if (multField) multField.style.display = mode === 'multiplier' ? '' : 'none';
+        // Multiplier doubles as the RTX video scale factor, so keep it visible
+        // when RTX is selected even in target mode.
+        if (multField) multField.style.display = (mode === 'multiplier' || engine === 'rtx') ? '' : 'none';
 
         ['upscaleProfileField', 'upscaleNoiseField', 'upscalePreScaleField', 'upscaleDiTField', 'upscaleVaeField', 'upscaleAttentionField'].forEach((id) => {
             const el = document.getElementById(id);
@@ -1474,6 +1477,36 @@ function initComfyUI() {
     fetchComfyUIStatus();
     setInterval(fetchComfyUIStatus, COMFYUI_REFRESH_MS);
     connectComfyUIEvents();
+    const cancelBtn = document.getElementById('comfyuiCancelBtn');
+    if (cancelBtn && !cancelBtn.dataset.bound) {
+        cancelBtn.dataset.bound = '1';
+        cancelBtn.addEventListener('click', cancelComfyUIJob);
+    }
+}
+
+async function cancelComfyUIJob() {
+    const cancelBtn = document.getElementById('comfyuiCancelBtn');
+    if (cancelBtn) {
+        cancelBtn.disabled = true;
+        cancelBtn.textContent = 'Cancelling...';
+    }
+    try {
+        const res = await fetch('/api/comfyui/cancel', { method: 'POST' });
+        if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            throw new Error(data.error || 'Cancel failed');
+        }
+        comfyuiProgress = null;
+        await fetchComfyUIStatus();
+    } catch (err) {
+        const detailEl = document.getElementById('comfyuiDetail');
+        if (detailEl) detailEl.textContent = 'Cancel failed: ' + err.message;
+    } finally {
+        if (cancelBtn) {
+            cancelBtn.disabled = false;
+            cancelBtn.textContent = 'Cancel job';
+        }
+    }
 }
 
 async function fetchComfyUIStatus() {
@@ -1522,6 +1555,7 @@ function updateComfyUIDisplay(data) {
     const valueEl = document.getElementById('comfyuiValue');
     const progressWrap = document.getElementById('comfyuiProgressWrapper');
     const detailEl = document.getElementById('comfyuiDetail');
+    const cancelBtn = document.getElementById('comfyuiCancelBtn');
     if (!statusEl || !detailEl || !valueEl || !progressWrap) return;
 
     if (!data || !data.available) {
@@ -1530,6 +1564,7 @@ function updateComfyUIDisplay(data) {
         valueEl.style.display = 'none';
         progressWrap.style.display = 'none';
         detailEl.textContent = 'ComfyUI not reachable';
+        if (cancelBtn) cancelBtn.style.display = 'none';
         return;
     }
 
@@ -1549,6 +1584,10 @@ function updateComfyUIDisplay(data) {
         statusEl.className = pending.length > 0 ? 'comfyui-status comfyui-status--queued' : 'comfyui-status comfyui-status--online';
         valueEl.style.display = 'none';
         progressWrap.style.display = 'none';
+    }
+
+    if (cancelBtn && !cancelBtn.disabled) {
+        cancelBtn.style.display = (running.length > 0 || pending.length > 0) ? '' : 'none';
     }
 
     let detail = '';

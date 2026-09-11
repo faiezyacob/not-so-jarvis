@@ -71,10 +71,11 @@ const H3_DEFAULTS = {
         : 'standard',
     loras: [],
     loraTriggerWords: {},
-    // Video upscaling (RTX 4K pass) shares the single global upscale settings
-    // in imageGeneration (upscaleResolution/Profile/Noise/PreScale, seedvr2
-    // DiT/VAE/attention, upscaleEngine) — one "upscale" for both image and
-    // video. There are no videoUpscale* keys; see sharedUpscaleSettings().
+    // Video upscaling (SeedVR2 quality or fast RTX) shares the single global
+    // upscale settings in imageGeneration (upscaleResolution/Profile/Noise/
+    // PreScale, seedvr2 DiT/VAE/attention, upscaleEngine, upscaleMultiplier) —
+    // one "upscale" for both image and video. There are no videoUpscale* keys;
+    // see sharedUpscaleSettings().
 };
 
 const H3_CONFIGURABLE_KEYS = [
@@ -220,8 +221,28 @@ const VIDEO_REQUEST_RE = /\b(?:generate|create|make|render|produce|record|shoot|
 // "turn this into", "make a video from this", "bring this to life", etc.
 // This gates entry into the LLM intent classifier (the final authority), so it
 // deliberately covers every phrasing the router must recognize as I2VA.
+// NOTE: pronoun + motion patterns ("make her walk", "make it rain") REQUIRE a
+// motion verb — a bare "make her ..." must NOT match, otherwise still-image
+// tweaks like "make her wear a blue tank top" are misread as video requests.
 const I2V_REF_RE =
-    /\b(?:use\s+(?:this|that|the\s+(?:image|photo|picture|generated))|turn\s+(?:this|that|the)\s+(?:(?:image|photo|picture)\s+)?into|make\s+(?:this|that)\s+(?:(?:image|photo|picture)\s+)?into|make\s+(?:a\s+)?(?:video|film|clip|movie|animation)\s+from\s+(?:this|that|it|the\s+(?:image|photo|picture))|make\s+(?:this|that)\s+(?:image|photo|picture)\s+(?:a\s+)?video|animat(?:e|ing)\s+(?:this|that|the)|bring\s+(?:this|that|the|it)\s+(?:(?:image|photo|picture)\s+)?to\s+life|from\s+(?:this|that|the)\s+(?:image|photo|picture)|using\s+(?:this|that|the)\s+(?:image|photo|picture)|with\s+(?:this|that|the)\s+(?:image|photo|picture)|(?:the|that)\s+image\s+above|make\s+her|make\s+him|make\s+them|make\s+it\s+(?:walk|run|smile|wave|talk|move|dance|spin|turn|laugh|cry|jump|fly|float|glow|sparkle|rain|snow))\b/i;
+    /\b(?:use\s+(?:this|that|the\s+(?:image|photo|picture|generated))|turn\s+(?:this|that|the)\s+(?:(?:image|photo|picture)\s+)?into|make\s+(?:this|that)\s+(?:(?:image|photo|picture)\s+)?into|make\s+(?:a\s+)?(?:video|film|clip|movie|animation)\s+from\s+(?:this|that|it|the\s+(?:image|photo|picture))|make\s+(?:this|that)\s+(?:image|photo|picture)\s+(?:a\s+)?video|animat(?:e|ing)\s+(?:this|that|the)|bring\s+(?:this|that|the|it)\s+(?:(?:image|photo|picture)\s+)?to\s+life|from\s+(?:this|that|the)\s+(?:image|photo|picture)|using\s+(?:this|that|the)\s+(?:image|photo|picture)|with\s+(?:this|that|the)\s+(?:image|photo|picture)|(?:the|that)\s+image\s+above|make\s+(?:her|him|them|it)\s+(?:walk|run|smile|wave|talk|move|dance|spin|turn|laugh|cry|jump|fly|float|glow|sparkle|rain|snow))\b/i;
+
+// Still-image attribute changes ("make her wear X", "change her dress", ...)
+// are NEVER video requests on their own. When such a pattern is present and
+// there is no explicit video noun or motion verb, the video pipeline must stay
+// out so the request falls through to the image router.
+const STILL_IMAGE_EDIT_RE =
+    /\b(?:wear(?:ing|s)?|dress(?:ed|es)?|outfit|cloth(?:es|ing)|tank\s*top|neckline|blouse|shirt|jeans|skirt|trousers|kimono|sweater|jacket|gown|background|hairstyle|makeup)\b/i;
+const VIDEO_MOTION_VERB_RE =
+    /\b(?:walk|run|smile|wave|talk|move|moving|dance|spin|turn|laugh|cry|jump|fly|float|animat(?:e|ing)|bring\s+(?:\w+\s+)?to\s+life)\b/i;
+
+function isStillImageOnlyChange(message) {
+    const text = String(message || '');
+    if (!STILL_IMAGE_EDIT_RE.test(text)) return false;
+    if (VIDEO_WORD_RE.test(text)) return false;
+    if (VIDEO_MOTION_VERB_RE.test(text)) return false;
+    return true;
+}
 
 // Concept questions about video generation.
 function isVideoConceptQuestion(message) {
@@ -236,6 +257,9 @@ function isVideoConceptQuestion(message) {
 
 function videoRequestStrength(message) {
     if (isVideoConceptQuestion(message)) return null;
+    // Still-image clothing/appearance tweaks are never video — bail out before
+    // the broad generation-verb heuristic ("make ...") can flag them as likely.
+    if (isStillImageOnlyChange(message)) return null;
     if (VIDEO_REQUEST_RE.test(message)) return 'definite';
     if (I2V_REF_RE.test(message)) return 'definite';
     const hasVideoVerb = VIDEO_SIGNAL_RE.test(message);
@@ -352,6 +376,9 @@ const H3_MODIFIER_SYSTEM_PROMPT =
     '- Preserve the H3 prompt structure (integrated_multimodal_description, ' +
     'overall_soundscape, non_diegetic_music).\n' +
     '- For I2VA prompts, preserve the <Picture 1> alignment and all reference tokens.\n' +
+    '- When a reference image is attached, it is the video\'s first frame: study ' +
+    'it and keep the subject identity, clothing, setting, composition, and ' +
+    'visual style unless the modification explicitly changes them.\n' +
     '- Apply the modification as an actual change, not an instruction appended.\n' +
     '- Preserve every existing detail the user did not ask to change.\n' +
     '- Update the soundscape and music if the visual change affects them.\n' +
@@ -380,6 +407,9 @@ const H3_INTENT_SYSTEM_PROMPT =
     '- Video requests: "generate a video of X", "make a film about X", ' +
     '"animate this image", "use this image to generate a video", ' +
     '"bring this to life", "make a video", "create a clip of X".\n' +
+    '- NOT video (→ chat): still-image attribute changes with no motion or ' +
+    'video noun, e.g. "make her wear a blue tank top", "change her dress", ' +
+    '"change the background". These belong to the image pipeline.\n' +
     '- "has_reference_image": true when the user references an existing image ' +
     '("this image", "the image above", "use the generated image").\n' +
     '- "modify": an incremental change to an existing video concept.\n' +
@@ -603,16 +633,42 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
 
 // --- H3 Video Prompt Modifier (conversational modifications) ------------------
 
-async function modifyH3VideoPrompt(currentPrompt, userMessage, providers, provider, model) {
+async function modifyH3VideoPrompt(currentPrompt, userMessage, providers, provider, model, opts) {
+    // Reference the last generated image with eyes on it: when the caller
+    // passes the I2VA source filename and the chat model supports vision, the
+    // source frame is attached so the rewrite edits what is actually on
+    // screen (e.g. "generate the video again but make her wave" keeps the
+    // same woman/outfit/setting and only changes the motion).
+    let sourceImageBase64 = null;
+    const sourceImageRawFilename = opts && opts.sourceImageRawFilename;
+    if (sourceImageRawFilename) {
+        const modelInfo = getModelById(model);
+        if (modelInfo && modelInfo.capabilities && modelInfo.capabilities.includes('vision')) {
+            const filePath = path.join(GENERATED_DIR, path.basename(String(sourceImageRawFilename).split('?')[0]));
+            if (fs.existsSync(filePath)) {
+                try {
+                    sourceImageBase64 = fs.readFileSync(filePath).toString('base64');
+                    console.log('[video] modifier using reference image for vision:', sourceImageRawFilename);
+                } catch (err) {
+                    console.warn('[video] modifier failed to read source image:', err.message);
+                }
+            }
+        }
+    }
     const modifierMessage =
+        (sourceImageBase64
+            ? 'REFERENCE IMAGE: attached below — it is the video\'s exact first frame (<Picture 1>). Preserve its subject, identity, outfit, setting, composition, lighting, and visual style unless the modification explicitly changes them.\n\n'
+            : '') +
         'CURRENT H3 VIDEO PROMPT:\n"' + currentPrompt + '"\n\n' +
         'USER MODIFICATION:\n"' + userMessage + '"\n\n' +
         'Output ONLY the new full H3 video prompt.';
 
     try {
+        const userMsg = { role: 'user', content: modifierMessage };
+        if (sourceImageBase64) userMsg.images = [sourceImageBase64];
         const raw = await providers.chat(provider, [
             { role: 'system', content: H3_MODIFIER_SYSTEM_PROMPT },
-            { role: 'user', content: modifierMessage }
+            userMsg
         ], model);
         const updated = String(raw || '').trim();
         if (updated) return updated;
@@ -677,18 +733,50 @@ function clampNumber(value, min, max, fallback) {
     return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : fallback;
 }
 
-// --- Video Upscale / RTX 4K Pass Settings ---------------------------------------
+// --- Video Upscale Settings ----------------------------------------------------
 //
-// RTX 4K pass for video using the SeedVR2 video upscaler. Manual-only and
-// sharing the single global upscale configuration with image upscale —
-// resolution/profile/noise/pre-scale/DiT/VAE/attention all come from
-// sharedUpscaleSettings() (imageGeneration). Image-only keys (upscaleMode,
-// upscaleMultiplier, Ultimate SD engine) are ignored by the video path.
+// Video upscale shares the single global upscale configuration with image
+// upscale (resolution/profile/noise/pre-scale/DiT/VAE/attention live in
+// imageGeneration). Engine is shared too but mapped per medium like Mix
+// Studio: videos run SeedVR2 or RTX (an Ultimate SD selection falls back to
+// RTX); images run SeedVR2 or Ultimate SD (an RTX selection falls back to
+// SeedVR2 there). RTX is a fast single-pass super-resolution node and the
+// default, matching Mix Studio's `seedvr2 ? seedvr2 : rtx` normalization —
+// SeedVR2 is the slow diffusion DiT quality path. RTX uses upscaleMultiplier
+// as its scale factor; SeedVR2 uses upscaleResolution as its target short
+// side. Image-only keys (upscaleMode, Ultimate SD engine) are ignored here.
 
 const VIDEO_UPSCALE_RESOLUTIONS = [1080, 1440, 2160, 3840];
+const VIDEO_UPSCALE_SCALES = [1.5, 2, 3, 4];
 const VIDEO_UPSCALE_PROFILES = ['sharp', 'balanced'];
 const VIDEO_UPSCALE_NOISE_LEVELS = { off: 0, low: 0.06, medium: 0.15 };
-const VIDEO_UPSCALE_ENGINES = ['seedvr2'];
+const VIDEO_UPSCALE_ENGINES = ['seedvr2', 'rtx'];
+const VIDEO_UPSCALE_DEFAULT_ENGINE = 'rtx';
+const VIDEO_UPSCALE_RTX_QUALITIES = ['ULTRA', 'HIGH', 'BALANCED', 'FAST'];
+
+// Mix Studio normalization (server.js buildExistingVideoUpscale,
+// lib/video-workflows.js videoProcessInfo): only an explicit SeedVR2 choice
+// selects the diffusion path; everything else (including the image-only
+// Ultimate SD engine) falls back to the fast RTX path.
+function normalizeVideoUpscaleEngine(value, fallback) {
+    const v = String(value || '').trim().toLowerCase();
+    if (v === 'seedvr2') return 'seedvr2';
+    if (v === 'rtx') return 'rtx';
+    if (v === 'ultimate') return 'rtx';
+    return fallback !== undefined ? fallback : VIDEO_UPSCALE_DEFAULT_ENGINE;
+}
+
+function normalizeVideoUpscaleScale(value, fallback) {
+    const n = Number(value);
+    if (Number.isFinite(n)) return Math.max(1, Math.min(4, Math.round(n * 10) / 10));
+    return fallback !== undefined ? fallback : 2;
+}
+
+function normalizeRtxQuality(value, fallback) {
+    const v = String(value || '').trim().toUpperCase();
+    if (VIDEO_UPSCALE_RTX_QUALITIES.includes(v)) return v;
+    return fallback !== undefined ? fallback : 'ULTRA';
+}
 
 function getVideoDefaults() {
     return { ...H3_DEFAULTS };
@@ -1013,8 +1101,13 @@ function resolveVideoSourceImage(conversationId, explicitFilename) {
 // source image. Otherwise the request is plain T2VA. This must run before the
 // H3 workflow is selected.
 function resolveVideoMode(conversationId, message, structuredRequest) {
+    const text = String(message || '');
     const refersToImage = Boolean(structuredRequest && structuredRequest.has_reference_image) ||
-        I2V_REF_RE.test(String(message || ''));
+        I2V_REF_RE.test(text) ||
+        // Regenerate-as-video ("generate the video again ...") while a prior
+        // image exists: the last generated image is the intended first frame
+        // even though "again" names no image explicitly.
+        (/\bagain\b/i.test(text) && VIDEO_WORD_RE.test(text));
     if (!refersToImage) return { videoMode: 't2va', sourceImage: null };
     const sourceImage = resolveVideoSourceImage(conversationId);
     if (!sourceImage) return { videoMode: 't2va', sourceImage: null };
@@ -1174,10 +1267,16 @@ async function generateVideo(prompt, options = {}) {
     }, queueOpts);
 }
 
-// --- Video Upscale / RTX 4K Pass ------------------------------------------------
+// --- Video Upscale --------------------------------------------------------------
 //
-// Uses SeedVR2VideoUpscaler (same as image upscale but for video). Manual-only:
-// runs when the user asks ("upscale this video") or via POST /api/video/upscale.
+// Two engines, adapted from Mix Studio's buildExistingVideoUpscale
+// (server.js) + upscale-workflows.js:
+//   rtx     — fast single-pass RTXVideoSuperResolution (scale multiplier,
+//             default 2x). The default, matching Mix Studio.
+//   seedvr2 — slow diffusion DiT quality path (SeedVR2VideoUpscaler at the
+//             target short-side resolution, batch 5 / overlap 2).
+// Manual-only: runs when the user asks ("upscale this video") or via
+// POST /api/video/upscale.
 
 const VIDEO_UPSCALE_DEFAULT_TIMEOUT_MS = 60 * 60 * 1000; // 60 min for upscale
 
@@ -1272,8 +1371,11 @@ function buildSeedVr2VideoUpscaleGraph(videoName, options = {}) {
     const seed = Number.isInteger(options.seed) && options.seed >= 0 ? options.seed : Math.floor(Math.random() * 2 ** 31);
     const resolution = clampNumber(options.resolution, 512, 8192, 2160);
     const preScale = clampNumber(options.preScale, 1, 4, 1);
-    const fps = options.fps || H3_FPS;
+    // Preserve the source frame rate (Mix Studio passes the source fps through
+    // both VHS_LoadVideo and CreateVideo); fall back to the H3 render rate.
+    const fps = Number(options.fps) > 0 ? Number(options.fps) : H3_FPS;
     const hasAudio = options.hasAudio !== false;
+    const savePrefix = String(options.savePrefix || 'not-so-jarvis/video_upscale_seedvr2');
 
     const graph = {};
     graph.src = { class_type: 'VHS_LoadVideo', inputs: {
@@ -1342,9 +1444,50 @@ function buildSeedVr2VideoUpscaleGraph(videoName, options = {}) {
     const videoInputs = { images: ['upscale', 0], fps };
     if (hasAudio) videoInputs.audio = ['src', 2];
     graph.video = { class_type: 'CreateVideo', inputs: videoInputs };
-    graph.save = { class_type: 'SaveVideo', inputs: { video: ['video', 0], filename_prefix: 'not-so-jarvis/video_upscale', format: 'auto', codec: 'auto' } };
+    graph.save = { class_type: 'SaveVideo', inputs: { video: ['video', 0], filename_prefix: savePrefix, format: 'auto', codec: 'auto' } };
 
     return { graph, profile };
+}
+
+// Fast single-pass video upscale, adapted from Mix Studio's
+// rtxVideoSuperResolutionNode (lib/upscale-workflows.js) as used by
+// buildExistingVideoUpscale: VHS_LoadVideo -> RTXVideoSuperResolution
+// (scale by multiplier) -> CreateVideo -> SaveVideo. No DiT/VAE models, no
+// diffusion — roughly two orders of magnitude faster than SeedVR2.
+function buildRtxVideoUpscaleGraph(videoName, options = {}) {
+    const scale = normalizeVideoUpscaleScale(options.scale, 2);
+    const quality = normalizeRtxQuality(options.quality, 'ULTRA');
+    const fps = Number(options.fps) > 0 ? Number(options.fps) : H3_FPS;
+    const hasAudio = options.hasAudio !== false;
+    const savePrefix = String(options.savePrefix || 'not-so-jarvis/video_upscale_rtx');
+
+    const graph = {};
+    graph.src = { class_type: 'VHS_LoadVideo', inputs: {
+        video: videoName,
+        force_rate: fps,
+        custom_width: 0,
+        custom_height: 0,
+        frame_load_cap: 0,
+        skip_first_frames: 0,
+        select_every_nth: 1,
+        format: 'None'
+    }};
+    graph.vsr = {
+        class_type: 'RTXVideoSuperResolution',
+        inputs: {
+            images: ['src', 0],
+            resize_type: 'scale by multiplier',
+            'resize_type.scale': scale,
+            quality
+        }
+    };
+
+    const videoInputs = { images: ['vsr', 0], fps };
+    if (hasAudio) videoInputs.audio = ['src', 2];
+    graph.video = { class_type: 'CreateVideo', inputs: videoInputs };
+    graph.save = { class_type: 'SaveVideo', inputs: { video: ['video', 0], filename_prefix: savePrefix, format: 'auto', codec: 'auto' } };
+
+    return { graph, scale, quality };
 }
 
 async function upscaleVideo(rawFilename, options = {}) {
@@ -1373,20 +1516,37 @@ async function upscaleVideo(rawFilename, options = {}) {
         const buffer = fs.readFileSync(filePath);
 
         // One shared upscale configuration for image and video alike.
+        // Videos run SeedVR2 or RTX (Mix Studio normalization: only an
+        // explicit SeedVR2 choice selects the slow diffusion path, everything
+        // else — including the image-only Ultimate SD engine — uses fast RTX).
         const upscale = sharedUpscaleSettings();
-        const engine = String(options.engine || upscale.upscaleEngine || 'seedvr2').toLowerCase();
-        if (engine !== 'seedvr2') {
-            const error = new Error('Only SeedVR2 engine is supported for video upscale.');
-            error.code = 'unsupported_engine';
-            throw error;
-        }
+        const engine = normalizeVideoUpscaleEngine(
+            options.engine !== undefined && options.engine !== null && options.engine !== ''
+                ? options.engine
+                : upscale.upscaleEngine
+        );
 
         const sourceMeta = generatedHistory.list().find((e) => e.rawFilename === safeName);
-        const resolution = clampNumber(options.resolution || upscale.upscaleResolution, 512, 8192, 2160);
+        const sourceFps = sourceMeta && sourceMeta.video && Number(sourceMeta.video.fps) > 0
+            ? Number(sourceMeta.video.fps)
+            : H3_FPS;
+        const fps = Number(options.fps) > 0 ? Number(options.fps) : sourceFps;
         const seed = Math.floor(Math.random() * 2 ** 32);
-        const profile = options.profile || upscale.upscaleProfile || 'sharp';
-        const noise = options.noise || upscale.upscaleNoise || 'low';
-        const preScale = options.preScale || upscale.upscalePreScale || 1;
+
+        const isSeedVr2 = engine === 'seedvr2';
+        const resolution = isSeedVr2
+            ? clampNumber(options.resolution || upscale.upscaleResolution, 512, 8192, 2160)
+            : null;
+        const profile = isSeedVr2 ? (options.profile || upscale.upscaleProfile || 'sharp') : null;
+        const noise = isSeedVr2 ? (options.noise || upscale.upscaleNoise || 'low') : null;
+        const preScale = isSeedVr2 ? (options.preScale || upscale.upscalePreScale || 1) : 1;
+        const scale = !isSeedVr2
+            ? normalizeVideoUpscaleScale(
+                options.scale !== undefined && options.scale !== null && options.scale !== ''
+                    ? options.scale
+                    : upscale.upscaleMultiplier, 2)
+            : null;
+        const quality = !isSeedVr2 ? normalizeRtxQuality(options.quality, 'ULTRA') : null;
 
         // Upload source video to ComfyUI input for VHS_LoadVideo node.
         const uploadName = 'jarvis_video_upscale_' + Date.now() + '_' + safeName;
@@ -1396,25 +1556,47 @@ async function upscaleVideo(rawFilename, options = {}) {
         let graph;
         let basename;
         let effectiveProfile = null;
+        let effectiveScale = null;
+        let effectiveQuality = null;
         try {
-            const built = buildSeedVr2VideoUpscaleGraph(loadName, {
-                settings: upscale,
-                profile,
-                noise,
-                resolution,
-                preScale,
-                seed,
-                fps: H3_FPS,
-                hasAudio: true
-            });
-            graph = built.graph;
-            effectiveProfile = built.profile;
+            if (isSeedVr2) {
+                const built = buildSeedVr2VideoUpscaleGraph(loadName, {
+                    settings: upscale,
+                    profile,
+                    noise,
+                    resolution,
+                    preScale,
+                    seed,
+                    fps,
+                    hasAudio: true
+                });
+                graph = built.graph;
+                effectiveProfile = built.profile;
+            } else {
+                const built = buildRtxVideoUpscaleGraph(loadName, {
+                    scale,
+                    quality,
+                    fps,
+                    hasAudio: true
+                });
+                graph = built.graph;
+                effectiveScale = built.scale;
+                effectiveQuality = built.quality;
+            }
 
             const info = await comfyui.getObjectInfo();
+            if (!isSeedVr2 && !info.RTXVideoSuperResolution) {
+                const error = new Error(
+                    'RTX video upscale needs the RTX Video Super Resolution node. ' +
+                    'Install the ComfyUI-RTXVideoSuperResolution custom node, then try again.'
+                );
+                error.code = 'rtx_video_upscale_setup_required';
+                throw error;
+            }
             await validateH3Graph(info, graph);
 
             const pid = await comfyui.queuePrompt(graph);
-            console.log('[video-generator] queued video upscale (SeedVR2) workflow:', pid);
+            console.log('[video-generator] queued video upscale (' + engine + ') workflow:', pid);
 
             const timeoutMs = options.timeoutMs || VIDEO_UPSCALE_DEFAULT_TIMEOUT_MS;
             const history = await comfyui.waitForPrompt(pid, { timeoutMs });
@@ -1444,7 +1626,7 @@ async function upscaleVideo(rawFilename, options = {}) {
             file: '/generated/' + encodeURIComponent(basename),
             rawFilename: basename,
             prompt: (sourceMeta && sourceMeta.prompt) || 'Upscaled video',
-            model: 'SeedVR2 Video Upscale',
+            model: isSeedVr2 ? 'SeedVR2 Video Upscale' : 'RTX Video Super Resolution',
             width: 0, // Video dimensions not easily readable without ffprobe
             height: 0,
             generationMs: Date.now() - startedAt,
@@ -1453,6 +1635,9 @@ async function upscaleVideo(rawFilename, options = {}) {
                 profile: effectiveProfile ? effectiveProfile.key : null,
                 noise: effectiveProfile ? effectiveProfile.noise : null,
                 resolution,
+                scale: effectiveScale,
+                quality: effectiveQuality,
+                fps,
                 source: safeName
             },
             video: {
@@ -1468,6 +1653,9 @@ async function upscaleVideo(rawFilename, options = {}) {
             profile: effectiveProfile ? effectiveProfile.key : null,
             noise: effectiveProfile ? effectiveProfile.noise : null,
             resolution,
+            scale: effectiveScale,
+            quality: effectiveQuality,
+            fps,
             source: safeName,
             sourceMeta,
             generationMs: meta.generationMs,
@@ -1546,9 +1734,17 @@ module.exports = {
     VIDEO_SIGNAL_RE,
     VIDEO_WORD_RE,
     I2V_REF_RE,
+    isStillImageOnlyChange,
     VIDEO_UPSCALE_RESOLUTIONS,
+    VIDEO_UPSCALE_SCALES,
     VIDEO_UPSCALE_PROFILES,
     VIDEO_UPSCALE_NOISE_LEVELS,
     VIDEO_UPSCALE_ENGINES,
+    VIDEO_UPSCALE_DEFAULT_ENGINE,
+    VIDEO_UPSCALE_RTX_QUALITIES,
+    normalizeVideoUpscaleEngine,
+    normalizeVideoUpscaleScale,
+    normalizeRtxQuality,
+    buildRtxVideoUpscaleGraph,
     VIDEO_UPSCALE_DEFAULT_TIMEOUT_MS,
 };

@@ -16,7 +16,8 @@ const SYSTEM_PROMPT =
     + 'is created locally and shown in the conversation. Concept questions about how '
     + 'image generation works are answered as normal chat. '
     + 'Be concise and helpful. The local environment may expose CPU, RAM, GPU and '
-    + 'VRAM telemetry.';
+    + 'VRAM telemetry. The user can attach images: when a message includes an '
+    + 'attached image, describe what you see and answer questions about it.';
 
 // Placeholder for future semantic retrieval. Returns [] for now.
 function getRelevantMessages(conversationId, query) {
@@ -24,7 +25,7 @@ function getRelevantMessages(conversationId, query) {
     return [];
 }
 
-function buildContext(conversationId, userMessage, provider, model, activeTaskContext) {
+function buildContext(conversationId, userMessage, provider, model, activeTaskContext, images) {
     const recent = conversationService
         .getMessages(conversationId)
         .slice(-conversationService.CONFIG.RECENT_MESSAGE_LIMIT);
@@ -61,7 +62,11 @@ function buildContext(conversationId, userMessage, provider, model, activeTaskCo
         messages.push({ role: m.role, content: m.content });
     });
 
-    messages.push({ role: 'user', content: userMessage });
+    const current = { role: 'user', content: userMessage };
+    if (Array.isArray(images) && images.length > 0) {
+        current.images = images.slice(0, 3);
+    }
+    messages.push(current);
 
     return messages;
 }

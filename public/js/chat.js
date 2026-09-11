@@ -10,16 +10,45 @@ const Chat = (() => {
     let chatMessagesEl;
     let chatInput;
     let chatSend;
+    let chatAttach;
+    let chatFileInput;
+    let chatAttachmentsEl;
     let conversationListEl;
+    let pendingAttachments = [];
+
+    const ATTACH_MAX = 3;
+    const ATTACH_MAX_BYTES = 10 * 1024 * 1024;
+    const ATTACH_MIME = {
+        'image/png': true,
+        'image/jpeg': true,
+        'image/webp': true
+    };
 
     function init() {
         chatMessagesEl = document.getElementById('chatMessages');
         chatInput = document.getElementById('chatInput');
         chatSend = document.getElementById('chatSend');
+        chatAttach = document.getElementById('chatAttach');
+        chatFileInput = document.getElementById('chatFileInput');
+        chatAttachmentsEl = document.getElementById('chatAttachments');
         conversationListEl = document.getElementById('conversationList');
 
         document.getElementById('newConversationBtn').addEventListener('click', onNewConversation);
         chatSend.addEventListener('click', onSendButton);
+        if (chatAttach && chatFileInput) {
+            chatAttach.addEventListener('click', () => chatFileInput.click());
+            chatFileInput.addEventListener('change', () => {
+                addFiles(chatFileInput.files);
+                chatFileInput.value = '';
+            });
+        }
+        chatInput.addEventListener('paste', (e) => {
+            const files = [];
+            if (e.clipboardData && e.clipboardData.files) {
+                for (const f of e.clipboardData.files) files.push(f);
+            }
+            if (files.length) addFiles(files);
+        });
         chatInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
@@ -138,6 +167,90 @@ const Chat = (() => {
         }
     }
 
+    // --- Attachments ---
+
+    function addFiles(fileList) {
+        const files = Array.from(fileList || []);
+        for (const file of files) {
+            if (pendingAttachments.length >= ATTACH_MAX) break;
+            if (!ATTACH_MIME[file.type]) continue;
+            if (file.size > ATTACH_MAX_BYTES || !file.size) continue;
+            readFileAsAttachment(file);
+        }
+    }
+
+    function readFileAsAttachment(file) {
+        const reader = new FileReader();
+        reader.onload = () => {
+            const dataUrl = String(reader.result || '');
+            const comma = dataUrl.indexOf(',');
+            const base64 = comma === -1 ? '' : dataUrl.slice(comma + 1);
+            if (!base64) return;
+            if (pendingAttachments.length >= ATTACH_MAX) return;
+            pendingAttachments.push({
+                id: 'att-' + Date.now() + '-' + Math.random().toString(16).slice(2, 8),
+                name: file.name || 'image',
+                mime: file.type,
+                dataUrl,
+                base64
+            });
+            renderAttachments();
+        };
+        reader.readAsDataURL(file);
+    }
+
+    function removeAttachment(id) {
+        pendingAttachments = pendingAttachments.filter((a) => a.id !== id);
+        renderAttachments();
+    }
+
+    function clearAttachments() {
+        pendingAttachments = [];
+        renderAttachments();
+    }
+
+    function renderAttachments() {
+        if (!chatAttachmentsEl) return;
+        chatAttachmentsEl.innerHTML = '';
+        if (!pendingAttachments.length) {
+            chatAttachmentsEl.style.display = 'none';
+            return;
+        }
+        chatAttachmentsEl.style.display = 'flex';
+        pendingAttachments.forEach((a) => {
+            const item = document.createElement('div');
+            item.className = 'chat-attachment';
+            const img = document.createElement('img');
+            img.className = 'chat-attachment-thumb';
+            img.src = a.dataUrl;
+            img.alt = a.name;
+            const btn = document.createElement('button');
+            btn.className = 'chat-attachment-remove';
+            btn.type = 'button';
+            btn.textContent = '×';
+            btn.title = 'Remove';
+            btn.addEventListener('click', () => removeAttachment(a.id));
+            item.appendChild(img);
+            item.appendChild(btn);
+            chatAttachmentsEl.appendChild(item);
+        });
+    }
+
+    async function uploadAttachments() {
+        const uploaded = [];
+        for (const a of pendingAttachments) {
+            const res = await fetch('/api/uploads', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ filename: a.name, mime: a.mime, data: a.base64 })
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.error || 'Upload failed');
+            uploaded.push(data);
+        }
+        return uploaded;
+    }
+
     // --- Message rendering ---
 
     // Group an upscaled image with its original so they render as a single
@@ -249,11 +362,15 @@ const Chat = (() => {
         const contentEl = document.createElement('div');
         contentEl.className = 'message-content';
 
-        // Use markdown parser for AI messages, plain text for user messages
+        // Markdown for AI messages; user messages render as markdown too so
+        // attached /images/ uploads display inline (plain text has no images).
+        // Escape raw HTML first so pasted markup can't inject elements.
         if (role === 'assistant') {
             setAiContent(contentEl, content);
         } else {
-            contentEl.textContent = content;
+            const esc = document.createElement('div');
+            esc.textContent = content;
+            contentEl.innerHTML = Markdown.parse(esc.innerHTML);
         }
 
         el.appendChild(roleLabel);
@@ -294,7 +411,8 @@ const Chat = (() => {
 
     async function sendMessage() {
         const text = chatInput.value.trim();
-        if (!text) return;
+        const attachments = pendingAttachments.slice();
+        if (!text && !attachments.length) return;
 
         let conversationId = Conversations.currentId();
 
@@ -305,13 +423,30 @@ const Chat = (() => {
             chatMessagesEl.innerHTML = '';
         }
 
-        addMessageDom('user', text);
+        const visionImages = attachments.map((a) => a.base64);
+        let userText = text;
+        let uploaded = [];
+        if (attachments.length) {
+            setSendingState(true);
+            try {
+                uploaded = await uploadAttachments();
+            } catch (e) {
+                setSendingState(false);
+                addMessageDom('ai', 'Upload failed: ' + e.message);
+                return;
+            }
+            const refs = uploaded.map((u) => '![upload](' + u.url + ')').join('\n');
+            userText = text ? text + '\n\n' + refs : refs;
+        }
+
+        addMessageDom('user', userText);
         chatInput.value = '';
+        clearAttachments();
 
         // Persist user message to backend (context builder source)
         let userMsg;
         try {
-            userMsg = await Conversations.saveUserMessage(conversationId, text);
+            userMsg = await Conversations.saveUserMessage(conversationId, userText);
         } catch (e) {
             addMessageDom('ai', 'Failed to save message: ' + e.message);
             return;
@@ -338,7 +473,8 @@ const Chat = (() => {
                     conversationId,
                     provider,
                     model,
-                    message: text
+                    message: userText || text,
+                    images: visionImages
                 }),
                 signal: activeStreamAbort.signal
             });
