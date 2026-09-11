@@ -51,7 +51,8 @@ function createEmptyTask() {
         sourceImage: null,          // I2VA source image raw filename (video tasks only)
         parameters: {},             // relevant generation parameters
         lastAction: '',             // high level description of last action
-        status: 'idle'              // 'idle' | 'running' | 'completed' | 'failed'
+        status: 'idle',             // 'idle' | 'running' | 'completed' | 'failed'
+        lastImage: null             // image lineage { prompt, originalPrompt, creative_mode, explicit_constraints, attributes } — survives video tasks so "another image" still knows the style
     };
 }
 

@@ -46,10 +46,6 @@ const SEEDVR2_NOISE_LEVELS = { off: 0, low: 0.06, medium: 0.15 };
 // Shared FIFO across image/video/upscale (see services/generation-queue.js).
 // Extra requests wait their turn instead of failing with generation_busy.
 
-function canStartGeneration() {
-    return generationQueue.canStartGeneration();
-}
-
 function withGenerationLock(fn, opts = {}) {
     return generationQueue.enqueue(fn, opts);
 }
@@ -165,10 +161,43 @@ function imageRequestStrength(message) {
     if (IMAGE_OF_RE.test(message)) return 'definite';
 
     const hasGenerationVerb = GENERATION_VERB_RE.test(message);
+    const hasImageWord = IMAGE_WORD_RE.test(message) || hasFuzzyImageWord(message);
 
-    if (hasGenerationVerb && IMAGE_WORD_RE.test(message)) return 'definite';
+    if (hasGenerationVerb && hasImageWord) return 'definite';
     if (hasGenerationVerb) return 'likely';
     return null;
+}
+
+// Typo-tolerant fallback for image nouns ("iamge", "pictue", "potrait", ...)
+// so a misspelled medium still reaches the LLM classifier instead of falling
+// through to chat. Plain Levenshtein against the canonical media words.
+function hasFuzzyImageWord(message) {
+    const tokens = String(message || '').toLowerCase().replace(/[^a-z\s]/g, ' ').split(/\s+/);
+    for (const raw of tokens) {
+        const token = String(raw || '').trim();
+        if (token.length < 4 || token.length > 14) continue;
+        if (IMAGE_WORD_RE.test(token)) return true;
+        for (const word of IMAGE_MEDIA_WORDS) {
+            if (Math.abs(token.length - word.length) > 2) continue;
+            if (levenshteinDistance(token, word) <= 2) return true;
+        }
+    }
+    return false;
+}
+
+// True when an extracted image concept carries no concrete subject — only
+// generic filler ("another image", "an image", "one more", "iamge"). Such
+// requests are anaphoric: they mean "another one in the same lineage", never
+// a blank concept for the prompt builder to invent from scratch.
+const VAGUE_IMAGE_FILLER_RE = /^(?:another|other|one|more|new|next|second|2nd|just|please|me|an?|the|of|for|generate|create|make|give|show|do|image|picture|photo|photograph|portrait|art|artwork|illustration|drawing|painting|wallpaper|poster|logo|avatar|graphic|landscape|interior|iamge|imge|imgae|pictue|potrait)[\s,;.]*$/i;
+
+function isVagueImageConcept(text) {
+    const t = String(text || '').trim().replace(/^[",']+|[",'.!?]+$/g, '').trim();
+    if (!t) return true;
+    const tokens = t.toLowerCase().replace(/[^a-z\s]/g, ' ').split(/\s+/).filter(Boolean);
+    if (!tokens.length) return true;
+    const concrete = tokens.filter((tok) => !VAGUE_IMAGE_FILLER_RE.test(tok));
+    return concrete.length === 0;
 }
 
 // Use the configured LLM to classify intent. Returns
@@ -197,7 +226,7 @@ async function detectIntent(message, providers, provider, model, think) {
         const raw = await providers.chat(provider, [
             { role: 'system', content: IMAGE_INTENT_SYSTEM_PROMPT },
             { role: 'user', content: cluesPrompt }
-        ], model, { think });
+        ], model, { think, temperature: 0 });
 
         const parsed = parseIntentJson(raw);
         if (parsed) {
@@ -263,6 +292,26 @@ function normalizeAction(value) {
 function normalizeCreativeMode(value) {
     const v = String(value || 'none').toLowerCase();
     return v === 'full' || v === 'light' ? v : 'none';
+}
+
+// Explicit new-image phrasing: a generation verb driving at an image noun
+// that names a subject ("generate an image of a forest", "create a picture
+// of a dog") or ends the turn ("generate a dreamy image", "draw me a
+// portrait"). Tweaks ("make the image brighter", "change the image to
+// sunset") do not match — the noun must be followed by of/about/with/for,
+// punctuation, or end-of-turn. "show" is excluded from the verbs: "show me
+// the image" asks to display the existing one, not generate.
+const EXPLICIT_NEW_IMAGE_RE = new RegExp(
+    '\\b(?:' + GENERATION_VERB_STEMS.filter((s) => s !== 'show').join('|') + ')\\w*' +
+    '\\b(?:\\s+[\\w\']+){0,6}?\\s+(?:' + IMAGE_MEDIA_WORDS.join('|') + ')s?\\b' +
+    '\\s*(?:of\\b|about\\b|with\\b|for\\b|featuring\\b|showing\\b|$|[,.!?:;])',
+    'i'
+);
+
+function isExplicitNewImageRequest(message) {
+    const text = String(message || '');
+    if (!text.trim() || isConceptQuestion(text)) return false;
+    return EXPLICIT_NEW_IMAGE_RE.test(text);
 }
 
 // True when the extracted prompt is nothing but a creative-freedom marker
@@ -416,10 +465,14 @@ const PROMPT_BUILDER_SYSTEM_PROMPT =
     '(the image generated before). If the user\'s new concept clearly continues ' +
     'the same subject (same person or scene, an incremental tweak like changing ' +
     'the top), keep the prior details and layer the change on top of them. If ' +
-    'it is genuinely a new subject, do not carry the prior details over. ' +
+    'it is genuinely a new subject, do not carry the prior details over — but ' +
+    'keep the previous STYLE (mood, setting family, creative register) when the ' +
+    'request is anaphoric ("another image", "one more", "generate me another"): ' +
+    'that means a FRESH subject in the SAME style, never a copy of the previous ' +
+    'scene and never an unrelated default. ' +
     'A vague creative request with no concrete subject ("be creative", ' +
     '"something dreamy", "surprise me") is a NEW subject — do not carry the ' +
-    'previous person or scene over.\n\n' +
+    'previous person or scene over, but do honor the requested style.\n\n' +
 
     'MODIFICATION — when a current image prompt, its current attribute values, ' +
     'and a modification request are provided, they are the single source of ' +
@@ -1113,9 +1166,47 @@ function detectUpscaleIntent(message) {
     if (!text.trim()) return null;
     if (isConceptQuestion(text)) return null;
     const norm = text.toLowerCase().replace(/[-_]/g, ' ').replace(/\s+/g, ' ').trim();
-    if (!UPSCALE_SIGNAL_RE.test(norm)) return null;
+    if (!UPSCALE_SIGNAL_RE.test(norm) && !hasFuzzyUpscaleSignal(norm)) return null;
     if (!UPSCALE_REF_RE.test(norm)) return null;
     return { intent: 'image_upscale' };
+}
+
+// Typo-tolerant fallback for the upscale verb ("uspcale", "upscalle",
+// "upcsale", ...). Plain Levenshtein against the canonical forms with a
+// threshold of 2 catches transpositions and single extra/missing letters
+// without opening the gate to unrelated words.
+function levenshteinDistance(a, b) {
+    const s = String(a || '');
+    const t = String(b || '');
+    if (s === t) return 0;
+    if (!s.length) return t.length;
+    if (!t.length) return s.length;
+    let prev = new Array(t.length + 1);
+    for (let j = 0; j <= t.length; j++) prev[j] = j;
+    for (let i = 1; i <= s.length; i++) {
+        let prevDiag = prev[0];
+        prev[0] = i;
+        for (let j = 1; j <= t.length; j++) {
+            const tmp = prev[j];
+            const cost = s[i - 1] === t[j - 1] ? 0 : 1;
+            prev[j] = Math.min(prev[j] + 1, prev[j - 1] + 1, prevDiag + cost);
+            prevDiag = tmp;
+        }
+    }
+    return prev[t.length];
+}
+
+function hasFuzzyUpscaleSignal(norm) {
+    const targets = ['upscale', 'upscaled', 'upscaling', 'upscaler'];
+    const tokens = String(norm || '').split(' ');
+    for (const raw of tokens) {
+        const token = String(raw || '').replace(/[^a-z]/g, '');
+        if (token.length < 5 || token.length > 10) continue;
+        for (const target of targets) {
+            if (levenshteinDistance(token, target) <= 2) return true;
+        }
+    }
+    return false;
 }
 
 // --- Upscale graph builders -----------------------------------------------------
@@ -1873,13 +1964,14 @@ module.exports = {
     ASPECT_RATIOS,
     IMAGE_SIZES,
     IMAGE_MEGAPIXELS,
-    canStartGeneration,
     withGenerationLock,
     getQueueStatus: generationQueue.getStatus,
     cancelQueued: generationQueue.cancelQueued,
     detectIntent,
     buildImagePrompt,
     imageRequestStrength,
+    isExplicitNewImageRequest,
+    isVagueImageConcept,
     extractImageSubject,
     stripCreativeMetaInstructions,
     resolveDimensions,

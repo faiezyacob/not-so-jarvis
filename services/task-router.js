@@ -94,6 +94,10 @@ const ROUTER_SYSTEM_PROMPT =
     'faster", "generate the image again with a red dress") is continue_task with ' +
     'action modify and shouldExecuteTool true; updatedPrompt must be ONLY the ' +
     'change ("make her walk faster"), never the "generate ... again" preamble.\n' +
+    '- An anaphoric new generation ("generate me another image", "one more ' +
+    'image", "generate another video") while any task is active is new_task ' +
+    '(same medium) or switch_task (other medium) with shouldExecuteTool true — ' +
+    'a fresh generation in the same lineage, never a question and never chat.\n' +
     '- A question about the active task is task_question with shouldExecuteTool false — ' +
     'even if it is phrased as an offer or suggestion.\n' +
     '- If there is an active task and the user references "it"/"that"/"this" or makes ' +
@@ -196,6 +200,33 @@ function renderActiveTaskContext(task) {
     return 'Active task context:\n' + activeTaskSummary(task);
 }
 
+// Infer the conversation's media type from its message history when no
+// ActiveTask is stored (e.g. after returning to an older conversation whose
+// task entry was never persisted). Scans assistant messages for the last
+// /generated/ link: a video extension means video, otherwise image.
+function inferMediaTypeFromHistory(conversationId) {
+    try {
+        if (!conversationId) return null;
+        const messages = conversationService.getMessages(conversationId) || [];
+        const urlRe = /\/generated\/([^\s)\]}"']+)/g;
+        let last = null;
+        for (const m of messages) {
+            if (!m || m.role !== 'assistant') continue;
+            const content = String(m.content || '');
+            let match;
+            urlRe.lastIndex = 0;
+            while ((match = urlRe.exec(content))) last = match[1];
+        }
+        if (!last) return null;
+        const name = String(last).split('?')[0];
+        if (/\.(?:mp4|webm|avi|mov)$/i.test(name)) return 'video';
+        if (/\.(?:png|jpe?g|webp|gif)$/i.test(name)) return 'image';
+        return null;
+    } catch (err) {
+        return null;
+    }
+}
+
 function parseRouterJson(raw) {
     if (!raw) return null;
     let text = String(raw).trim();
@@ -282,9 +313,14 @@ async function routeMessage({ message, provider, model, conversationId, hasAttac
     if (imageGenerator.detectUpscaleIntent(message)) {
         // Pronoun-only upscale ("upscale this", "upscale it") while a video
         // task is active means the video — same rule the image pipeline uses
-        // for image tasks. Explicit image nouns always stay on image.
+        // for image tasks. Explicit image nouns always stay on image. When
+        // the ActiveTask is missing (fresh restart, imported history), infer
+        // the media type from the conversation's last generated asset so
+        // returning to an older conversation still routes pronoun upscales
+        // to the right pipeline.
         const activeTaskForUpscale = taskState.getTask(conversationId);
-        if (activeTaskForUpscale.type === 'video' &&
+        const effectiveUpscaleType = activeTaskForUpscale.type || inferMediaTypeFromHistory(conversationId);
+        if (effectiveUpscaleType === 'video' &&
             !/\b(?:image|picture|photo|artwork|illustration|painting|render|screenshot|wallpaper|poster|logo|avatar|graphic)\w*\b/i.test(String(message || ''))) {
             return {
                 intent: 'new_task',
@@ -321,8 +357,7 @@ async function routeMessage({ message, provider, model, conversationId, hasAttac
                         task: 'video_generation',
                         action: 'generate',
                         shouldExecuteTool: true,
-                        updatedPrompt: '',
-                        regenerateBare: true
+                        updatedPrompt: ''
                     };
                 }
                 return {
@@ -340,8 +375,7 @@ async function routeMessage({ message, provider, model, conversationId, hasAttac
                         task: 'image_generation',
                         action: 'generate',
                         shouldExecuteTool: true,
-                        updatedPrompt: '',
-                        regenerateBare: true
+                        updatedPrompt: ''
                     };
                 }
                 return {
@@ -388,6 +422,88 @@ async function routeMessage({ message, provider, model, conversationId, hasAttac
                     structuredRequest
                 };
             }
+        }
+    }
+
+    // Anaphoric new image ("generate me another image", "one more image"):
+    // an explicit new generation in the image lineage — never a modification
+    // and never chat. Routed deterministically (with the intent classifier's
+    // structured request) so the tool always executes: the LLM router tends
+    // to downgrade this vague wording to a question/unrelated turn that merely
+    // echoes a prompt back without running anything.
+    if ((activeTask.type === 'image' || activeTask.type === 'video') &&
+        !hasAttachedImage &&
+        !videoGenerator.VIDEO_WORD_RE.test(message) &&
+        /\banother\b|\bone\s+more\b/i.test(message) &&
+        imageGenerator.imageRequestStrength(message)) {
+        try {
+            const anaphoricIntent = await imageGenerator.detectIntent(message, providers, provider, model, think);
+            if (anaphoricIntent.intent === 'image_generation') {
+                return {
+                    intent: activeTask.type === 'video' ? 'switch_task' : 'new_task',
+                    task: 'image_generation',
+                    action: 'generate',
+                    shouldExecuteTool: true,
+                    updatedPrompt: anaphoricIntent.user_prompt,
+                    structuredRequest: anaphoricIntent
+                };
+            }
+        } catch (err) {
+            console.warn('[task-router] Anaphoric image gate failed:', err.message);
+        }
+    }
+
+    // Explicit new image request ("generate an image of a forest", "create a
+    // picture of a dog", "draw me a portrait") while any task is active: honor
+    // the dedicated image classifier directly instead of letting the generic
+    // LLM router downgrade clear wording to chat. Only the classifier's
+    // generate verdict executes — a modify verdict (tweaks the phrasing gate
+    // let through) and questions fall through to the router as before.
+    if (activeTask.type &&
+        !hasAttachedImage &&
+        !videoGenerator.VIDEO_WORD_RE.test(message) &&
+        imageGenerator.isExplicitNewImageRequest(message)) {
+        try {
+            const explicitIntent = await imageGenerator.detectIntent(message, providers, provider, model, think);
+            if (explicitIntent.intent === 'image_generation' && explicitIntent.action !== 'modify') {
+                return {
+                    intent: activeTask.type === 'image' ? 'new_task' : 'switch_task',
+                    task: 'image_generation',
+                    action: 'generate',
+                    shouldExecuteTool: true,
+                    updatedPrompt: explicitIntent.user_prompt,
+                    structuredRequest: explicitIntent
+                };
+            }
+        } catch (err) {
+            console.warn('[task-router] Explicit image gate failed:', err.message);
+        }
+    }
+
+    // Explicit new video request ("generate a video of a dog") while a video
+    // task is active: the cross-task I2VA gate below only covers switches
+    // away from other task types, so same-type follow-ups get their own
+    // deterministic path with the video classifier as authority.
+    if (activeTask.type === 'video' &&
+        !hasAttachedImage &&
+        videoGenerator.VIDEO_REQUEST_RE.test(message)) {
+        try {
+            const explicitVideoIntent = await videoGenerator.detectVideoIntent(message, providers, provider, model, think);
+            if (explicitVideoIntent.intent === 'video_generation' && explicitVideoIntent.action !== 'modify') {
+                const modeInfo = videoGenerator.resolveVideoMode(conversationId, message, explicitVideoIntent);
+                explicitVideoIntent.videoMode = modeInfo.videoMode;
+                explicitVideoIntent.sourceImageRawFilename = modeInfo.sourceImage ? modeInfo.sourceImage.rawFilename : null;
+                return {
+                    intent: 'new_task',
+                    task: 'video_generation',
+                    action: 'generate',
+                    shouldExecuteTool: true,
+                    updatedPrompt: explicitVideoIntent.user_prompt,
+                    structuredRequest: explicitVideoIntent
+                };
+            }
+        } catch (err) {
+            console.warn('[task-router] Explicit video gate failed:', err.message);
         }
     }
 
@@ -502,6 +618,46 @@ async function routeMessage({ message, provider, model, conversationId, hasAttac
 
     const parsed = await askRouter(routerPrompt, provider, model, think);
 
+    // Router LLM returned garbage twice — consult the focused intent
+    // classifiers before surrendering to chat, mirroring the no-task path.
+    // Attachments stay router-owned: without its verdict a question about an
+    // upload could be misread as an edit instruction.
+    if (!parsed && !hasAttachedImage) {
+        try {
+            const fallbackVideo = await videoGenerator.detectVideoIntent(message, providers, provider, model, think);
+            if (fallbackVideo.intent === 'video_generation') {
+                const modeInfo = videoGenerator.resolveVideoMode(conversationId, message, fallbackVideo);
+                fallbackVideo.videoMode = modeInfo.videoMode;
+                fallbackVideo.sourceImageRawFilename = modeInfo.sourceImage ? modeInfo.sourceImage.rawFilename : null;
+                return {
+                    intent: 'switch_task',
+                    task: 'video_generation',
+                    action: fallbackVideo.action,
+                    shouldExecuteTool: true,
+                    updatedPrompt: fallbackVideo.user_prompt,
+                    structuredRequest: fallbackVideo
+                };
+            }
+        } catch (err) {
+            console.warn('[task-router] Fallback video intent failed:', err.message);
+        }
+        try {
+            const fallbackImage = await imageGenerator.detectIntent(message, providers, provider, model, think);
+            if (fallbackImage.intent === 'image_generation') {
+                return {
+                    intent: activeTask.type === 'image' ? 'new_task' : 'switch_task',
+                    task: 'image_generation',
+                    action: fallbackImage.action,
+                    shouldExecuteTool: true,
+                    updatedPrompt: fallbackImage.user_prompt,
+                    structuredRequest: fallbackImage
+                };
+            }
+        } catch (err) {
+            console.warn('[task-router] Fallback image intent failed:', err.message);
+        }
+    }
+
     const decision = normalizeDecision(parsed);
 
     // Only keep an updated prompt for generation executions.
@@ -547,15 +703,24 @@ async function routeMessage({ message, provider, model, conversationId, hasAttac
 }
 
 async function askRouter(routerPrompt, provider, model, think) {
-    try {
-        const raw = await providers.chat(provider, [
-            { role: 'system', content: ROUTER_SYSTEM_PROMPT },
-            { role: 'user', content: routerPrompt }
-        ], model, { think });
-        const parsed = parseRouterJson(raw);
-        if (parsed) return parsed;
-    } catch (err) {
-        console.warn('[task-router] LLM routing failed, using fallback:', err.message);
+    // Two attempts: small local models often wrap the verdict in commentary
+    // on the first try. Classification runs at temperature 0 so the verdict
+    // is deterministic, not creative.
+    const messages = [
+        { role: 'system', content: ROUTER_SYSTEM_PROMPT },
+        { role: 'user', content: routerPrompt }
+    ];
+    for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+            const raw = await providers.chat(provider, messages, model, { think, temperature: 0 });
+            const parsed = parseRouterJson(raw);
+            if (parsed) return parsed;
+            console.warn('[task-router] Unparseable router JSON (attempt ' + (attempt + 1) + '), retrying.');
+            messages.push({ role: 'user', content: 'That was not valid JSON. Respond with ONLY the single JSON object, no other text.' });
+        } catch (err) {
+            console.warn('[task-router] LLM routing failed, using fallback:', err.message);
+            return null;
+        }
     }
     return null;
 }

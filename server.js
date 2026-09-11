@@ -1060,6 +1060,36 @@ async function handleChatStream(req, res) {
             if (isNew && decision.structuredRequest) {
                 // Brand-new task detected through the intent pipeline.
                 structuredRequest = decision.structuredRequest;
+                // A new image requested while a video task is active must not
+                // inherit the H3 video prompt as its style context — rebase
+                // onto the conversation's image lineage instead.
+                if (activeTask.type === 'video') {
+                    const lineagePrompt = (activeTask.lastImage && activeTask.lastImage.prompt) ||
+                        (findLastImagePromptInHistory(conversationId) || {}).prompt || '';
+                    if (lineagePrompt) structuredRequest.previous_prompt = lineagePrompt;
+                } else if (activeTask.type === 'image' && !structuredRequest.previous_prompt) {
+                    // Same-task follow-up: pass the current prompt as style
+                    // context (the builder ignores it for new subjects).
+                    structuredRequest.previous_prompt = activeTask.prompt || '';
+                }
+                // "generate me another image" carries no subject of its own:
+                // resolve the anaphora to the lineage concept (same style,
+                // fresh subject) instead of sending the literal "an image"
+                // to the prompt builder, which would invent an unrelated one.
+                if (imageGenerator.isVagueImageConcept(structuredRequest.user_prompt) &&
+                    /\b(?:another|one more|one-more|new one)\b/i.test(message)) {
+                    const lineage = resolveAnotherImageConcept(conversationId, activeTask);
+                    if (lineage) {
+                        structuredRequest.user_prompt = lineage.userPrompt;
+                        structuredRequest.previous_prompt = lineage.previousPrompt;
+                        if (!structuredRequest.creative_mode || structuredRequest.creative_mode === 'none') {
+                            structuredRequest.creative_mode = lineage.creativeMode;
+                        }
+                        if ((!structuredRequest.explicit_constraints || !structuredRequest.explicit_constraints.length) && lineage.explicitConstraints.length) {
+                            structuredRequest.explicit_constraints = lineage.explicitConstraints;
+                        }
+                    }
+                }
                 enhanced = await imageGenerator.buildImagePrompt(structuredRequest, providers, provider, model, think);
             } else if (isNew && decision.updatedPrompt) {
                 // Brand-new / switched task reported by the router. Pass the
@@ -1068,7 +1098,10 @@ async function handleChatStream(req, res) {
                 structuredRequest = {
                     intent: 'image_generation',
                     user_prompt: decision.updatedPrompt,
-                    previous_prompt: activeTask.prompt || '',
+                    previous_prompt: activeTask.type === 'video'
+                        ? ((activeTask.lastImage && activeTask.lastImage.prompt) ||
+                            (findLastImagePromptInHistory(conversationId) || {}).prompt || '')
+                        : (activeTask.prompt || ''),
                     creative_mode: 'none',
                     explicit_constraints: []
                 };
@@ -1407,6 +1440,15 @@ async function handleImageGenerationStream(req, res, opts) {
                 width: result.width,
                 height: result.height
             }),
+            // Image lineage survives later video tasks so "another image"
+            // keeps the style context even after a video was generated.
+            lastImage: {
+                prompt: imagePrompt,
+                originalPrompt: taskState.getTask(conversationId).originalPrompt || imagePrompt,
+                creative_mode: existingParams.creative_mode || 'none',
+                explicit_constraints: existingParams.explicit_constraints || [],
+                attributes: existingParams.attributes || null
+            },
             status: 'completed',
             lastAction: action || 'generate'
         });
@@ -1728,7 +1770,11 @@ async function handleVideoUpscaleStream(req, res, opts) {
             scale: result.scale,
             quality: result.quality,
             profile: result.profile,
-            noise: result.noise
+            noise: result.noise,
+            sourceWidth: result.sourceWidth || null,
+            sourceHeight: result.sourceHeight || null,
+            width: result.width || null,
+            height: result.height || null
         };
         taskState.setTask(conversationId, {
             prompt: basePrompt,
@@ -1740,12 +1786,18 @@ async function handleVideoUpscaleStream(req, res, opts) {
             lastAction: 'upscale'
         });
 
+        const dimPart = (result.sourceWidth && result.sourceHeight && result.width && result.height)
+            ? ' from ' + result.sourceWidth + 'x' + result.sourceHeight +
+              ' to **' + result.width + 'x' + result.height + '**'
+            : (result.width && result.height
+                ? ' to **' + result.width + 'x' + result.height + '**'
+                : '');
         const content =
             result.engine === 'seedvr2'
-                ? 'Upscaled your video to **' + result.resolution + 'p** (' + result.profile + ', noise: ' + result.noise + ').\n\n' +
+                ? 'Upscaled your video' + dimPart + ' (**' + result.resolution + 'p** target, ' + result.profile + ', noise: ' + result.noise + ').\n\n' +
                   '**SeedVR2 Pass:** diffusion detail restoration.\n\n' +
                   '<video class="md-video" preload="metadata" playsinline src="' + result.url + '"></video>'
-                : 'Upscaled your video **' + result.scale + 'x** (RTX super-resolution, ' + result.quality + ').\n\n' +
+                : 'Upscaled your video' + dimPart + ' (**' + result.scale + 'x** RTX super-resolution, ' + result.quality + ').\n\n' +
                   '**RTX Pass:** fast single-pass upscale.\n\n' +
                   '<video class="md-video" preload="metadata" playsinline src="' + result.url + '"></video>';
 
@@ -1787,6 +1839,24 @@ function friendlyVideoError(err) {
     }
 }
 
+// True when a data/generated filename actually exists on disk. Chat replies
+// can hallucinate /generated/ links (e.g. after a typo'd upscale request
+// falls through to chat); resolvers must skip those so the next real upscale
+// still finds the last genuine asset instead of the fake one.
+function generatedFileExists(rawFilename) {
+    try {
+        const safeName = path.basename(String(rawFilename || '').split('?')[0]);
+        if (!safeName) return false;
+        let decoded = safeName;
+        try { decoded = decodeURIComponent(safeName); } catch (err) { /* keep raw */ }
+        const fullPath = path.join(GENERATED_DIR, path.basename(decoded));
+        if (!fullPath.startsWith(GENERATED_DIR)) return false;
+        return fs.existsSync(fullPath);
+    } catch (err) {
+        return false;
+    }
+}
+
 // Find the generated image to upscale for a conversation: the last
 // /generated/<file> link in the assistant messages (so consecutive upscales
 // chain), falling back to the active task's latest generated asset. An explicit
@@ -1801,26 +1871,90 @@ function resolveUpscaleSource(conversationId, explicitFilename) {
 
     const messages = conversationService.getMessages(conversationId) || [];
     const urlRe = /\/generated\/([^\s)\]}"']+)/g;
-    let last = null;
+    const candidates = [];
     for (const m of messages) {
         if (!m || m.role !== 'assistant') continue;
         const content = String(m.content || '');
         let match;
-        while ((match = urlRe.exec(content))) last = match[1];
+        urlRe.lastIndex = 0;
+        while ((match = urlRe.exec(content))) candidates.push(match[1]);
     }
-    if (!last) {
-        const asset = taskState.getTask(conversationId).generatedAsset;
-        if (asset) last = String(asset).split('/').pop();
+    // Walk newest-first so hallucinated / deleted links are skipped in favor
+    // of the last genuine file still on disk. This is what lets a conversation
+    // recover after a chat reply invents a /generated/ URL.
+    for (let i = candidates.length - 1; i >= 0; i--) {
+        let rawFilename = candidates[i];
+        try { rawFilename = decodeURIComponent(rawFilename); } catch (err) { /* keep raw */ }
+        if (generatedFileExists(rawFilename)) {
+            return { rawFilename: path.basename(rawFilename), meta: findGeneratedMeta(rawFilename) };
+        }
     }
-    if (!last) return null;
-    const rawFilename = decodeURIComponent(last);
-    return { rawFilename, meta: findGeneratedMeta(rawFilename) };
+    // No on-disk match in history: fall back to the active task asset (the
+    // caller reports a clear source-missing error when that is gone too).
+    const asset = taskState.getTask(conversationId).generatedAsset;
+    if (asset) {
+        const rawFilename = String(asset).split('/').pop();
+        return { rawFilename, meta: findGeneratedMeta(rawFilename) };
+    }
+    return null;
 }
 
 function findGeneratedMeta(rawFilename) {
     const name = decodeURIComponent(String(rawFilename || '')).split('/').pop();
     return generatedHistory.list().find((e) =>
         e.rawFilename === name || String(e.file).split('/').pop() === name) || null;
+}
+
+// Last image lineage for a conversation: the most recent assistant message
+// that produced an image (not a video), with its stored "**Prompt:**".
+// Used when a new image is requested while a video task is active (the
+// ActiveTask prompt is then the H3 video prompt, not the image style), and
+// when "another image" needs the previous style context. Returns
+// { prompt } or null.
+function findLastImagePromptInHistory(conversationId) {
+    if (!conversationId) return null;
+    const messages = conversationService.getMessages(conversationId) || [];
+    for (let i = messages.length - 1; i >= 0; i--) {
+        const m = messages[i];
+        if (!m || m.role !== 'assistant') continue;
+        const content = String(m.content || '');
+        if (!/\/generated\//.test(content)) continue;
+        if (/<video[\s>]/i.test(content)) continue;
+        if (/\.(?:mp4|webm|avi|mov)(\?.*)?(?:[\s)\]}"']|$)/i.test(content)) continue;
+        const promptMatch = content.match(/\*\*Prompt:\*\*\s*([\s\S]*?)(?:\n\s*\n|\n\s*![\[]|$)/);
+        if (promptMatch && promptMatch[1].trim()) {
+            // Skip degenerate prompts left by earlier vague requests
+            // ("Prompt: an image") so lineage keeps the last concrete style.
+            const candidate = promptMatch[1].trim();
+            try {
+                if (imageGenerator.isVagueImageConcept(candidate)) continue;
+            } catch (err) { /* fall through — accept the candidate */ }
+            return { prompt: candidate };
+        }
+    }
+    return null;
+}
+
+// Resolve an anaphoric new-image request ("generate me another image") to the
+// conversation's image lineage. A vague concept with an "another / one more"
+// marker means a fresh subject in the SAME style — never the literal words
+// "an image". Returns the lineage concept { userPrompt, creativeMode,
+// previousPrompt } or null when there is no lineage to continue.
+function resolveAnotherImageConcept(conversationId, activeTask) {
+    const task = activeTask || taskState.getTask(conversationId);
+    const lineage = (task && task.lastImage) || null;
+    const historyPrompt = findLastImagePromptInHistory(conversationId);
+    const lineagePrompt = (lineage && lineage.prompt && !imageGenerator.isVagueImageConcept(lineage.prompt))
+        ? lineage.prompt : null;
+    const previousPrompt = lineagePrompt || (historyPrompt && historyPrompt.prompt) || (task && task.type === 'image' && !imageGenerator.isVagueImageConcept(task.prompt) ? task.prompt : '') || '';
+    if (!previousPrompt) return null;
+    const lineageConcept = (lineage && (lineage.originalPrompt || lineage.prompt)) || '';
+    const userPrompt = (!imageGenerator.isVagueImageConcept(lineageConcept) && lineageConcept) || previousPrompt;
+    const creativeMode = (lineage && lineage.creative_mode) ||
+        (task && task.parameters && task.parameters.creative_mode) || 'none';
+    const explicitConstraints = (lineage && lineage.explicit_constraints) ||
+        (task && task.parameters && task.parameters.explicit_constraints) || [];
+    return { userPrompt, creativeMode, explicitConstraints, previousPrompt };
 }
 
 // Find the generated video to upscale for a conversation: the last
@@ -1837,27 +1971,35 @@ function resolveVideoUpscaleSource(conversationId, explicitFilename) {
 
     const messages = conversationService.getMessages(conversationId) || [];
     const urlRe = /\/generated\/([^\s)\]}"']+)/g;
-    let last = null;
+    const candidates = [];
     for (const m of messages) {
         if (!m || m.role !== 'assistant') continue;
         const content = String(m.content || '');
         let match;
+        urlRe.lastIndex = 0;
         while ((match = urlRe.exec(content))) {
             const filename = match[1];
-            if (/\.(?:mp4|webm|avi|mov)$/i.test(filename)) {
-                last = filename;
+            if (/\.(?:mp4|webm|avi|mov)(\?.*)?$/i.test(filename)) {
+                candidates.push(filename);
             }
         }
     }
-    if (!last) {
-        const asset = taskState.getTask(conversationId).generatedAsset;
-        if (asset && /\.(?:mp4|webm|avi|mov)$/i.test(String(asset))) {
-            last = String(asset).split('/').pop();
+    // Newest-first with an on-disk check, mirroring resolveUpscaleSource: a
+    // hallucinated or since-replaced video link never blocks the real source.
+    for (let i = candidates.length - 1; i >= 0; i--) {
+        let rawFilename = candidates[i];
+        try { rawFilename = decodeURIComponent(rawFilename); } catch (err) { /* keep raw */ }
+        rawFilename = String(rawFilename).split('?')[0];
+        if (generatedFileExists(rawFilename)) {
+            return { rawFilename: path.basename(rawFilename), meta: findGeneratedMeta(rawFilename) };
         }
     }
-    if (!last) return null;
-    const rawFilename = decodeURIComponent(last);
-    return { rawFilename, meta: findGeneratedMeta(rawFilename) };
+    const asset = taskState.getTask(conversationId).generatedAsset;
+    if (asset && /\.(?:mp4|webm|avi|mov)(\?.*)?$/i.test(String(asset))) {
+        const rawFilename = String(asset).split('/').pop().split('?')[0];
+        return { rawFilename, meta: findGeneratedMeta(rawFilename) };
+    }
+    return null;
 }
 
 // Handle an upscale chat request over SSE. Emits a "generating" status event,
@@ -1928,6 +2070,13 @@ async function handleImageUpscaleStream(req, res, opts) {
                     source: source.rawFilename
                 }
             }),
+            lastImage: {
+                prompt: basePrompt,
+                originalPrompt: taskState.getTask(conversationId).originalPrompt || basePrompt,
+                creative_mode: existingParams.creative_mode || 'none',
+                explicit_constraints: existingParams.explicit_constraints || [],
+                attributes: existingParams.attributes || null
+            },
             status: 'completed',
             lastAction: 'upscale'
         });

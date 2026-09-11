@@ -161,6 +161,171 @@ function readImageDimensions(filePath) {
     return null;
 }
 
+// --- Video dimension probing (no dependencies) ------------------------------
+//
+// Reads WxH straight from the container header so the gallery preview and the
+// chat reply can show the AFTER dimensions of an upscaled video. Supports
+// MP4/MOV (ISO BMFF stsd sample entry, tkhd fallback), WebM (EBML Video
+// PixelWidth/PixelHeight) and AVI (avih). Returns { width, height } or null.
+
+function validVideoDims(w, h) {
+    return Number.isInteger(w) && Number.isInteger(h) &&
+        w >= 16 && h >= 16 && w <= 8192 && h <= 8192;
+}
+
+function probeMp4Dimensions(buf) {
+    // stsd sample entries (avc1/hev1/...) carry the coded size: after the
+    // 4-byte fourcc, width sits at content offset 24, height at +26.
+    const codecs = ['avc1', 'avc3', 'hev1', 'hev3', 'hvc1', 'av01', 'vp09', 'mp4v', 'h264', 'H264'];
+    for (const fourcc of codecs) {
+        let idx = -1;
+        while ((idx = buf.indexOf(fourcc, idx + 1)) !== -1) {
+            if (idx + 32 > buf.length) break;
+            const w = buf.readUInt16BE(idx + 28);
+            const h = buf.readUInt16BE(idx + 30);
+            if (validVideoDims(w, h)) return { width: w, height: h };
+        }
+    }
+    // tkhd fallback (display size as 16.16 fixed point, one box per track —
+    // keep the largest non-zero area so the video track wins over audio).
+    let best = null;
+    let idx = -1;
+    while ((idx = buf.indexOf('tkhd', idx + 1)) !== -1) {
+        if (idx + 100 > buf.length) break;
+        const version = buf[idx + 4];
+        const wOff = version === 1 ? idx + 92 : idx + 80;
+        const hOff = wOff + 4;
+        if (hOff + 4 > buf.length) continue;
+        const w = buf.readUInt32BE(wOff) >> 16;
+        const h = buf.readUInt32BE(hOff) >> 16;
+        if (validVideoDims(w, h) && (!best || w * h > best.width * best.height)) {
+            best = { width: w, height: h };
+        }
+    }
+    return best;
+}
+
+function ebmlVint(buf, pos) {
+    if (pos < 0 || pos >= buf.length) return null;
+    const first = buf[pos];
+    if (!first) return null;
+    let len = 1;
+    let mask = 0x80;
+    while (len <= 8 && !(first & mask)) { len += 1; mask >>= 1; }
+    if (len > 8 || pos + len > buf.length) return null;
+    let value = first & (mask - 1);
+    for (let i = 1; i < len; i++) value = value * 256 + buf[pos + i];
+    return { len, value };
+}
+
+function ebmlUint(buf, pos, size) {
+    if (size < 1 || size > 4 || pos + size > buf.length) return null;
+    let value = 0;
+    for (let i = 0; i < size; i++) value = value * 256 + buf[pos + i];
+    return value;
+}
+
+function probeWebmDimensions(buf) {
+    // The Video element (0xE0) holds PixelWidth (0xB0) / PixelHeight (0xBA).
+    // Random 0xE0 bytes are filtered by requiring a valid size vint and a
+    // small element body, which the real Video element always has.
+    let best = null;
+    let idx = -1;
+    let guard = 0;
+    while ((idx = buf.indexOf(0xE0, idx + 1)) !== -1) {
+        if (++guard > 50000) break;
+        const sizeInfo = ebmlVint(buf, idx + 1);
+        if (!sizeInfo) continue;
+        const maxVint = Math.pow(2, 7 * sizeInfo.len) - 1;
+        let end;
+        if (sizeInfo.value === maxVint) {
+            end = Math.min(buf.length, idx + 1 + sizeInfo.len + 512);
+        } else {
+            if (sizeInfo.value > 4096 || sizeInfo.value < 4) continue;
+            end = Math.min(buf.length, idx + 1 + sizeInfo.len + sizeInfo.value);
+        }
+        let w = null;
+        let h = null;
+        for (let p = idx + 1 + sizeInfo.len; p < end; p++) {
+            const id = buf[p];
+            if (id === 0xB0 || id === 0xBA) {
+                const s = ebmlVint(buf, p + 1);
+                if (!s || s.value < 1 || s.value > 4 || s.value === maxVint) continue;
+                const value = ebmlUint(buf, p + 1 + s.len, s.value);
+                if (!Number.isFinite(value) || value <= 0) continue;
+                if (id === 0xB0) w = value; else h = value;
+                if (w && h) break;
+            }
+        }
+        if (validVideoDims(w, h)) return { width: w, height: h };
+        if ((w || h) && !best) best = { width: w || 0, height: h || 0 };
+    }
+    return best && validVideoDims(best.width, best.height) ? best : null;
+}
+
+function probeAviDimensions(buf) {
+    const idx = buf.indexOf('avih');
+    if (idx !== -1 && idx + 44 <= buf.length) {
+        const w = buf.readUInt32LE(idx + 36);
+        const h = buf.readUInt32LE(idx + 40);
+        if (validVideoDims(w, h)) return { width: w, height: h };
+    }
+    return null;
+}
+
+// Probe dimensions from an in-memory video buffer (the caller already holds
+// it for the ComfyUI upload/download, so no extra disk read is needed).
+// ext hints the container; when it is missing or unknown every parser is
+// tried in turn.
+function probeVideoBuffer(buffer, ext) {
+    const buf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer || []);
+    if (!buf || buf.length < 16) return null;
+    const e = String(ext || '').toLowerCase();
+    const isEbml = buf[0] === 0x1A && buf[1] === 0x45 && buf[2] === 0xDF && buf[3] === 0xA3;
+    const isRiff = buf.toString('ascii', 0, 4) === 'RIFF';
+    const order = e === '.webm' || (!e && isEbml)
+        ? ['webm', 'mp4', 'avi']
+        : (e === '.avi' || (!e && isRiff)) ? ['avi', 'mp4', 'webm'] : ['mp4', 'webm', 'avi'];
+    for (const kind of order) {
+        const found = kind === 'webm' ? probeWebmDimensions(buf)
+            : kind === 'avi' ? probeAviDimensions(buf)
+            : probeMp4Dimensions(buf);
+        if (found) return found;
+    }
+    return null;
+}
+
+function readVideoDimensions(filePath) {
+    try {
+        return probeVideoBuffer(fs.readFileSync(filePath), path.extname(String(filePath)));
+    } catch (_) {
+        return null;
+    }
+}
+
+// Expected output size when the actual file cannot be probed (e.g. header
+// parse failed): RTX scales both sides by the multiplier, SeedVR2 fits the
+// short side to the target resolution keeping aspect (even pixels).
+function expectedUpscaleDims(sourceWidth, sourceHeight, opts) {
+    const sw = Number(sourceWidth);
+    const sh = Number(sourceHeight);
+    if (!Number.isFinite(sw) || !Number.isFinite(sh) || sw <= 0 || sh <= 0) return null;
+    const o = opts || {};
+    if (o.engine === 'seedvr2') {
+        const target = clampNumber(o.resolution, 512, 8192, 2160);
+        const factor = target / Math.min(sw, sh);
+        const w = Math.max(2, Math.round((sw * factor) / 2) * 2);
+        const h = Math.max(2, Math.round((sh * factor) / 2) * 2);
+        if (validVideoDims(w, h)) return { width: w, height: h };
+        return null;
+    }
+    const scale = normalizeVideoUpscaleScale(o.scale, 2);
+    const w = Math.round(sw * scale);
+    const h = Math.round(sh * scale);
+    if (validVideoDims(w, h)) return { width: w, height: h };
+    return null;
+}
+
 function h3SizeScale(size) {
     const key = String(size || '').trim().toUpperCase();
     return H3_SIZE_SCALES[key] || H3_SIZE_SCALES.M;
@@ -197,10 +362,6 @@ function h3Dimensions(width, height, size) {
 // --- Generation lock (shared with image-generator) ---------------------------
 // Single FIFO in services/generation-queue.js. Both pipelines delegate here
 // so image/video/upscale never run concurrently and extras queue.
-
-function canStartGeneration() {
-    return generationQueue.canStartGeneration();
-}
 
 function withGenerationLock(fn, opts = {}) {
     return generationQueue.enqueue(fn, opts);
@@ -448,7 +609,7 @@ async function detectVideoIntent(message, providers, provider, model, think) {
         const raw = await providers.chat(provider, [
             { role: 'system', content: H3_INTENT_SYSTEM_PROMPT },
             { role: 'user', content: cluesPrompt }
-        ], model, { think });
+        ], model, { think, temperature: 0 });
 
         const parsed = parseIntentJson(raw);
         if (parsed && parsed.intent === 'video_generation') {
@@ -503,13 +664,50 @@ function detectVideoUpscaleIntent(message) {
     if (!text.trim()) return null;
     if (isVideoConceptQuestion(text)) return null;
     const norm = text.toLowerCase().replace(/[-_]/g, ' ').replace(/\s+/g, ' ').trim();
-    if (!VIDEO_UPSCALE_SIGNAL_RE.test(norm)) return null;
+    if (!VIDEO_UPSCALE_SIGNAL_RE.test(norm) && !hasFuzzyVideoUpscaleSignal(norm)) return null;
     if (!VIDEO_UPSCALE_REF_RE.test(norm)) return null;
     // Require an explicit video noun so a bare "upscale this" still goes to
     // the image pipeline (backwards compatible). Pronoun-only requests are
     // resolved by the active task type in the router.
     if (!/\b(?:video|film|clip|movie|footage|animation|reel|mp4|webm|mov|4k)\b/i.test(norm)) return null;
     return { intent: 'video_upscale' };
+}
+
+// Typo-tolerant fallback for the upscale verb, mirroring image-generator's
+// matcher so "uspcale this video" still routes to the video pipeline instead
+// of falling through to chat (where the model would hallucinate a success).
+function levenshteinDistance(a, b) {
+    const s = String(a || '');
+    const t = String(b || '');
+    if (s === t) return 0;
+    if (!s.length) return t.length;
+    if (!t.length) return s.length;
+    const prev = new Array(t.length + 1);
+    for (let j = 0; j <= t.length; j++) prev[j] = j;
+    for (let i = 1; i <= s.length; i++) {
+        let prevDiag = prev[0];
+        prev[0] = i;
+        for (let j = 1; j <= t.length; j++) {
+            const tmp = prev[j];
+            const cost = s[i - 1] === t[j - 1] ? 0 : 1;
+            prev[j] = Math.min(prev[j] + 1, prev[j - 1] + 1, prevDiag + cost);
+            prevDiag = tmp;
+        }
+    }
+    return prev[t.length];
+}
+
+function hasFuzzyVideoUpscaleSignal(norm) {
+    const targets = ['upscale', 'upscaled', 'upscaling', 'upscaler'];
+    const tokens = String(norm || '').split(' ');
+    for (const raw of tokens) {
+        const token = String(raw || '').replace(/[^a-z]/g, '');
+        if (token.length < 5 || token.length > 10) continue;
+        for (const target of targets) {
+            if (levenshteinDistance(token, target) <= 2) return true;
+        }
+    }
+    return false;
 }
 
 // --- H3 Prompt Building -------------------------------------------------------
@@ -1077,22 +1275,31 @@ function resolveVideoSourceImage(conversationId, explicitFilename) {
     const taskState = require('./task-state');
     const messages = conversationService.getMessages(conversationId) || [];
     const urlRe = /\/generated\/([^\s)\]}"']+)/g;
-    let last = null;
+    const candidates = [];
     for (const m of messages) {
         if (!m || m.role !== 'assistant') continue;
         const content = String(m.content || '');
         let match;
-        while ((match = urlRe.exec(content))) last = match[1];
+        urlRe.lastIndex = 0;
+        while ((match = urlRe.exec(content))) candidates.push(match[1]);
     }
-    if (!last) {
-        const asset = taskState.getTask(conversationId).generatedAsset;
-        if (asset) last = String(asset).split('/').pop();
+    // Newest-first with an on-disk check so hallucinated or deleted links are
+    // skipped in favor of the last genuine image still available.
+    for (let i = candidates.length - 1; i >= 0; i--) {
+        let rawFilename = candidates[i];
+        try { rawFilename = decodeURIComponent(rawFilename); } catch (err) { /* keep raw */ }
+        rawFilename = String(rawFilename).split('?')[0];
+        if (!/\.(?:png|jpg|jpeg|webp)$/i.test(rawFilename)) continue;
+        const fullPath = path.join(GENERATED_DIR, path.basename(rawFilename));
+        if (!fullPath.startsWith(GENERATED_DIR) || !fs.existsSync(fullPath)) continue;
+        return { rawFilename: path.basename(rawFilename) };
     }
-    if (!last) return null;
-    const rawFilename = decodeURIComponent(last);
-    // Only accept image files as source for I2VA.
-    if (!/\.(?:png|jpg|jpeg|webp)$/i.test(rawFilename)) return null;
-    return { rawFilename };
+    const asset = taskState.getTask(conversationId).generatedAsset;
+    if (asset) {
+        const rawFilename = String(asset).split('/').pop().split('?')[0];
+        if (/\.(?:png|jpg|jpeg|webp)$/i.test(rawFilename)) return { rawFilename };
+    }
+    return null;
 }
 
 // Decide whether a video request is I2VA (uses a prior generated image as the
@@ -1527,6 +1734,17 @@ async function upscaleVideo(rawFilename, options = {}) {
         );
 
         const sourceMeta = generatedHistory.list().find((e) => e.rawFilename === safeName);
+        // Source dimensions: prefer the recorded metadata, fall back to
+        // probing the file header so the before/after sizes can be reported.
+        let sourceWidth = sourceMeta && Number(sourceMeta.width) > 0 ? Number(sourceMeta.width) : 0;
+        let sourceHeight = sourceMeta && Number(sourceMeta.height) > 0 ? Number(sourceMeta.height) : 0;
+        if (!(sourceWidth > 0 && sourceHeight > 0)) {
+            const probedSource = probeVideoBuffer(buffer, path.extname(safeName));
+            if (probedSource) {
+                sourceWidth = probedSource.width;
+                sourceHeight = probedSource.height;
+            }
+        }
         const sourceFps = sourceMeta && sourceMeta.video && Number(sourceMeta.video.fps) > 0
             ? Number(sourceMeta.video.fps)
             : H3_FPS;
@@ -1622,13 +1840,44 @@ async function upscaleVideo(rawFilename, options = {}) {
             await comfyui.deleteInputFile(loadName).catch(() => {});
         }
 
+        // After dimensions: probe the actual output header so the preview and
+        // chat reply show the real size, falling back to the expected size
+        // derived from the upscale settings when the header cannot be parsed.
+        let outWidth = 0;
+        let outHeight = 0;
+        try {
+            const probed = probeVideoBuffer(
+                fs.readFileSync(path.join(GENERATED_DIR, basename)),
+                path.extname(basename)
+            );
+            if (probed) {
+                outWidth = probed.width;
+                outHeight = probed.height;
+            }
+        } catch (_) { /* fall through to the expected-size fallback */ }
+        if (!(outWidth > 0 && outHeight > 0)) {
+            const expected = expectedUpscaleDims(sourceWidth, sourceHeight, {
+                engine,
+                resolution,
+                scale: effectiveScale
+            });
+            if (expected) {
+                outWidth = expected.width;
+                outHeight = expected.height;
+            }
+        }
+        if (outWidth > 0 && outHeight > 0) {
+            console.log('[video-generator] upscaled video dimensions:', sourceWidth + 'x' + sourceHeight,
+                '->', outWidth + 'x' + outHeight);
+        }
+
         const meta = generatedHistory.add({
             file: '/generated/' + encodeURIComponent(basename),
             rawFilename: basename,
             prompt: (sourceMeta && sourceMeta.prompt) || 'Upscaled video',
             model: isSeedVr2 ? 'SeedVR2 Video Upscale' : 'RTX Video Super Resolution',
-            width: 0, // Video dimensions not easily readable without ffprobe
-            height: 0,
+            width: outWidth || null,
+            height: outHeight || null,
             generationMs: Date.now() - startedAt,
             upscale: {
                 engine,
@@ -1637,7 +1886,10 @@ async function upscaleVideo(rawFilename, options = {}) {
                 resolution,
                 scale: effectiveScale,
                 quality: effectiveQuality,
-                fps
+                fps,
+                source: safeName,
+                sourceWidth: sourceWidth || null,
+                sourceHeight: sourceHeight || null
             },
             video: {
                 upscaled: true
@@ -1671,7 +1923,11 @@ async function upscaleVideo(rawFilename, options = {}) {
             scale: effectiveScale,
             quality: effectiveQuality,
             fps,
+            width: outWidth || null,
+            height: outHeight || null,
             source: safeName,
+            sourceWidth: sourceWidth || null,
+            sourceHeight: sourceHeight || null,
             sourceMeta,
             generationMs: meta.generationMs,
             meta
@@ -1718,7 +1974,6 @@ module.exports = {
     H3_DEFAULT_STEPS,
     H3_ATTENTION_BACKENDS,
     normalizeH3AttentionBackend,
-    canStartGeneration,
     registerGenerationLock,
     detectVideoIntent,
     detectVideoUpscaleIntent,
@@ -1748,6 +2003,7 @@ module.exports = {
     stripVideoLoraTriggerWords,
     VIDEO_SIGNAL_RE,
     VIDEO_WORD_RE,
+    VIDEO_REQUEST_RE,
     I2V_REF_RE,
     isStillImageOnlyChange,
     VIDEO_UPSCALE_RESOLUTIONS,
@@ -1762,4 +2018,7 @@ module.exports = {
     normalizeRtxQuality,
     buildRtxVideoUpscaleGraph,
     VIDEO_UPSCALE_DEFAULT_TIMEOUT_MS,
+    readVideoDimensions,
+    probeVideoBuffer,
+    expectedUpscaleDims,
 };

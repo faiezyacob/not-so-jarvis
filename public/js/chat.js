@@ -390,6 +390,9 @@ const Chat = (() => {
     let activeQueueActive = false;
 
     async function cancelActiveStream() {
+        if (typeof VoiceOutput !== 'undefined' && VoiceOutput && typeof VoiceOutput.cancel === 'function') {
+            VoiceOutput.cancel();
+        }
         if (activeQueueId) {
             try {
                 await fetch('/api/queue/cancel', {
@@ -413,6 +416,12 @@ const Chat = (() => {
     }
 
     async function sendMessage() {
+        if (typeof VoiceInput !== 'undefined' && VoiceInput && typeof VoiceInput.stop === 'function') {
+            VoiceInput.stop();
+        }
+        if (typeof VoiceOutput !== 'undefined' && VoiceOutput && typeof VoiceOutput.cancel === 'function') {
+            VoiceOutput.cancel();
+        }
         const text = chatInput.value.trim();
         const attachments = pendingAttachments.slice();
         if (!text && !attachments.length) return;
@@ -595,6 +604,9 @@ const Chat = (() => {
             if (fullReply) {
                 await Conversations.saveAssistantMessage(conversationId, fullReply);
                 renderConversationList();
+                if (typeof VoiceOutput !== 'undefined' && VoiceOutput && typeof VoiceOutput.speak === 'function') {
+                    VoiceOutput.speak(fullReply);
+                }
             }
 
             // If the conversation is open but the live stream element was
@@ -669,6 +681,8 @@ const Chat = (() => {
     return {
         init,
         refreshConversationList,
-        addMessageDom
+        addMessageDom,
+        sendMessage,
+        cancelActiveStream
     };
 })();

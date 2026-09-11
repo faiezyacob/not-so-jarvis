@@ -15,6 +15,11 @@ const SYSTEM_PROMPT =
     + 'user asks you to generate, create, draw, render, or imagine an image, an image '
     + 'is created locally and shown in the conversation. Concept questions about how '
     + 'image generation works are answered as normal chat. '
+    + 'Never invent /generated/ image, video, or file links in a plain chat reply: '
+    + 'only the image/video tool pipelines can produce /generated/ URLs, and a chat '
+    + 'reply without a tool run must not contain any. If the user asks for a '
+    + 'generation, upscale, or edit that you cannot run, say so plainly instead of '
+    + 'describing a fake result. '
     + 'Be concise and helpful. The local environment may expose CPU, RAM, GPU and '
     + 'VRAM telemetry. The user can attach images: when a message includes an '
     + 'attached image, describe what you see and answer questions about it.';

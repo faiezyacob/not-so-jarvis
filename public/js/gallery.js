@@ -293,6 +293,28 @@
             window.VideoPlayer.scan(imgWrap);
         }
 
+        if (video) {
+            const vidEl = imgWrap.querySelector('video');
+            if (vidEl) {
+                vidEl.addEventListener('loadedmetadata', () => {
+                    const w = Number(vidEl.videoWidth) || 0;
+                    const h = Number(vidEl.videoHeight) || 0;
+                    if (!(w > 0 && h > 0)) return;
+                    let dimsEl = body.querySelector('[data-raw-dims]');
+                    if (!dimsEl) {
+                        dimsEl = document.createElement('div');
+                        dimsEl.className = 'gallery-preview-meta';
+                        dimsEl.innerHTML =
+                            '<div class="gallery-preview-row"><span class="gallery-preview-label">Resolution</span>' +
+                            '<span class="gallery-preview-value" data-raw-dims></span></div>';
+                        body.insertBefore(dimsEl, body.querySelector('.modal-footer'));
+                        dimsEl = dimsEl.querySelector('[data-raw-dims]');
+                    }
+                    dimsEl.textContent = w + ' × ' + h;
+                });
+            }
+        }
+
         const zoomApi = video ? null : attachInlineZoom(imgWrap, imgWrap.querySelector('img'));
 
         function close() {
@@ -523,6 +545,26 @@
 
     function formatResolution(img) {
         if (img.width && img.height) return img.width + ' × ' + img.height;
+        return '—';
+    }
+
+    // "before → after" label for an upscaled video. The source entry is
+    // deleted on upscale, so the before-size comes from the stored upscale
+    // metadata; the after-size prefers the recorded dimensions and falls back
+    // to probedDims (the live video element's intrinsic size).
+    function videoUpscaleLabel(img, probedDims) {
+        const up = (img && img.upscale) || {};
+        const base = (up.sourceWidth && up.sourceHeight)
+            ? up.sourceWidth + ' × ' + up.sourceHeight
+            : (up.source ? lastSegment(up.source) : null);
+        const after = (img.width && img.height)
+            ? img.width + ' × ' + img.height
+            : (probedDims && probedDims.width && probedDims.height
+                ? probedDims.width + ' × ' + probedDims.height
+                : null);
+        if (base && after) return base + ' → ' + after;
+        if (after) return '→ ' + after;
+        if (base) return base + ' → …';
         return '—';
     }
 
@@ -1119,7 +1161,7 @@
         meta.className = 'gallery-preview-meta';
         meta.innerHTML =
             '<div class="gallery-preview-row"><span class="gallery-preview-label">Model</span><span class="gallery-preview-value">' + escapeHtml(img.model || 'Krea2') + '</span></div>' +
-            '<div class="gallery-preview-row"><span class="gallery-preview-label">Resolution</span><span class="gallery-preview-value">' + escapeHtml(formatResolution(img)) + '</span></div>' +
+            '<div class="gallery-preview-row"><span class="gallery-preview-label">Resolution</span><span class="gallery-preview-value" data-resolution-value>' + escapeHtml(formatResolution(img)) + '</span></div>' +
             '<div class="gallery-preview-row"><span class="gallery-preview-label">Duration</span><span class="gallery-preview-value">' + escapeHtml(formatGenerationDuration(img)) + '</span></div>';
         if (compare) {
             const originalMeta = img.upscale ? compare.originalMeta : img;
@@ -1127,8 +1169,30 @@
             const baseDims = formatResolution(originalMeta);
             const otherDims = formatResolution(upscaledMeta);
             meta.innerHTML += '<div class="gallery-preview-row"><span class="gallery-preview-label">Upscale</span><span class="gallery-preview-value">' + escapeHtml(baseDims + ' \u2192 ' + otherDims) + '</span></div>';
+        } else if (video && img.upscale) {
+            // Video upscales replace the original file (no compare UI), so
+            // show the before → after sizes from the stored upscale metadata
+            // instead. The "after" side is filled in from the video element
+            // itself once its metadata loads (covers entries recorded before
+            // dimensions were stored).
+            meta.innerHTML += '<div class="gallery-preview-row"><span class="gallery-preview-label">Upscale</span><span class="gallery-preview-value" data-upscale-value>' + escapeHtml(videoUpscaleLabel(img, null)) + '</span></div>';
         }
         body.appendChild(meta);
+
+        if (video) {
+            const vidEl = imgWrap.querySelector('video');
+            const resolutionEl = meta.querySelector('[data-resolution-value]');
+            const upscaleEl = meta.querySelector('[data-upscale-value]');
+            if (vidEl && (resolutionEl || upscaleEl)) {
+                vidEl.addEventListener('loadedmetadata', () => {
+                    const w = Number(vidEl.videoWidth) || 0;
+                    const h = Number(vidEl.videoHeight) || 0;
+                    if (!(w > 0 && h > 0)) return;
+                    if (resolutionEl && !img.width) resolutionEl.textContent = w + ' × ' + h;
+                    if (upscaleEl) upscaleEl.textContent = videoUpscaleLabel(img, { width: w, height: h });
+                });
+            }
+        }
 
         if (img.prompt) {
             const promptEl = document.createElement('div');

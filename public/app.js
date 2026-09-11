@@ -1161,6 +1161,38 @@ function initChatProviderSettings() {
 
     initChatReasoningToggle(providerSelect, modelInput);
     initUnloadModelButton(providerSelect, modelInput);
+    initVoiceSettings();
+}
+
+function initVoiceSettings() {
+    const replyToggle = document.getElementById('voiceReplyToggle');
+    const autoSendToggle = document.getElementById('voiceAutoSendToggle');
+    const voiceSelect = document.getElementById('voiceSelect');
+    const rateInput = document.getElementById('voiceRate');
+    const rateValue = document.getElementById('voiceRateValue');
+
+    if (replyToggle && window.VoiceOutput && typeof window.VoiceOutput.isEnabled === 'function') {
+        replyToggle.checked = window.VoiceOutput.isEnabled();
+        replyToggle.addEventListener('change', () => window.VoiceOutput.setEnabled(replyToggle.checked));
+    }
+    if (autoSendToggle && window.VoiceInput && typeof window.VoiceInput.isAutoSend === 'function') {
+        autoSendToggle.checked = window.VoiceInput.isAutoSend();
+        autoSendToggle.addEventListener('change', () => window.VoiceInput.setAutoSend(autoSendToggle.checked));
+    }
+    if (voiceSelect && window.VoiceOutput) {
+        voiceSelect.value = window.VoiceOutput.getVoiceName ? window.VoiceOutput.getVoiceName() : '';
+        voiceSelect.addEventListener('change', () => window.VoiceOutput.setVoiceName(voiceSelect.value));
+    }
+    if (rateInput && window.VoiceOutput) {
+        const rate = window.VoiceOutput.getRate ? window.VoiceOutput.getRate() : 1;
+        rateInput.value = String(rate);
+        if (rateValue) rateValue.textContent = Number(rate).toFixed(1) + '×';
+        rateInput.addEventListener('input', () => {
+            const next = parseFloat(rateInput.value);
+            window.VoiceOutput.setRate(next);
+            if (rateValue) rateValue.textContent = Number(next).toFixed(1) + '×';
+        });
+    }
 }
 
 function initUnloadModelButton(providerSelect, modelInput) {
@@ -1280,6 +1312,8 @@ async function bootApp() {
         console.warn('IndexedDB unavailable, running without persistence:', e.message);
     }
     Chat.init();
+    if (window.VoiceInput && typeof window.VoiceInput.init === 'function') window.VoiceInput.init();
+    if (window.VoiceOutput && typeof window.VoiceOutput.init === 'function') window.VoiceOutput.init();
     await Chat.refreshConversationList();
     renderActiveChat();
 }

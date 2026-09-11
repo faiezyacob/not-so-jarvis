@@ -22,15 +22,21 @@ function resolveThink(model, options) {
 }
 
 async function callOllama(messages, model, options) {
+    // Classification calls (router, intent) pass temperature 0 for
+    // deterministic JSON verdicts; creative calls omit it (model default).
+    const payload = {
+        model: model || 'llama3.2',
+        messages: messages,
+        stream: false,
+        think: resolveThink(model, options)
+    };
+    if (options && Number.isFinite(options.temperature)) {
+        payload.options = { temperature: options.temperature };
+    }
     const res = await fetch(OLLAMA_URL + '/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            model: model || 'llama3.2',
-            messages: messages,
-            stream: false,
-            think: resolveThink(model, options)
-        })
+        body: JSON.stringify(payload)
     });
 
     if (!res.ok) {
