@@ -4,6 +4,13 @@
    Krea2 text-to-image workflow graph, submits it
    to ComfyUI, and stores the finished image so
    the chat layer can display it.
+   SPDX-License-Identifier: GPL-3.0-only
+   Copyright (c) 2025 not-so-jarvis contributors.
+   Adapted from Mix Studio (https://github.com/BlackMixture/Mix-Studio,
+   GPL-3.0-only): Krea2 workflow graph, S/M/L resolution tiers,
+   LoRA chain, and SeedVR2 / Ultimate SD upscale pipelines.
+   Modified: simplified to plain T2I path, chat-driven intent,
+   not-so-jarvis/ output prefixes.
    ============================================ */
 
 const fs = require('fs');
@@ -547,16 +554,20 @@ async function buildImagePrompt(structuredRequest, providers, provider, model) {
 
 // --- Resolution (Aspect Ratio + Size) ------------------------------------------
 //
-// The only user-facing resolution controls. Size names the SHORT side in
-// pixels (S 768 / M 1024 / L 1536); the long side is scaled from the aspect
-// ratio, so M + 4:5 yields ~1024x1280 and M + 16:9 yields ~1820x1024.
-// Dimensions are snapped to multiples of 16 before reaching Krea2: the
-// EmptySD3LatentImage node feeds an SD3-style VAE (8x downscale), and the
-// 16-grid keeps the latent whole on strict ComfyUI builds instead of sending
-// arbitrary pixel values.
+// The only user-facing resolution controls, matching Mix Studio's S/M/L tiers
+// (public/app.js RESOLUTION_SIZE_OPTIONS + createSizeLabel +
+// dimensionsForMegapixels): S is 0.75 MP, M is 1 MP, L is 1.75 MP total
+// pixels. Dimensions are derived from the aspect ratio as
+//   w = round32(sqrt(pixels * ratio)), h = round32(sqrt(pixels / ratio))
+// so M + 1:1 yields ~992x992, M + 4:5 yields ~896x1120, and
+// M + 16:9 yields ~1344x736. Dimensions are snapped to multiples of 32
+// (Mix Studio's round32) before reaching Krea2.
 
 const ASPECT_RATIOS = ['1:1', '4:5', '3:4', '16:9', '9:16'];
-const IMAGE_SIZES = { S: 768, M: 1024, L: 1536 };
+const IMAGE_MEGAPIXELS = { S: 0.75, M: 1, L: 1.75 };
+// Backwards-compatible alias: previous revisions exposed short-side pixels
+// under this name ({ S: 768, M: 1024, L: 1536 }).
+const IMAGE_SIZES = IMAGE_MEGAPIXELS;
 
 function normalizeAspectRatio(value) {
     const v = String(value || '').trim();
@@ -565,25 +576,25 @@ function normalizeAspectRatio(value) {
 
 function normalizeImageSize(value) {
     const v = String(value || '').trim().toUpperCase();
-    return Object.prototype.hasOwnProperty.call(IMAGE_SIZES, v) ? v : null;
+    return Object.prototype.hasOwnProperty.call(IMAGE_MEGAPIXELS, v) ? v : null;
 }
 
-function snapToLatentGrid(n) {
-    return Math.max(64, Math.min(4096, Math.round(n / 16) * 16));
+function round32(n) {
+    return Math.max(64, Math.round(n / 32) * 32);
 }
 
-// Map aspectRatio + imageSize to concrete Krea2 latent dimensions.
-// Invalid inputs fall back to the 4:5 / M defaults.
+// Map aspectRatio + imageSize to concrete Krea2 latent dimensions, matching
+// Mix Studio's dimensionsForMegapixels(). Invalid inputs fall back to the
+// 4:5 / M defaults.
 function resolveDimensions(settings) {
     const ratio = normalizeAspectRatio(settings && settings.aspectRatio) || '4:5';
     const size = normalizeImageSize(settings && settings.imageSize) || 'M';
     const parts = ratio.split(':').map(Number);
-    const short = IMAGE_SIZES[size];
-    const long = Math.round(short * Math.max(parts[0], parts[1]) / Math.min(parts[0], parts[1]));
-    const landscape = parts[0] >= parts[1];
+    const aspect = Math.max(0.1, Math.min(10, parts[0] / parts[1] || 1));
+    const pixels = (IMAGE_MEGAPIXELS[size] || IMAGE_MEGAPIXELS.M) * 1e6;
     return {
-        width: snapToLatentGrid(landscape ? long : short),
-        height: snapToLatentGrid(landscape ? short : long),
+        width: round32(Math.sqrt(pixels * aspect)),
+        height: round32(Math.sqrt(pixels / aspect)),
         aspectRatio: ratio,
         imageSize: size
     };
@@ -1468,6 +1479,7 @@ module.exports = {
     DEFAULT_SETTINGS,
     ASPECT_RATIOS,
     IMAGE_SIZES,
+    IMAGE_MEGAPIXELS,
     canStartGeneration,
     detectIntent,
     buildImagePrompt,

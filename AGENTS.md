@@ -19,7 +19,7 @@
 - A model library with hardware-compatibility detection
 - AI image generation via a local ComfyUI instance using the **Krea2** text-to-image workflow
 
-Version 0.1.0, MIT license. Entry point is `server.js`.
+Version 0.1.0, GPL-3.0-only license. Entry point is `server.js`.
 
 ## Directory structure
 

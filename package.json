@@ -7,5 +7,5 @@
     "start": "node server.js"
   },
   "keywords": ["jarvis", "ai", "assistant", "local"],
-  "license": "MIT"
+  "license": "GPL-3.0-only"
 }

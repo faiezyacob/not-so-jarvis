@@ -144,34 +144,8 @@ Upscaled images are grouped with their original in the gallery — click the ori
 
 ## License
 
-This project includes adaptations from **Mix Studio** (https://github.com/BlackMixture/Mix-Studio), which is licensed under the **GNU General Public License v3.0**. Specifically, the image generation and upscaling pipeline components in `services/image-generator.js` were adapted from Mix Studio's Krea2 workflow implementations and upscale pipelines.
+This project is free software licensed under the **GNU General Public License v3.0 only** (`GPL-3.0-only`). See [LICENSE](LICENSE) or <https://www.gnu.org/licenses/gpl-3.0.html>.
 
-Mix Studio code is used under the terms of the GPL v3.0 license. While this project is primarily distributed under the MIT license below, the Mix Studio-derived components remain subject to the GPL v3.0 terms, which require:
+Copyright (c) 2025 not-so-jarvis contributors.
 
-- Preservation of copyright and license notices
-- Distribution of any modifications to Mix Studio-derived code under GPL v3.0
-- Source code availability for Mix Studio-derived components
-
-MIT License (applies to non-Mix-Studio-derived portions of this project):
-
-Copyright (c) 2025 not-so-jarvis contributors
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-For the full text of the GNU General Public License v3.0, see [LICENSE-GPL-3.0.txt](LICENSE-GPL-3.0.txt) or <https://www.gnu.org/licenses/gpl-3.0.html>.
+It includes adaptations from **Mix Studio** (https://github.com/BlackMixture/Mix-Studio), which is also licensed under GPL-3.0. Adapted components include the Krea2 text-to-image workflow graph, SeedVR2 / Ultimate SD upscale pipelines, and MiniMax H3 video workflow in `services/image-generator.js` and `services/video-generator.js` (plus related resolution-tier, LoRA-chain, and compare-viewer logic). The original Mix Studio copyright notices are preserved in the adapted source files. Changes vs. upstream: simplified to plain text-to-image / first-frame video paths (no region/edit/outpaint modes, no turbo/long-context/reference-video paths), chat-driven intent routing, and `not-so-jarvis/` output prefixes.

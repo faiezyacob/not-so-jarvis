@@ -4,7 +4,13 @@
    MiniMax H3 ComfyUI workflow graph (T2VA and
    I2VA modes), submits it to ComfyUI, and stores
    the finished video so the chat layer can display it.
-   Adapted from Mix Studio's working H3 implementation.
+   SPDX-License-Identifier: GPL-3.0-only
+   Copyright (c) 2025 not-so-jarvis contributors.
+   Adapted from Mix Studio's working H3 implementation
+   (https://github.com/BlackMixture/Mix-Studio, GPL-3.0-only):
+   lib/video-workflows.js buildMiniMaxH3Graph + H3 resolution helpers.
+   Modified: simplified to T2VA/first-frame I2VA only (no turbo,
+   reference-video/audio, long-context, or RTX post-pass).
    ============================================ */
 
 const fs = require('fs');
@@ -17,14 +23,21 @@ const { getModelById } = require('../server/models');
 
 const GENERATED_DIR = path.join(__dirname, '..', 'data', 'generated');
 
-// --- H3 Constants (from Mix Studio video-workflows.js) -----------------------
+// --- H3 Constants (from Mix Studio video-workflows.js + h3-resolution.js) -----
+// S/M/L share Mix Studio's image tiers: 0.75 MP (S), 1 MP (M), 1.75 MP (L,
+// the model's native canvas). H3 renders from a 768-short-edge base canvas
+// capped at 768x1344 pixels, scaled per tier (S 0.5x, M 0.75x, L 1x).
 
 const H3_FPS = 24;
 const H3_MIN_SECONDS = 5;
 const H3_MAX_SECONDS = 15;
+const H3_BASE_SHORT_EDGE = 768;
 const H3_MAX_PIXELS = 768 * 1344;
 
-const H3_IMAGE_SIZES = { S: 768, M: 1024, L: 1536 };
+const H3_SIZE_SCALES = { S: 0.5, M: 0.75, L: 1 };
+// Backwards-compatible alias: previous revisions exposed short-side pixels
+// under this name ({ S: 768, M: 1024, L: 1536 }).
+const H3_IMAGE_SIZES = H3_SIZE_SCALES;
 
 // --- Default H3 Video Settings ------------------------------------------------
 
@@ -146,6 +159,11 @@ function readImageDimensions(filePath) {
     return null;
 }
 
+function h3SizeScale(size) {
+    const key = String(size || '').trim().toUpperCase();
+    return H3_SIZE_SCALES[key] || H3_SIZE_SCALES.M;
+}
+
 function h3Dimensions(width, height, size) {
     const requestedWidth = Number(width);
     const requestedHeight = Number(height);
@@ -153,24 +171,24 @@ function h3Dimensions(width, height, size) {
     const sourceHeight = Number.isFinite(requestedHeight) && requestedHeight > 0 ? requestedHeight : 768;
     const ratio = sourceWidth / sourceHeight;
 
-    const shortEdge = H3_IMAGE_SIZES[size] || H3_IMAGE_SIZES.M;
     let nominalWidth;
     let nominalHeight;
     if (ratio >= 1) {
-        nominalWidth = shortEdge * ratio;
-        nominalHeight = shortEdge;
+        nominalWidth = H3_BASE_SHORT_EDGE * ratio;
+        nominalHeight = H3_BASE_SHORT_EDGE;
     } else {
-        nominalWidth = shortEdge;
-        nominalHeight = shortEdge / ratio;
+        nominalWidth = H3_BASE_SHORT_EDGE;
+        nominalHeight = H3_BASE_SHORT_EDGE / ratio;
     }
     if (nominalWidth * nominalHeight > H3_MAX_PIXELS) {
-        const scale = Math.sqrt(H3_MAX_PIXELS / (nominalWidth * nominalHeight));
-        nominalWidth *= scale;
-        nominalHeight *= scale;
+        const fit = Math.sqrt(H3_MAX_PIXELS / (nominalWidth * nominalHeight));
+        nominalWidth *= fit;
+        nominalHeight *= fit;
     }
+    const scale = h3SizeScale(size);
     return {
-        W: Math.max(32, Math.round(nominalWidth / 32) * 32),
-        H: Math.max(32, Math.round(nominalHeight / 32) * 32),
+        W: Math.max(32, Math.round((nominalWidth * scale) / 32) * 32),
+        H: Math.max(32, Math.round((nominalHeight * scale) / 32) * 32),
     };
 }
 
@@ -1039,15 +1057,8 @@ async function generateVideo(prompt, options = {}) {
             const imgPath = path.join(GENERATED_DIR, options.sourceImageRawFilename);
             const imgDims = readImageDimensions(imgPath);
             if (imgDims) {
-                const srcRatio = imgDims.width / imgDims.height;
-                const shortEdge = H3_IMAGE_SIZES[settings.h3Size] || H3_IMAGE_SIZES.M;
-                if (srcRatio >= 1) {
-                    videoWidth = shortEdge * srcRatio;
-                    videoHeight = shortEdge;
-                } else {
-                    videoWidth = shortEdge;
-                    videoHeight = shortEdge / srcRatio;
-                }
+                videoWidth = imgDims.width;
+                videoHeight = imgDims.height;
                 console.log('[video] source image aspect ratio:', imgDims.width + 'x' + imgDims.height,
                     '-> video dimensions:', videoWidth + 'x' + videoHeight);
             }
@@ -1518,6 +1529,9 @@ module.exports = {
     h3FramesForSeconds,
     h3EffectiveDurationSeconds,
     h3Dimensions,
+    h3SizeScale,
+    H3_SIZE_SCALES,
+    H3_IMAGE_SIZES,
     effectiveVideoSettings,
     getVideoDefaults,
     saveVideoSettings,
