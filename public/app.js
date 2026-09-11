@@ -184,7 +184,8 @@ function resizeAllCanvases() {
 function initSettings() {
     const settingsBtn = document.getElementById('settingsBtn');
     const dropdown = document.getElementById('settingsDropdown');
-    const checkboxes = dropdown.querySelectorAll('input[type="checkbox"]');
+    const modal = dropdown.querySelector('.settings-modal');
+    const checkboxes = dropdown.querySelectorAll('input[type="checkbox"][data-widget]');
     const settings = loadWidgetSettings();
 
     checkboxes.forEach(cb => {
@@ -194,10 +195,41 @@ function initSettings() {
 
     applyWidgetSettings(settings);
 
+    const openSettings = () => {
+        dropdown.classList.add('open');
+        settingsBtn.classList.add('active');
+        const search = document.getElementById('settingsSearch');
+        if (search) { search.value = ''; applySettingsSearch(''); }
+        if (search && window.matchMedia('(min-width: 700px)').matches) search.focus();
+    };
+    const closeSettings = () => {
+        dropdown.classList.remove('open');
+        settingsBtn.classList.remove('active');
+    };
+
     settingsBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        dropdown.classList.toggle('open');
-        settingsBtn.classList.toggle('active');
+        if (dropdown.classList.contains('open')) closeSettings();
+        else openSettings();
+    });
+
+    const closeBtn = document.getElementById('settingsClose');
+    if (closeBtn) closeBtn.addEventListener('click', closeSettings);
+    const doneBtn = document.getElementById('settingsDone');
+    if (doneBtn) doneBtn.addEventListener('click', closeSettings);
+    dropdown.addEventListener('click', (e) => {
+        if (e.target === dropdown) closeSettings();
+    });
+    document.addEventListener('keydown', (e) => {
+        if (e.key !== 'Escape' || !dropdown.classList.contains('open')) return;
+        const search = document.getElementById('settingsSearch');
+        if (search && search.value) {
+            search.value = '';
+            applySettingsSearch('');
+            search.blur();
+            return;
+        }
+        closeSettings();
     });
 
     checkboxes.forEach(cb => {
@@ -209,32 +241,119 @@ function initSettings() {
         });
     });
 
-    document.addEventListener('click', (e) => {
-        if (!dropdown.contains(e.target) && !settingsBtn.contains(e.target)) {
-            dropdown.classList.remove('open');
-            settingsBtn.classList.remove('active');
-        }
-    });
-
     // Panel navigation (left sidebar)
     const navItems = dropdown.querySelectorAll('.settings-nav-item');
     const panels = dropdown.querySelectorAll('.settings-panel');
+    const subtitle = document.getElementById('settingsPanelSubtitle');
+    const selectPanel = (name) => {
+        const search = document.getElementById('settingsSearch');
+        if (search && search.value) {
+            search.value = '';
+            applySettingsSearch('');
+        }
+        navItems.forEach(i => i.classList.toggle('active', i.dataset.panel === name));
+        panels.forEach(p => p.classList.toggle('active', p.dataset.panel === name));
+        const active = dropdown.querySelector('.settings-nav-item[data-panel="' + name + '"]');
+        if (subtitle) subtitle.textContent = active ? active.textContent.charAt(0) + active.textContent.slice(1).toLowerCase() : name;
+        if (modal) modal.scrollTop = 0;
+        const panelsWrap = document.getElementById('settingsPanels');
+        if (panelsWrap) panelsWrap.scrollTop = 0;
+    };
     navItems.forEach(item => {
-        item.addEventListener('click', () => {
-            navItems.forEach(i => i.classList.remove('active'));
-            panels.forEach(p => p.classList.remove('active'));
-            item.classList.add('active');
-            const panel = dropdown.querySelector('.settings-panel[data-panel="' + item.dataset.panel + '"]');
-            if (panel) panel.classList.add('active');
-        });
+        item.addEventListener('click', () => selectPanel(item.dataset.panel));
+    });
+    const gotoSystem = document.getElementById('gotoSystemBtn');
+    if (gotoSystem) gotoSystem.addEventListener('click', () => selectPanel('system'));
+
+    // Search filters cards/fields by data-search + visible text.
+    const searchInput = document.getElementById('settingsSearch');
+    if (searchInput) {
+        searchInput.addEventListener('input', () => applySettingsSearch(searchInput.value));
+    }
+
+    // Mirror per-panel save statuses into the modal footer.
+    ['imageSettingsStatus', 'upscaleSettingsStatus', 'videoSettingsStatus', 'loraStatus', 'videoLoraStatus'].forEach((id) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        new MutationObserver(() => {
+            const footer = document.getElementById('settingsFooterStatus');
+            if (!footer) return;
+            if (el.textContent) {
+                footer.textContent = el.textContent;
+                footer.classList.toggle('settings-save-status--error', el.classList.contains('settings-save-status--error'));
+            }
+        }).observe(el, { childList: true, characterData: true, subtree: true });
     });
 
     initChatProviderSettings();
     initImageGenSettings();
     initUpscaleSettings();
     initVideoSettings();
+    initEngineCards();
     initFreeComfyButton();
     initRestartServerButton();
+}
+
+function applySettingsSearch(query) {
+    const q = (query || '').trim().toLowerCase();
+    const dropdown = document.getElementById('settingsDropdown');
+    if (!dropdown) return;
+    const modal = dropdown.querySelector('.settings-modal');
+    const subtitle = document.getElementById('settingsPanelSubtitle');
+    const panels = dropdown.querySelectorAll('.settings-panel');
+    if (!q) {
+        if (modal) modal.classList.remove('searching');
+        panels.forEach((panel) => {
+            panel.style.display = '';
+            panel.querySelectorAll('.settings-card').forEach((c) => { c.style.display = ''; });
+            Array.prototype.forEach.call(panel.children, (child) => {
+                if (child.classList && child.classList.contains('settings-field')) child.style.display = '';
+            });
+        });
+        const active = dropdown.querySelector('.settings-nav-item.active');
+        if (subtitle && active) subtitle.textContent = active.textContent.charAt(0) + active.textContent.slice(1).toLowerCase();
+        return;
+    }
+    if (modal) modal.classList.add('searching');
+    let total = 0;
+    panels.forEach((panel) => {
+        let visible = 0;
+        panel.querySelectorAll('.settings-card').forEach((card) => {
+            const hay = ((card.dataset.search || '') + ' ' + card.textContent).toLowerCase();
+            const match = hay.indexOf(q) !== -1;
+            card.style.display = match ? '' : 'none';
+            if (match) {
+                visible++;
+                if (card.tagName === 'DETAILS' && !card.open) card.open = true;
+            }
+        });
+        Array.prototype.forEach.call(panel.children, (child) => {
+            if (child.classList && child.classList.contains('settings-field')) child.style.display = 'none';
+        });
+        panel.style.display = visible ? 'flex' : 'none';
+        total += visible;
+    });
+    if (subtitle) subtitle.textContent = total === 1 ? '1 match' : total + ' matches';
+    const wrap = document.getElementById('settingsPanels');
+    if (wrap) wrap.scrollTop = 0;
+}
+
+function initEngineCards() {
+    const select = document.getElementById('upscaleEngine');
+    const cards = document.querySelectorAll('#upscaleEngineCards .engine-card');
+    if (!select || !cards.length) return;
+    const sync = () => {
+        cards.forEach((c) => c.classList.toggle('active', c.dataset.engine === select.value));
+    };
+    cards.forEach((c) => {
+        c.addEventListener('click', () => {
+            select.value = c.dataset.engine;
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+            sync();
+        });
+    });
+    select.addEventListener('change', sync);
+    sync();
 }
 
 function initFreeComfyButton() {
@@ -764,6 +883,7 @@ function initUpscaleSettings() {
             });
 
             syncVisibility();
+            if (engineSel) engineSel.dispatchEvent(new Event('change', { bubbles: true }));
         } catch {
             setStatus('Could not load upscale settings', true);
         }

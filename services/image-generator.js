@@ -377,16 +377,31 @@ const PROMPT_BUILDER_SYSTEM_PROMPT =
     '- camera: camera angle / framing / lens (when useful)\n' +
     '- lighting: lighting and time of day (when useful)\n\n' +
 
-    'EXAMPLE — user concept "a young Korean woman". Prompt:\n' +
+    'EXAMPLE 1 — user concept "a young Korean woman". Prompt:\n' +
     '"A young Korean woman with long black hair, wearing an oversized cream ' +
     'sweater and blue jeans, standing casually on a quiet Seoul street in the ' +
     'late afternoon."\n' +
     'attributes: {"subject": "a young Korean woman", "appearance": "with long ' +
     'black hair", "top": "wearing an oversized cream sweater", "bottom": "blue ' +
     'jeans", "pose": "standing casually", "setting": "on a quiet Seoul street ' +
-    'in the late afternoon", "expression": "", "camera": "", "lighting": ""}\n' +
+    'in the late afternoon", "expression": "", "camera": "", "lighting": ""}\n\n' +
+
+    'EXAMPLE 2 — user concept "a dreamy landscape". Prompt:\n' +
+    '"A misty mountain lake at dawn, still water reflecting jagged peaks, ' +
+    'soft fog drifting above the surface, pale gold light."\n' +
+    'attributes: {"subject": "a mountain lake", "appearance": "", "top": "", ' +
+    '"bottom": "", "pose": "", "setting": "in misty mountains at dawn", ' +
+    '"expression": "", "camera": "", "lighting": "pale gold dawn light with soft fog"}\n' +
+    'Person fields (appearance, top, bottom, pose, expression) stay "" when ' +
+    'the image has no person. The examples above are only two possibilities — ' +
+    'vary invented subjects (landscapes, creatures, objects, architecture, ' +
+    'still life, abstract scenes), do not always pick a woman/portrait.\n' +
     'Keep prompts concise (usually one or two sentences). Never change the ' +
     'subject or drop any explicit detail the user gave.\n\n' +
+
+    'Do not default to a person when the user did not ask for one. A mood or ' +
+    'style word alone ("dreamy", "moody", "epic", "beautiful") is NOT a ' +
+    'subject — invent a varied, fitting subject instead of falling back to a woman.\n\n' +
 
     'creative_mode controls how freely you invent detail:\n' +
     '- "none": stay close to the user\'s request; only fill in what is needed ' +
@@ -394,13 +409,17 @@ const PROMPT_BUILDER_SYSTEM_PROMPT =
     '- "light": fill the obvious missing visual attributes (for example a ' +
     'believable outfit when the user named only a subject and setting).\n' +
     '- "full": freely complete the visual concept with an appropriate ' +
-    'appearance, outfit, pose, setting, etc.\n\n' +
+    'subject, setting, composition, lighting, etc. When no subject was given, ' +
+    'invent a varied one — do not fall back to a woman/portrait by default.\n\n' +
 
     'PREVIOUS CONTEXT — a previous image prompt may be provided as context ' +
     '(the image generated before). If the user\'s new concept clearly continues ' +
     'the same subject (same person or scene, an incremental tweak like changing ' +
     'the top), keep the prior details and layer the change on top of them. If ' +
-    'it is genuinely a new subject, do not carry the prior details over.\n\n' +
+    'it is genuinely a new subject, do not carry the prior details over. ' +
+    'A vague creative request with no concrete subject ("be creative", ' +
+    '"something dreamy", "surprise me") is a NEW subject — do not carry the ' +
+    'previous person or scene over.\n\n' +
 
     'MODIFICATION — when a current image prompt, its current attribute values, ' +
     'and a modification request are provided, they are the single source of ' +

@@ -586,9 +586,9 @@ const PROMPT_MODIFIER_SYSTEM_PROMPT =
     'CORRECT RESULT: A young Korean woman with long wavy black hair, wearing a traditional kimono, walking through a cherry blossom garden in golden hour sunlight.\n\n' +
 
     'Another example:\n' +
-    'CURRENT PROMPT: A young Korean woman with long black hair, wearing a cream sweater and blue jeans, standing on a Seoul street in the afternoon.\n' +
-    'USER MODIFICATION: change her pose to sitting on a bench\n' +
-    'CORRECT RESULT: A young Korean woman with long black hair, wearing a cream sweater and blue jeans, sitting on a bench on a Seoul street in the afternoon.\n\n' +
+    'CURRENT PROMPT: A misty mountain lake at dawn, still water reflecting jagged peaks, soft fog drifting above the surface.\n' +
+    'USER MODIFICATION: change it to sunset\n' +
+    'CORRECT RESULT: A mountain lake at sunset, still water reflecting jagged peaks glowing orange, soft fog drifting above the surface.\n\n' +
 
     'Output ONLY the new full image prompt. No explanations, no quotes, no markdown.';
 

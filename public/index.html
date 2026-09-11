@@ -22,19 +22,40 @@
                     <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
                 </svg>
             </button>
-            <div class="settings-dropdown" id="settingsDropdown">
+        </div>
+    </header>
+
+    <div class="settings-modal-overlay" id="settingsDropdown">
+                <div class="settings-modal" role="dialog" aria-modal="true" aria-label="Settings">
+                    <div class="settings-modal-header">
+                        <div class="settings-modal-title-wrap">
+                            <span class="settings-modal-title">SETTINGS</span>
+                            <span class="settings-modal-subtitle" id="settingsPanelSubtitle">General</span>
+                        </div>
+                        <input type="text" class="settings-search" id="settingsSearch" placeholder="Search settings..." autocomplete="off">
+                        <button class="settings-close" id="settingsClose" aria-label="Close settings">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                                <line x1="18" y1="6" x2="6" y2="18"></line>
+                                <line x1="6" y1="6" x2="18" y2="18"></line>
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="settings-modal-body">
                 <div class="settings-nav" id="settingsNav">
                     <button class="settings-nav-item active" data-panel="general">GENERAL</button>
                     <button class="settings-nav-item" data-panel="chat">CHAT</button>
                     <button class="settings-nav-item" data-panel="image">IMAGE</button>
                     <button class="settings-nav-item" data-panel="upscale">UPSCALE</button>
                     <button class="settings-nav-item" data-panel="video">VIDEO</button>
+                    <button class="settings-nav-item" data-panel="system">SYSTEM</button>
                 </div>
                 <div class="settings-panels" id="settingsPanels">
                     <!-- General -->
                     <div class="settings-panel active" data-panel="general">
-                        <div class="settings-dropdown-title">WIDGETS</div>
-                        <div class="settings-widget-grid">
+                        <div class="settings-card" data-search="widgets cpu ram vram weather gallery comfyui dashboard">
+                            <div class="settings-card-title">DASHBOARD WIDGETS</div>
+                            <div class="settings-card-sub">Toggle the cards shown in the right monitor column.</div>
+                            <div class="settings-widget-grid">
                             <label class="settings-toggle">
                                 <input type="checkbox" checked data-widget="cpu">
                                 <span class="settings-toggle-label">CPU</span>
@@ -59,21 +80,22 @@
                                 <input type="checkbox" checked data-widget="comfyui">
                                 <span class="settings-toggle-label">ComfyUI</span>
                             </label>
+                            </div>
                         </div>
-                        <div class="settings-field">
-                            <button class="settings-restart-btn" id="restartServerBtn" type="button">Restart server</button>
-                        </div>
-                        <div class="settings-field">
-                            <button class="settings-free-btn" id="freeComfyBtn" type="button">Free comfy</button>
-                        </div>
-                        <div class="settings-field">
-                            <button class="settings-unload-btn" id="unloadModelBtn" type="button">Unload model</button>
+                        <div class="settings-card" data-search="system server restart">
+                            <div class="settings-card-title">SYSTEM</div>
+                            <div class="settings-card-sub">Server controls live here now — see the System tab for memory actions.</div>
+                            <div class="settings-field">
+                                <button class="settings-goto-btn" id="gotoSystemBtn" type="button">Go to System →</button>
+                            </div>
                         </div>
                     </div>
 
                     <!-- Chat -->
                     <div class="settings-panel" data-panel="chat">
-                        <div class="settings-dropdown-title">CHAT PROVIDER</div>
+                        <div class="settings-card" data-search="chat provider model ollama browse library">
+                            <div class="settings-card-title">CHAT PROVIDER</div>
+                            <div class="settings-field-row">
                         <div class="settings-field">
                             <label class="settings-field-label">Provider</label>
                              <select class="settings-select" id="chatProvider">
@@ -84,9 +106,13 @@
                             <label class="settings-field-label">Model</label>
                             <input type="text" class="settings-input" id="chatModel" placeholder="e.g. llama3.2" autocomplete="off">
                         </div>
+                            </div>
                         <div class="settings-field">
                             <button class="settings-browse-btn" id="modelLibraryBtn" type="button">Browse models</button>
                         </div>
+                        </div>
+                        <div class="settings-card" data-search="reasoning thinking chain of thought">
+                            <div class="settings-card-title">REASONING</div>
                         <div class="settings-field" id="chatReasoningField">
                             <label class="settings-toggle">
                                 <span class="settings-toggle-label">Reasoning</span>
@@ -94,19 +120,22 @@
                             </label>
                             <span class="settings-hint" id="chatReasoningHint">Chain-of-thought for thinking-capable models. Off is faster.</span>
                         </div>
+                        </div>
                     </div>
 
                     <!-- Image -->
                     <div class="settings-panel" data-panel="image">
-                        <div class="settings-dropdown-title">IMAGE GENERATION</div>
+                        <div class="settings-card" data-search="image aspect ratio size resolution output dimensions">
+                            <div class="settings-card-title">OUTPUT</div>
+                            <div class="settings-field-row">
                         <div class="settings-field">
                             <label class="settings-field-label" for="imageAspectRatio">Aspect Ratio</label>
                             <select class="settings-select" id="imageAspectRatio">
-                                <option value="1:1">1:1</option>
-                                <option value="4:5">4:5</option>
-                                <option value="3:4">3:4</option>
-                                <option value="16:9">16:9</option>
-                                <option value="9:16">9:16</option>
+                                <option value="1:1">1:1 square</option>
+                                <option value="4:5">4:5 portrait</option>
+                                <option value="3:4">3:4 portrait</option>
+                                <option value="16:9">16:9 landscape</option>
+                                <option value="9:16">9:16 portrait</option>
                             </select>
                         </div>
                         <div class="settings-field">
@@ -117,45 +146,73 @@
                                 <option value="L">L (1.75MP)</option>
                             </select>
                         </div>
+                            </div>
+                        </div>
+                        <div class="settings-card" data-search="unet clip vae base model krea2 checkpoint">
+                            <div class="settings-card-title">BASE MODELS</div>
+                            <div class="settings-card-sub">Blank = use default. Changes save on Enter / blur.</div>
                         <div class="settings-field">
                             <label class="settings-field-label" for="imageUnet">UNET Model</label>
                             <input type="text" class="settings-input" id="imageUnet"
-                                placeholder="Loading..." autocomplete="off">
+                                placeholder="Loading..." autocomplete="off" list="imageUnetList">
+                            <datalist id="imageUnetList"></datalist>
                         </div>
                         <div class="settings-field">
                             <label class="settings-field-label" for="imageClip">CLIP Model</label>
                             <input type="text" class="settings-input" id="imageClip"
-                                placeholder="Loading..." autocomplete="off">
+                                placeholder="Loading..." autocomplete="off" list="imageClipList">
+                            <datalist id="imageClipList"></datalist>
                         </div>
                         <div class="settings-field">
                             <label class="settings-field-label" for="imageVae">VAE Model</label>
                             <input type="text" class="settings-input" id="imageVae"
-                                placeholder="Loading..." autocomplete="off">
+                                placeholder="Loading..." autocomplete="off" list="imageVaeList">
+                            <datalist id="imageVaeList"></datalist>
                         </div>
+                        </div>
+                        <div class="settings-card" data-search="edit lora identity instruction edit image">
+                            <div class="settings-card-title">IDENTITY EDIT</div>
                         <div class="settings-field">
                             <label class="settings-field-label" for="imageEditLora">Edit LoRA</label>
                             <input type="text" class="settings-input" id="imageEditLora"
                                 placeholder="Loading..." autocomplete="off">
                             <span class="settings-hint">Identity Edit LoRA for "edit this image" (Krea2 instruction edits). Must be installed in ComfyUI loras with the comfyui-krea2edit nodes.</span>
                         </div>
-                        <div class="settings-dropdown-title settings-section-slim">LORA STACK</div>
+                        </div>
+                        <div class="settings-card" data-search="lora stack trigger word strength attach">
+                            <div class="settings-card-title">LORA STACK</div>
+                            <div class="settings-card-sub">Attach LoRAs to every generation. Stacked in order, each with its own strength.</div>
                         <div class="settings-field">
                             <div class="lora-list" id="loraList"></div>
                             <select class="settings-select" id="loraAddSelect">
                                 <option value="">— Add LoRA —</option>
                             </select>
-                            <span class="settings-hint">Attach LoRAs to every generation. Stacked in order, each with its own strength.</span>
                             <span class="settings-save-status" id="loraStatus"></span>
                         </div>
+                        </div>
                         <div class="settings-field">
-                            <span class="settings-hint">Blank = use default. Leave a field and press Enter to save. Clear a field and press Enter to revert.</span>
                             <span class="settings-save-status" id="imageSettingsStatus"></span>
                         </div>
                     </div>
 
                     <!-- Upscale (shared by image + video) -->
                     <div class="settings-panel" data-panel="upscale">
-                        <div class="settings-dropdown-title">UPSCALE</div>
+                        <div class="settings-card" data-search="upscale engine rtx seedvr2 ultimate sd fast quality">
+                            <div class="settings-card-title">ENGINE</div>
+                            <div class="engine-cards" id="upscaleEngineCards">
+                                <button type="button" class="engine-card" data-engine="rtx">
+                                    <span class="engine-card-name">RTX</span>
+                                    <span class="engine-card-desc">Fast video upscale</span>
+                                </button>
+                                <button type="button" class="engine-card" data-engine="seedvr2">
+                                    <span class="engine-card-name">SeedVR2</span>
+                                    <span class="engine-card-desc">Slow diffusion quality</span>
+                                </button>
+                                <button type="button" class="engine-card" data-engine="ultimate">
+                                    <span class="engine-card-name">Ultimate SD</span>
+                                    <span class="engine-card-desc">Image only</span>
+                                </button>
+                            </div>
                         <div class="settings-field">
                             <label class="settings-field-label" for="upscaleEngine">Engine</label>
                             <select class="settings-select" id="upscaleEngine">
@@ -163,8 +220,12 @@
                                 <option value="seedvr2">SeedVR2</option>
                                 <option value="ultimate">Ultimate SD</option>
                             </select>
-                            <span class="settings-hint">RTX is a fast single-pass video upscale (video only; images fall back to SeedVR2). SeedVR2 is slow diffusion quality. Ultimate SD is image-only (videos fall back to RTX).</span>
+                            <span class="settings-hint">RTX is video-only (images fall back to SeedVR2). Ultimate SD is image-only (videos fall back to RTX).</span>
                         </div>
+                        </div>
+                        <div class="settings-card" data-search="upscale mode target resolution multiplier scale">
+                            <div class="settings-card-title">SCALE</div>
+                            <div class="settings-field-row">
                         <div class="settings-field">
                             <label class="settings-field-label" for="upscaleMode">Mode</label>
                             <select class="settings-select" id="upscaleMode">
@@ -190,6 +251,11 @@
                             </select>
                             <span class="settings-hint">Scale factor for Multiplier mode (images) and RTX video upscale.</span>
                         </div>
+                            </div>
+                        </div>
+                        <details class="settings-card settings-advanced" data-search="seedvr2 detail profile sharp balanced noise pre-resize dit vae attention" open>
+                            <summary class="settings-card-title">SEEDVR2 DETAILS</summary>
+                            <div class="settings-advanced-body">
                         <div class="settings-field" id="upscaleProfileField">
                             <label class="settings-field-label" for="upscaleProfile">Detail profile</label>
                             <select class="settings-select" id="upscaleProfile">
@@ -231,18 +297,21 @@
                                 placeholder="Loading..." autocomplete="off">
                             <span class="settings-hint">Default: sdpa. Options: sdpa, sageattn_2, sageattn_3, flash_attn_2, flash_attn_3 (NVIDIA only).</span>
                         </div>
+                            </div>
+                        </details>
                         <div class="settings-field">
-                            <span class="settings-hint">One shared upscale for images and video. Ask JARVIS to "upscale this image" or "upscale this video" and it will upscale the last generated one in the conversation. Mode and Ultimate SD apply to images only; video runs SeedVR2 at the target resolution or fast RTX at the multiplier.</span>
+                            <span class="settings-hint">One shared upscale for images and video. Ask JARVIS to "upscale this image" or "upscale this video" and it will upscale the last generated one in the conversation.</span>
                         </div>
                         <div class="settings-field">
-                            <span class="settings-hint">Blank = use default. Leave a field and press Enter to save. Clear a field and press Enter to revert.</span>
                             <span class="settings-save-status" id="upscaleSettingsStatus"></span>
                         </div>
                     </div>
 
                     <!-- Video -->
                     <div class="settings-panel" data-panel="video">
-                        <div class="settings-dropdown-title">VIDEO GENERATION (MiniMax H3)</div>
+                        <div class="settings-card" data-search="video minimax h3 unet clip vae audio model">
+                            <div class="settings-card-title">VIDEO GENERATION (MiniMax H3)</div>
+                            <div class="settings-card-sub">Blank = use default. Changes save on Enter / blur.</div>
                         <div class="settings-field">
                             <label class="settings-field-label" for="videoUnet">UNET Model</label>
                             <input type="text" class="settings-input" id="videoUnet"
@@ -267,6 +336,10 @@
                                 placeholder="Loading..." autocomplete="off">
                             <span class="settings-hint">Default: minimax_h3_audio_vae_fp32.safetensors</span>
                         </div>
+                        </div>
+                        <div class="settings-card" data-search="video duration size attention sage sparse output length">
+                            <div class="settings-card-title">OUTPUT</div>
+                            <div class="settings-field-row">
                         <div class="settings-field">
                             <label class="settings-field-label" for="videoDuration">Duration</label>
                             <select class="settings-select" id="videoDuration">
@@ -290,7 +363,6 @@
                                 <option value="M">M (1MP)</option>
                                 <option value="L">L (1.75MP)</option>
                             </select>
-                            <span class="settings-hint">Total-pixel tier, matching Mix Studio S/M/L. Matches image S/M/L scale.</span>
                         </div>
                         <div class="settings-field">
                             <label class="settings-field-label" for="videoAttentionBackend">Attention</label>
@@ -301,24 +373,53 @@
                             </select>
                             <span class="settings-hint">SageAttention patches the guider for speed (needs the KJNodes sageattention package). SLA uses sparse attention (experimental).</span>
                         </div>
-                        <div class="settings-dropdown-title settings-section-slim">LORA STACK</div>
+                            </div>
+                        </div>
+                        <div class="settings-card" data-search="video lora stack trigger word strength">
+                            <div class="settings-card-title">LORA STACK</div>
+                            <div class="settings-card-sub">Attach LoRAs to every video generation. Stacked in order (model-only), each with its own strength.</div>
                         <div class="settings-field">
                             <div class="lora-list" id="videoLoraList"></div>
                             <select class="settings-select" id="videoLoraAddSelect">
                                 <option value="">— Add LoRA —</option>
                             </select>
-                            <span class="settings-hint">Attach LoRAs to every video generation. Stacked in order (model-only), each with its own strength.</span>
                             <span class="settings-save-status" id="videoLoraStatus"></span>
                         </div>
+                        </div>
                         <div class="settings-field">
-                            <span class="settings-hint">Leave blank = use default. Press Enter to save. Clear and Enter to revert.</span>
                             <span class="settings-save-status" id="videoSettingsStatus"></span>
                         </div>
                     </div>
+
+                    <!-- System -->
+                    <div class="settings-panel" data-panel="system">
+                        <div class="settings-card" data-search="system server restart reload">
+                            <div class="settings-card-title">SERVER</div>
+                            <div class="settings-card-sub">Restarts the Node server. The page reloads automatically when it is back.</div>
+                        <div class="settings-field">
+                            <button class="settings-restart-btn" id="restartServerBtn" type="button">Restart server</button>
+                        </div>
+                        </div>
+                        <div class="settings-card" data-search="memory vram free comfy unload model gpu">
+                            <div class="settings-card-title">MEMORY</div>
+                            <div class="settings-card-sub">Free GPU memory before switching between chat and image/video work.</div>
+                        <div class="settings-field">
+                            <button class="settings-free-btn" id="freeComfyBtn" type="button">Free comfy</button>
+                        </div>
+                        <div class="settings-field">
+                            <button class="settings-unload-btn" id="unloadModelBtn" type="button">Unload model</button>
+                        </div>
+                        </div>
+                    </div>
+                </div>
+                    </div>
+                    <div class="settings-modal-footer">
+                        <span class="settings-footer-hint">Autosaves on change — text fields save on Enter / blur.</span>
+                        <span class="settings-footer-status" id="settingsFooterStatus"></span>
+                        <button class="settings-done-btn" id="settingsDone" type="button">Done</button>
+                    </div>
                 </div>
             </div>
-        </div>
-    </header>
 
     <main class="main">
         <aside class="conversations-panel" id="conversationsPanel">
