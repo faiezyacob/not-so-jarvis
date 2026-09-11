@@ -544,6 +544,17 @@ async function deleteInputFile(filename) {
     }
 }
 
+// Interrupt the currently executing ComfyUI prompt. Used when the user
+// cancels the active generation from the queue endpoint.
+async function interrupt() {
+    const res = await comfyFetch('/interrupt', {
+        method: 'POST',
+        timeout: 15000
+    });
+    await res.text().catch(() => '');
+    return true;
+}
+
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -561,6 +572,7 @@ module.exports = {
     subscribeProgress,
     unsubscribeProgress,
     freeModels,
+    interrupt,
     queuePrompt,
     waitForPrompt,
     findOutputFiles,

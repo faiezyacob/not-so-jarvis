@@ -19,10 +19,11 @@ const Chat = (() => {
         conversationListEl = document.getElementById('conversationList');
 
         document.getElementById('newConversationBtn').addEventListener('click', onNewConversation);
-        chatSend.addEventListener('click', sendMessage);
+        chatSend.addEventListener('click', onSendButton);
         chatInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
+                if (activeStreamAbort) return;
                 sendMessage();
             }
         });
@@ -264,6 +265,33 @@ const Chat = (() => {
 
     // --- Send flow ---
 
+    let activeStreamAbort = null;
+    let activeQueueId = null;
+    let activeQueueActive = false;
+
+    async function cancelActiveStream() {
+        if (activeQueueId) {
+            try {
+                await fetch('/api/queue/cancel', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ queueId: activeQueueId, active: activeQueueActive })
+                });
+            } catch (e) {}
+        }
+        if (activeStreamAbort) {
+            try { activeStreamAbort.abort(); } catch (e) {}
+        }
+    }
+
+    function onSendButton() {
+        if (activeStreamAbort) {
+            cancelActiveStream();
+            return;
+        }
+        sendMessage();
+    }
+
     async function sendMessage() {
         const text = chatInput.value.trim();
         if (!text) return;
@@ -298,6 +326,10 @@ const Chat = (() => {
         setSendingState(true);
         showTypingIndicator();
 
+        activeStreamAbort = new AbortController();
+        activeQueueId = null;
+        activeQueueActive = false;
+
         try {
             const res = await fetch('/api/chat/stream', {
                 method: 'POST',
@@ -307,7 +339,8 @@ const Chat = (() => {
                     provider,
                     model,
                     message: text
-                })
+                }),
+                signal: activeStreamAbort.signal
             });
 
             if (!res.ok) {
@@ -366,6 +399,19 @@ const Chat = (() => {
                                 contentEl.appendChild(generatingEl);
                             }
                             generatingEl.textContent = data.generating;
+                            activeQueueActive = true;
+                            chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+                        }
+                        if (data.queued) {
+                            if (!generatingEl) {
+                                generatingEl = document.createElement('div');
+                                generatingEl.className = 'generating-status';
+                                contentEl.appendChild(generatingEl);
+                            }
+                            activeQueueId = data.queued.queueId || null;
+                            activeQueueActive = false;
+                            const pos = data.queued.position || 1;
+                            generatingEl.textContent = 'Queued #' + pos + ' — waiting for current generation… (press send to cancel)';
                             chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
                         }
                         if (data.image) {
@@ -419,21 +465,33 @@ const Chat = (() => {
             }
         } catch (err) {
             removeTypingIndicator();
-            addMessageDom('ai', 'Connection error: ' + err.message);
+            if (err && err.name === 'AbortError') {
+                addMessageDom('ai', 'Cancelled.');
+            } else {
+                addMessageDom('ai', 'Connection error: ' + err.message);
+            }
         } finally {
+            activeStreamAbort = null;
+            activeQueueId = null;
+            activeQueueActive = false;
             setSendingState(false);
         }
     }
 
     function setSendingState(active) {
         if (active) {
-            chatSend.disabled = true;
+            // Keep the send button enabled so it acts as Cancel while streaming.
+            chatSend.disabled = false;
             chatInput.disabled = true;
             chatSend.classList.add('sending');
+            chatSend.setAttribute('aria-label', 'Cancel');
+            chatSend.title = 'Cancel';
         } else {
             chatSend.disabled = false;
             chatInput.disabled = false;
             chatSend.classList.remove('sending');
+            chatSend.setAttribute('aria-label', 'Send message');
+            chatSend.title = '';
             chatInput.focus();
         }
     }

@@ -18,6 +18,7 @@ const path = require('path');
 const comfyui = require('./comfyui');
 const configManager = require('../server/config-manager');
 const generatedHistory = require('./generated-history');
+const generationQueue = require('./generation-queue');
 const imageGenerator = require('./image-generator');
 const { getModelById } = require('../server/models');
 
@@ -193,35 +194,20 @@ function h3Dimensions(width, height, size) {
 }
 
 // --- Generation lock (shared with image-generator) ---------------------------
-
-const MAX_GENERATIONS = 1;
-let activeGeneration = 0;
+// Single FIFO in services/generation-queue.js. Both pipelines delegate here
+// so image/video/upscale never run concurrently and extras queue.
 
 function canStartGeneration() {
-    return activeGeneration < MAX_GENERATIONS;
+    return generationQueue.canStartGeneration();
 }
 
-async function withGenerationLock(fn) {
-    if (!canStartGeneration()) {
-        const error = new Error('A generation is already in progress. Please wait for it to finish.');
-        error.code = 'generation_busy';
-        throw error;
-    }
-    activeGeneration += 1;
-    try {
-        return await fn();
-    } finally {
-        activeGeneration -= 1;
-    }
+function withGenerationLock(fn, opts = {}) {
+    return generationQueue.enqueue(fn, opts);
 }
 
-// Expose the shared lock for cross-service use (image + video + upscale).
+// Backwards-compat no-op: both services already share generation-queue.
 function registerGenerationLock(imageGen) {
-    // Patch image-generator's canStartGeneration to share the same counter.
-    const originalCanStart = imageGen.canStartGeneration;
-    imageGen.canStartGeneration = function sharedCanStart() {
-        return activeGeneration < MAX_GENERATIONS;
-    };
+    return true;
 }
 
 // --- Video intent detection --------------------------------------------------
@@ -1038,6 +1024,12 @@ function resolveVideoMode(conversationId, message, structuredRequest) {
 // --- Video generation execution -----------------------------------------------
 
 async function generateVideo(prompt, options = {}) {
+    const queueOpts = {
+        label: options.label || 'video generation',
+        kind: options.kind || 'video_generation',
+        conversationId: options.conversationId || null,
+        onQueued: options.onQueued || null
+    };
     return withGenerationLock(async () => {
         await ensureGeneratedDir();
         const startedAt = Date.now();
@@ -1179,7 +1171,7 @@ async function generateVideo(prompt, options = {}) {
             generationMs: meta.generationMs,
             meta
         };
-    });
+    }, queueOpts);
 }
 
 // --- Video Upscale / RTX 4K Pass ------------------------------------------------
@@ -1356,6 +1348,12 @@ function buildSeedVr2VideoUpscaleGraph(videoName, options = {}) {
 }
 
 async function upscaleVideo(rawFilename, options = {}) {
+    const queueOpts = {
+        label: options.label || 'video upscale',
+        kind: options.kind || 'video_upscale',
+        conversationId: options.conversationId || null,
+        onQueued: options.onQueued || null
+    };
     return withGenerationLock(async () => {
         await ensureGeneratedDir();
         const startedAt = Date.now();
@@ -1475,7 +1473,7 @@ async function upscaleVideo(rawFilename, options = {}) {
             generationMs: meta.generationMs,
             meta
         };
-    });
+    }, queueOpts);
 }
 
 // --- Helpers ------------------------------------------------------------------

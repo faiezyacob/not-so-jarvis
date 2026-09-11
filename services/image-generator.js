@@ -18,6 +18,7 @@ const path = require('path');
 const comfyui = require('./comfyui');
 const configManager = require('../server/config-manager');
 const generatedHistory = require('./generated-history');
+const generationQueue = require('./generation-queue');
 
 const GENERATED_DIR = path.join(__dirname, '..', 'data', 'generated');
 
@@ -39,26 +40,15 @@ const ULTIMATE_SD_UPSCALE_MODEL = '4x_foolhardy_Remacri.pth';
 const SEEDVR2_NOISE_LEVELS = { off: 0, low: 0.06, medium: 0.15 };
 
 // --- One generation at a time -------------------------------------------------
-
-const MAX_GENERATIONS = 1;
-let activeGeneration = 0;
+// Shared FIFO across image/video/upscale (see services/generation-queue.js).
+// Extra requests wait their turn instead of failing with generation_busy.
 
 function canStartGeneration() {
-    return activeGeneration < MAX_GENERATIONS;
+    return generationQueue.canStartGeneration();
 }
 
-async function withGenerationLock(fn) {
-    if (!canStartGeneration()) {
-        const error = new Error('An image generation is already in progress. Please wait for it to finish.');
-        error.code = 'generation_busy';
-        throw error;
-    }
-    activeGeneration += 1;
-    try {
-        return await fn();
-    } finally {
-        activeGeneration -= 1;
-    }
+function withGenerationLock(fn, opts = {}) {
+    return generationQueue.enqueue(fn, opts);
 }
 
 // --- Intent detection ----------------------------------------------------------
@@ -1219,7 +1209,14 @@ function buildUltimateSdUpscaleGraph(imageName, options = {}) {
 // into data/generated/. Shares the single-generation lock with generateImage so
 // ComfyUI never runs two jobs at once. Returns { url, filename, width, height,
 // sourceWidth, sourceHeight, engine, profile, noise, resolution, meta }.
+// options.queue / options.onQueued / options.conversationId feed the shared FIFO.
 async function upscaleImage(rawFilename, options = {}) {
+    const queueOpts = {
+        label: options.label || 'image upscale',
+        kind: options.kind || 'image_upscale',
+        conversationId: options.conversationId || null,
+        onQueued: options.onQueued || null
+    };
     return withGenerationLock(async () => {
         await ensureGeneratedDir();
         const startedAt = Date.now();
@@ -1347,7 +1344,7 @@ async function upscaleImage(rawFilename, options = {}) {
             generationMs: meta.generationMs,
             meta
         };
-    });
+    }, queueOpts);
 }
 
 // --- Generation ----------------------------------------------------------------
@@ -1386,6 +1383,12 @@ function stripLoraTriggerWords(prompt) {
 // Generate an image from a text prompt and write it into data/generated.
 // Returns { url, filename, width, height }.
 async function generateImage(prompt, options = {}) {
+    const queueOpts = {
+        label: options.label || 'image generation',
+        kind: options.kind || 'image_generation',
+        conversationId: options.conversationId || null,
+        onQueued: options.onQueued || null
+    };
     return withGenerationLock(async () => {
         await ensureGeneratedDir();
         const startedAt = Date.now();
@@ -1469,7 +1472,7 @@ async function generateImage(prompt, options = {}) {
             generationMs: meta.generationMs,
             meta
         };
-    });
+    }, queueOpts);
 }
 
 module.exports = {
@@ -1481,6 +1484,9 @@ module.exports = {
     IMAGE_SIZES,
     IMAGE_MEGAPIXELS,
     canStartGeneration,
+    withGenerationLock,
+    getQueueStatus: generationQueue.getStatus,
+    cancelQueued: generationQueue.cancelQueued,
     detectIntent,
     buildImagePrompt,
     imageRequestStrength,

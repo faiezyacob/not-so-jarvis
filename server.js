@@ -70,10 +70,22 @@ const comfyui = require('./services/comfyui');
 const vramManager = require('./services/vram-manager');
 const taskRouter = require('./services/task-router');
 const taskState = require('./services/task-state');
+const generationQueue = require('./services/generation-queue');
 const GENERATED_DIR = path.join(__dirname, 'data', 'generated');
 
 // Share the single-generation lock between image and video pipelines.
 videoGenerator.registerGenerationLock(imageGenerator);
+
+// Safe SSE write that never throws after the client detached.
+function sseWrite(res, obj) {
+    try {
+        if (res.writableEnded || res.destroyed) return false;
+        res.write(`data: ${JSON.stringify(obj)}\n\n`);
+        return true;
+    } catch {
+        return false;
+    }
+}
 
 function readBody(req) {
     return new Promise((resolve, reject) => {
@@ -330,7 +342,9 @@ async function handleAPI(req, res, urlPath) {
                 resolution: body.resolution,
                 multiplier: body.multiplier,
                 preScale: body.preScale,
-                prompt: body.prompt
+                prompt: body.prompt,
+                conversationId: body.conversationId || null,
+                label: 'image upscale', kind: 'image_upscale'
             });
             json(res, 200, { ok: true, image: result });
         } catch (err) {
@@ -356,7 +370,9 @@ async function handleAPI(req, res, urlPath) {
                 resolution: body.resolution,
                 profile: body.profile,
                 noise: body.noise,
-                preScale: body.preScale
+                preScale: body.preScale,
+                conversationId: body.conversationId || null,
+                label: 'video upscale', kind: 'video_upscale'
             });
             json(res, 200, { ok: true, video: result });
         } catch (err) {
@@ -426,6 +442,42 @@ async function handleAPI(req, res, urlPath) {
             clearInterval(ping);
             comfyui.unsubscribeProgress(onProgress);
         });
+        return true;
+    }
+
+    // GET /api/queue — shared generation queue status (active + pending)
+    if (urlPath === '/api/queue' && req.method === 'GET') {
+        json(res, 200, generationQueue.getStatus());
+        return true;
+    }
+
+    // POST /api/queue/cancel — cancel a queued job ({ queueId }), or the
+    // active job ({ queueId, active: true } aborts via ComfyUI /interrupt).
+    if (urlPath === '/api/queue/cancel' && req.method === 'POST') {
+        try {
+            const body = await readBody(req);
+            const queueId = Number(body.queueId);
+            if (!Number.isFinite(queueId)) {
+                json(res, 400, { error: 'queueId is required' });
+                return true;
+            }
+            if (imageGenerator.cancelQueued(queueId)) {
+                json(res, 200, { ok: true, cancelled: queueId });
+                return true;
+            }
+            const status = generationQueue.getStatus();
+            if (body.active && status.active && status.active.id === queueId) {
+                try { await comfyui.interrupt(); } catch (err) {
+                    json(res, 502, { error: 'Interrupt failed: ' + err.message });
+                    return true;
+                }
+                json(res, 200, { ok: true, interrupted: queueId });
+                return true;
+            }
+            json(res, 404, { error: 'Job not found in queue. It may have already started or finished.' });
+        } catch (err) {
+            json(res, 500, { error: err.message });
+        }
         return true;
     }
 
@@ -1058,16 +1110,25 @@ async function handleChatStream(req, res) {
 async function handleImageGenerationStream(req, res, opts) {
     const { provider, model, conversationId, message, imagePrompt, action, previousPrompt } = opts;
 
+    let queueId = null;
+    const onClose = () => {
+        if (queueId) imageGenerator.cancelQueued(queueId);
+    };
+    req.on('close', onClose);
+    const onQueued = (position, id) => {
+        queueId = id;
+        sseWrite(res, { queued: { position, queueId: id } });
+    };
+
     try {
-        if (!imageGenerator.canStartGeneration()) {
-            res.write(`data: ${JSON.stringify({ error: 'An image generation is already in progress. Please wait for it to finish.' })}\n\n`);
-            res.end();
-            return;
-        }
+        sseWrite(res, { generating: 'Generating image...' });
 
-        res.write(`data: ${JSON.stringify({ generating: 'Generating image...' })}\n\n`);
-
-        const result = await imageGenerator.generateImage(imagePrompt, { provider, model });
+        const promise = imageGenerator.generateImage(imagePrompt, {
+            provider, model, conversationId, onQueued,
+            label: 'image generation', kind: 'image_generation'
+        });
+        queueId = promise.queueId || null;
+        const result = await promise;
 
         // Tool succeeded — now update task context and generate the user-facing
         // response based on the actual result.
@@ -1096,13 +1157,17 @@ async function handleImageGenerationStream(req, res, opts) {
             '**Prompt:** ' + imagePrompt + '\n\n' +
             '![' + 'image' + '](' + result.url + ')';
 
-        res.write(`data: ${JSON.stringify({ image: { url: result.url, content, meta: result.meta || null } })}\n\n`);
+        sseWrite(res, { image: { url: result.url, content, meta: result.meta || null } });
         res.end();
     } catch (err) {
         console.error('[image-generator] Generation failed:', err.message, '\n', err.stack);
-        taskState.setTask(conversationId, { status: 'failed' });
-        res.write(`data: ${JSON.stringify({ error: friendlyImageError(err) })}\n\n`);
+        if (err.code !== 'generation_cancelled') {
+            taskState.setTask(conversationId, { status: 'failed' });
+        }
+        sseWrite(res, { error: friendlyImageError(err) });
         res.end();
+    } finally {
+        req.removeListener('close', onClose);
     }
 }
 
@@ -1124,6 +1189,8 @@ function friendlyImageError(err) {
             return 'ComfyUI finished but did not produce an image. Check the ComfyUI console, then try again.';
         case 'generation_busy':
             return err.message;
+        case 'generation_cancelled':
+            return 'Generation cancelled. It was removed from the queue before it started.';
         case 'upscale_source_missing':
             return 'The image to upscale could not be found on disk. It may have been deleted.';
         default:
@@ -1138,16 +1205,20 @@ async function handleVideoGenerationStream(req, res, opts) {
         duration, width, height
     } = opts;
 
+    let queueId = null;
+    const onClose = () => {
+        if (queueId) imageGenerator.cancelQueued(queueId);
+    };
+    req.on('close', onClose);
+    const onQueued = (position, id) => {
+        queueId = id;
+        sseWrite(res, { queued: { position, queueId: id } });
+    };
+
     try {
-        if (!imageGenerator.canStartGeneration()) {
-            res.write(`data: ${JSON.stringify({ error: 'A generation is already in progress. Please wait for it to finish.' })}\n\n`);
-            res.end();
-            return;
-        }
+        sseWrite(res, { generating: 'Generating video...' });
 
-        res.write(`data: ${JSON.stringify({ generating: 'Generating video...' })}\n\n`);
-
-        const opts2 = { provider, model };
+        const opts2 = { provider, model, conversationId, onQueued, label: 'video generation', kind: 'video_generation' };
         if (structuredRequest) {
             if (structuredRequest.parameters) opts2.parameters = structuredRequest.parameters;
             if (structuredRequest.modifier) opts2.modifier = structuredRequest.modifier;
@@ -1164,7 +1235,9 @@ async function handleVideoGenerationStream(req, res, opts) {
         console.log('[video] user request:', message);
         console.log('[video] H3 director prompt generated:', videoPrompt);
 
-        const result = await videoGenerator.generateVideo(videoPrompt, opts2);
+        const promise = videoGenerator.generateVideo(videoPrompt, opts2);
+        queueId = promise.queueId || null;
+        const result = await promise;
 
         // Manual-only upscale: the RTX 4K pass runs only when the user asks
         // ("upscale this video" -> handleVideoUpscaleStream), just like image
@@ -1197,13 +1270,17 @@ async function handleVideoGenerationStream(req, res, opts) {
             '**Prompt:** ' + videoPrompt + '\n\n' +
             '<video class="md-video" preload="metadata" playsinline src="' + finalResult.url + '"></video>';
 
-        res.write(`data: ${JSON.stringify({ video: { url: finalResult.url, content, meta: finalResult.metadata || null, upscale: null } })}\n\n`);
+        sseWrite(res, { video: { url: finalResult.url, content, meta: finalResult.metadata || null, upscale: null } });
         res.end();
     } catch (err) {
         console.error('[video-generator] Generation failed:', err.message, '\n', err.stack);
-        taskState.setTask(conversationId, { status: 'failed' });
-        res.write(`data: ${JSON.stringify({ error: friendlyVideoError(err) })}\n\n`);
+        if (err.code !== 'generation_cancelled') {
+            taskState.setTask(conversationId, { status: 'failed' });
+        }
+        sseWrite(res, { error: friendlyVideoError(err) });
         res.end();
+    } finally {
+        req.removeListener('close', onClose);
     }
 }
 
@@ -1213,13 +1290,17 @@ async function handleVideoGenerationStream(req, res, opts) {
 async function handleVideoUpscaleStream(req, res, opts) {
     const { provider, model, conversationId, message } = opts;
 
-    try {
-        if (!imageGenerator.canStartGeneration()) {
-            res.write(`data: ${JSON.stringify({ error: 'A generation is already in progress. Please wait for it to finish.' })}\n\n`);
-            res.end();
-            return;
-        }
+    let queueId = null;
+    const onClose = () => {
+        if (queueId) imageGenerator.cancelQueued(queueId);
+    };
+    req.on('close', onClose);
+    const onQueued = (position, id) => {
+        queueId = id;
+        sseWrite(res, { queued: { position, queueId: id } });
+    };
 
+    try {
         const source = resolveVideoUpscaleSource(conversationId);
         if (!source) {
             taskState.setTask(conversationId, { status: 'failed' });
@@ -1241,9 +1322,13 @@ async function handleVideoUpscaleStream(req, res, opts) {
             status: 'running'
         });
 
-        res.write(`data: ${JSON.stringify({ generating: 'Upscaling video to 4K...' })}\n\n`);
+        sseWrite(res, { generating: 'Upscaling video to 4K...' });
 
-        const result = await videoGenerator.upscaleVideo(source.rawFilename, {});
+        const promise = videoGenerator.upscaleVideo(source.rawFilename, {
+            conversationId, onQueued, label: 'video upscale', kind: 'video_upscale'
+        });
+        queueId = promise.queueId || null;
+        const result = await promise;
 
         const existingParams = taskState.getTask(conversationId).parameters || {};
         const upscaleInfo = {
@@ -1271,13 +1356,17 @@ async function handleVideoUpscaleStream(req, res, opts) {
             '<video class="md-video" preload="metadata" playsinline src="' + result.url + '"></video>';
 
         console.log('[video] Manual upscale to 4K:', result.filename);
-        res.write(`data: ${JSON.stringify({ video: { url: result.url, content, meta: result.meta || null, upscale: upscaleInfo } })}\n\n`);
+        sseWrite(res, { video: { url: result.url, content, meta: result.meta || null, upscale: upscaleInfo } });
         res.end();
     } catch (err) {
         console.error('[video-generator] Upscale failed:', err.message, '\n', err.stack);
-        taskState.setTask(conversationId, { status: 'failed' });
-        res.write(`data: ${JSON.stringify({ error: friendlyVideoError(err) })}\n\n`);
+        if (err.code !== 'generation_cancelled') {
+            taskState.setTask(conversationId, { status: 'failed' });
+        }
+        sseWrite(res, { error: friendlyVideoError(err) });
         res.end();
+    } finally {
+        req.removeListener('close', onClose);
     }
 }
 
@@ -1295,6 +1384,8 @@ function friendlyVideoError(err) {
             return 'ComfyUI finished but did not produce a video. Check the ComfyUI console, then try again.';
         case 'generation_busy':
             return err.message;
+        case 'generation_cancelled':
+            return 'Generation cancelled. It was removed from the queue before it started.';
         default:
             return 'Video generation failed: ' + (err.message || 'unknown error');
     }
@@ -1379,13 +1470,17 @@ function resolveVideoUpscaleSource(conversationId, explicitFilename) {
 async function handleImageUpscaleStream(req, res, opts) {
     const { provider, model, conversationId, message } = opts;
 
-    try {
-        if (!imageGenerator.canStartGeneration()) {
-            res.write(`data: ${JSON.stringify({ error: 'An image generation is already in progress. Please wait for it to finish.' })}\n\n`);
-            res.end();
-            return;
-        }
+    let queueId = null;
+    const onClose = () => {
+        if (queueId) imageGenerator.cancelQueued(queueId);
+    };
+    req.on('close', onClose);
+    const onQueued = (position, id) => {
+        queueId = id;
+        sseWrite(res, { queued: { position, queueId: id } });
+    };
 
+    try {
         const source = resolveUpscaleSource(conversationId);
         if (!source) {
             taskState.setTask(conversationId, { status: 'failed' });
@@ -1411,9 +1506,14 @@ async function handleImageUpscaleStream(req, res, opts) {
             status: 'running'
         });
 
-        res.write(`data: ${JSON.stringify({ generating: 'Upscaling image...' })}\n\n`);
+        sseWrite(res, { generating: 'Upscaling image...' });
 
-        const result = await imageGenerator.upscaleImage(source.rawFilename, { provider, model });
+        const promise = imageGenerator.upscaleImage(source.rawFilename, {
+            provider, model, conversationId, onQueued,
+            label: 'image upscale', kind: 'image_upscale'
+        });
+        queueId = promise.queueId || null;
+        const result = await promise;
 
         // The effective prompt stays the source image's generation prompt so a
         // follow-up modification builds on the same visual concept.
@@ -1444,13 +1544,17 @@ async function handleImageUpscaleStream(req, res, opts) {
             '**Original:**\n![original](' + sourceUrl + ')\n\n' +
             '**Upscaled:**\n![upscaled](' + result.url + ')';
 
-        res.write(`data: ${JSON.stringify({ image: { url: result.url, content, meta: result.meta || null } })}\n\n`);
+        sseWrite(res, { image: { url: result.url, content, meta: result.meta || null } });
         res.end();
     } catch (err) {
         console.error('[image-generator] Upscale failed:', err.message, '\n', err.stack);
-        taskState.setTask(conversationId, { status: 'failed' });
-        res.write(`data: ${JSON.stringify({ error: friendlyImageError(err) })}\n\n`);
+        if (err.code !== 'generation_cancelled') {
+            taskState.setTask(conversationId, { status: 'failed' });
+        }
+        sseWrite(res, { error: friendlyImageError(err) });
         res.end();
+    } finally {
+        req.removeListener('close', onClose);
     }
 }
 
