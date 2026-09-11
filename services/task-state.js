@@ -47,6 +47,8 @@ function createEmptyTask() {
         prompt: '',                 // current / effective prompt
         originalPrompt: '',         // original concept (kept for the task)
         generatedAsset: null,       // last generated asset url/file
+        videoMode: null,            // 't2va' | 'i2va' | null (video tasks only)
+        sourceImage: null,          // I2VA source image raw filename (video tasks only)
         parameters: {},             // relevant generation parameters
         lastAction: '',             // high level description of last action
         status: 'idle'              // 'idle' | 'running' | 'completed' | 'failed'

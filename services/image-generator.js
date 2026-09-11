@@ -1211,6 +1211,7 @@ function buildUltimateSdUpscaleGraph(imageName, options = {}) {
 async function upscaleImage(rawFilename, options = {}) {
     return withGenerationLock(async () => {
         await ensureGeneratedDir();
+        const startedAt = Date.now();
 
         const safeName = path.basename(String(rawFilename || ''));
         if (!safeName) {
@@ -1308,6 +1309,7 @@ async function upscaleImage(rawFilename, options = {}) {
             model: modelLabel,
             width,
             height,
+            generationMs: Date.now() - startedAt,
             upscale: {
                 engine,
                 profile: effectiveProfile ? effectiveProfile.key : null,
@@ -1331,6 +1333,7 @@ async function upscaleImage(rawFilename, options = {}) {
             source: safeName,
             sourceMeta,
             prompt: meta.prompt,
+            generationMs: meta.generationMs,
             meta
         };
     });
@@ -1374,6 +1377,7 @@ function stripLoraTriggerWords(prompt) {
 async function generateImage(prompt, options = {}) {
     return withGenerationLock(async () => {
         await ensureGeneratedDir();
+        const startedAt = Date.now();
 
         const seed = Number.isInteger(options.seed) && options.seed >= 0
             ? options.seed
@@ -1441,7 +1445,8 @@ async function generateImage(prompt, options = {}) {
             model: 'Krea2',
             loras: activeLoras,
             width: settings.width,
-            height: settings.height
+            height: settings.height,
+            generationMs: Date.now() - startedAt
         });
 
         return {
@@ -1450,6 +1455,7 @@ async function generateImage(prompt, options = {}) {
             width: settings.width,
             height: settings.height,
             prompt: finalPrompt,
+            generationMs: meta.generationMs,
             meta
         };
     });

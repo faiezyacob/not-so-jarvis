@@ -341,7 +341,8 @@ async function handleAPI(req, res, urlPath) {
 
     // POST /api/video/upscale — upscale the last generated video in a conversation
     // (or an explicit data/generated filename). Used by the chat pipeline and
-    // available for the gallery. Optional body overrides: resolution, profile,
+    // available for the gallery. Reads the shared upscale settings (same as
+    // image upscale); optional body overrides: resolution, profile,
     // noise, preScale.
     if (urlPath === '/api/video/upscale' && req.method === 'POST') {
         try {
@@ -562,32 +563,73 @@ function handleDeleteConversation(req, res, id) {
         json(res, 404, { error: 'Conversation not found' });
         return;
     }
-    removeConversationImages(messages);
+    removeConversationImages(messages, id);
+    taskState.clearTask(id);
     json(res, 200, { ok: true });
 }
 
-// Remove generated image files that were linked from a deleted conversation's
-// messages, keeping the gallery in sync with what the chat actually references.
-function removeConversationImages(messages) {
+// Remove generated media files (images and videos) that were linked from a
+// deleted conversation's messages, keeping the gallery in sync with what the
+// chat actually references.
+function removeConversationImages(messages, conversationId) {
     const wanted = new Set();
-    const urlRe = /\/generated\/([^\s)\]}]+)/g;
+    // Same character exclusions as resolveUpscaleSource /
+    // resolveVideoUpscaleSource — video embeds use quoted src attributes
+    // (<video ... src="/generated/<file>">), so quotes must terminate the
+    // match or the captured name keeps a trailing quote and never matches.
+    const urlRe = /\/generated\/([^\s)\]}"']+)/g;
+    const collect = (value) => {
+        if (!value) return;
+        let name = String(value).split('?')[0];
+        name = name.slice(name.lastIndexOf('/') + 1);
+        try { name = decodeURIComponent(name); } catch (err) { /* keep raw */ }
+        if (name) wanted.add(name);
+    };
     (messages || []).forEach((m) => {
         const content = (m && m.content) || '';
         let match;
+        urlRe.lastIndex = 0;
         while ((match = urlRe.exec(content))) {
-            wanted.add(match[1]);
+            collect(match[1]);
         }
     });
+    // Fall back to the conversation's bound task asset (e.g. a video upscale
+    // reply only embeds the upscaled output, not its source).
+    if (conversationId) {
+        try {
+            collect(taskState.getTask(conversationId).generatedAsset);
+        } catch (err) { /* ignore — messages already scanned */ }
+    }
     if (!wanted.size) return;
 
-    generatedHistory.list().forEach((entry) => {
-        const segment = String(entry.file || '');
-        const idx = segment.lastIndexOf('/');
-        const name = idx === -1 ? segment : segment.slice(idx + 1);
-        if (wanted.has(name)) {
-            generatedHistory.remove(entry.id);
+    const entries = generatedHistory.list();
+    const basenameOf = (entry) => {
+        const raw = entry.rawFilename || String(entry.file || '').split('/').pop() || '';
+        try { return decodeURIComponent(raw); } catch (err) { return raw; }
+    };
+    const idsToDelete = new Set();
+    entries.forEach((entry) => {
+        if (wanted.has(basenameOf(entry))) idsToDelete.add(entry.id);
+    });
+    // Also drop the other half of any upscale pair (the original whose file
+    // is an entry's upscale.source, or the upscaled child pointing at a
+    // deleted original) so no orphaned partner survives in the gallery.
+    entries.forEach((entry) => {
+        const source = entry.upscale && entry.upscale.source
+            ? String(entry.upscale.source).split('/').pop()
+            : null;
+        if (!source) return;
+        let decoded = source;
+        try { decoded = decodeURIComponent(source); } catch (err) { /* keep raw */ }
+        const childName = basenameOf(entry);
+        if (wanted.has(decoded) || idsToDelete.has(entry.id)) {
+            entries.forEach((other) => {
+                const otherName = basenameOf(other);
+                if (otherName === decoded || otherName === childName) idsToDelete.add(other.id);
+            });
         }
     });
+    idsToDelete.forEach((entryId) => generatedHistory.remove(entryId));
 }
 
 function handleGetMessages(req, res, id) {
@@ -718,6 +760,17 @@ async function handleChatStream(req, res) {
         if (decision.shouldExecuteTool && decision.task === 'image_upscale') {
             await vramManager.freeVRAMBeforeImage();
             await handleImageUpscaleStream(req, res, {
+                provider, model, conversationId, message
+            });
+            return;
+        }
+
+        // Upscale the last generated video in this conversation. Manual-only,
+        // just like image upscale — the user must ask ("upscale this video").
+        // There is no automatic 4K pass after generation.
+        if (decision.shouldExecuteTool && decision.task === 'video_upscale') {
+            await vramManager.freeVRAMBeforeImage();
+            await handleVideoUpscaleStream(req, res, {
                 provider, model, conversationId, message
             });
             return;
@@ -1113,34 +1166,10 @@ async function handleVideoGenerationStream(req, res, opts) {
 
         const result = await videoGenerator.generateVideo(videoPrompt, opts2);
 
-        // Auto-upscale to 4K if enabled in settings
-        let finalResult = result;
-        let upscaleInfo = null;
-        const videoSettings = videoGenerator.effectiveVideoSettings();
-        if (videoSettings.videoUpscaleEnabled) {
-            try {
-                res.write(`data: ${JSON.stringify({ generating: 'Upscaling video to 4K...' })}\n\n`);
-                const upscaleResult = await videoGenerator.upscaleVideo(result.filename, {
-                    resolution: videoSettings.videoUpscaleResolution,
-                    profile: videoSettings.videoUpscaleProfile,
-                    noise: videoSettings.videoUpscaleNoise,
-                    preScale: videoSettings.videoUpscalePreScale
-                });
-                finalResult = { ...result, ...upscaleResult, url: upscaleResult.url, filename: upscaleResult.filename };
-                upscaleInfo = {
-                    originalUrl: result.url,
-                    originalFilename: result.filename,
-                    upscaledUrl: upscaleResult.url,
-                    upscaledFilename: upscaleResult.filename,
-                    resolution: upscaleResult.resolution,
-                    profile: upscaleResult.profile,
-                    noise: upscaleResult.noise
-                };
-                console.log('[video] Auto-upscaled to 4K:', upscaleResult.filename);
-            } catch (upscaleErr) {
-                console.warn('[video] Auto-upscale failed, keeping original:', upscaleErr.message);
-            }
-        }
+        // Manual-only upscale: the RTX 4K pass runs only when the user asks
+        // ("upscale this video" -> handleVideoUpscaleStream), just like image
+        // upscale. No automatic pass here.
+        const finalResult = result;
 
         // Mark the task completed with the video result.
         const existingParams = taskState.getTask(conversationId).parameters || {};
@@ -1149,7 +1178,7 @@ async function handleVideoGenerationStream(req, res, opts) {
             generatedAsset: finalResult.url,
             videoMode: finalResult.mode || opts2.mode || 't2va',
             sourceImage: opts2.sourceImageRawFilename || null,
-            parameters: Object.assign({}, existingParams, finalResult.metadata || {}, upscaleInfo ? { upscale: upscaleInfo } : {}),
+            parameters: Object.assign({}, existingParams, finalResult.metadata || {}),
             status: 'completed',
             lastAction: message || action || 'generate'
         });
@@ -1163,15 +1192,12 @@ async function handleVideoGenerationStream(req, res, opts) {
             taskType: 'video'
         });
 
-        let content =
+        const content =
             summary + '\n\n' +
             '**Prompt:** ' + videoPrompt + '\n\n' +
-            '<video controls src="' + finalResult.url + '"></video>';
-        if (upscaleInfo) {
-            content += '\n\n**RTX 4K Pass:** Upscaled to ' + upscaleInfo.resolution + 'p (' + upscaleInfo.profile + ', noise: ' + upscaleInfo.noise + ')';
-        }
+            '<video class="md-video" preload="metadata" playsinline src="' + finalResult.url + '"></video>';
 
-        res.write(`data: ${JSON.stringify({ video: { url: finalResult.url, content, meta: finalResult.metadata || null, upscale: upscaleInfo } })}\n\n`);
+        res.write(`data: ${JSON.stringify({ video: { url: finalResult.url, content, meta: finalResult.metadata || null, upscale: null } })}\n\n`);
         res.end();
     } catch (err) {
         console.error('[video-generator] Generation failed:', err.message, '\n', err.stack);
@@ -1181,8 +1207,84 @@ async function handleVideoGenerationStream(req, res, opts) {
     }
 }
 
+// Handle a manual video-upscale chat request over SSE (RTX 4K pass).
+// Mirrors handleImageUpscaleStream: the conversation's previously generated
+// video is always the source; runs only when the user asks for it.
+async function handleVideoUpscaleStream(req, res, opts) {
+    const { provider, model, conversationId, message } = opts;
+
+    try {
+        if (!imageGenerator.canStartGeneration()) {
+            res.write(`data: ${JSON.stringify({ error: 'A generation is already in progress. Please wait for it to finish.' })}\n\n`);
+            res.end();
+            return;
+        }
+
+        const source = resolveVideoUpscaleSource(conversationId);
+        if (!source) {
+            taskState.setTask(conversationId, { status: 'failed' });
+            res.write(`data: ${JSON.stringify({ error: "I couldn't find a generated video in this conversation to upscale. Generate a video first, then ask me to upscale it." })}\n\n`);
+            res.end();
+            return;
+        }
+
+        const prevTask = taskState.getTask(conversationId);
+        const basePrompt = videoGenerator.stripVideoLoraTriggerWords(
+            (source.meta && source.meta.prompt) || prevTask.prompt || message
+        );
+        taskState.setTask(conversationId, {
+            type: 'video',
+            operation: 'upscale',
+            prompt: basePrompt,
+            originalPrompt: prevTask.originalPrompt || basePrompt,
+            lastAction: 'upscale',
+            status: 'running'
+        });
+
+        res.write(`data: ${JSON.stringify({ generating: 'Upscaling video to 4K...' })}\n\n`);
+
+        const result = await videoGenerator.upscaleVideo(source.rawFilename, {});
+
+        const existingParams = taskState.getTask(conversationId).parameters || {};
+        const upscaleInfo = {
+            originalUrl: '/generated/' + encodeURIComponent(source.rawFilename),
+            originalFilename: source.rawFilename,
+            upscaledUrl: result.url,
+            upscaledFilename: result.filename,
+            resolution: result.resolution,
+            profile: result.profile,
+            noise: result.noise
+        };
+        taskState.setTask(conversationId, {
+            prompt: basePrompt,
+            generatedAsset: result.url,
+            parameters: Object.assign({}, existingParams, {
+                upscale: upscaleInfo
+            }),
+            status: 'completed',
+            lastAction: 'upscale'
+        });
+
+        const content =
+            'Upscaled your video to **' + result.resolution + 'p** (' + result.profile + ', noise: ' + result.noise + ').\n\n' +
+            '**RTX 4K Pass:** SeedVR2 video upscale.\n\n' +
+            '<video class="md-video" preload="metadata" playsinline src="' + result.url + '"></video>';
+
+        console.log('[video] Manual upscale to 4K:', result.filename);
+        res.write(`data: ${JSON.stringify({ video: { url: result.url, content, meta: result.meta || null, upscale: upscaleInfo } })}\n\n`);
+        res.end();
+    } catch (err) {
+        console.error('[video-generator] Upscale failed:', err.message, '\n', err.stack);
+        taskState.setTask(conversationId, { status: 'failed' });
+        res.write(`data: ${JSON.stringify({ error: friendlyVideoError(err) })}\n\n`);
+        res.end();
+    }
+}
+
 function friendlyVideoError(err) {
     switch (err.code) {
+        case 'upscale_source_missing':
+            return 'The video to upscale could not be found on disk. It may have been deleted.';
         case 'comfyui_unavailable':
             return 'ComfyUI is not running. Start ComfyUI, then try again.';
         case 'comfyui_missing_nodes':

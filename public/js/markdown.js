@@ -169,7 +169,14 @@ const Markdown = (() => {
 
             // Regular paragraph line
             if (/^<video\b/i.test(line.trim())) {
-                html += line.replace(/<video(\s)/i, '<video class="md-video"$1');
+                let tag = line;
+                // The custom VideoPlayer provides all controls — never use the
+                // native browser UI, even if the backend emits it.
+                tag = tag.replace(/\scontrols(?:="[^"]*")?/gi, '');
+                if (!/class=/i.test(tag)) tag = tag.replace(/<video(\s)/i, '<video class="md-video"$1');
+                if (!/preload=/i.test(tag)) tag = tag.replace(/<video/i, '<video preload="metadata"');
+                if (!/playsinline/i.test(tag)) tag = tag.replace(/<video/i, '<video playsinline');
+                html += tag;
             } else {
                 html += '<p class="md-paragraph">' + parseInline(line) + '</p>';
             }

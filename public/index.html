@@ -27,9 +27,8 @@
                     <button class="settings-nav-item active" data-panel="general">GENERAL</button>
                     <button class="settings-nav-item" data-panel="chat">CHAT</button>
                     <button class="settings-nav-item" data-panel="image">IMAGE</button>
-                    <button class="settings-nav-item" data-panel="upscale">IMAGE UPSCALE</button>
+                    <button class="settings-nav-item" data-panel="upscale">UPSCALE</button>
                     <button class="settings-nav-item" data-panel="video">VIDEO</button>
-                    <button class="settings-nav-item" data-panel="videoUpscale">VIDEO UPSCALE</button>
                 </div>
                 <div class="settings-panels" id="settingsPanels">
                     <!-- General -->
@@ -64,6 +63,12 @@
                         <div class="settings-field">
                             <button class="settings-restart-btn" id="restartServerBtn" type="button">Restart server</button>
                         </div>
+                        <div class="settings-field">
+                            <button class="settings-free-btn" id="freeComfyBtn" type="button">Free comfy</button>
+                        </div>
+                        <div class="settings-field">
+                            <button class="settings-unload-btn" id="unloadModelBtn" type="button">Unload model</button>
+                        </div>
                     </div>
 
                     <!-- Chat -->
@@ -81,9 +86,6 @@
                         </div>
                         <div class="settings-field">
                             <button class="settings-browse-btn" id="modelLibraryBtn" type="button">Browse models</button>
-                        </div>
-                        <div class="settings-field">
-                            <button class="settings-unload-btn" id="unloadModelBtn" type="button">Unload model</button>
                         </div>
                     </div>
 
@@ -136,14 +138,11 @@
                             <span class="settings-hint">Blank = use default. Leave a field and press Enter to save. Clear a field and press Enter to revert.</span>
                             <span class="settings-save-status" id="imageSettingsStatus"></span>
                         </div>
-                        <div class="settings-field">
-                            <button class="settings-free-btn" id="freeComfyBtn" type="button">Free comfy</button>
-                        </div>
                     </div>
 
-                    <!-- Image Upscale -->
+                    <!-- Upscale (shared by image + video) -->
                     <div class="settings-panel" data-panel="upscale">
-                        <div class="settings-dropdown-title">IMAGE UPSCALE</div>
+                        <div class="settings-dropdown-title">UPSCALE</div>
                         <div class="settings-field">
                             <label class="settings-field-label" for="upscaleEngine">Engine</label>
                             <select class="settings-select" id="upscaleEngine">
@@ -181,6 +180,7 @@
                                 <option value="sharp">Sharp</option>
                                 <option value="balanced">Balanced</option>
                             </select>
+                            <span class="settings-hint">Sharp uses the 7B-sharp DiT variant (wavelet color correction). Balanced uses lab color correction.</span>
                         </div>
                         <div class="settings-field" id="upscaleNoiseField">
                             <label class="settings-field-label" for="upscaleNoise">Detail noise</label>
@@ -189,6 +189,7 @@
                                 <option value="low">Low</option>
                                 <option value="medium">Medium</option>
                             </select>
+                            <span class="settings-hint">Input noise level for detail synthesis. Off = no noise injection.</span>
                         </div>
                         <div class="settings-field" id="upscalePreScaleField">
                             <label class="settings-field-label" for="upscalePreScale">Pre-resize (lanczos)</label>
@@ -201,14 +202,21 @@
                             <label class="settings-field-label" for="upscaleDiT">SeedVR2 DiT Model</label>
                             <input type="text" class="settings-input" id="upscaleDiT"
                                 placeholder="Loading..." autocomplete="off">
+                            <span class="settings-hint">Sharp profile uses seedvr2_ema_7b_sharp_fp8_e4m3fn_mixed_block35_fp16.safetensors when installed.</span>
                         </div>
                         <div class="settings-field" id="upscaleVaeField">
                             <label class="settings-field-label" for="upscaleVae">SeedVR2 VAE Model</label>
                             <input type="text" class="settings-input" id="upscaleVae"
                                 placeholder="Loading..." autocomplete="off">
                         </div>
+                        <div class="settings-field" id="upscaleAttentionField">
+                            <label class="settings-field-label" for="upscaleAttention">SeedVR2 Attention Backend</label>
+                            <input type="text" class="settings-input" id="upscaleAttention"
+                                placeholder="Loading..." autocomplete="off">
+                            <span class="settings-hint">Default: sdpa. Options: sdpa, sageattn_2, sageattn_3, flash_attn_2, flash_attn_3 (NVIDIA only).</span>
+                        </div>
                         <div class="settings-field">
-                            <span class="settings-hint">Ask JARVIS to "upscale this image" and it will upscale the last generated image in the conversation.</span>
+                            <span class="settings-hint">One shared upscale for images and video. Ask JARVIS to "upscale this image" or "upscale this video" and it will upscale the last generated one in the conversation. Mode, Multiplier and Ultimate SD apply to images only; video always uses SeedVR2 at the target resolution.</span>
                         </div>
                         <div class="settings-field">
                             <span class="settings-hint">Blank = use default. Leave a field and press Enter to save. Clear a field and press Enter to revert.</span>
@@ -289,75 +297,6 @@
                         <div class="settings-field">
                             <span class="settings-hint">Leave blank = use default. Press Enter to save. Clear and Enter to revert.</span>
                             <span class="settings-save-status" id="videoSettingsStatus"></span>
-                        </div>
-                    </div>
-
-                    <!-- Video Upscale -->
-                    <div class="settings-panel" data-panel="videoUpscale">
-                        <div class="settings-dropdown-title">VIDEO UPSCALE (RTX 4K Pass)</div>
-                        <div class="settings-field">
-                            <label class="settings-field-label" for="videoUpscaleEnabled">Enable 4K Pass</label>
-                            <select class="settings-select" id="videoUpscaleEnabled">
-                                <option value="false">Disabled</option>
-                                <option value="true">Enabled</option>
-                            </select>
-                            <span class="settings-hint">When enabled, generated videos are automatically upscaled to the target resolution using SeedVR2. Requires SeedVR2 custom nodes in ComfyUI.</span>
-                        </div>
-                        <div class="settings-field" id="videoUpscaleResolutionField">
-                            <label class="settings-field-label" for="videoUpscaleResolution">Target Resolution</label>
-                            <select class="settings-select" id="videoUpscaleResolution">
-                                <option value="1080">1080p</option>
-                                <option value="1440">1440p</option>
-                                <option value="2160">2160p (4K)</option>
-                                <option value="3840">3840p</option>
-                            </select>
-                        </div>
-                        <div class="settings-field" id="videoUpscaleProfileField">
-                            <label class="settings-field-label" for="videoUpscaleProfile">Detail Profile</label>
-                            <select class="settings-select" id="videoUpscaleProfile">
-                                <option value="sharp">Sharp</option>
-                                <option value="balanced">Balanced</option>
-                            </select>
-                            <span class="settings-hint">Sharp uses the 7B-sharp DiT variant (wavelet color correction). Balanced uses lab color correction.</span>
-                        </div>
-                        <div class="settings-field" id="videoUpscaleNoiseField">
-                            <label class="settings-field-label" for="videoUpscaleNoise">Detail Noise</label>
-                            <select class="settings-select" id="videoUpscaleNoise">
-                                <option value="off">Off</option>
-                                <option value="low">Low</option>
-                                <option value="medium">Medium</option>
-                            </select>
-                            <span class="settings-hint">Input noise level for detail synthesis. Off = no noise injection.</span>
-                        </div>
-                        <div class="settings-field" id="videoUpscalePreScaleField">
-                            <label class="settings-field-label" for="videoUpscalePreScale">Pre-resize (lanczos)</label>
-                            <select class="settings-select" id="videoUpscalePreScale">
-                                <option value="1">Off</option>
-                                <option value="2">2x</option>
-                            </select>
-                            <span class="settings-hint">Optional lanczos pre-upscale before SeedVR2 processing.</span>
-                        </div>
-                        <div class="settings-field" id="videoUpscaleDiTField">
-                            <label class="settings-field-label" for="videoUpscaleDiT">SeedVR2 DiT Model</label>
-                            <input type="text" class="settings-input" id="videoUpscaleDiT"
-                                placeholder="Loading..." autocomplete="off">
-                            <span class="settings-hint">Default: seedvr2_ema_7b_fp8_e4m3fn_mixed_block35_fp16.safetensors. Sharp profile uses seedvr2_ema_7b_sharp_fp8_e4m3fn_mixed_block35_fp16.safetensors.</span>
-                        </div>
-                        <div class="settings-field" id="videoUpscaleVaeField">
-                            <label class="settings-field-label" for="videoUpscaleVae">SeedVR2 VAE Model</label>
-                            <input type="text" class="settings-input" id="videoUpscaleVae"
-                                placeholder="Loading..." autocomplete="off">
-                            <span class="settings-hint">Default: ema_vae_fp16.safetensors</span>
-                        </div>
-                        <div class="settings-field" id="videoUpscaleAttentionField">
-                            <label class="settings-field-label" for="videoUpscaleAttention">Attention Backend</label>
-                            <input type="text" class="settings-input" id="videoUpscaleAttention"
-                                placeholder="Loading..." autocomplete="off">
-                            <span class="settings-hint">Default: sdpa. Options: sdpa, sageattn_2, sageattn_3, flash_attn_2, flash_attn_3 (NVIDIA only).</span>
-                        </div>
-                        <div class="settings-field">
-                            <span class="settings-hint">Blank = use default. Leave a field and press Enter to save. Clear a field and press Enter to revert.</span>
-                            <span class="settings-save-status" id="videoUpscaleSettingsStatus"></span>
                         </div>
                     </div>
                 </div>
@@ -501,6 +440,7 @@
 
     <script src="js/db.js"></script>
     <script src="js/markdown.js"></script>
+    <script src="js/video-player.js"></script>
     <script src="js/hardware-compat.js"></script>
     <script src="js/model-library.js"></script>
     <script src="js/conversations.js"></script>

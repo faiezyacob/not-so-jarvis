@@ -233,7 +233,6 @@ function initSettings() {
     initImageGenSettings();
     initUpscaleSettings();
     initVideoSettings();
-    initVideoUpscaleSettings();
     initFreeComfyButton();
     initRestartServerButton();
 }
@@ -626,7 +625,7 @@ function initImageGenSettings() {
     });
 }
 
-// --- Image Upscaling Settings ---
+// --- Shared Upscale Settings (image + video) ---
 
 const UPSCALE_SELECT_FIELDS = [
     { key: 'upscaleEngine', id: 'upscaleEngine' },
@@ -640,7 +639,8 @@ const UPSCALE_SELECT_FIELDS = [
 
 const UPSCALE_TEXT_FIELDS = [
     { key: 'seedvr2Dit', id: 'upscaleDiT' },
-    { key: 'seedvr2Vae', id: 'upscaleVae' }
+    { key: 'seedvr2Vae', id: 'upscaleVae' },
+    { key: 'seedvr2Attention', id: 'upscaleAttention' }
 ];
 
 function initUpscaleSettings() {
@@ -664,7 +664,7 @@ function initUpscaleSettings() {
         if (resField) resField.style.display = mode === 'target' ? '' : 'none';
         if (multField) multField.style.display = mode === 'multiplier' ? '' : 'none';
 
-        ['upscaleProfileField', 'upscaleNoiseField', 'upscalePreScaleField', 'upscaleDiTField', 'upscaleVaeField'].forEach((id) => {
+        ['upscaleProfileField', 'upscaleNoiseField', 'upscalePreScaleField', 'upscaleDiTField', 'upscaleVaeField', 'upscaleAttentionField'].forEach((id) => {
             const el = document.getElementById(id);
             if (el) el.style.display = engine === 'seedvr2' ? '' : 'none';
         });
@@ -757,7 +757,7 @@ function initUpscaleSettings() {
                 if (!input) return;
                 const stored = settings[key];
                 input.value = (stored !== undefined && stored !== null && stored !== '') ? stored : '';
-                input.placeholder = defaults[key] || (key === 'seedvr2Dit' ? 'SeedVR2 DiT model' : 'SeedVR2 VAE model');
+                input.placeholder = defaults[key] || (key === 'seedvr2Dit' ? 'SeedVR2 DiT model' : key === 'seedvr2Attention' ? 'sdpa' : 'SeedVR2 VAE model');
             });
 
             syncVisibility();
@@ -789,27 +789,7 @@ const VIDEO_HINTS = {
     videoAudioVae: 'minimax_h3_audio_vae_fp32.safetensors'
 };
 
-// --- Video Upscale Settings ---
-
-const VIDEO_UPSCALE_SELECT_FIELDS = [
-    { key: 'videoUpscaleEnabled', id: 'videoUpscaleEnabled' },
-    { key: 'videoUpscaleResolution', id: 'videoUpscaleResolution' },
-    { key: 'videoUpscaleProfile', id: 'videoUpscaleProfile' },
-    { key: 'videoUpscaleNoise', id: 'videoUpscaleNoise' },
-    { key: 'videoUpscalePreScale', id: 'videoUpscalePreScale' }
-];
-
-const VIDEO_UPSCALE_TEXT_FIELDS = [
-    { key: 'videoUpscaleDiT', id: 'videoUpscaleDiT' },
-    { key: 'videoUpscaleVae', id: 'videoUpscaleVae' },
-    { key: 'videoUpscaleAttention', id: 'videoUpscaleAttention' }
-];
-
-const VIDEO_UPSCALE_HINTS = {
-    videoUpscaleDiT: 'seedvr2_ema_7b_fp8_e4m3fn_mixed_block35_fp16.safetensors',
-    videoUpscaleVae: 'ema_vae_fp16.safetensors',
-    videoUpscaleAttention: 'sdpa'
-};
+// --- Video Generation Settings ---
 
 function initVideoSettings() {
     const statusEl = document.getElementById('videoSettingsStatus');
@@ -935,130 +915,6 @@ function initVideoSettings() {
             }
         } catch {
             setStatus('Could not load video settings', true);
-        }
-    })();
-}
-
-function initVideoUpscaleSettings() {
-    const statusEl = document.getElementById('videoUpscaleSettingsStatus');
-    if (statusEl) statusEl.style.display = 'none';
-    const setStatus = (text, isError) => {
-        if (!statusEl) return;
-        statusEl.textContent = text;
-        statusEl.classList.toggle('settings-save-status--error', !!isError);
-        statusEl.style.display = text ? '' : 'none';
-    };
-
-    const syncVisibility = () => {
-        const enabled = document.getElementById('videoUpscaleEnabled');
-        if (!enabled) return;
-        const isEnabled = enabled.value === 'true';
-        const upscaleFields = [
-            'videoUpscaleResolutionField',
-            'videoUpscaleProfileField',
-            'videoUpscaleNoiseField',
-            'videoUpscalePreScaleField',
-            'videoUpscaleDiTField',
-            'videoUpscaleVaeField',
-            'videoUpscaleAttentionField'
-        ];
-        upscaleFields.forEach(id => {
-            const el = document.getElementById(id);
-            if (el) el.style.display = isEnabled ? '' : 'none';
-        });
-    };
-
-    const persistSelect = async (key, select) => {
-        setStatus('Saving...');
-        try {
-            const res = await fetch('/api/settings/video', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ [key]: select.value })
-            });
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok) {
-                setStatus('Save failed: ' + (data.error || 'Unknown error'), true);
-                return;
-            }
-            setStatus('Saved: ' + select.value);
-        } catch {
-            setStatus('Save failed: connection error', true);
-        }
-        setTimeout(() => setStatus(''), 3000);
-    };
-
-    const persistText = async (key, input) => {
-        const value = input.value.trim();
-        setStatus('Saving...');
-        try {
-            const res = await fetch('/api/settings/video', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ [key]: value })
-            });
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok) {
-                setStatus('Save failed: ' + (data.error || 'Unknown error'), true);
-                return;
-            }
-            setStatus(value ? 'Saved: ' + value : 'Reverted to default');
-        } catch {
-            setStatus('Save failed: connection error', true);
-        }
-        setTimeout(() => setStatus(''), 3000);
-    };
-
-    VIDEO_UPSCALE_SELECT_FIELDS.forEach(({ key, id }) => {
-        const select = document.getElementById(id);
-        if (!select) return;
-        select.addEventListener('change', () => {
-            persistSelect(key, select);
-            if (key === 'videoUpscaleEnabled') syncVisibility();
-        });
-    });
-
-    VIDEO_UPSCALE_TEXT_FIELDS.forEach(({ key, id }) => {
-        const input = document.getElementById(id);
-        if (!input) return;
-        input.addEventListener('change', () => persistText(key, input));
-        input.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                input.blur();
-            }
-        });
-    });
-
-    (async () => {
-        try {
-            const res = await fetch('/api/settings/video');
-            if (!res.ok) throw new Error('API error');
-            const data = await res.json();
-            const defaults = data.defaults || {};
-            const settings = data.settings || {};
-
-            VIDEO_UPSCALE_SELECT_FIELDS.forEach(({ key, id }) => {
-                const select = document.getElementById(id);
-                if (!select) return;
-                const stored = settings[key];
-                select.value = (stored !== undefined && stored !== null && stored !== '')
-                    ? stored
-                    : (defaults[key] !== undefined && defaults[key] !== null ? defaults[key] : select.value);
-            });
-
-            VIDEO_UPSCALE_TEXT_FIELDS.forEach(({ key, id }) => {
-                const input = document.getElementById(id);
-                if (!input) return;
-                const stored = settings[key];
-                input.value = (stored !== undefined && stored !== null && stored !== '') ? stored : '';
-                input.placeholder = defaults[key] || VIDEO_UPSCALE_HINTS[id] || key;
-                input.title = 'Default: ' + (defaults[key] || VIDEO_UPSCALE_HINTS[id] || '');
-            });
-
-            syncVisibility();
-        } catch {
-            setStatus('Could not load video upscale settings', true);
         }
     })();
 }

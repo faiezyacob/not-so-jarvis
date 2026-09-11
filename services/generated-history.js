@@ -125,6 +125,7 @@ function publicMeta(entry) {
         width: entry.width || null,
         height: entry.height || null,
         createdAt: entry.createdAt,
+        generationMs: Number.isFinite(Number(entry.generationMs)) ? Number(entry.generationMs) : null,
         upscale: entry.upscale || null,
         video: entry.video || null
     };
@@ -142,6 +143,7 @@ function add(meta) {
         model: meta.model || 'Krea2',
         width: meta.width || null,
         height: meta.height || null,
+        generationMs: Number.isFinite(Number(meta.generationMs)) ? Number(meta.generationMs) : null,
         upscale: meta.upscale || null,
         video: meta.video || null,
         createdAt

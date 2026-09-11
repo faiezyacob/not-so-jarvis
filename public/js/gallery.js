@@ -67,6 +67,7 @@
                 if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openPreview(img); }
             });
             if (isVideo(img)) {
+                cell.classList.add('generated-thumb--video');
                 const vid = document.createElement('video');
                 vid.src = img.url;
                 vid.preload = 'metadata';
@@ -264,7 +265,8 @@
         if (video) {
             const vidEl = document.createElement('video');
             vidEl.src = src;
-            vidEl.controls = true;
+            vidEl.preload = 'metadata';
+            vidEl.playsInline = true;
             vidEl.addEventListener('error', () => {
                 imgWrap.classList.add('gallery-preview-broken');
                 imgWrap.textContent = 'Video file is missing.';
@@ -281,6 +283,10 @@
             imgWrap.appendChild(imgEl);
         }
         body.appendChild(imgWrap);
+
+        if (window.VideoPlayer && typeof window.VideoPlayer.scan === 'function') {
+            window.VideoPlayer.scan(imgWrap);
+        }
 
         const zoomApi = video ? null : attachInlineZoom(imgWrap, imgWrap.querySelector('img'));
 
@@ -972,11 +978,14 @@
         renderTransform();
     }
 
-    function formatGeneratedAt(img) {
-        const t = Date.parse(img.createdAt);
-        if (isNaN(t)) return img.createdAt || '';
-        const d = new Date(t);
-        return 'Generated ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+    function formatGenerationDuration(img) {
+        const ms = Number(img.generationMs);
+        if (!Number.isFinite(ms) || ms <= 0) return '—';
+        const totalSeconds = Math.round(ms / 1000);
+        if (totalSeconds < 60) return totalSeconds + 's';
+        const minutes = Math.floor(totalSeconds / 60);
+        const seconds = totalSeconds % 60;
+        return minutes + 'm ' + seconds + 's';
     }
 
     function copyPrompt(img) {
@@ -1047,7 +1056,8 @@
         if (video) {
             const vidEl = document.createElement('video');
             vidEl.src = img.url;
-            vidEl.controls = true;
+            vidEl.preload = 'metadata';
+            vidEl.playsInline = true;
             vidEl.addEventListener('error', () => {
                 imgWrap.classList.add('gallery-preview-broken');
                 imgWrap.textContent = 'Video file is missing.';
@@ -1064,6 +1074,10 @@
             imgWrap.appendChild(imgEl);
         }
         body.appendChild(imgWrap);
+
+        if (window.VideoPlayer && typeof window.VideoPlayer.scan === 'function') {
+            window.VideoPlayer.scan(imgWrap);
+        }
 
         const zoomApi = video ? null : attachInlineZoom(imgWrap, imgWrap.querySelector('img'));
 
@@ -1088,7 +1102,7 @@
         meta.innerHTML =
             '<div class="gallery-preview-row"><span class="gallery-preview-label">Model</span><span class="gallery-preview-value">' + escapeHtml(img.model || 'Krea2') + '</span></div>' +
             '<div class="gallery-preview-row"><span class="gallery-preview-label">Resolution</span><span class="gallery-preview-value">' + escapeHtml(formatResolution(img)) + '</span></div>' +
-            '<div class="gallery-preview-row"><span class="gallery-preview-label">Time</span><span class="gallery-preview-value">' + escapeHtml(formatGeneratedAt(img)) + '</span></div>';
+            '<div class="gallery-preview-row"><span class="gallery-preview-label">Duration</span><span class="gallery-preview-value">' + escapeHtml(formatGenerationDuration(img)) + '</span></div>';
         if (compare) {
             const originalMeta = img.upscale ? compare.originalMeta : img;
             const upscaledMeta = img.upscale ? img : compare.upscaledMeta;
@@ -1208,6 +1222,7 @@
                     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openPreview(img); }
                 });
                 if (isVideo(img)) {
+                    cell.classList.add('gallery-cell--video');
                     const vid = document.createElement('video');
                     vid.src = img.url;
                     vid.preload = 'metadata';

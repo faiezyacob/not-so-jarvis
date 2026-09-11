@@ -12,6 +12,7 @@ const path = require('path');
 const comfyui = require('./comfyui');
 const configManager = require('../server/config-manager');
 const generatedHistory = require('./generated-history');
+const imageGenerator = require('./image-generator');
 const { getModelById } = require('../server/models');
 
 const GENERATED_DIR = path.join(__dirname, '..', 'data', 'generated');
@@ -56,25 +57,45 @@ const H3_DEFAULTS = {
         : 'standard',
     loras: [],
     loraTriggerWords: {},
-    // Video upscaling / RTX 4K pass settings (SeedVR2 video upscaler)
-    videoUpscaleEnabled: false,
-    videoUpscaleEngine: 'seedvr2',
-    videoUpscaleResolution: 2160,
-    videoUpscaleProfile: 'sharp',
-    videoUpscaleNoise: 'low',
-    videoUpscalePreScale: 1,
-    videoUpscaleDit: process.env.VIDEO_UPSCALE_DIT || 'seedvr2_ema_7b_fp8_e4m3fn_mixed_block35_fp16.safetensors',
-    videoUpscaleVae: process.env.VIDEO_UPSCALE_VAE || 'ema_vae_fp16.safetensors',
-    videoUpscaleAttention: process.env.VIDEO_UPSCALE_ATTENTION || 'sdpa',
+    // Video upscaling (RTX 4K pass) shares the single global upscale settings
+    // in imageGeneration (upscaleResolution/Profile/Noise/PreScale, seedvr2
+    // DiT/VAE/attention, upscaleEngine) — one "upscale" for both image and
+    // video. There are no videoUpscale* keys; see sharedUpscaleSettings().
 };
 
 const H3_CONFIGURABLE_KEYS = [
     'h3Unet', 'h3Clip', 'h3VideoVae', 'h3AudioVae',
-    'h3Duration', 'h3Size', 'attentionBackend', 'loras', 'loraTriggerWords',
-    'videoUpscaleEnabled', 'videoUpscaleEngine', 'videoUpscaleResolution',
-    'videoUpscaleProfile', 'videoUpscaleNoise', 'videoUpscalePreScale',
-    'videoUpscaleDit', 'videoUpscaleVae', 'videoUpscaleAttention'
+    'h3Duration', 'h3Size', 'attentionBackend', 'loras', 'loraTriggerWords'
 ];
+
+// Shared upscale keys (canonical names in imageGeneration). Posted to
+// /api/settings/video for backwards compatibility they are written through
+// to the image settings so there is exactly one upscale configuration.
+const SHARED_UPSCALE_KEYS = [
+    'upscaleEngine', 'upscaleMode', 'upscaleResolution', 'upscaleMultiplier',
+    'upscaleProfile', 'upscaleNoise', 'upscalePreScale',
+    'seedvr2Dit', 'seedvr2Vae', 'seedvr2Attention'
+];
+
+// Legacy per-video upscale keys. No longer stored; accepted once via
+// saveVideoSettings and mapped onto the shared keys above.
+const LEGACY_VIDEO_UPSCALE_MAP = {
+    videoUpscaleEngine: 'upscaleEngine',
+    videoUpscaleResolution: 'upscaleResolution',
+    videoUpscaleProfile: 'upscaleProfile',
+    videoUpscaleNoise: 'upscaleNoise',
+    videoUpscalePreScale: 'upscalePreScale',
+    videoUpscaleDit: 'seedvr2Dit',
+    videoUpscaleVae: 'seedvr2Vae',
+    videoUpscaleAttention: 'seedvr2Attention'
+};
+
+// Single source of truth for upscale tuning: the shared imageGeneration
+// upscale settings. Both "upscale this image" and "upscale this video" read
+// resolution/profile/noise/pre-scale/DiT/VAE/attention from here.
+function sharedUpscaleSettings() {
+    return imageGenerator.effectiveSettings();
+}
 
 // --- Frame / Dimension helpers (adapted from Mix Studio) ----------------------
 
@@ -431,6 +452,32 @@ async function detectVideoIntent(message, providers, provider, model) {
     return { intent: 'chat', related_task: null, message };
 }
 
+// --- Video upscale intent detection -------------------------------------------
+//
+// Narrow, deterministic intent — no LLM needed. Mirrors image-generator's
+// detectUpscaleIntent but requires a VIDEO reference (video/film/clip/movie/
+// footage/etc. or a pronoun pointing at the last generated video), so
+// "upscale this video" routes to the video upscale pipeline while
+// "upscale this image" still routes to the image pipeline. Concept questions
+// ("what is upscaling?") never fire.
+
+const VIDEO_UPSCALE_SIGNAL_RE = /\b(?:up\s*scale\w*|up\s*res\w*|super\s*res\w*|higher\s*res\w*|hi\s*res\b|increase\w*\s+(?:the\s+)?res\w*|improve\w*\s+(?:the\s+)?(?:res\w*|video\w*|clip\w*|film\w*|movie\w*|footage\w*)|make\s+(?:it|this|that)\s+(?:bigger|larger|sharper|crisper|clearer|higher\s*res)|sharpen\w*|enlarge\w*|4k\b)\b/i;
+const VIDEO_UPSCALE_REF_RE = /\b(?:video\w*|film\w*|clip\w*|movie\w*|footage\w*|animation\w*|reel\w*|mp4\b|webm\b|mov\b|this\b|that\b|it\b|them\b|one\b|the last\b|previous\b|generated\b)\b/i;
+
+function detectVideoUpscaleIntent(message) {
+    const text = String(message || '');
+    if (!text.trim()) return null;
+    if (isVideoConceptQuestion(text)) return null;
+    const norm = text.toLowerCase().replace(/[-_]/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!VIDEO_UPSCALE_SIGNAL_RE.test(norm)) return null;
+    if (!VIDEO_UPSCALE_REF_RE.test(norm)) return null;
+    // Require an explicit video noun so a bare "upscale this" still goes to
+    // the image pipeline (backwards compatible). Pronoun-only requests are
+    // resolved by the active task type in the router.
+    if (!/\b(?:video|film|clip|movie|footage|animation|reel|mp4|webm|mov|4k)\b/i.test(norm)) return null;
+    return { intent: 'video_upscale' };
+}
+
 // --- H3 Prompt Building -------------------------------------------------------
 
 async function buildH3VideoPrompt(structuredRequest, providers, provider, model, sourceImageRawFilename, conversationId) {
@@ -628,58 +675,16 @@ function clampNumber(value, min, max, fallback) {
 
 // --- Video Upscale / RTX 4K Pass Settings ---------------------------------------
 //
-// RTX 4K pass for video using SeedVR2 video upscaler (same engine as image upscale
-// but with SeedVR2VideoUpscaler node). When enabled, the generated video is
-// upscaled to the target resolution (default 4K / 2160p short side).
+// RTX 4K pass for video using the SeedVR2 video upscaler. Manual-only and
+// sharing the single global upscale configuration with image upscale —
+// resolution/profile/noise/pre-scale/DiT/VAE/attention all come from
+// sharedUpscaleSettings() (imageGeneration). Image-only keys (upscaleMode,
+// upscaleMultiplier, Ultimate SD engine) are ignored by the video path.
 
 const VIDEO_UPSCALE_RESOLUTIONS = [1080, 1440, 2160, 3840];
 const VIDEO_UPSCALE_PROFILES = ['sharp', 'balanced'];
 const VIDEO_UPSCALE_NOISE_LEVELS = { off: 0, low: 0.06, medium: 0.15 };
 const VIDEO_UPSCALE_ENGINES = ['seedvr2'];
-
-function sanitizeVideoUpscaleEnabled(value) {
-    return value === true || value === 'true' || value === 1 || value === '1';
-}
-
-function sanitizeVideoUpscaleEngine(value) {
-    const v = String(value || '').toLowerCase();
-    return VIDEO_UPSCALE_ENGINES.includes(v) ? v : 'seedvr2';
-}
-
-function sanitizeVideoUpscaleResolution(value) {
-    const n = Math.round(Number(value));
-    return VIDEO_UPSCALE_RESOLUTIONS.includes(n) ? n : 2160;
-}
-
-function sanitizeVideoUpscaleProfile(value) {
-    const v = String(value || '').toLowerCase();
-    return VIDEO_UPSCALE_PROFILES.includes(v) ? v : 'sharp';
-}
-
-function sanitizeVideoUpscaleNoise(value) {
-    const v = String(value || '').toLowerCase();
-    return Object.prototype.hasOwnProperty.call(VIDEO_UPSCALE_NOISE_LEVELS, v) ? v : 'low';
-}
-
-function sanitizeVideoUpscalePreScale(value) {
-    const n = Math.round(Number(value));
-    return (n === 1 || n === 2) ? n : 1;
-}
-
-function sanitizeVideoUpscaleDit(value) {
-    const s = String(value || '').trim();
-    return s || null;
-}
-
-function sanitizeVideoUpscaleVae(value) {
-    const s = String(value || '').trim();
-    return s || null;
-}
-
-function sanitizeVideoUpscaleAttention(value) {
-    const s = String(value || '').trim();
-    return s || null;
-}
 
 function getVideoDefaults() {
     return { ...H3_DEFAULTS };
@@ -687,6 +692,15 @@ function getVideoDefaults() {
 
 function saveVideoSettings(patch) {
     const out = {};
+    const sharedPatch = {};
+    for (const [key, value] of Object.entries(patch || {})) {
+        if (Object.prototype.hasOwnProperty.call(LEGACY_VIDEO_UPSCALE_MAP, key)) {
+            sharedPatch[LEGACY_VIDEO_UPSCALE_MAP[key]] = value;
+        } else if (SHARED_UPSCALE_KEYS.includes(key)) {
+            sharedPatch[key] = value;
+        }
+    }
+    if (Object.keys(sharedPatch).length) imageGenerator.saveSettings(sharedPatch);
     for (const key of H3_CONFIGURABLE_KEYS) {
         if (!(key in patch)) continue;
         const value = patch[key];
@@ -704,24 +718,6 @@ function saveVideoSettings(patch) {
             if (Object.prototype.hasOwnProperty.call(H3_IMAGE_SIZES, s)) out[key] = s;
         } else if (key === 'attentionBackend') {
             out[key] = normalizeH3AttentionBackend(value);
-        } else if (key === 'videoUpscaleEnabled') {
-            out[key] = sanitizeVideoUpscaleEnabled(value);
-        } else if (key === 'videoUpscaleEngine') {
-            out[key] = sanitizeVideoUpscaleEngine(value);
-        } else if (key === 'videoUpscaleResolution') {
-            out[key] = sanitizeVideoUpscaleResolution(value);
-        } else if (key === 'videoUpscaleProfile') {
-            out[key] = sanitizeVideoUpscaleProfile(value);
-        } else if (key === 'videoUpscaleNoise') {
-            out[key] = sanitizeVideoUpscaleNoise(value);
-        } else if (key === 'videoUpscalePreScale') {
-            out[key] = sanitizeVideoUpscalePreScale(value);
-        } else if (key === 'videoUpscaleDit') {
-            out[key] = sanitizeVideoUpscaleDit(value);
-        } else if (key === 'videoUpscaleVae') {
-            out[key] = sanitizeVideoUpscaleVae(value);
-        } else if (key === 'videoUpscaleAttention') {
-            out[key] = sanitizeVideoUpscaleAttention(value);
         } else if (typeof value === 'string') {
             out[key] = value.trim() || null;
         }
@@ -1026,6 +1022,7 @@ function resolveVideoMode(conversationId, message, structuredRequest) {
 async function generateVideo(prompt, options = {}) {
     return withGenerationLock(async () => {
         await ensureGeneratedDir();
+        const startedAt = Date.now();
 
         const seed = Number.isInteger(options.seed) && options.seed >= 0
             ? options.seed
@@ -1148,6 +1145,7 @@ async function generateVideo(prompt, options = {}) {
             width: W,
             height: H,
             loras: activeLoras,
+            generationMs: Date.now() - startedAt,
             video: {
                 duration: h3EffectiveDurationSeconds(duration),
                 frames,
@@ -1167,6 +1165,7 @@ async function generateVideo(prompt, options = {}) {
             fps: H3_FPS,
             mode,
             prompt: finalPrompt,
+            generationMs: meta.generationMs,
             meta
         };
     });
@@ -1174,17 +1173,16 @@ async function generateVideo(prompt, options = {}) {
 
 // --- Video Upscale / RTX 4K Pass ------------------------------------------------
 //
-// Uses SeedVR2VideoUpscaler (same as image upscale but for video). When
-// videoUpscaleEnabled is true in settings, the generated video is automatically
-// upscaled to the target resolution. Can also be invoked manually via API.
+// Uses SeedVR2VideoUpscaler (same as image upscale but for video). Manual-only:
+// runs when the user asks ("upscale this video") or via POST /api/video/upscale.
 
 const VIDEO_UPSCALE_DEFAULT_TIMEOUT_MS = 60 * 60 * 1000; // 60 min for upscale
 
 function seedVr2VideoUpscaleDitInputs(settings) {
-    const model = settings.videoUpscaleDit || H3_DEFAULTS.videoUpscaleDit;
+    const model = settings.seedvr2Dit || imageGenerator.DEFAULT_SEEDVR2_DIT;
     const vendor = String(settings.gpuVendor || '').toLowerCase();
     const isSevenB = /(?:^|[_-])7b(?:[_-]|$)/i.test(model);
-    const attention = String(settings.videoUpscaleAttention || H3_DEFAULTS.videoUpscaleAttention);
+    const attention = String(settings.seedvr2Attention || imageGenerator.DEFAULT_SEEDVR2_ATTENTION);
     const nvidiaOnly = new Set(['sageattn_2', 'sageattn_3', 'flash_attn_2', 'flash_attn_3']);
     let attentionMode = attention;
     if (vendor && vendor !== 'nvidia' && nvidiaOnly.has(attention)) {
@@ -1209,7 +1207,7 @@ function seedVr2VideoUpscaleProfile(settings, requestedProfile, requestedNoise) 
     const noise = seedVr2VideoUpscaleNoiseLevel(requestedNoise);
     const balanced = {
         key: 'balanced',
-        ditModel: settings.videoUpscaleDit || H3_DEFAULTS.videoUpscaleDit,
+        ditModel: settings.seedvr2Dit || imageGenerator.DEFAULT_SEEDVR2_DIT,
         colorCorrection: 'lab',
         noise,
         inputNoiseScale: VIDEO_UPSCALE_NOISE_LEVELS[noise]
@@ -1264,34 +1262,47 @@ function installedSeedVr2ModelsSync() {
 }
 
 function buildSeedVr2VideoUpscaleGraph(videoName, options = {}) {
-    const settings = Object.assign({}, H3_DEFAULTS, options.settings || {});
+    // Shared upscale tuning comes from the single global upscale settings
+    // (imageGeneration); per-call options (API overrides) win when present.
+    const settings = Object.assign({}, imageGenerator.getDefaults(), options.settings || {});
     const profile = seedVr2VideoUpscaleProfile(settings, options.profile || 'sharp', options.noise || 'low');
     const seed = Number.isInteger(options.seed) && options.seed >= 0 ? options.seed : Math.floor(Math.random() * 2 ** 31);
     const resolution = clampNumber(options.resolution, 512, 8192, 2160);
     const preScale = clampNumber(options.preScale, 1, 4, 1);
+    const fps = options.fps || H3_FPS;
+    const hasAudio = options.hasAudio !== false;
 
     const graph = {};
-    graph.load = { class_type: 'LoadVideo', inputs: { video: videoName } };
-    let vidRef = ['load', 0];
+    graph.src = { class_type: 'VHS_LoadVideo', inputs: {
+        video: videoName,
+        force_rate: fps,
+        custom_width: 0,
+        custom_height: 0,
+        frame_load_cap: 0,
+        skip_first_frames: 0,
+        select_every_nth: 1,
+        format: 'None'
+    }};
+    let frameSource = ['src', 0];
 
     if (preScale !== 1) {
         graph.prescale = {
             class_type: 'VideoScaleBy',
-            inputs: { video: vidRef, upscale_method: 'lanczos', scale_by: preScale }
+            inputs: { video: frameSource, upscale_method: 'lanczos', scale_by: preScale }
         };
-        vidRef = ['prescale', 0];
+        frameSource = ['prescale', 0];
     }
 
     graph.dit = {
         class_type: 'SeedVR2LoadDiTModel',
         inputs: seedVr2VideoUpscaleDitInputs(Object.assign({}, settings, {
-            videoUpscaleDit: profile.ditModel
+            seedvr2Dit: profile.ditModel
         }))
     };
     graph.svvae = {
         class_type: 'SeedVR2LoadVAEModel',
         inputs: {
-            model: settings.videoUpscaleVae || H3_DEFAULTS.videoUpscaleVae,
+            model: settings.seedvr2Vae || imageGenerator.DEFAULT_SEEDVR2_VAE,
             device: 'cuda:0',
             encode_tiled: true,
             encode_tile_size: 1024,
@@ -1307,16 +1318,16 @@ function buildSeedVr2VideoUpscaleGraph(videoName, options = {}) {
     graph.upscale = {
         class_type: 'SeedVR2VideoUpscaler',
         inputs: {
-            video: vidRef,
+            image: frameSource,
             dit: ['dit', 0],
             vae: ['svvae', 0],
             seed,
             resolution,
             max_resolution: 0,
-            batch_size: 1,
-            uniform_batch_size: false,
+            batch_size: 5,
+            uniform_batch_size: true,
             color_correction: profile.colorCorrection,
-            temporal_overlap: 8,
+            temporal_overlap: 2,
             prepend_frames: 0,
             input_noise_scale: profile.inputNoiseScale,
             latent_noise_scale: 0,
@@ -1324,7 +1335,11 @@ function buildSeedVr2VideoUpscaleGraph(videoName, options = {}) {
             enable_debug: false
         }
     };
-    graph.save = { class_type: 'SaveVideo', inputs: { video: ['upscale', 0], filename_prefix: 'not-so-jarvis/video_upscale', format: 'auto', codec: 'auto' } };
+
+    const videoInputs = { images: ['upscale', 0], fps };
+    if (hasAudio) videoInputs.audio = ['src', 2];
+    graph.video = { class_type: 'CreateVideo', inputs: videoInputs };
+    graph.save = { class_type: 'SaveVideo', inputs: { video: ['video', 0], filename_prefix: 'not-so-jarvis/video_upscale', format: 'auto', codec: 'auto' } };
 
     return { graph, profile };
 }
@@ -1332,6 +1347,7 @@ function buildSeedVr2VideoUpscaleGraph(videoName, options = {}) {
 async function upscaleVideo(rawFilename, options = {}) {
     return withGenerationLock(async () => {
         await ensureGeneratedDir();
+        const startedAt = Date.now();
 
         const safeName = path.basename(String(rawFilename || ''));
         if (!safeName) {
@@ -1347,8 +1363,9 @@ async function upscaleVideo(rawFilename, options = {}) {
         }
         const buffer = fs.readFileSync(filePath);
 
-        const settings = effectiveVideoSettings();
-        const engine = String(options.engine || settings.videoUpscaleEngine || 'seedvr2').toLowerCase();
+        // One shared upscale configuration for image and video alike.
+        const upscale = sharedUpscaleSettings();
+        const engine = String(options.engine || upscale.upscaleEngine || 'seedvr2').toLowerCase();
         if (engine !== 'seedvr2') {
             const error = new Error('Only SeedVR2 engine is supported for video upscale.');
             error.code = 'unsupported_engine';
@@ -1356,13 +1373,13 @@ async function upscaleVideo(rawFilename, options = {}) {
         }
 
         const sourceMeta = generatedHistory.list().find((e) => e.rawFilename === safeName);
-        const resolution = clampNumber(options.resolution || settings.videoUpscaleResolution, 512, 8192, 2160);
+        const resolution = clampNumber(options.resolution || upscale.upscaleResolution, 512, 8192, 2160);
         const seed = Math.floor(Math.random() * 2 ** 32);
-        const profile = options.profile || settings.videoUpscaleProfile || 'sharp';
-        const noise = options.noise || settings.videoUpscaleNoise || 'low';
-        const preScale = options.preScale || settings.videoUpscalePreScale || 1;
+        const profile = options.profile || upscale.upscaleProfile || 'sharp';
+        const noise = options.noise || upscale.upscaleNoise || 'low';
+        const preScale = options.preScale || upscale.upscalePreScale || 1;
 
-        // Upload source video to ComfyUI input for LoadVideo node.
+        // Upload source video to ComfyUI input for VHS_LoadVideo node.
         const uploadName = 'jarvis_video_upscale_' + Date.now() + '_' + safeName;
         const uploaded = await comfyui.uploadImage(buffer, uploadName); // uploadImage works for video too
         const loadName = (uploaded && uploaded.name) || uploadName;
@@ -1372,12 +1389,14 @@ async function upscaleVideo(rawFilename, options = {}) {
         let effectiveProfile = null;
         try {
             const built = buildSeedVr2VideoUpscaleGraph(loadName, {
-                settings,
+                settings: upscale,
                 profile,
                 noise,
                 resolution,
                 preScale,
-                seed
+                seed,
+                fps: H3_FPS,
+                hasAudio: true
             });
             graph = built.graph;
             effectiveProfile = built.profile;
@@ -1419,6 +1438,7 @@ async function upscaleVideo(rawFilename, options = {}) {
             model: 'SeedVR2 Video Upscale',
             width: 0, // Video dimensions not easily readable without ffprobe
             height: 0,
+            generationMs: Date.now() - startedAt,
             upscale: {
                 engine,
                 profile: effectiveProfile ? effectiveProfile.key : null,
@@ -1441,6 +1461,7 @@ async function upscaleVideo(rawFilename, options = {}) {
             resolution,
             source: safeName,
             sourceMeta,
+            generationMs: meta.generationMs,
             meta
         };
     });
@@ -1488,6 +1509,7 @@ module.exports = {
     canStartGeneration,
     registerGenerationLock,
     detectVideoIntent,
+    detectVideoUpscaleIntent,
     buildH3VideoPrompt,
     modifyH3VideoPrompt,
     buildH3Graph,
@@ -1502,6 +1524,9 @@ module.exports = {
     getVideoModelChoices,
     generateVideo,
     upscaleVideo,
+    sharedUpscaleSettings,
+    SHARED_UPSCALE_KEYS,
+    LEGACY_VIDEO_UPSCALE_MAP,
     buildSeedVr2VideoUpscaleGraph,
     resolveVideoSourceImage,
     resolveVideoMode,

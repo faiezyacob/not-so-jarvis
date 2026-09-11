@@ -120,14 +120,14 @@ Attach LoRAs from ComfyUI's available models. Each LoRA has:
 
 Active LoRAs compose in order via chained `LoraLoader` nodes.
 
-### Image upscaling
+### Upscaling (image + video)
 
-Two engines available in the settings panel:
+One shared upscale configuration in the settings panel applies to both:
 
 - **SeedVR2** (default) — tiled diffusion upscaler with Sharp/Balanced profiles, noise control, optional pre-resize
-- **Ultimate SD** — prompt-guided tiled upscaler reusing your Krea2 models
+- **Ultimate SD** (images only) — prompt-guided tiled upscaler reusing your Krea2 models
 
-Trigger by saying *"upscale this image"* or *"make it higher res"*. The source is automatically resolved from the conversation's last generated image.
+Trigger by saying *"upscale this image"* or *"upscale this video"* (also *"make it higher res"*). The source is automatically resolved from the conversation's last generated image or video. Video always uses SeedVR2 at the target resolution.
 
 Upscaled images are grouped with their original in the gallery — click the original to preview, then use the **Compare** button for a before/after slider.
 

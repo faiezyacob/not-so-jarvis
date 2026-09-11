@@ -32,7 +32,8 @@ const ROUTER_SYSTEM_PROMPT =
     '- image_generation (Krea2/ComfyUI local image pipeline). Generate or modify images.\n' +
     '- video_generation (MiniMax H3/ComfyUI local video pipeline). Generate or modify videos.\n' +
     '  Supports T2VA (text-to-video) and I2VA (image-to-video, using a reference image).\n' +
-    '- image_upscale — upscale/enhance image resolution.\n\n' +
+    '- image_upscale — upscale/enhance image resolution.\n' +
+    '- video_upscale — upscale/enhance video resolution (RTX 4K pass).\n\n' +
     'Respond with ONLY a single JSON object, no markdown, no commentary:\n' +
     '{"intent": "...", "task": "...", "action": "...", "shouldExecuteTool": bool, ' +
     '"updatedPrompt": "..."}\n\n' +
@@ -44,12 +45,29 @@ const ROUTER_SYSTEM_PROMPT =
     '("what camera works best for this?", "which lighting style would look best?"). Does NOT execute the tool.\n' +
     '- "unrelated": user message is ordinary conversation unrelated to any tool. Does not execute.\n' +
     '- "switch_task": user explicitly starts a different task/workflow while one is active. Executes if that is a generation.\n\n' +
-    'task (one of): "image_generation" | "video_generation" | "chat" | null\n' +
+    'task (one of): "image_generation" | "video_generation" | "image_upscale" | "video_upscale" | "chat" | null\n' +
     'action (one of): "generate" | "modify" | "respond" | null\n' +
     'shouldExecuteTool: true ONLY when generation should actually run.\n' +
     'updatedPrompt: when the user modifies the active task, the new effective prompt ' +
-    'built on top of the CURRENT PROMPT (do not restart from scratch). Otherwise empty string.\n\n' +
+    'built on top of the CURRENT PROMPT (do not restart from scratch). Otherwise empty string.\n' +
+    'EXCEPTION — cross-modal switch (e.g. image task active, user asks for a video ' +
+    'from that image): updatedPrompt must be ONLY the new motion/action request ' +
+    '(e.g. "a woman walking through rain"), NOT the image prompt merged with motion ' +
+    'words. The video director rebuilds the full prompt from the source image.\n\n' +
     'Rules:\n' +
+    '- An image task is active and the user asks to animate / bring it to life / ' +
+    'turn it into a video / use the image for a video, OR describes motion for ' +
+    'the pictured subject ("make her walk", "make it rain", "make him wave"), ' +
+    'is switch_task with task video_generation and shouldExecuteTool true. ' +
+    'It is NEVER an image modification.\n' +
+    '- While a video task is active, a tweak ("make her walk faster", "now make ' +
+    'it nighttime", "change it to rain") is continue_task with task ' +
+    'video_generation and action modify; the same source image is reused.\n' +
+    '- A still-image change while an image task is active ("make her wear a red ' +
+    'dress", "change the background") is continue_task with task image_generation.\n' +
+    '- A still-image change while a VIDEO task is active ("change her dress", ' +
+    '"make the background a beach") modifies the video, not the image: ' +
+    'continue_task with task video_generation and action modify.\n' +
     '- A modification like "make her walk faster" while a video task is active is ' +
     'continue_task with action modify and shouldExecuteTool true; updatedPrompt extends the current prompt.\n' +
     '- A modification like "make her wear a red dress" while an image task is active is ' +
@@ -125,10 +143,19 @@ function normalizeDecision(parsed) {
 
     if (intent === 'new_task' || intent === 'continue_task' || intent === 'switch_task') {
         const rawTask = String(parsed.task || '').toLowerCase();
-        task = (rawTask === 'video_generation') ? 'video_generation' : (rawTask === 'image_generation' ? 'image_generation' : 'image_generation');
-        action = intent === 'new_task' ? String(parsed.action || 'generate')
-            : String(parsed.action || 'modify');
-        shouldExecuteTool = parsed.shouldExecuteTool !== false;
+        if (rawTask === 'video_generation') task = 'video_generation';
+        else if (rawTask === 'image_generation') task = 'image_generation';
+        else if (rawTask === 'video_upscale') task = 'video_upscale';
+        else if (rawTask === 'image_upscale') task = 'image_upscale';
+        else task = 'image_generation';
+        if (task === 'video_upscale' || task === 'image_upscale') {
+            action = 'upscale';
+            shouldExecuteTool = parsed.shouldExecuteTool !== false;
+        } else {
+            action = intent === 'new_task' ? String(parsed.action || 'generate')
+                : String(parsed.action || 'modify');
+            shouldExecuteTool = parsed.shouldExecuteTool !== false;
+        }
     } else {
         // question / unrelated — never execute a tool
         task = 'chat';
@@ -156,10 +183,35 @@ function normalizeDecision(parsed) {
 // activeTask can be null to indicate no active task; conversationId is used to
 // fetch recent messages for the compact context.
 async function routeMessage({ message, provider, model, conversationId }) {
-    // Upscale requests are a narrow, deterministic intent. Detect them with a
-    // heuristic before the LLM router so "upscale this image" always routes to
-    // the upscale pipeline regardless of the active task.
+    // Upscale requests are narrow, deterministic intents. Detect them with
+    // heuristics before the LLM router so "upscale this video" always routes
+    // to the video upscale pipeline and "upscale this image" always routes to
+    // the image pipeline, regardless of the active task. Video is checked
+    // first because its phrases are a superset ("upscale this video").
+    if (videoGenerator.detectVideoUpscaleIntent(message)) {
+        return {
+            intent: 'new_task',
+            task: 'video_upscale',
+            action: 'upscale',
+            shouldExecuteTool: true,
+            updatedPrompt: ''
+        };
+    }
     if (imageGenerator.detectUpscaleIntent(message)) {
+        // Pronoun-only upscale ("upscale this", "upscale it") while a video
+        // task is active means the video — same rule the image pipeline uses
+        // for image tasks. Explicit image nouns always stay on image.
+        const activeTaskForUpscale = taskState.getTask(conversationId);
+        if (activeTaskForUpscale.type === 'video' &&
+            !/\b(?:image|picture|photo|artwork|illustration|painting|render|screenshot|wallpaper|poster|logo|avatar|graphic)\w*\b/i.test(String(message || ''))) {
+            return {
+                intent: 'new_task',
+                task: 'video_upscale',
+                action: 'upscale',
+                shouldExecuteTool: true,
+                updatedPrompt: ''
+            };
+        }
         return {
             intent: 'new_task',
             task: 'image_upscale',
@@ -177,11 +229,15 @@ async function routeMessage({ message, provider, model, conversationId }) {
     // image) and the user asks for a video made from an existing image, route
     // deterministically to the video pipeline so "use this image to generate a
     // video" is always I2VA, never misread as an image modification or T2VA.
-    // The gate covers explicit video words plus the free-form I2V phrasings from
-    // the spec ("use this image", "make it rain", "make her walk", ...); the LLM
+    // The gate reuses the video pipeline's own matchers (VIDEO_WORD_RE for
+    // explicit video nouns plus the full I2V_REF_RE free-form phrasings:
+    // "use this image", "make it rain", "make her walk", ...); the LLM
     // intent classifier remains the final authority on whether it is a video.
+    // Falling through on a non-video verdict is safe: still-image tweaks like
+    // "make her wear a red dress" match the "make her" prefix but are rejected
+    // by the classifier and continue to the LLM router as image modifications.
     if (activeTask.type && activeTask.type !== 'video' &&
-        /\b(?:video|film|clip|movie|animation|to\s+life|turn\s+.{0,24}into|animat\w*|use\s+(?:this|that|the)\s+image)\b/i.test(message)) {
+        (videoGenerator.VIDEO_WORD_RE.test(message) || videoGenerator.I2V_REF_RE.test(message))) {
         const videoIntent = await videoGenerator.detectVideoIntent(message, providers, provider, model);
         if (videoIntent.intent === 'video_generation') {
             const modeInfo = videoGenerator.resolveVideoMode(conversationId, message, videoIntent);
@@ -245,6 +301,40 @@ async function routeMessage({ message, provider, model, conversationId }) {
     // Only keep an updated prompt for generation executions.
     if (!(decision.shouldExecuteTool && (decision.task === 'image_generation' || decision.task === 'video_generation'))) {
         decision.updatedPrompt = '';
+    }
+
+    // Enrich cross-modal switches that the LLM router caught but the
+    // deterministic gate above did not (e.g. an indirect "now animate it"
+    // the gate's classifier rejected, or a video->image switch back). The
+    // router's updatedPrompt is modality-biased (built on the CURRENT prompt),
+    // so replace it with the dedicated intent classifier's user_prompt plus a
+    // resolved source image — the same structuredRequest shape the gate and
+    // no-task paths return, which server.js prefers over the stub fallback.
+    if (decision.shouldExecuteTool && (decision.intent === 'switch_task' || decision.intent === 'new_task')) {
+        if (decision.task === 'video_generation' && activeTask.type !== 'video') {
+            try {
+                const videoIntent = await videoGenerator.detectVideoIntent(message, providers, provider, model);
+                if (videoIntent.intent === 'video_generation') {
+                    const modeInfo = videoGenerator.resolveVideoMode(conversationId, message, videoIntent);
+                    videoIntent.videoMode = modeInfo.videoMode;
+                    videoIntent.sourceImageRawFilename = modeInfo.sourceImage ? modeInfo.sourceImage.rawFilename : null;
+                    if (videoIntent.user_prompt) decision.updatedPrompt = videoIntent.user_prompt;
+                    decision.structuredRequest = videoIntent;
+                }
+            } catch (err) {
+                console.warn('[task-router] Switch enrichment (video) failed:', err.message);
+            }
+        } else if (decision.task === 'image_generation' && activeTask.type === 'video') {
+            try {
+                const imgIntent = await imageGenerator.detectIntent(message, providers, provider, model);
+                if (imgIntent.intent === 'image_generation') {
+                    if (imgIntent.user_prompt) decision.updatedPrompt = imgIntent.user_prompt;
+                    decision.structuredRequest = imgIntent;
+                }
+            } catch (err) {
+                console.warn('[task-router] Switch enrichment (image) failed:', err.message);
+            }
+        }
     }
 
     return decision;

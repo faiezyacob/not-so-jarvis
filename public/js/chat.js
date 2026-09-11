@@ -28,15 +28,16 @@ const Chat = (() => {
         });
 
         // Clicking an image inside a chat message opens the same preview
-        // lightbox as clicking a thumbnail in the GENERATED widget.
+        // lightbox as clicking a thumbnail in the GENERATED widget. Videos
+        // use the custom player (play on canvas click, preview via the
+        // open-preview button), so player clicks never open the lightbox.
         chatMessagesEl.addEventListener('click', (e) => {
+            if (e.target.closest('.jv-player')) return;
             const imgEl = e.target.closest('.md-image');
-            const vidEl = e.target.closest('.md-video');
-            const el = imgEl || vidEl;
-            if (!el) return;
+            if (!imgEl) return;
             if (window.Gallery && typeof window.Gallery.openFromUrl === 'function') {
                 e.preventDefault();
-                window.Gallery.openFromUrl(el.getAttribute('src'));
+                window.Gallery.openFromUrl(imgEl.getAttribute('src'));
             }
         });
 
@@ -208,9 +209,14 @@ const Chat = (() => {
 
     // Render assistant markdown into a content element and collapse any
     // original + upscaled image pairs (keeping just the upscaled image).
+    // Videos are handed to the custom VideoPlayer synchronously so the
+    // conversation message never depends on observer timing.
     function setAiContent(contentEl, markdown) {
         contentEl.innerHTML = Markdown.parse(markdown);
         collapseUpscalePairs(contentEl);
+        if (window.VideoPlayer && typeof window.VideoPlayer.scan === 'function') {
+            window.VideoPlayer.scan(contentEl);
+        }
     }
 
     function renderMessages(messages) {
