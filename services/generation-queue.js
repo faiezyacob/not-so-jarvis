@@ -9,7 +9,8 @@
 
 let nextId = 1;
 let active = null; // { id, label, kind, conversationId, startedAt }
-let pending = []; // [{ id, label, kind, conversationId, enqueuedAt, run, resolve, reject, onQueued, onStart }]
+let activeEntry = null; // the running entry (holds its AbortController)
+let pending = []; // [{ id, label, kind, conversationId, enqueuedAt, run, resolve, reject, onQueued, onStart, abort }]
 const MAX_PENDING = 10;
 
 function canStartGeneration() {
@@ -19,6 +20,16 @@ function canStartGeneration() {
 // True when the given queue id is the job currently holding the slot.
 function isActive(id) {
     return Boolean(active && active.id === Number(id));
+}
+
+// Cancel the running job: aborts its AbortSignal so the generator's in-flight
+// ComfyUI wait rejects promptly (the caller still interrupts ComfyUI itself).
+// Returns true when the id matched the running job.
+function cancelActive(id) {
+    const num = Number(id);
+    if (!activeEntry || activeEntry.id !== num) return false;
+    if (!activeEntry.abort.signal.aborted) activeEntry.abort.abort();
+    return true;
 }
 
 function getStatus() {
@@ -52,23 +63,32 @@ async function runEntry(entry) {
         conversationId: entry.conversationId,
         startedAt: Date.now()
     };
+    activeEntry = entry;
     // A job that waited in the queue emits a fresh "generating" status when it
     // actually starts, so the client knows it is now the running job (and
     // Cancel should interrupt it rather than try to dequeue it).
     if (entry.queued && typeof entry.onStart === 'function') {
         try { entry.onStart(entry.id); } catch {}
     }
+    // Free the slot BEFORE settling the promise so a caller that reacts to the
+    // rejection (or resolves and immediately enqueues) never has a new job
+    // queue behind an already-finished one.
+    let result;
+    let failure = null;
     try {
-        const result = await entry.run();
-        entry.resolve(result);
-        return result;
+        result = await entry.run(entry.abort.signal);
     } catch (err) {
-        entry.reject(err);
-        throw err;
-    } finally {
-        active = null;
-        pump();
+        failure = err;
     }
+    active = null;
+    activeEntry = null;
+    pump();
+    if (failure) {
+        entry.reject(failure);
+        throw failure;
+    }
+    entry.resolve(result);
+    return result;
 }
 
 function pump() {
@@ -103,6 +123,7 @@ function enqueue(fn, opts = {}) {
         onStart: typeof opts.onStart === 'function' ? opts.onStart : null,
         cancelled: false,
         queued: false,
+        abort: new AbortController(),
         resolve: null,
         reject: null
     };
@@ -132,6 +153,7 @@ function cancelQueued(id) {
     const entry = pending[idx];
     pending.splice(idx, 1);
     entry.cancelled = true;
+    if (!entry.abort.signal.aborted) entry.abort.abort();
     const error = new Error('Generation cancelled while queued.');
     error.code = 'generation_cancelled';
     try { entry.reject(error); } catch {}
@@ -147,6 +169,7 @@ function queuedIdOf(promise) {
 module.exports = {
     enqueue,
     cancelQueued,
+    cancelActive,
     canStartGeneration,
     isActive,
     getStatus,

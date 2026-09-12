@@ -750,6 +750,7 @@ const Chat = (() => {
             let fullReply = '';
             let hadError = false;
             let generatingEl = null;
+            let generatingLabel = '';
 
             while (true) {
                 const { done, value } = await reader.read();
@@ -777,6 +778,7 @@ const Chat = (() => {
                                 generatingEl.className = 'generating-status';
                                 contentEl.appendChild(generatingEl);
                             }
+                            generatingLabel = data.generating;
                             generatingEl.textContent = data.generating;
                             activeQueueActive = true;
                             chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
@@ -792,6 +794,15 @@ const Chat = (() => {
                             const pos = data.queued.position || 1;
                             generatingEl.textContent = 'Queued #' + pos + ' — waiting for current generation… (press send to cancel)';
                             chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+                        }
+                        if (data.progress && generatingEl) {
+                            // Live ComfyUI step percentage for the running job.
+                            if (data.progress.idle) {
+                                generatingEl.textContent = generatingLabel || 'Finishing…';
+                            } else if (data.progress.max > 0) {
+                                const pct = Math.max(0, Math.min(100, Math.round((data.progress.value / data.progress.max) * 100)));
+                                generatingEl.textContent = (generatingLabel || 'Generating') + ' ' + pct + '%';
+                            }
                         }
                         if (data.image) {
                             fullReply = data.image.content;

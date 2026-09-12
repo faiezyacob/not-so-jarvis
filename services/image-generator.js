@@ -47,7 +47,9 @@ const SEEDVR2_NOISE_LEVELS = { off: 0, low: 0.06, medium: 0.15 };
 // Extra requests wait their turn instead of failing with generation_busy.
 
 function withGenerationLock(fn, opts = {}) {
-    return generationQueue.enqueue(fn, opts);
+    // The queue passes an AbortSignal so a running job can be cancelled
+    // promptly (see generationQueue.cancelActive).
+    return generationQueue.enqueue((signal) => fn(signal), opts);
 }
 
 // --- Intent detection ----------------------------------------------------------
@@ -1344,7 +1346,7 @@ async function upscaleImage(rawFilename, options = {}) {
         onQueued: options.onQueued || null,
         onStart: options.onStart || null
     };
-    return withGenerationLock(async () => {
+    return withGenerationLock(async (signal) => {
         await ensureGeneratedDir();
         const startedAt = Date.now();
 
@@ -1415,7 +1417,7 @@ async function upscaleImage(rawFilename, options = {}) {
             const pid = await comfyui.queuePrompt(graph);
             console.log('[image-generator] queued upscale (' + engine + ') workflow:', pid);
 
-            const history = await comfyui.waitForPrompt(pid, { timeoutMs: options.timeoutMs });
+            const history = await comfyui.waitForPrompt(pid, { timeoutMs: options.timeoutMs, signal });
             const files = comfyui.findOutputFiles(history.outputs || {}, /\.(?:png|jpg|jpeg|webp)$/i);
             if (!files.length) {
                 const error = new Error('ComfyUI finished but produced no upscaled image file.');
@@ -1520,7 +1522,7 @@ async function generateImage(prompt, options = {}) {
         onQueued: options.onQueued || null,
         onStart: options.onStart || null
     };
-    return withGenerationLock(async () => {
+    return withGenerationLock(async (signal) => {
         await ensureGeneratedDir();
         const startedAt = Date.now();
 
@@ -1552,7 +1554,8 @@ async function generateImage(prompt, options = {}) {
         console.log('[image-generator] queued Krea2 workflow:', pid);
 
         const history = await comfyui.waitForPrompt(pid, {
-            timeoutMs: options.timeoutMs
+            timeoutMs: options.timeoutMs,
+            signal
         });
 
         const files = comfyui.findOutputFiles(history.outputs || {}, /\.(?:png|jpg|jpeg|webp)$/i);
@@ -1932,7 +1935,7 @@ async function editImage(sourceAbsPath, instruction, options = {}) {
         onQueued: options.onQueued || null,
         onStart: options.onStart || null
     };
-    return withGenerationLock(async () => {
+    return withGenerationLock(async (signal) => {
         await ensureGeneratedDir();
         const startedAt = Date.now();
 
@@ -2002,7 +2005,7 @@ async function editImage(sourceAbsPath, instruction, options = {}) {
             const pid = await comfyui.queuePrompt(graph);
             console.log('[image-generator] queued Krea2 edit workflow:', pid);
 
-            const history = await comfyui.waitForPrompt(pid, { timeoutMs: options.timeoutMs });
+            const history = await comfyui.waitForPrompt(pid, { timeoutMs: options.timeoutMs, signal });
             const files = comfyui.findOutputFiles(history.outputs || {}, /\.(?:png|jpg|jpeg|webp)$/i);
             if (!files.length) {
                 const error = new Error('ComfyUI finished but produced no edited image file.');
@@ -2063,6 +2066,7 @@ module.exports = {
     withGenerationLock,
     getQueueStatus: generationQueue.getStatus,
     cancelQueued: generationQueue.cancelQueued,
+    cancelActive: generationQueue.cancelActive,
     isActive: generationQueue.isActive,
     detectIntent,
     buildImagePrompt,

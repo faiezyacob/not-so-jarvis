@@ -28,12 +28,22 @@ function comfyWsUrl() {
 }
 
 async function comfyFetch(path, options = {}) {
+    const { timeout, signal: cancelSignal, ...fetchOptions } = options;
+    const timeoutSignal = AbortSignal.timeout(Number(timeout) || 120000);
+    const signal = cancelSignal && typeof AbortSignal.any === 'function'
+        ? AbortSignal.any([timeoutSignal, cancelSignal])
+        : timeoutSignal;
     let res;
     try {
-        res = await fetch(comfyUrl(path), Object.assign({
-            signal: AbortSignal.timeout(Number(options.timeout) || 120000)
-        }, options));
+        res = await fetch(comfyUrl(path), Object.assign({}, fetchOptions, { signal }));
     } catch (error) {
+        // A cancelled generation must surface as cancellation, not as an
+        // "unreachable" error, even when it lands mid-request.
+        if (cancelSignal && cancelSignal.aborted) {
+            const cancelled = new Error('Generation cancelled.');
+            cancelled.code = 'generation_cancelled';
+            throw cancelled;
+        }
         const detail = String((error && error.cause && error.cause.message) || error.message || error || 'connection failed');
         const wrapped = new Error(
             'Could not reach ComfyUI for ' + (options.method || 'GET') + ' ' + path + ': ' + detail +
@@ -237,23 +247,34 @@ async function waitForPrompt(pid, options = {}) {
     const timeoutMs = Number(options.timeoutMs) || GENERATION_TIMEOUT_MS;
     const startedAt = Date.now();
     const pollMs = Number(options.pollMs) || 1000;
+    const signal = options.signal || null;
+    const throwIfCancelled = () => {
+        if (signal && signal.aborted) {
+            const err = new Error('Generation cancelled.');
+            err.code = 'generation_cancelled';
+            throw err;
+        }
+    };
 
     // First check: ComfyUI may already have removed the prompt from the
     // queue and written its history entry before our first poll.
     while (Date.now() - startedAt < timeoutMs) {
+        throwIfCancelled();
         let hist;
         try {
-            const res = await comfyFetch('/history/' + encodeURIComponent(pid), { timeout: 15000 });
+            const res = await comfyFetch('/history/' + encodeURIComponent(pid), { timeout: 15000, signal });
             hist = await res.json();
         } catch (err) {
+            // Cancellation wins over the offline/404 retry paths.
+            if (err.code === 'generation_cancelled') throw err;
             if (err.code === 'comfyui_unavailable') {
                 // ComfyUI temporarily offline; keep polling until timeout.
-                await sleep(pollMs);
+                await sleep(pollMs, signal);
                 continue;
             }
             if (err.status === 404) {
                 // No history entry yet — still running or queued.
-                await sleep(pollMs);
+                await sleep(pollMs, signal);
                 continue;
             }
             throw err;
@@ -261,7 +282,7 @@ async function waitForPrompt(pid, options = {}) {
 
         const entry = hist && hist[pid];
         if (!entry) {
-            await sleep(pollMs);
+            await sleep(pollMs, signal);
             continue;
         }
 
@@ -278,9 +299,10 @@ async function waitForPrompt(pid, options = {}) {
             throw error;
         }
 
-        await sleep(pollMs);
+        await sleep(pollMs, signal);
     }
 
+    throwIfCancelled();
     const error = new Error('ComfyUI generation timed out after ' + Math.round(timeoutMs / 1000) + 's');
     error.code = 'comfyui_timeout';
     throw error;
@@ -638,8 +660,26 @@ async function cancelCurrentJob() {
     return { interrupted, cleared };
 }
 
-function sleep(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms, signal) {
+    if (!signal) return new Promise((resolve) => setTimeout(resolve, ms));
+    return new Promise((resolve, reject) => {
+        const cancelled = () => {
+            const err = new Error('Generation cancelled.');
+            err.code = 'generation_cancelled';
+            return err;
+        };
+        if (signal.aborted) {
+            reject(cancelled());
+            return;
+        }
+        const timer = setTimeout(() => { cleanup(); resolve(); }, ms);
+        const onAbort = () => { cleanup(); reject(cancelled()); };
+        function cleanup() {
+            clearTimeout(timer);
+            signal.removeEventListener('abort', onAbort);
+        }
+        signal.addEventListener('abort', onAbort, { once: true });
+    });
 }
 
 module.exports = {

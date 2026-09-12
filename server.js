@@ -141,6 +141,22 @@ function sseWrite(res, obj) {
     }
 }
 
+// Relay ComfyUI step progress to a chat stream for the duration of a job. Only
+// one generation runs at a time, so progress observed while a handler awaits
+// its job belongs to that job. Returns an unsubscribe function.
+function forwardComfyProgress(res) {
+    const onProgress = (update) => {
+        if (!update) return;
+        if (update.idle) {
+            sseWrite(res, { progress: { idle: true } });
+        } else if (typeof update.value === 'number' && typeof update.max === 'number' && update.max > 0) {
+            sseWrite(res, { progress: { value: update.value, max: update.max } });
+        }
+    };
+    comfyui.subscribeProgress(onProgress);
+    return () => comfyui.unsubscribeProgress(onProgress);
+}
+
 // Detect a hallucinated tool-call JSON blob in a plain chat reply, e.g.
 // {"action": "image_generation", "action_input": "{ \"prompt\": \"...\" }"}
 // or {"intent": "image_generation", "prompt": "..."}. Small chat models emit
@@ -657,8 +673,8 @@ async function handleAPI(req, res, urlPath) {
     // POST /api/comfyui/cancel — interrupt the running ComfyUI prompt and
     // clear its native pending queue so the GPU goes idle. Used by the
     // ComfyUI widget's Cancel button. The JARVIS-side job waiting in
-    // waitForPrompt observes the interruption as a generation error and
-    // releases the shared generation slot on its own.
+    // waitForPrompt is aborted explicitly so it releases the shared
+    // generation slot immediately instead of waiting for a ComfyUI error.
     if (urlPath === '/api/comfyui/cancel' && req.method === 'POST') {
         try {
             if (!(await comfyui.isAvailable())) {
@@ -666,6 +682,8 @@ async function handleAPI(req, res, urlPath) {
                 return true;
             }
             const result = await comfyui.cancelCurrentJob();
+            const queueStatus = generationQueue.getStatus();
+            if (queueStatus.active) imageGenerator.cancelActive(queueStatus.active.id);
             json(res, 200, { ok: true, interrupted: result.interrupted, cleared: result.cleared });
         } catch (err) {
             json(res, 502, { error: 'Cancel failed: ' + err.message });
@@ -744,11 +762,14 @@ async function handleAPI(req, res, urlPath) {
             }
             const status = generationQueue.getStatus();
             if (body.active && status.active && status.active.id === queueId) {
-                try { await comfyui.interrupt(); } catch (err) {
-                    json(res, 502, { error: 'Interrupt failed: ' + err.message });
-                    return true;
+                // Abort the waiter first so it stops polling even if the
+                // ComfyUI interrupt is slow or fails.
+                imageGenerator.cancelActive(queueId);
+                let interrupted = false;
+                try { await comfyui.interrupt(); interrupted = true; } catch (err) {
+                    console.warn('[queue] ComfyUI interrupt failed:', err.message);
                 }
-                json(res, 200, { ok: true, interrupted: queueId });
+                json(res, 200, { ok: true, cancelled: queueId, interrupted });
                 return true;
             }
             json(res, 404, { error: 'Job not found in queue. It may have already started or finished.' });
@@ -1777,14 +1798,17 @@ async function handleImageGenerationStream(req, res, opts) {
     let queueId = null;
     const onClose = () => {
         if (!queueId) return;
-        // Pending job: drop it from the queue. Running job: interrupt ComfyUI
-        // so an abandoned client doesn't leave a generation churning and
-        // then writing an orphan file + history entry.
-        if (!imageGenerator.cancelQueued(queueId) && imageGenerator.isActive(queueId)) {
+        // Pending job: drop it from the queue. Running job: abort the waiter
+        // and interrupt ComfyUI so an abandoned client doesn't leave a
+        // generation churning and then writing an orphan file + history entry.
+        if (imageGenerator.cancelQueued(queueId)) return;
+        if (imageGenerator.isActive(queueId)) {
+            imageGenerator.cancelActive(queueId);
             comfyui.interrupt().catch(() => {});
         }
     };
     req.on('close', onClose);
+    const stopProgress = forwardComfyProgress(res);
     const onQueued = (position, id) => {
         queueId = id;
         sseWrite(res, { queued: { position, queueId: id } });
@@ -1851,6 +1875,7 @@ async function handleImageGenerationStream(req, res, opts) {
         res.end();
     } finally {
         req.removeListener('close', onClose);
+        stopProgress();
     }
 }
 
@@ -1900,14 +1925,17 @@ async function handleImageEditStream(req, res, opts) {
     let queueId = null;
     const onClose = () => {
         if (!queueId) return;
-        // Pending job: drop it from the queue. Running job: interrupt ComfyUI
-        // so an abandoned client doesn't leave a generation churning and
-        // then writing an orphan file + history entry.
-        if (!imageGenerator.cancelQueued(queueId) && imageGenerator.isActive(queueId)) {
+        // Pending job: drop it from the queue. Running job: abort the waiter
+        // and interrupt ComfyUI so an abandoned client doesn't leave a
+        // generation churning and then writing an orphan file + history entry.
+        if (imageGenerator.cancelQueued(queueId)) return;
+        if (imageGenerator.isActive(queueId)) {
+            imageGenerator.cancelActive(queueId);
             comfyui.interrupt().catch(() => {});
         }
     };
     req.on('close', onClose);
+    const stopProgress = forwardComfyProgress(res);
     const onQueued = (position, id) => {
         queueId = id;
         sseWrite(res, { queued: { position, queueId: id } });
@@ -1988,6 +2016,7 @@ async function handleImageEditStream(req, res, opts) {
         res.end();
     } finally {
         req.removeListener('close', onClose);
+        stopProgress();
     }
 }
 
@@ -2032,14 +2061,17 @@ async function handleVideoGenerationStream(req, res, opts) {
     let queueId = null;
     const onClose = () => {
         if (!queueId) return;
-        // Pending job: drop it from the queue. Running job: interrupt ComfyUI
-        // so an abandoned client doesn't leave a generation churning and
-        // then writing an orphan file + history entry.
-        if (!imageGenerator.cancelQueued(queueId) && imageGenerator.isActive(queueId)) {
+        // Pending job: drop it from the queue. Running job: abort the waiter
+        // and interrupt ComfyUI so an abandoned client doesn't leave a
+        // generation churning and then writing an orphan file + history entry.
+        if (imageGenerator.cancelQueued(queueId)) return;
+        if (imageGenerator.isActive(queueId)) {
+            imageGenerator.cancelActive(queueId);
             comfyui.interrupt().catch(() => {});
         }
     };
     req.on('close', onClose);
+    const stopProgress = forwardComfyProgress(res);
     const onQueued = (position, id) => {
         queueId = id;
         sseWrite(res, { queued: { position, queueId: id } });
@@ -2133,6 +2165,7 @@ async function handleVideoGenerationStream(req, res, opts) {
         res.end();
     } finally {
         req.removeListener('close', onClose);
+        stopProgress();
     }
 }
 
@@ -2146,14 +2179,17 @@ async function handleVideoUpscaleStream(req, res, opts) {
     let queueId = null;
     const onClose = () => {
         if (!queueId) return;
-        // Pending job: drop it from the queue. Running job: interrupt ComfyUI
-        // so an abandoned client doesn't leave a generation churning and
-        // then writing an orphan file + history entry.
-        if (!imageGenerator.cancelQueued(queueId) && imageGenerator.isActive(queueId)) {
+        // Pending job: drop it from the queue. Running job: abort the waiter
+        // and interrupt ComfyUI so an abandoned client doesn't leave a
+        // generation churning and then writing an orphan file + history entry.
+        if (imageGenerator.cancelQueued(queueId)) return;
+        if (imageGenerator.isActive(queueId)) {
+            imageGenerator.cancelActive(queueId);
             comfyui.interrupt().catch(() => {});
         }
     };
     req.on('close', onClose);
+    const stopProgress = forwardComfyProgress(res);
     const onQueued = (position, id) => {
         queueId = id;
         sseWrite(res, { queued: { position, queueId: id } });
@@ -2246,6 +2282,7 @@ async function handleVideoUpscaleStream(req, res, opts) {
         res.end();
     } finally {
         req.removeListener('close', onClose);
+        stopProgress();
     }
 }
 
@@ -2446,14 +2483,17 @@ async function handleImageUpscaleStream(req, res, opts) {
     let queueId = null;
     const onClose = () => {
         if (!queueId) return;
-        // Pending job: drop it from the queue. Running job: interrupt ComfyUI
-        // so an abandoned client doesn't leave a generation churning and
-        // then writing an orphan file + history entry.
-        if (!imageGenerator.cancelQueued(queueId) && imageGenerator.isActive(queueId)) {
+        // Pending job: drop it from the queue. Running job: abort the waiter
+        // and interrupt ComfyUI so an abandoned client doesn't leave a
+        // generation churning and then writing an orphan file + history entry.
+        if (imageGenerator.cancelQueued(queueId)) return;
+        if (imageGenerator.isActive(queueId)) {
+            imageGenerator.cancelActive(queueId);
             comfyui.interrupt().catch(() => {});
         }
     };
     req.on('close', onClose);
+    const stopProgress = forwardComfyProgress(res);
     const onQueued = (position, id) => {
         queueId = id;
         sseWrite(res, { queued: { position, queueId: id } });
@@ -2544,6 +2584,7 @@ async function handleImageUpscaleStream(req, res, opts) {
         res.end();
     } finally {
         req.removeListener('close', onClose);
+        stopProgress();
     }
 }
 

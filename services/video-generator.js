@@ -405,7 +405,9 @@ function h3Dimensions(width, height, size) {
 // so image/video/upscale never run concurrently and extras queue.
 
 function withGenerationLock(fn, opts = {}) {
-    return generationQueue.enqueue(fn, opts);
+    // The queue passes an AbortSignal so a running job can be cancelled
+    // promptly (see generationQueue.cancelActive).
+    return generationQueue.enqueue((signal) => fn(signal), opts);
 }
 
 // Backwards-compat no-op: both services already share generation-queue.
@@ -1765,7 +1767,10 @@ async function refineVideo(baseRawFilename, opts = {}) {
         const pid = await comfyui.queuePrompt(graph);
         console.log('[video-generator] queued FaceRefine workflow:', pid, '(nativeAudio=' + availability.hasNativeAudio + ')');
 
-        const history = await comfyui.waitForPrompt(pid, { timeoutMs: opts.timeoutMs || FACEREFINE_TIMEOUT_MS });
+        const history = await comfyui.waitForPrompt(pid, {
+            timeoutMs: opts.timeoutMs || FACEREFINE_TIMEOUT_MS,
+            signal: opts.signal || null
+        });
         const videoFiles = comfyui.findOutputFiles(history.outputs || {}, /\.(?:mp4|webm|avi|mov)$/i);
         if (!videoFiles.length) {
             const error = new Error('ComfyUI finished FaceRefine but produced no video file.');
@@ -1939,7 +1944,7 @@ async function generateVideo(prompt, options = {}) {
         onQueued: options.onQueued || null,
         onStart: options.onStart || null
     };
-    return withGenerationLock(async () => {
+    return withGenerationLock(async (signal) => {
         await ensureGeneratedDir();
         const startedAt = Date.now();
 
@@ -2023,7 +2028,7 @@ async function generateVideo(prompt, options = {}) {
             console.log('[video-generator] queued H3 workflow:', pid, '(' + mode + ', ' + duration + 's, ' + frames + 'f)');
 
             const timeoutMs = options.timeoutMs || 30 * 60 * 1000;  // 30 min for video
-            const history = await comfyui.waitForPrompt(pid, { timeoutMs });
+            const history = await comfyui.waitForPrompt(pid, { timeoutMs, signal });
 
             // Find video output.
             const videoFiles = comfyui.findOutputFiles(history.outputs || {}, /\.(?:mp4|webm|avi|mov)$/i);
@@ -2085,7 +2090,7 @@ async function generateVideo(prompt, options = {}) {
                 generationMs: meta.generationMs,
                 meta,
                 refined: false
-            }, options);
+            }, Object.assign({}, options, { signal }));
         } finally {
             if (firstImageName) {
                 await comfyui.deleteInputFile(firstImageName).catch(() => {});
@@ -2109,7 +2114,8 @@ async function maybeFaceRefine(baseResult, opts = {}) {
             fps: baseResult.fps || H3_FPS,
             duration: baseResult.duration,
             frames: baseResult.frames,
-            sourceImageRawFilename: opts.sourceImageRawFilename || null
+            sourceImageRawFilename: opts.sourceImageRawFilename || null,
+            signal: opts.signal || null
         });
         return {
             url: refined.url,
@@ -2364,7 +2370,7 @@ async function upscaleVideo(rawFilename, options = {}) {
         onQueued: options.onQueued || null,
         onStart: options.onStart || null
     };
-    return withGenerationLock(async () => {
+    return withGenerationLock(async (signal) => {
         await ensureGeneratedDir();
         const startedAt = Date.now();
 
@@ -2477,7 +2483,7 @@ async function upscaleVideo(rawFilename, options = {}) {
             console.log('[video-generator] queued video upscale (' + engine + ') workflow:', pid);
 
             const timeoutMs = options.timeoutMs || VIDEO_UPSCALE_DEFAULT_TIMEOUT_MS;
-            const history = await comfyui.waitForPrompt(pid, { timeoutMs });
+            const history = await comfyui.waitForPrompt(pid, { timeoutMs, signal });
 
             const videoFiles = comfyui.findOutputFiles(history.outputs || {}, /\.(?:mp4|webm|avi|mov)$/i);
             if (!videoFiles.length) {
