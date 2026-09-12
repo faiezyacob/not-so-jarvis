@@ -126,6 +126,8 @@ function publicMeta(entry) {
         height: entry.height || null,
         createdAt: entry.createdAt,
         generationMs: Number.isFinite(Number(entry.generationMs)) ? Number(entry.generationMs) : null,
+        seed: Number.isFinite(Number(entry.seed)) ? Number(entry.seed) : null,
+        loras: Array.isArray(entry.loras) ? entry.loras : [],
         upscale: entry.upscale || null,
         video: entry.video || null
     };
@@ -144,6 +146,8 @@ function add(meta) {
         width: meta.width || null,
         height: meta.height || null,
         generationMs: Number.isFinite(Number(meta.generationMs)) ? Number(meta.generationMs) : null,
+        seed: Number.isFinite(Number(meta.seed)) ? Number(meta.seed) : null,
+        loras: Array.isArray(meta.loras) ? meta.loras : [],
         upscale: meta.upscale || null,
         video: meta.video || null,
         createdAt

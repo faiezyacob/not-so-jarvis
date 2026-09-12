@@ -1818,14 +1818,26 @@ async function handleImageGenerationStream(req, res, opts) {
     };
 
     try {
-        sseWrite(res, { generating: 'Generating image...' });
+        // Variations: generate 1-4 images in one turn. A fixed seed gives a
+        // reproducible set (seed, seed+1, ...); random mode picks a fresh base.
+        const genSettings = imageGenerator.effectiveSettings();
+        const variations = Math.max(1, Math.min(4, Number(genSettings.variations) || 1));
+        const baseSeed = imageGenerator.resolveSeed(genSettings, null);
 
-        const promise = imageGenerator.generateImage(imagePrompt, {
-            provider, model, conversationId, onQueued, onStart,
-            label: 'image generation', kind: 'image_generation'
-        });
-        queueId = promise.queueId || null;
-        const result = await promise;
+        sseWrite(res, { generating: variations > 1 ? 'Generating ' + variations + ' images...' : 'Generating image...' });
+
+        const results = [];
+        for (let i = 0; i < variations; i++) {
+            if (i > 0) sseWrite(res, { generating: 'Generating image ' + (i + 1) + ' of ' + variations + '...' });
+            const promise = imageGenerator.generateImage(imagePrompt, {
+                provider, model, conversationId, onQueued, onStart,
+                seed: baseSeed + i,
+                label: 'image generation', kind: 'image_generation'
+            });
+            queueId = promise.queueId || null;
+            results.push(await promise);
+        }
+        const result = results[0];
 
         // Tool succeeded — now update task context and generate the user-facing
         // response based on the actual result.
@@ -1835,7 +1847,9 @@ async function handleImageGenerationStream(req, res, opts) {
             generatedAsset: result.url,
             parameters: Object.assign({}, existingParams, {
                 width: result.width,
-                height: result.height
+                height: result.height,
+                seed: result.seed,
+                variations: results.length
             }),
             // Image lineage survives later video tasks so "another image"
             // keeps the style context even after a video was generated.
@@ -1862,9 +1876,16 @@ async function handleImageGenerationStream(req, res, opts) {
         const content =
             summary + '\n\n' +
             '**Prompt:** ' + imagePrompt + '\n\n' +
-            '![' + 'image' + '](' + result.url + ')';
+            results.map((r) => '![' + 'image' + '](' + r.url + ')').join('\n\n');
 
-        sseWrite(res, { image: { url: result.url, content, meta: result.meta || null } });
+        sseWrite(res, {
+            image: {
+                url: result.url,
+                content,
+                meta: result.meta || null,
+                images: results.map((r) => ({ url: r.url, seed: r.seed, meta: r.meta || null }))
+            }
+        });
         res.end();
     } catch (err) {
         console.error('[image-generator] Generation failed:', err.message, '\n', err.stack);
@@ -2031,6 +2052,12 @@ function friendlyImageError(err) {
         case 'comfyui_validation_error':
             return err.message;
         case 'comfyui_generation_error':
+            return err.message;
+        case 'comfyui_oom':
+        case 'comfyui_missing_model':
+        case 'comfyui_missing_node':
+        case 'comfyui_empty_output':
+        case 'comfyui_api_error':
             return err.message;
         case 'comfyui_timeout':
             return 'Image generation timed out. ComfyUI may be overloaded — please try again.';
@@ -2297,6 +2324,14 @@ function friendlyVideoError(err) {
         case 'rtx_video_upscale_setup_required':
             return err.message;
         case 'facerefine_failed':
+            return err.message;
+        case 'comfyui_generation_error':
+        case 'comfyui_oom':
+        case 'comfyui_missing_model':
+        case 'comfyui_missing_node':
+        case 'comfyui_empty_output':
+        case 'comfyui_api_error':
+        case 'comfyui_validation_error':
             return err.message;
         case 'comfyui_timeout':
             return 'Video generation timed out. ComfyUI may be overloaded — please try again.';

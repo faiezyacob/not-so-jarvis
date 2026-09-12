@@ -336,6 +336,17 @@
         const footer = document.createElement('div');
         footer.className = 'modal-footer';
 
+        if (src) {
+            const downloadLink = document.createElement('a');
+            downloadLink.className = 'modal-btn';
+            downloadLink.textContent = video ? 'Download Video' : 'Download Image';
+            downloadLink.title = 'Save this file to your downloads';
+            downloadLink.href = src;
+            const downloadName = lastSegment(src);
+            if (downloadName) downloadLink.setAttribute('download', downloadName);
+            footer.appendChild(downloadLink);
+        }
+
         const closeButton = document.createElement('button');
         closeButton.type = 'button';
         closeButton.className = 'modal-btn modal-btn-cancel';
@@ -1162,6 +1173,9 @@
         meta.innerHTML =
             '<div class="gallery-preview-row"><span class="gallery-preview-label">Model</span><span class="gallery-preview-value">' + escapeHtml(img.model || 'Krea2') + '</span></div>' +
             '<div class="gallery-preview-row"><span class="gallery-preview-label">Resolution</span><span class="gallery-preview-value" data-resolution-value>' + escapeHtml(formatResolution(img)) + '</span></div>' +
+            (img.seed !== undefined && img.seed !== null
+                ? '<div class="gallery-preview-row"><span class="gallery-preview-label">Seed</span><span class="gallery-preview-value">' + escapeHtml(String(img.seed)) + '</span></div>'
+                : '') +
             '<div class="gallery-preview-row"><span class="gallery-preview-label">Duration</span><span class="gallery-preview-value">' + escapeHtml(formatGenerationDuration(img)) + '</span></div>';
         if (compare) {
             const originalMeta = img.upscale ? compare.originalMeta : img;
@@ -1226,6 +1240,40 @@
                 }
             });
             footer.appendChild(copyBtn);
+        }
+
+        // Reproducibility actions: lock this image's seed.
+        if (!video && img.seed !== undefined && img.seed !== null) {
+            const seedBtn = document.createElement('button');
+            seedBtn.type = 'button';
+            seedBtn.className = 'modal-btn';
+            seedBtn.textContent = 'Use Seed';
+            seedBtn.title = 'Lock this seed for the next generation';
+            seedBtn.addEventListener('click', async () => {
+                try {
+                    const res = await fetch('/api/settings/image', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ seedMode: 'fixed', seed: Number(img.seed) })
+                    });
+                    seedBtn.textContent = res.ok ? 'Seed locked' : 'Failed';
+                    seedBtn.disabled = true;
+                } catch {
+                    seedBtn.textContent = 'Failed';
+                }
+            });
+            footer.appendChild(seedBtn);
+        }
+
+        if (img.url) {
+            const downloadLink = document.createElement('a');
+            downloadLink.className = 'modal-btn';
+            downloadLink.textContent = video ? 'Download Video' : 'Download Image';
+            downloadLink.title = 'Save this file to your downloads';
+            downloadLink.href = img.url;
+            const downloadName = lastSegment(img.url);
+            if (downloadName) downloadLink.setAttribute('download', downloadName);
+            footer.appendChild(downloadLink);
         }
 
         const deleteBtn = document.createElement('button');

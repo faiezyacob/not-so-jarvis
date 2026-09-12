@@ -700,6 +700,13 @@ const DEFAULT_SETTINGS = {
     height: Number(process.env.KREA2_HEIGHT) || 1024,
     steps: Number(process.env.KREA2_STEPS) || 8,
     cfg: Number(process.env.KREA2_CFG) || 1,
+    // Seed control: 'random' picks a fresh seed per image, 'fixed' reuses
+    // `seed` so a result is reproducible. `variations` (1-4) generates that
+    // many images per request, each using seed + index — so a fixed seed gives
+    // a reproducible set of variations.
+    seedMode: 'random',
+    seed: 0,
+    variations: 1,
     // Stacked LoRAs applied to every Krea2 generation, in order. Each entry
     // is { name, strength, on, triggerWord } where strength is the model+clip
     // LoRA scale and triggerWord is an optional keyword prepended to the prompt.
@@ -732,7 +739,7 @@ const DEFAULT_SETTINGS = {
 
 // Fields the user may override through the settings panel / API. Kept
 // separate from DEFAULT_SETTINGS so we only persist explicit overrides.
-const CONFIGURABLE_KEYS = ['unet', 'clip', 'clipType', 'vae', 'editLora', 'aspectRatio', 'imageSize', 'width', 'height', 'steps', 'cfg', 'loras', 'loraTriggerWords',
+const CONFIGURABLE_KEYS = ['unet', 'clip', 'clipType', 'vae', 'editLora', 'aspectRatio', 'imageSize', 'width', 'height', 'steps', 'cfg', 'seedMode', 'seed', 'variations', 'loras', 'loraTriggerWords',
     'upscaleEngine', 'upscaleMode', 'upscaleResolution', 'upscaleMultiplier', 'upscaleProfile', 'upscaleNoise', 'upscalePreScale',
     'seedvr2Dit', 'seedvr2Vae', 'seedvr2Attention'];
 
@@ -762,6 +769,30 @@ function getDefaults() {
 function clampNumber(value, min, max, fallback) {
     const n = Number(value);
     return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : fallback;
+}
+
+// ComfyUI seeds are unsigned 32-bit. Normalize any input into that range;
+// returns null when the value is not a finite number.
+const MAX_SEED = 4294967295;
+function normalizeSeed(value) {
+    if (value === null || value === undefined) return null;
+    if (typeof value === 'string' && !value.trim()) return null;
+    const n = Number(value);
+    if (!Number.isFinite(n)) return null;
+    const range = MAX_SEED + 1;
+    return ((Math.floor(n) % range) + range) % range;
+}
+
+// Resolve the seed for one generation. A per-request seed always wins; a
+// 'fixed' seedMode reuses the stored seed; otherwise a fresh random seed.
+function resolveSeed(settings, requestedSeed) {
+    const requested = normalizeSeed(requestedSeed);
+    if (requested !== null) return requested;
+    if (settings && settings.seedMode === 'fixed') {
+        const fixed = normalizeSeed(settings.seed);
+        if (fixed !== null) return fixed;
+    }
+    return Math.floor(Math.random() * 2 ** 32);
 }
 
 // Normalize a client-supplied LoRA list. Drops entries without a name and
@@ -818,6 +849,15 @@ function sanitizeSettings(patch) {
         } else if (key === 'cfg') {
             const n = Number(value);
             if (Number.isFinite(n) && n >= 0) out[key] = n;
+        } else if (key === 'seedMode') {
+            const v = String(value || '').toLowerCase();
+            if (v === 'random' || v === 'fixed') out[key] = v;
+        } else if (key === 'seed') {
+            const n = normalizeSeed(value);
+            if (n !== null) out[key] = n;
+        } else if (key === 'variations') {
+            const n = Math.round(Number(value));
+            if (Number.isFinite(n)) out[key] = Math.max(1, Math.min(4, n));
         } else if (key === 'upscaleEngine') {
             const v = String(value || '').toLowerCase();
             if (v === 'seedvr2' || v === 'ultimate' || v === 'rtx') out[key] = v;
@@ -1526,12 +1566,12 @@ async function generateImage(prompt, options = {}) {
         await ensureGeneratedDir();
         const startedAt = Date.now();
 
-        const seed = Number.isInteger(options.seed) && options.seed >= 0
-            ? options.seed
-            : Math.floor(Math.random() * 2 ** 32);
         // Prefer a fresh read of the global settings so edits made through
         // the settings panel take effect without restarting the server.
         const settings = effectiveSettings();
+        // A per-request seed (e.g. a variation index) wins; a fixed seedMode
+        // reuses the stored seed; otherwise a fresh random seed.
+        const seed = resolveSeed(settings, options.seed);
 
         // Prepend trigger words from active LoRAs to the prompt. The incoming
         // prompt is normalized first so a value that already carries a
@@ -1592,6 +1632,7 @@ async function generateImage(prompt, options = {}) {
             prompt: finalPrompt,
             model: 'Krea2',
             loras: activeLoras,
+            seed,
             width: settings.width,
             height: settings.height,
             generationMs: Date.now() - startedAt
@@ -1602,6 +1643,7 @@ async function generateImage(prompt, options = {}) {
             filename: basename,
             width: settings.width,
             height: settings.height,
+            seed,
             prompt: finalPrompt,
             generationMs: meta.generationMs,
             meta
@@ -2076,6 +2118,9 @@ module.exports = {
     extractImageSubject,
     stripCreativeMetaInstructions,
     resolveDimensions,
+    normalizeSeed,
+    resolveSeed,
+    MAX_SEED,
     generateImage,
     stripLoraTriggerWords,
     buildKrea2T2IGraph,
@@ -2091,6 +2136,7 @@ module.exports = {
     validateGraphAgainstComfy,
     effectiveSettings,
     getDefaults,
+    sanitizeSettings,
     saveSettings,
     getModelChoices,
     detectUpscaleIntent,

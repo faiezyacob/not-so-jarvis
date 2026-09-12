@@ -72,8 +72,15 @@ body {
 
 .header-left {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     gap: 12px;
+}
+
+.header-logo {
+    display: block;
+    width: 26px;
+    height: 26px;
+    filter: drop-shadow(0 0 6px rgba(108, 255, 154, 0.35));
 }
 
 .header-title {

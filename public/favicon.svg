@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="nsjTitle">
+    <title id="nsjTitle">Not-So-Jarvis</title>
+    <defs>
+        <radialGradient id="nsjGlow" cx="50%" cy="42%" r="62%">
+            <stop offset="0%" stop-color="#6CFF9A" stop-opacity="0.28"/>
+            <stop offset="100%" stop-color="#6CFF9A" stop-opacity="0"/>
+        </radialGradient>
+        <radialGradient id="nsjCore" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="#6CFF9A" stop-opacity="0.22"/>
+            <stop offset="100%" stop-color="#6CFF9A" stop-opacity="0"/>
+        </radialGradient>
+    </defs>
+
+    <rect x="2" y="2" width="60" height="60" rx="16" fill="#0a0c0a" stroke="#6CFF9A" stroke-opacity="0.22" stroke-width="1.5"/>
+    <circle cx="32" cy="32" r="26" fill="url(#nsjGlow)"/>
+
+    <circle cx="32" cy="32" r="21" fill="none" stroke="#6CFF9A" stroke-width="3.5"
+            stroke-linecap="round" stroke-dasharray="24 8.99"
+            transform="rotate(-90 32 32)"/>
+
+    <circle cx="32" cy="32" r="9" fill="url(#nsjCore)"/>
+
+    <path d="M38 19 L38 39 C38 45 33 47.5 27.5 44.5" fill="none" stroke="#6CFF9A"
+          stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <circle cx="53" cy="32" r="2.6" fill="#6CFF9A"/>
+    <circle cx="32" cy="53" r="2.6" fill="#6CFF9A"/>
+    <circle cx="11" cy="32" r="2.6" fill="#6CFF9A"/>
+    <circle cx="32" cy="11" r="2.6" fill="#6CFF9A"/>
+</svg>

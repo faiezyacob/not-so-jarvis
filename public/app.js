@@ -1001,6 +1001,37 @@ function initImageGenSettings() {
     if (aspectSelect) aspectSelect.addEventListener('change', () => persistSelect('aspectRatio', aspectSelect));
     if (sizeSelect) sizeSelect.addEventListener('change', () => persistSelect('imageSize', sizeSelect));
 
+    // Seed lock + variation count: numeric/select settings that are persisted
+    // the same way as the dropdowns above.
+    const variationsSelect = document.getElementById('imageVariations');
+    const seedModeSelect = document.getElementById('imageSeedMode');
+    const seedInput = document.getElementById('imageSeed');
+    const syncSeedDisabled = () => {
+        if (seedInput) seedInput.disabled = !(seedModeSelect && seedModeSelect.value === 'fixed');
+    };
+    const persistValue = async (key, value, label) => {
+        setStatus('Saving...');
+        try {
+            const res = await fetch('/api/settings/image', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ [key]: value })
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                setStatus('Save failed: ' + (data.error || 'Unknown error'), true);
+                return;
+            }
+            setStatus('Saved: ' + label);
+        } catch {
+            setStatus('Save failed: connection error', true);
+        }
+        setTimeout(() => setStatus(''), 3000);
+    };
+    if (variationsSelect) variationsSelect.addEventListener('change', () => persistValue('variations', Number(variationsSelect.value), variationsSelect.value));
+    if (seedModeSelect) seedModeSelect.addEventListener('change', () => { syncSeedDisabled(); persistValue('seedMode', seedModeSelect.value, seedModeSelect.value); });
+    if (seedInput) seedInput.addEventListener('change', () => persistValue('seed', Math.max(0, Math.floor(Number(seedInput.value) || 0)), seedInput.value));
+
     (async () => {
         try {
             const res = await fetch('/api/settings/image');
@@ -1051,6 +1082,16 @@ function initImageGenSettings() {
             // Restore the saved Aspect Ratio + Size (fall back to defaults).
             if (aspectSelect) aspectSelect.value = settings.aspectRatio || defaults.aspectRatio || '4:5';
             if (sizeSelect) sizeSelect.value = settings.imageSize || defaults.imageSize || 'M';
+
+            // Restore seed lock + variations.
+            if (variationsSelect) variationsSelect.value = String(settings.variations || defaults.variations || 1);
+            if (seedModeSelect) seedModeSelect.value = settings.seedMode || defaults.seedMode || 'random';
+            if (seedInput) {
+                seedInput.value = (settings.seed !== undefined && settings.seed !== null)
+                    ? settings.seed
+                    : (defaults.seed || 0);
+            }
+            syncSeedDisabled();
 
             if (!data.comfyAvailable) {
                 setStatus('ComfyUI unreachable — showing defaults only', true);

@@ -4,12 +4,14 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>NOT-SO-JARVIS — Local AI Assistant</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
     <header class="header">
         <div class="header-left">
+            <img class="header-logo" src="favicon.svg" alt="" width="26" height="26">
             <span class="header-title">NOT-SO-JARVIS</span>
             <span class="header-subtitle">LOCAL INTELLIGENCE SYSTEM</span>
         </div>
@@ -270,6 +272,33 @@
                                 <option value="L">L (1.75MP)</option>
                             </select>
                         </div>
+                            </div>
+                        </div>
+                        <div class="settings-card" data-search="seed variations batch reproducibility lock">
+                            <div class="settings-card-title">SEED &amp; VARIATIONS</div>
+                            <div class="settings-card-sub">Lock a seed to reproduce a result, or generate up to 4 variations per request.</div>
+                            <div class="settings-field-row">
+                                <div class="settings-field">
+                                    <label class="settings-field-label" for="imageVariations">Variations</label>
+                                    <select class="settings-select" id="imageVariations">
+                                        <option value="1">1</option>
+                                        <option value="2">2</option>
+                                        <option value="3">3</option>
+                                        <option value="4">4</option>
+                                    </select>
+                                </div>
+                                <div class="settings-field">
+                                    <label class="settings-field-label" for="imageSeedMode">Seed Mode</label>
+                                    <select class="settings-select" id="imageSeedMode">
+                                        <option value="random">Random</option>
+                                        <option value="fixed">Fixed</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="settings-field">
+                                <label class="settings-field-label" for="imageSeed">Seed Value</label>
+                                <input type="number" class="settings-input" id="imageSeed" min="0" step="1" value="0">
+                                <span class="settings-hint">Used when Seed Mode is “Fixed”. Variations use seed, seed+1, …</span>
                             </div>
                         </div>
                         <div class="settings-card" data-search="unet clip vae base model krea2 checkpoint">

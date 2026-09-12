@@ -59,10 +59,66 @@ async function comfyFetch(path, options = {}) {
         const wrapped = new Error('ComfyUI ' + path + ' -> ' + res.status + ' ' + text.slice(0, 400));
         wrapped.code = 'comfyui_api_error';
         wrapped.status = res.status;
+        wrapped.body = text;
         throw wrapped;
     }
 
     return res;
+}
+
+// --- Error classification ----------------------------------------------------
+//
+// ComfyUI reports missing models, missing custom nodes and OOM as free-text in
+// a 400 body or a history error entry. Classify on content so the chat reply
+// tells the user what is actually wrong instead of always blaming custom nodes.
+
+const COMFY_ERROR_CLASSIFIERS = [
+    {
+        code: 'comfyui_oom',
+        re: /out of memory|cuda\s+oom|cuda error: out of memory|insufficient memory|allocation of .* failed|cannot allocate memory/i,
+        hint: 'The GPU ran out of VRAM during generation. Free memory (or let the VRAM manager unload the chat model) and try again.'
+    },
+    {
+        code: 'comfyui_missing_model',
+        re: /not in list|no such file|file ?not ?found|cannot find (?:the )?file|could not (?:find|open|load)|does not exist|failed to load|unable to load|invalid model|is not a valid (?:model|file)|ckpt_name|lora_name|unet_name|vae_name|clip_name/i,
+        hint: 'A required model file (UNET/CLIP/VAE/LoRA) is missing or misnamed. Check the model names in Settings > Setup.'
+    },
+    {
+        code: 'comfyui_missing_node',
+        re: /module not found|no module named|cannot import|import failed|unknown node|not registered|is not a valid node|class_type|node type/i,
+        hint: 'A ComfyUI custom node is missing or failed to load. Install it (Settings > Setup) and restart ComfyUI.'
+    }
+];
+
+// Returns the matching { code, hint } classifier, or null when unknown.
+function classifyComfyError(text) {
+    const t = String(text || '');
+    for (const c of COMFY_ERROR_CLASSIFIERS) {
+        if (c.re.test(t)) return c;
+    }
+    return null;
+}
+
+// Pull the most useful lines out of a ComfyUI /prompt error body:
+// { error: { message, details }, node_errors: { id: { errors: [...] } } }.
+function summarizeComfyErrorBody(body) {
+    if (!body) return '';
+    let parsed = null;
+    try { parsed = JSON.parse(body); } catch { /* not JSON */ }
+    if (!parsed || typeof parsed !== 'object') return String(body).slice(0, 400);
+    const parts = [];
+    if (parsed.error && parsed.error.message) parts.push(parsed.error.message);
+    if (parsed.error && parsed.error.details) parts.push(String(parsed.error.details).split('\n')[0]);
+    if (parsed.node_errors && typeof parsed.node_errors === 'object') {
+        for (const info of Object.values(parsed.node_errors)) {
+            const errs = (info && info.errors) || [];
+            for (const e of errs) {
+                if (e && e.message) parts.push(e.message + (e.details ? ': ' + String(e.details).split('\n')[0] : ''));
+            }
+        }
+    }
+    const unique = [...new Set(parts.filter(Boolean))];
+    return unique.join(' | ').slice(0, 500);
 }
 
 // Quick health check used before starting a generation so we can give the
@@ -78,8 +134,10 @@ async function isAvailable() {
 }
 
 async function getObjectInfo(timeoutMs) {
-    const res = await comfyFetch('/object_info', { timeout: Number(timeoutMs) || 120000 });
-    return res.json();
+    return withRetry(async () => {
+        const res = await comfyFetch('/object_info', { timeout: Number(timeoutMs) || 120000 });
+        return res.json();
+    });
 }
 
 // --- Real-time progress relay ---------------------------------------------
@@ -193,8 +251,18 @@ async function queuePrompt(graph) {
         });
     } catch (err) {
         if (err.code === 'comfyui_api_error') {
-            const wrapped = new Error('ComfyUI rejected the workflow. Check that the Krea2 custom nodes are installed: ' + String(err.message).slice(0, 400));
-            wrapped.code = 'comfyui_validation_error';
+            const detail = summarizeComfyErrorBody(err.body) || String(err.body || err.message || '').slice(0, 400);
+            const classified = classifyComfyError(String(err.body || '') + ' ' + detail);
+            const wrapped = new Error('');
+            if (classified) {
+                wrapped.code = classified.code;
+                wrapped.message = classified.hint + (detail ? ' ' + detail : '');
+            } else {
+                wrapped.code = 'comfyui_validation_error';
+                wrapped.message = 'ComfyUI rejected the workflow.' + (detail ? ' ' + detail : '') +
+                    ' Check the ComfyUI console; a model file may be missing or a custom node out of date.';
+            }
+            wrapped.detail = detail;
             throw wrapped;
         }
         throw err;
@@ -202,8 +270,14 @@ async function queuePrompt(graph) {
 
     const json = await res.json();
     if (json.node_errors && Object.keys(json.node_errors).length) {
-        const error = new Error('ComfyUI validation: ' + JSON.stringify(json.node_errors).slice(0, 500));
-        error.code = 'comfyui_validation_error';
+        const nodeErrorsText = JSON.stringify(json.node_errors);
+        const detail = summarizeComfyErrorBody(JSON.stringify({ node_errors: json.node_errors })) || nodeErrorsText.slice(0, 400);
+        const classified = classifyComfyError(detail);
+        const error = new Error(classified
+            ? classified.hint + ' ' + detail
+            : 'ComfyUI validation: ' + nodeErrorsText.slice(0, 500));
+        error.code = classified ? classified.code : 'comfyui_validation_error';
+        error.detail = detail;
         throw error;
     }
     if (!json.prompt_id) {
@@ -265,10 +339,10 @@ async function waitForPrompt(pid, options = {}) {
             const res = await comfyFetch('/history/' + encodeURIComponent(pid), { timeout: 15000, signal });
             hist = await res.json();
         } catch (err) {
-            // Cancellation wins over the offline/404 retry paths.
+            // Cancellation wins over the offline/5xx/404 retry paths.
             if (err.code === 'generation_cancelled') throw err;
-            if (err.code === 'comfyui_unavailable') {
-                // ComfyUI temporarily offline; keep polling until timeout.
+            if (isRetryableComfyError(err)) {
+                // ComfyUI briefly unreachable or a transient 5xx; keep polling.
                 await sleep(pollMs, signal);
                 continue;
             }
@@ -294,8 +368,12 @@ async function waitForPrompt(pid, options = {}) {
                 .map((m) => (m && m[1] && m[1].message) || '')
                 .filter(Boolean)
                 .join(' ');
-            const error = new Error('ComfyUI generation failed: ' + (messages || 'execution error (see ComfyUI console)'));
-            error.code = 'comfyui_generation_error';
+            const classified = classifyComfyError(messages);
+            const error = new Error(classified
+                ? classified.hint + (messages ? ' ' + messages : '')
+                : 'ComfyUI generation failed: ' + (messages || 'execution error (see ComfyUI console)'));
+            error.code = classified ? classified.code : 'comfyui_generation_error';
+            error.detail = messages;
             throw error;
         }
 
@@ -313,14 +391,21 @@ async function downloadImage(entry) {
         '/view?filename=' + encodeURIComponent(entry.filename) +
         '&subfolder=' + encodeURIComponent(entry.subfolder || '') +
         '&type=output';
-    const res = await comfyFetch(query, { timeout: 60000 });
-    const buf = Buffer.from(await res.arrayBuffer());
-    if (!buf.length) {
-        const error = new Error('ComfyUI returned an empty image for ' + entry.filename);
-        error.code = 'comfyui_empty_output';
-        throw error;
-    }
-    return buf;
+    // Downloads are idempotent GETs, so a transient network blip or an empty
+    // (partially-written) file is worth a couple of retries.
+    return withRetry(async () => {
+        const res = await comfyFetch(query, { timeout: 60000 });
+        const buf = Buffer.from(await res.arrayBuffer());
+        if (!buf.length) {
+            const error = new Error('ComfyUI returned an empty output file for ' + entry.filename);
+            error.code = 'comfyui_empty_output';
+            throw error;
+        }
+        return buf;
+    }, {
+        retries: 2,
+        isRetryable: (err) => err.code === 'comfyui_empty_output' || isRetryableComfyError(err)
+    });
 }
 
 // Locate ComfyUI's install root (the folder containing main.py) so services
@@ -660,6 +745,36 @@ async function cancelCurrentJob() {
     return { interrupted, cleared };
 }
 
+// Transient ComfyUI failures worth retrying: briefly unreachable, or a 5xx.
+// 4xx (validation, missing model) is deterministic and never retried.
+function isRetryableComfyError(err) {
+    if (!err) return false;
+    if (err.code === 'comfyui_unavailable') return true;
+    if (err.code === 'comfyui_api_error' && Number(err.status) >= 500) return true;
+    return false;
+}
+
+// Retry an idempotent ComfyUI operation with exponential backoff. Returns the
+// first successful result; rethrows the last error when retries are exhausted
+// or the error is not retryable.
+async function withRetry(fn, options = {}) {
+    const retries = Number.isFinite(options.retries) ? options.retries : 2;
+    const baseDelayMs = Number(options.baseDelayMs) || 400;
+    const signal = options.signal || null;
+    const isRetryable = typeof options.isRetryable === 'function' ? options.isRetryable : isRetryableComfyError;
+    let lastErr;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+        try {
+            return await fn();
+        } catch (err) {
+            lastErr = err;
+            if (attempt === retries || !isRetryable(err) || (signal && signal.aborted)) throw err;
+            await sleep(baseDelayMs * Math.pow(2, attempt), signal);
+        }
+    }
+    throw lastErr;
+}
+
 function sleep(ms, signal) {
     if (!signal) return new Promise((resolve) => setTimeout(resolve, ms));
     return new Promise((resolve, reject) => {
@@ -688,6 +803,10 @@ module.exports = {
     comfyUrl,
     comfyWsUrl,
     comfyFetch,
+    classifyComfyError,
+    summarizeComfyErrorBody,
+    isRetryableComfyError,
+    withRetry,
     isAvailable,
     getObjectInfo,
     getQueue,
