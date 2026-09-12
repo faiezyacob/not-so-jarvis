@@ -119,6 +119,17 @@ const ROUTER_FALLBACK = {
     updatedPrompt: ''
 };
 
+// Lightweight question detector for @-reference turns: a question about the
+// referenced image must stay chat, not trigger an identity edit.
+const QUESTION_LEAD_RE = /^(?:what|which|why|who|when|where|how|is|are|was|were|do|does|did|can|could|would|should|will|tell\s+me|describe|explain|show\s+me)\b/i;
+
+function looksLikeQuestion(text) {
+    const t = String(text || '').trim();
+    if (!t) return false;
+    if (QUESTION_LEAD_RE.test(t)) return true;
+    return /\?\s*$/.test(t);
+}
+
 // --- Deterministic regenerate handling ---------------------------------------
 // "generate the video again" / "generate the image again" must always execute
 // (same prompt, new seed), and "generate the video again but make her ..."
@@ -136,6 +147,10 @@ const REGEN_IMAGE_NOUN_RE = /\b(?:images?|pictures?|photos?|photographs?|portrai
 function parseRegenerateRequest(message, activeTaskType) {
     const text = String(message || '');
     if (!text.trim() || !REGENERATE_WORD_RE.test(text)) return null;
+    // Questions/exclamations about repetition ("what again?", "not again!",
+    // "stop repeating") are chat, not regenerate commands.
+    if (looksLikeQuestion(text)) return null;
+    if (/^\s*(?:no|not|never|stop|don'?t)\b/i.test(text)) return null;
     const hasVideoNoun = videoGenerator.VIDEO_WORD_RE.test(text);
     const hasImageNoun = REGEN_IMAGE_NOUN_RE.test(text);
     let media = null;
@@ -179,7 +194,11 @@ function parseRegenerateRequest(message, activeTaskType) {
 function buildRouterContext(activeTask, recentMessages) {
     if (!recentMessages || recentMessages.length === 0) return '(no recent messages)';
     return recentMessages
-        .map((m) => (m.role === 'assistant' ? 'Assistant' : 'User') + ': ' + m.content)
+        .map((m) => {
+            const role = m.role === 'assistant' ? 'Assistant' : 'User';
+            const content = String(m.content || '').replace(/\s+/g, ' ').trim();
+            return role + ': ' + (content.length > 500 ? content.slice(0, 500) + '…' : content);
+        })
         .join('\n');
 }
 
@@ -260,14 +279,21 @@ function normalizeDecision(parsed) {
         else if (rawTask === 'image_generation') task = 'image_generation';
         else if (rawTask === 'video_upscale') task = 'video_upscale';
         else if (rawTask === 'image_upscale') task = 'image_upscale';
-        else task = 'image_generation';
+        // Unknown/missing task stays null: a malformed router reply must never
+        // be guessed into image_generation (which would trigger a real render).
         if (task === 'video_upscale' || task === 'image_upscale') {
             action = 'upscale';
+            shouldExecuteTool = parsed.shouldExecuteTool !== false;
+        } else if (task === 'image_edit' && intent === 'continue_task') {
+            // Follow-up tweaks are always a full-regen modify; an identity edit
+            // only runs for an explicit new/switch image_edit decision.
+            task = 'image_generation';
+            action = 'modify';
             shouldExecuteTool = parsed.shouldExecuteTool !== false;
         } else if (task === 'image_edit') {
             action = 'edit';
             shouldExecuteTool = parsed.shouldExecuteTool !== false;
-        } else {
+        } else if (task) {
             action = intent === 'new_task' ? String(parsed.action || 'generate')
                 : String(parsed.action || 'modify');
             shouldExecuteTool = parsed.shouldExecuteTool !== false;
@@ -299,7 +325,7 @@ function normalizeDecision(parsed) {
 // activeTask can be null to indicate no active task; conversationId is used to
 // fetch recent messages for the compact context. hasAttachedImage marks a
 // freshly uploaded photo on this message (vision source for image_edit).
-async function routeMessage({ message, provider, model, conversationId, hasAttachedImage, think }) {
+async function routeMessage({ message, provider, model, conversationId, hasAttachedImage, referenceImage, think }) {
     // Upscale requests are narrow, deterministic intents. Detect them with
     // heuristics before the LLM router so "upscale this video" always routes
     // to the video upscale pipeline and "upscale this image" always routes to
@@ -343,9 +369,62 @@ async function routeMessage({ message, provider, model, conversationId, hasAttac
         };
     }
 
+    // Explicit @-picker reference: the user chose a generated image from the
+    // current conversation and wants to act on that exact file. This governs
+    // the turn regardless of the active task:
+    //   - a video request turns it into the I2VA first frame;
+    //   - a question about it stays chat;
+    //   - any other instruction is an identity edit of the referenced image.
+    if (referenceImage) {
+        const refText = String(message || '')
+            .replace(/!\[[^\]]*\]\(\/generated\/[^)]+\)/g, '')
+            .replace(/!\[[^\]]*\]\(\/images\/[^)]+\)/g, '')
+            .trim();
+
+        if (videoGenerator.VIDEO_WORD_RE.test(refText) || videoGenerator.I2V_REF_RE.test(refText)) {
+            try {
+                const videoIntent = await videoGenerator.detectVideoIntent(refText, providers, provider, model, think);
+                if (videoIntent && videoIntent.intent === 'video_generation') {
+                    videoIntent.has_reference_image = true;
+                    videoIntent.videoMode = 'i2va';
+                    videoIntent.sourceImageRawFilename = referenceImage;
+                    if (!videoIntent.user_prompt) videoIntent.user_prompt = refText || 'animate this image';
+                    return {
+                        intent: 'new_task',
+                        task: 'video_generation',
+                        action: 'generate',
+                        shouldExecuteTool: true,
+                        updatedPrompt: videoIntent.user_prompt,
+                        structuredRequest: videoIntent
+                    };
+                }
+            } catch (err) {
+                console.warn('[task-router] Reference video gate failed:', err.message);
+            }
+        }
+
+        if (refText && !looksLikeQuestion(refText)) {
+            return {
+                intent: 'new_task',
+                task: 'image_edit',
+                action: 'edit',
+                shouldExecuteTool: true,
+                updatedPrompt: refText
+            };
+        }
+        return ROUTER_FALLBACK;
+    }
+
     const activeTask = taskState.getTask(conversationId);
-    const messages = conversationService.getMessages(conversationId)
-        .slice(-RECENT_MESSAGES_FOR_ROUTER);
+    // The caller persists the current user turn before routing, so the latest
+    // stored message duplicates `message` — drop it to avoid the router seeing
+    // the turn twice and losing a real prior turn.
+    const stored = conversationService.getMessages(conversationId);
+    const lastStored = stored[stored.length - 1];
+    const history = (lastStored && String(lastStored.content || '') === String(message || ''))
+        ? stored.slice(0, -1)
+        : stored;
+    const messages = history.slice(-RECENT_MESSAGES_FOR_ROUTER);
 
     // Deterministic regenerate gate: "generate the video/image again" re-runs
     // the active task verbatim; "... again but <change>" runs it as a
@@ -518,7 +597,7 @@ async function routeMessage({ message, provider, model, conversationId, hasAttac
     // generated image. Skipped for video tasks and video requests (the video
     // pipeline owns those) — the LLM router handles everything vaguer.
     if (activeTask.type !== 'video' && !videoGenerator.VIDEO_WORD_RE.test(message)) {
-        if (imageGenerator.detectEditIntent(message)) {
+        if (imageGenerator.detectEditIntent(message, activeTask.type === 'image')) {
             return {
                 intent: 'new_task',
                 task: 'image_edit',

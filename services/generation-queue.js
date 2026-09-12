@@ -9,11 +9,16 @@
 
 let nextId = 1;
 let active = null; // { id, label, kind, conversationId, startedAt }
-let pending = []; // [{ id, label, kind, conversationId, enqueuedAt, run, resolve, reject, onQueued }]
+let pending = []; // [{ id, label, kind, conversationId, enqueuedAt, run, resolve, reject, onQueued, onStart }]
 const MAX_PENDING = 10;
 
 function canStartGeneration() {
     return !active && pending.length === 0;
+}
+
+// True when the given queue id is the job currently holding the slot.
+function isActive(id) {
+    return Boolean(active && active.id === Number(id));
 }
 
 function getStatus() {
@@ -47,6 +52,12 @@ async function runEntry(entry) {
         conversationId: entry.conversationId,
         startedAt: Date.now()
     };
+    // A job that waited in the queue emits a fresh "generating" status when it
+    // actually starts, so the client knows it is now the running job (and
+    // Cancel should interrupt it rather than try to dequeue it).
+    if (entry.queued && typeof entry.onStart === 'function') {
+        try { entry.onStart(entry.id); } catch {}
+    }
     try {
         const result = await entry.run();
         entry.resolve(result);
@@ -89,7 +100,9 @@ function enqueue(fn, opts = {}) {
         enqueuedAt: Date.now(),
         run: fn,
         onQueued: typeof opts.onQueued === 'function' ? opts.onQueued : null,
+        onStart: typeof opts.onStart === 'function' ? opts.onStart : null,
         cancelled: false,
+        queued: false,
         resolve: null,
         reject: null
     };
@@ -102,6 +115,7 @@ function enqueue(fn, opts = {}) {
     if (!active && pending.length === 0) {
         runEntry(entry).catch(() => {});
     } else {
+        entry.queued = true;
         pending.push(entry);
         if (entry.onQueued) {
             try { entry.onQueued(pending.length, entry.id); } catch {}
@@ -134,6 +148,7 @@ module.exports = {
     enqueue,
     cancelQueued,
     canStartGeneration,
+    isActive,
     getStatus,
     queuedIdOf,
     MAX_PENDING

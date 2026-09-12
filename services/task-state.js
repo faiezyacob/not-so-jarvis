@@ -40,6 +40,20 @@ function saveStore() {
 
 const tasks = new Map(Object.entries(loadStore()));
 
+// A generation cannot survive a process restart (the generation queue is
+// in-memory), so any task left "running" at boot is stale — mark it failed so
+// the UI and routing don't wait forever on a job that no longer exists.
+(function reconcileRunningTasks() {
+    let changed = false;
+    for (const task of tasks.values()) {
+        if (task && task.status === 'running') {
+            task.status = 'failed';
+            changed = true;
+        }
+    }
+    if (changed) saveStore();
+})();
+
 function createEmptyTask() {
     return {
         type: null,                 // 'image' | 'video' | 'audio' | null

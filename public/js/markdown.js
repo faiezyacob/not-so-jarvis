@@ -12,6 +12,18 @@ const Markdown = (() => {
         return div.innerHTML;
     }
 
+    // Only safe URL schemes / local media paths reach an attribute. Blocks
+    // javascript:/vbscript:/file: and non-image data: URLs, and rejects any
+    // whitespace/quote/angle characters that could break out of the attribute.
+    // Apostrophes stay allowed (safe inside a double-quoted attribute).
+    function sanitizeUrl(url) {
+        const raw = String(url == null ? '' : url).trim();
+        if (!raw) return '';
+        if (/[\s"<>`]/.test(raw)) return '';
+        if (/^(?:javascript|vbscript|file|data):/i.test(raw) && !/^data:image\//i.test(raw)) return '';
+        return raw;
+    }
+
     function parseInline(text) {
         let result = text;
 
@@ -56,15 +68,18 @@ const Markdown = (() => {
 
         // Images ![alt](url) - handle before links so they don't match as links
         result = result.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, url) => {
-            return '<img class="md-image" src="' + url + '" alt="' + alt + '">';
+            return '<img class="md-image" src="' + sanitizeUrl(url) + '" alt="' + escapeHtml(alt) + '">';
         });
 
         // Links [text](url)
-        result = result.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer" class="md-link">$1</a>');
+        result = result.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, label, url) => {
+            return '<a href="' + sanitizeUrl(url) + '" target="_blank" rel="noopener noreferrer" class="md-link">' + label + '</a>';
+        });
 
         // Auto-detect URLs (http/https)
         result = result.replace(/(?<!["\'])(https?:\/\/[^\s<]+)/g, (url) => {
-            return '<a href="' + url + '" target="_blank" rel="noopener noreferrer" class="md-link">' + url + '</a>';
+            const safe = sanitizeUrl(url);
+            return '<a href="' + safe + '" target="_blank" rel="noopener noreferrer" class="md-link">' + escapeHtml(safe) + '</a>';
         });
 
         return result;
@@ -170,6 +185,9 @@ const Markdown = (() => {
             // Regular paragraph line
             if (/^<video\b/i.test(line.trim())) {
                 let tag = line;
+                // Strip inline event handlers (onerror, onload, ...) so a
+                // model-supplied tag can never execute script.
+                tag = tag.replace(/\son[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
                 // The custom VideoPlayer provides all controls — never use the
                 // native browser UI, even if the backend emits it.
                 tag = tag.replace(/\scontrols(?:="[^"]*")?/gi, '');

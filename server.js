@@ -932,6 +932,41 @@ function sanitizeChatImages(images) {
     });
 }
 
+// Validate an @-picker reference: an image filename inside data/generated.
+// Returns the bare safe filename, or null when it is missing/not an image.
+function sanitizeReferenceImage(value) {
+    const safeName = path.basename(String(value || '').split('?')[0]);
+    if (!safeName || !/\.(?:png|jpe?g|webp)$/i.test(safeName)) return null;
+    const fullPath = path.join(GENERATED_DIR, safeName);
+    if (!fullPath.startsWith(GENERATED_DIR) || !fs.existsSync(fullPath)) return null;
+    return safeName;
+}
+
+// Resolve a reference to the edit-source shape (absPath/kind/rawFilename).
+function resolveReferenceSource(rawFilename) {
+    const safeName = sanitizeReferenceImage(rawFilename);
+    if (!safeName) return null;
+    return {
+        absPath: path.join(GENERATED_DIR, safeName),
+        kind: 'generated',
+        rawFilename: safeName
+    };
+}
+
+// Read a referenced generated image as vision base64 (best-effort) so chat can
+// answer questions about it. Oversized or unreadable files are skipped.
+function referenceVisionImages(referenceImage) {
+    const source = resolveReferenceSource(referenceImage);
+    if (!source) return [];
+    try {
+        const buffer = fs.readFileSync(source.absPath);
+        if (!buffer.length || buffer.length > UPLOAD_MAX_BYTES) return [];
+        return [buffer.toString('base64')];
+    } catch (err) {
+        return [];
+    }
+}
+
 // --- Conversation handlers ---
 
 async function handleCreateConversation(req, res) {
@@ -1150,7 +1185,10 @@ async function handleChatStream(req, res) {
             json(res, 400, { error: err.message });
             return;
         }
-        if ((!message || typeof message !== 'string' || !message.trim()) && chatImages.length === 0) {
+        // Optional generated-image reference selected from the @ picker. It
+        // becomes the source for an identity edit or an I2VA first frame.
+        const referenceImage = sanitizeReferenceImage(body.reference || body.referenceImage || (Array.isArray(body.references) ? body.references[0] : null));
+        if ((!message || typeof message !== 'string' || !message.trim()) && chatImages.length === 0 && !referenceImage) {
             json(res, 400, { error: 'message is required' });
             return;
         }
@@ -1184,6 +1222,7 @@ async function handleChatStream(req, res) {
             model,
             conversationId,
             hasAttachedImage: chatImages.length > 0,
+            referenceImage,
             think
         });
 
@@ -1232,6 +1271,7 @@ async function handleChatStream(req, res) {
                 instruction,
                 action,
                 previousPrompt: activeTask.prompt || null,
+                sourceOverride: referenceImage ? resolveReferenceSource(referenceImage) : undefined,
                 think
             });
             return;
@@ -1468,7 +1508,7 @@ async function handleChatStream(req, res) {
                 // requires BOTH image-referencing wording AND a resolvable image;
                 // otherwise the request is plain T2VA. The mode decision is based
                 // on the previously resolved generated image (never a re-upload).
-                const modeInfo = videoGenerator.resolveVideoMode(conversationId, message, structuredRequest);
+                const modeInfo = videoGenerator.resolveVideoMode(conversationId, message, structuredRequest, referenceImage);
                 videoMode = modeInfo.videoMode;
                 sourceImageRawFilename = modeInfo.sourceImage ? modeInfo.sourceImage.rawFilename : null;
 
@@ -1619,6 +1659,11 @@ async function handleChatStream(req, res) {
             taskState.clearTask(conversationId);
         }
 
+        // A referenced generated image is exposed to the chat model as vision
+        // so questions about it ("what do you think of this?") are answered
+        // with the actual pixels in view.
+        const chatVision = chatImages.concat(referenceVisionImages(referenceImage)).slice(0, CHAT_IMAGES_MAX);
+
         const contextMessages = contextBuilder.buildContext(
             conversationId,
             message,
@@ -1627,7 +1672,7 @@ async function handleChatStream(req, res) {
             decision.intent === 'task_question'
                 ? taskRouter.renderActiveTaskContext(taskState.getTask(conversationId))
                 : '',
-            chatImages
+            chatVision
         );
 
         let fullReply = '';
@@ -1731,19 +1776,28 @@ async function handleImageGenerationStream(req, res, opts) {
 
     let queueId = null;
     const onClose = () => {
-        if (queueId) imageGenerator.cancelQueued(queueId);
+        if (!queueId) return;
+        // Pending job: drop it from the queue. Running job: interrupt ComfyUI
+        // so an abandoned client doesn't leave a generation churning and
+        // then writing an orphan file + history entry.
+        if (!imageGenerator.cancelQueued(queueId) && imageGenerator.isActive(queueId)) {
+            comfyui.interrupt().catch(() => {});
+        }
     };
     req.on('close', onClose);
     const onQueued = (position, id) => {
         queueId = id;
         sseWrite(res, { queued: { position, queueId: id } });
     };
+    const onStart = () => {
+        sseWrite(res, { generating: 'Generating image...' });
+    };
 
     try {
         sseWrite(res, { generating: 'Generating image...' });
 
         const promise = imageGenerator.generateImage(imagePrompt, {
-            provider, model, conversationId, onQueued,
+            provider, model, conversationId, onQueued, onStart,
             label: 'image generation', kind: 'image_generation'
         });
         queueId = promise.queueId || null;
@@ -1805,6 +1859,7 @@ async function handleImageGenerationStream(req, res, opts) {
 function stripImageRefs(text) {
     return String(text || '')
         .replace(/!\[[^\]]*\]\(\/images\/[^)]+\)/g, '')
+        .replace(/!\[[^\]]*\]\(\/generated\/[^)]+\)/g, '')
         .replace(/\n{3,}/g, '\n\n')
         .trim();
 }
@@ -1821,6 +1876,10 @@ function resolveEditSource(userText, conversationId) {
             return { absPath: fullPath, kind: 'upload', rawFilename: safeName };
         }
     }
+    // A generated-image reference embedded in the message (the @ picker) wins
+    // over the conversation's latest output so the edit targets that exact file.
+    const reference = resolveReferenceSource((String(userText || '').match(/\/generated\/([^\s)\]}"']+)/) || [])[1]);
+    if (reference) return reference;
     return resolveGeneratedEditSource(conversationId);
 }
 
@@ -1840,12 +1899,21 @@ async function handleImageEditStream(req, res, opts) {
 
     let queueId = null;
     const onClose = () => {
-        if (queueId) imageGenerator.cancelQueued(queueId);
+        if (!queueId) return;
+        // Pending job: drop it from the queue. Running job: interrupt ComfyUI
+        // so an abandoned client doesn't leave a generation churning and
+        // then writing an orphan file + history entry.
+        if (!imageGenerator.cancelQueued(queueId) && imageGenerator.isActive(queueId)) {
+            comfyui.interrupt().catch(() => {});
+        }
     };
     req.on('close', onClose);
     const onQueued = (position, id) => {
         queueId = id;
         sseWrite(res, { queued: { position, queueId: id } });
+    };
+    const onStart = () => {
+        sseWrite(res, { generating: 'Editing image...' });
     };
 
     try {
@@ -1866,7 +1934,7 @@ async function handleImageEditStream(req, res, opts) {
         sseWrite(res, { generating: 'Editing image...' });
 
         const promise = imageGenerator.editImage(source.absPath, instruction, {
-            provider, model, conversationId, onQueued,
+            provider, model, conversationId, onQueued, onStart,
             label: 'image edit', kind: 'image_edit'
         });
         queueId = promise.queueId || null;
@@ -1881,6 +1949,16 @@ async function handleImageEditStream(req, res, opts) {
                 height: result.height,
                 edit: { source: source.rawFilename }
             }),
+            // An edit supersedes the prior image lineage so "generate another
+            // image" after an edit rebases onto the edited result, not the
+            // pre-edit prompt.
+            lastImage: {
+                prompt: instruction,
+                originalPrompt: taskState.getTask(conversationId).originalPrompt || instruction,
+                creative_mode: existingParams.creative_mode || 'none',
+                explicit_constraints: existingParams.explicit_constraints || [],
+                attributes: existingParams.attributes || null
+            },
             status: 'completed',
             lastAction: action || 'edit'
         });
@@ -1953,18 +2031,27 @@ async function handleVideoGenerationStream(req, res, opts) {
 
     let queueId = null;
     const onClose = () => {
-        if (queueId) imageGenerator.cancelQueued(queueId);
+        if (!queueId) return;
+        // Pending job: drop it from the queue. Running job: interrupt ComfyUI
+        // so an abandoned client doesn't leave a generation churning and
+        // then writing an orphan file + history entry.
+        if (!imageGenerator.cancelQueued(queueId) && imageGenerator.isActive(queueId)) {
+            comfyui.interrupt().catch(() => {});
+        }
     };
     req.on('close', onClose);
     const onQueued = (position, id) => {
         queueId = id;
         sseWrite(res, { queued: { position, queueId: id } });
     };
+    const onStart = () => {
+        sseWrite(res, { generating: 'Generating video...' });
+    };
 
     try {
         sseWrite(res, { generating: 'Generating video...' });
 
-        const opts2 = { provider, model, conversationId, onQueued, label: 'video generation', kind: 'video_generation' };
+        const opts2 = { provider, model, conversationId, onQueued, onStart, label: 'video generation', kind: 'video_generation' };
         if (structuredRequest) {
             if (structuredRequest.parameters) opts2.parameters = structuredRequest.parameters;
             if (structuredRequest.modifier) opts2.modifier = structuredRequest.modifier;
@@ -2000,7 +2087,13 @@ async function handleVideoGenerationStream(req, res, opts) {
             generatedAsset: finalResult.url,
             videoMode: finalResult.mode || opts2.mode || 't2va',
             sourceImage: opts2.sourceImageRawFilename || null,
-            parameters: Object.assign({}, existingParams, finalResult.metadata || {}),
+            parameters: Object.assign({}, existingParams, {
+                width: finalResult.width || existingParams.width || null,
+                height: finalResult.height || existingParams.height || null,
+                video: (finalResult.meta && finalResult.meta.video) || existingParams.video || null,
+                refined: Boolean(finalResult.refined),
+                refineError: finalResult.refineError || null
+            }),
             status: 'completed',
             lastAction: message || action || 'generate'
         });
@@ -2020,7 +2113,16 @@ async function handleVideoGenerationStream(req, res, opts) {
             '**Prompt:** ' + videoPrompt + '\n\n' +
             '<video class="md-video" preload="metadata" playsinline src="' + finalResult.url + '"></video>';
 
-        sseWrite(res, { video: { url: finalResult.url, content, meta: finalResult.metadata || null, upscale: null } });
+        sseWrite(res, {
+            video: {
+                url: finalResult.url,
+                content,
+                meta: finalResult.meta || null,
+                refined: Boolean(finalResult.refined),
+                refineError: finalResult.refineError || null,
+                upscale: null
+            }
+        });
         res.end();
     } catch (err) {
         console.error('[video-generator] Generation failed:', err.message, '\n', err.stack);
@@ -2043,12 +2145,21 @@ async function handleVideoUpscaleStream(req, res, opts) {
 
     let queueId = null;
     const onClose = () => {
-        if (queueId) imageGenerator.cancelQueued(queueId);
+        if (!queueId) return;
+        // Pending job: drop it from the queue. Running job: interrupt ComfyUI
+        // so an abandoned client doesn't leave a generation churning and
+        // then writing an orphan file + history entry.
+        if (!imageGenerator.cancelQueued(queueId) && imageGenerator.isActive(queueId)) {
+            comfyui.interrupt().catch(() => {});
+        }
     };
     req.on('close', onClose);
     const onQueued = (position, id) => {
         queueId = id;
         sseWrite(res, { queued: { position, queueId: id } });
+    };
+    const onStart = () => {
+        sseWrite(res, { generating: 'Upscaling video...' });
     };
 
     try {
@@ -2076,7 +2187,7 @@ async function handleVideoUpscaleStream(req, res, opts) {
         sseWrite(res, { generating: 'Upscaling video...' });
 
         const promise = videoGenerator.upscaleVideo(source.rawFilename, {
-            conversationId, onQueued, label: 'video upscale', kind: 'video_upscale'
+            conversationId, onQueued, onStart, label: 'video upscale', kind: 'video_upscale'
         });
         queueId = promise.queueId || null;
         const result = await promise;
@@ -2334,12 +2445,21 @@ async function handleImageUpscaleStream(req, res, opts) {
 
     let queueId = null;
     const onClose = () => {
-        if (queueId) imageGenerator.cancelQueued(queueId);
+        if (!queueId) return;
+        // Pending job: drop it from the queue. Running job: interrupt ComfyUI
+        // so an abandoned client doesn't leave a generation churning and
+        // then writing an orphan file + history entry.
+        if (!imageGenerator.cancelQueued(queueId) && imageGenerator.isActive(queueId)) {
+            comfyui.interrupt().catch(() => {});
+        }
     };
     req.on('close', onClose);
     const onQueued = (position, id) => {
         queueId = id;
         sseWrite(res, { queued: { position, queueId: id } });
+    };
+    const onStart = () => {
+        sseWrite(res, { generating: 'Upscaling image...' });
     };
 
     try {
@@ -2371,7 +2491,7 @@ async function handleImageUpscaleStream(req, res, opts) {
         sseWrite(res, { generating: 'Upscaling image...' });
 
         const promise = imageGenerator.upscaleImage(source.rawFilename, {
-            provider, model, conversationId, onQueued,
+            provider, model, conversationId, onQueued, onStart,
             label: 'image upscale', kind: 'image_upscale'
         });
         queueId = promise.queueId || null;

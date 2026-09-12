@@ -14,7 +14,13 @@ const Chat = (() => {
     let chatFileInput;
     let chatAttachmentsEl;
     let conversationListEl;
+    let chatMentionPopup;
     let pendingAttachments = [];
+    let pendingReference = null;
+    let mentionItems = [];
+    let mentionIndex = 0;
+    let mentionToken = 0;
+    let generatedMetaCache = null;
 
     const ATTACH_MAX = 3;
     const ATTACH_MAX_BYTES = 10 * 1024 * 1024;
@@ -31,6 +37,7 @@ const Chat = (() => {
         chatAttach = document.getElementById('chatAttach');
         chatFileInput = document.getElementById('chatFileInput');
         chatAttachmentsEl = document.getElementById('chatAttachments');
+        chatMentionPopup = document.getElementById('chatMentionPopup');
         conversationListEl = document.getElementById('conversationList');
 
         document.getElementById('newConversationBtn').addEventListener('click', onNewConversation);
@@ -49,7 +56,21 @@ const Chat = (() => {
             }
             if (files.length) addFiles(files);
         });
+        chatInput.addEventListener('input', onChatInput);
+        chatInput.addEventListener('blur', () => {
+            setTimeout(closeMentionPopup, 120);
+        });
         chatInput.addEventListener('keydown', (e) => {
+            if (mentionIsOpen()) {
+                if (e.key === 'ArrowDown') { e.preventDefault(); moveMention(1); return; }
+                if (e.key === 'ArrowUp') { e.preventDefault(); moveMention(-1); return; }
+                if (e.key === 'Enter' || e.key === 'Tab') {
+                    e.preventDefault();
+                    selectMention(mentionIndex);
+                    return;
+                }
+                if (e.key === 'Escape') { e.preventDefault(); closeMentionPopup(); return; }
+            }
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 if (activeStreamAbort) return;
@@ -138,12 +159,21 @@ const Chat = (() => {
     async function onSelect(id) {
         if (id === Conversations.currentId()) return;
         const messages = await Conversations.select(id);
+        resetReferenceState();
         renderMessages(messages);
     }
 
     async function onNewConversation() {
         const conv = await Conversations.create();
+        resetReferenceState();
         renderMessages([]);
+    }
+
+    function resetReferenceState() {
+        generatedMetaCache = null;
+        pendingReference = null;
+        closeMentionPopup();
+        renderAttachments();
     }
 
     async function onRename(conv) {
@@ -212,11 +242,35 @@ const Chat = (() => {
     function renderAttachments() {
         if (!chatAttachmentsEl) return;
         chatAttachmentsEl.innerHTML = '';
-        if (!pendingAttachments.length) {
+        if (!pendingAttachments.length && !pendingReference) {
             chatAttachmentsEl.style.display = 'none';
             return;
         }
         chatAttachmentsEl.style.display = 'flex';
+
+        if (pendingReference) {
+            const item = document.createElement('div');
+            item.className = 'chat-attachment chat-attachment--reference';
+            const img = document.createElement('img');
+            img.className = 'chat-attachment-thumb';
+            img.src = pendingReference.url;
+            img.alt = pendingReference.filename;
+            const badge = document.createElement('span');
+            badge.className = 'chat-attachment-badge';
+            badge.textContent = '@';
+            badge.title = 'Reference image';
+            const btn = document.createElement('button');
+            btn.className = 'chat-attachment-remove';
+            btn.type = 'button';
+            btn.textContent = '×';
+            btn.title = 'Remove reference';
+            btn.addEventListener('click', clearReference);
+            item.appendChild(img);
+            item.appendChild(badge);
+            item.appendChild(btn);
+            chatAttachmentsEl.appendChild(item);
+        }
+
         pendingAttachments.forEach((a) => {
             const item = document.createElement('div');
             item.className = 'chat-attachment';
@@ -249,6 +303,172 @@ const Chat = (() => {
             uploaded.push(data);
         }
         return uploaded;
+    }
+
+    // --- @ reference picker ---
+    //
+    // Typing "@" opens a picker of the images generated in the current
+    // conversation. Selecting one attaches it as a reference chip that is sent
+    // with the next message so the pipelines can use it as an edit source or
+    // an I2VA first frame instead of the conversation's latest image.
+
+    function onChatInput() {
+        const caret = chatInput.selectionStart;
+        if (caret === null || caret === undefined) return;
+        const before = chatInput.value.slice(0, caret);
+        const match = before.match(/(?:^|\s)@([^\s@]*)$/);
+        if (!match) {
+            closeMentionPopup();
+            return;
+        }
+        openMentionPopup(match[1]);
+    }
+
+    function mentionIsOpen() {
+        return chatMentionPopup && !chatMentionPopup.hidden && mentionItems.length > 0;
+    }
+
+    function closeMentionPopup() {
+        mentionToken += 1;
+        mentionItems = [];
+        mentionIndex = 0;
+        if (chatMentionPopup) {
+            chatMentionPopup.hidden = true;
+            chatMentionPopup.innerHTML = '';
+        }
+    }
+
+    // Scan the rendered conversation for generated image links (newest first).
+    function conversationImages() {
+        if (!chatMessagesEl) return [];
+        const seen = new Set();
+        const list = [];
+        chatMessagesEl.querySelectorAll('img.md-image').forEach((img) => {
+            const src = String(img.getAttribute('src') || '');
+            if (src.indexOf('/generated/') === -1) return;
+            const decoded = decodeURIComponent(src.split('?')[0]);
+            const idx = decoded.lastIndexOf('/');
+            const filename = idx === -1 ? decoded : decoded.slice(idx + 1);
+            if (!/\.(?:png|jpe?g|webp)$/i.test(filename)) return;
+            if (seen.has(filename)) return;
+            seen.add(filename);
+            list.push({ filename, url: '/generated/' + encodeURIComponent(filename) });
+        });
+        return list.reverse();
+    }
+
+    async function generatedMeta() {
+        if (generatedMetaCache) return generatedMetaCache;
+        try {
+            const res = await fetch('/api/generated');
+            const data = await res.json();
+            generatedMetaCache = data.images || [];
+        } catch (e) {
+            generatedMetaCache = [];
+        }
+        return generatedMetaCache;
+    }
+
+    async function openMentionPopup(query) {
+        const token = ++mentionToken;
+        const images = conversationImages();
+        if (!images.length) {
+            closeMentionPopup();
+            return;
+        }
+        const meta = await generatedMeta();
+        if (token !== mentionToken) return;
+        const q = String(query || '').toLowerCase();
+        const enriched = images.map((img) => {
+            const found = meta.find((m) => String(m.file || '').split('?')[0].endsWith('/' + img.filename));
+            return Object.assign({}, img, { prompt: found ? (found.prompt || '') : '' });
+        });
+        mentionItems = q
+            ? enriched.filter((img) => (img.filename + ' ' + img.prompt).toLowerCase().indexOf(q) !== -1)
+            : enriched;
+        if (!mentionItems.length) {
+            closeMentionPopup();
+            return;
+        }
+        mentionIndex = 0;
+        renderMentionPopup();
+    }
+
+    function renderMentionPopup() {
+        chatMentionPopup.innerHTML = '';
+        mentionItems.forEach((item, i) => {
+            const row = document.createElement('button');
+            row.type = 'button';
+            row.className = 'chat-mention-item' + (i === mentionIndex ? ' active' : '');
+            const thumb = document.createElement('img');
+            thumb.className = 'chat-mention-thumb';
+            thumb.src = item.url;
+            thumb.alt = item.filename;
+            const meta = document.createElement('div');
+            meta.className = 'chat-mention-meta';
+            const name = document.createElement('div');
+            name.className = 'chat-mention-name';
+            name.textContent = item.filename;
+            const prompt = document.createElement('div');
+            prompt.className = 'chat-mention-prompt';
+            prompt.textContent = item.prompt || 'Generated image';
+            meta.appendChild(name);
+            meta.appendChild(prompt);
+            row.appendChild(thumb);
+            row.appendChild(meta);
+            row.addEventListener('mousedown', (e) => {
+                e.preventDefault();
+                selectMention(i);
+            });
+            row.addEventListener('mouseenter', () => {
+                mentionIndex = i;
+                updateMentionActive();
+            });
+            chatMentionPopup.appendChild(row);
+        });
+        chatMentionPopup.hidden = false;
+        updateMentionActive();
+        if (mentionItems.length) {
+            requestAnimationFrame(() => chatInput.focus());
+        }
+    }
+
+    function updateMentionActive() {
+        if (!chatMentionPopup) return;
+        const rows = chatMentionPopup.querySelectorAll('.chat-mention-item');
+        rows.forEach((row, i) => row.classList.toggle('active', i === mentionIndex));
+        const active = rows[mentionIndex];
+        if (active && typeof active.scrollIntoView === 'function') {
+            active.scrollIntoView({ block: 'nearest' });
+        }
+    }
+
+    function moveMention(delta) {
+        if (!mentionItems.length) return;
+        mentionIndex = (mentionIndex + delta + mentionItems.length) % mentionItems.length;
+        updateMentionActive();
+    }
+
+    function selectMention(index) {
+        const item = mentionItems[index];
+        if (!item) return;
+        const caret = chatInput.selectionStart || 0;
+        const before = chatInput.value.slice(0, caret).replace(/(?:^|\s)@[^\s@]*$/, ' ');
+        const after = chatInput.value.slice(caret);
+        chatInput.value = (before + after).replace(/^\s+/, '').replace(/\s{2,}/g, ' ');
+        addReference(item);
+        closeMentionPopup();
+        chatInput.focus();
+    }
+
+    function addReference(item) {
+        pendingReference = item;
+        renderAttachments();
+    }
+
+    function clearReference() {
+        pendingReference = null;
+        renderAttachments();
     }
 
     // --- Message rendering ---
@@ -424,7 +644,8 @@ const Chat = (() => {
         }
         const text = chatInput.value.trim();
         const attachments = pendingAttachments.slice();
-        if (!text && !attachments.length) return;
+        const reference = pendingReference;
+        if (!text && !attachments.length && !reference) return;
 
         let conversationId = Conversations.currentId();
 
@@ -436,24 +657,28 @@ const Chat = (() => {
         }
 
         const visionImages = attachments.map((a) => a.base64);
-        let userText = text;
-        let uploaded = [];
+        const parts = [];
+        if (text) parts.push(text);
         if (attachments.length) {
             setSendingState(true);
             try {
-                uploaded = await uploadAttachments();
+                const uploaded = await uploadAttachments();
+                parts.push(uploaded.map((u) => '![upload](' + u.url + ')').join('\n'));
             } catch (e) {
                 setSendingState(false);
                 addMessageDom('ai', 'Upload failed: ' + e.message);
                 return;
             }
-            const refs = uploaded.map((u) => '![upload](' + u.url + ')').join('\n');
-            userText = text ? text + '\n\n' + refs : refs;
         }
+        if (reference) {
+            parts.push('![reference](' + reference.url + ')');
+        }
+        const userText = parts.join('\n\n');
 
         addMessageDom('user', userText);
         chatInput.value = '';
         clearAttachments();
+        clearReference();
 
         // Persist user message to backend (context builder source)
         let userMsg;
@@ -488,7 +713,8 @@ const Chat = (() => {
                     model,
                     think,
                     message: userText || text,
-                    images: visionImages
+                    images: visionImages,
+                    references: reference ? [reference.filename] : []
                 }),
                 signal: activeStreamAbort.signal
             });
@@ -522,6 +748,7 @@ const Chat = (() => {
             const decoder = new TextDecoder();
             let buffer = '';
             let fullReply = '';
+            let hadError = false;
             let generatingEl = null;
 
             while (true) {
@@ -538,7 +765,9 @@ const Chat = (() => {
                         if (data.error) {
                             if (generatingEl) { generatingEl.remove(); generatingEl = null; }
                             setAiContent(contentEl, data.error);
-                            fullReply = data.error;
+                            // An error is shown in place but must NOT be persisted
+                            // or spoken — only real assistant replies are saved.
+                            hadError = true;
                             aiMessageEl.classList.add('message--error');
                             continue;
                         }
@@ -569,6 +798,7 @@ const Chat = (() => {
                             if (generatingEl) generatingEl.remove();
                             setAiContent(contentEl, data.image.content);
                             chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+                            generatedMetaCache = null;
                             if (window.Gallery) window.Gallery.refresh();
                         }
                         if (data.video) {
@@ -576,6 +806,7 @@ const Chat = (() => {
                             if (generatingEl) generatingEl.remove();
                             setAiContent(contentEl, data.video.content);
                             chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+                            generatedMetaCache = null;
                             if (window.Gallery) window.Gallery.refresh();
                         }
                         if (data.chunk) {
@@ -601,7 +832,7 @@ const Chat = (() => {
             }
 
             // Save the complete message
-            if (fullReply) {
+            if (fullReply && !hadError) {
                 await Conversations.saveAssistantMessage(conversationId, fullReply);
                 renderConversationList();
                 if (typeof VoiceOutput !== 'undefined' && VoiceOutput && typeof VoiceOutput.speak === 'function') {
@@ -612,7 +843,7 @@ const Chat = (() => {
             // If the conversation is open but the live stream element was
             // detached by a tab switch during generation, re-render from
             // persistence so the finished reply/image shows up automatically.
-            if (fullReply && Conversations.currentId() === conversationId && !chatMessagesEl.contains(aiMessageEl)) {
+            if (fullReply && !hadError && Conversations.currentId() === conversationId && !chatMessagesEl.contains(aiMessageEl)) {
                 const messages = await Conversations.loadMessages(conversationId);
                 renderMessages(messages);
             }

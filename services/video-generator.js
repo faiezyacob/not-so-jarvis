@@ -1909,16 +1909,22 @@ function resolveVideoSourceImage(conversationId, explicitFilename) {
 // (from the intent classifier or the reference regex) AND an actually resolvable
 // source image. Otherwise the request is plain T2VA. This must run before the
 // H3 workflow is selected.
-function resolveVideoMode(conversationId, message, structuredRequest) {
+function resolveVideoMode(conversationId, message, structuredRequest, explicitSource) {
     const text = String(message || '');
-    const refersToImage = Boolean(structuredRequest && structuredRequest.has_reference_image) ||
+    // An explicit @-picker reference is an intentional first frame: it wins
+    // over both the wording heuristics and the conversation's latest image.
+    const explicit = explicitSource
+        ? { rawFilename: path.basename(String(explicitSource).split('?')[0]) }
+        : null;
+    const refersToImage = Boolean(explicit) ||
+        Boolean(structuredRequest && structuredRequest.has_reference_image) ||
         I2V_REF_RE.test(text) ||
         // Regenerate-as-video ("generate the video again ...") while a prior
         // image exists: the last generated image is the intended first frame
         // even though "again" names no image explicitly.
         (/\bagain\b/i.test(text) && VIDEO_WORD_RE.test(text));
     if (!refersToImage) return { videoMode: 't2va', sourceImage: null };
-    const sourceImage = resolveVideoSourceImage(conversationId);
+    const sourceImage = explicit || resolveVideoSourceImage(conversationId);
     if (!sourceImage) return { videoMode: 't2va', sourceImage: null };
     return { videoMode: 'i2va', sourceImage };
 }
@@ -1930,7 +1936,8 @@ async function generateVideo(prompt, options = {}) {
         label: options.label || 'video generation',
         kind: options.kind || 'video_generation',
         conversationId: options.conversationId || null,
-        onQueued: options.onQueued || null
+        onQueued: options.onQueued || null,
+        onStart: options.onStart || null
     };
     return withGenerationLock(async () => {
         await ensureGeneratedDir();
@@ -1997,89 +2004,93 @@ async function generateVideo(prompt, options = {}) {
             }
         }
 
-        const graph = buildH3Graph({
-            prompt: finalPrompt,
-            mode,
-            W,
-            H,
-            frames,
-            seed,
-            settings,
-            firstImageName,
-        });
+        try {
+            const graph = buildH3Graph({
+                prompt: finalPrompt,
+                mode,
+                W,
+                H,
+                frames,
+                seed,
+                settings,
+                firstImageName,
+            });
 
-        const info = await comfyui.getObjectInfo();
-        await validateH3Graph(info, graph);
+            const info = await comfyui.getObjectInfo();
+            await validateH3Graph(info, graph);
 
-        const pid = await comfyui.queuePrompt(graph);
-        console.log('[video-generator] queued H3 workflow:', pid, '(' + mode + ', ' + duration + 's, ' + frames + 'f)');
+            const pid = await comfyui.queuePrompt(graph);
+            console.log('[video-generator] queued H3 workflow:', pid, '(' + mode + ', ' + duration + 's, ' + frames + 'f)');
 
-        const timeoutMs = options.timeoutMs || 30 * 60 * 1000;  // 30 min for video
-        const history = await comfyui.waitForPrompt(pid, { timeoutMs });
+            const timeoutMs = options.timeoutMs || 30 * 60 * 1000;  // 30 min for video
+            const history = await comfyui.waitForPrompt(pid, { timeoutMs });
 
-        // Find video output.
-        const videoFiles = comfyui.findOutputFiles(history.outputs || {}, /\.(?:mp4|webm|avi|mov)$/i);
-        if (!videoFiles.length) {
-            const error = new Error('ComfyUI finished but produced no video file.');
-            error.code = 'comfyui_output_not_found';
-            throw error;
-        }
+            // Find video output.
+            const videoFiles = comfyui.findOutputFiles(history.outputs || {}, /\.(?:mp4|webm|avi|mov)$/i);
+            if (!videoFiles.length) {
+                const error = new Error('ComfyUI finished but produced no video file.');
+                error.code = 'comfyui_output_not_found';
+                throw error;
+            }
 
-        const entry = videoFiles[videoFiles.length - 1];
-        const buffer = await comfyui.downloadImage(entry);  // same download logic works for video
+            const entry = videoFiles[videoFiles.length - 1];
+            const buffer = await comfyui.downloadImage(entry);  // same download logic works for video
 
-        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-        const extension = path.extname(entry.filename).toLowerCase() || '.mp4';
-        const basename = safeFilename(buffer.toString('hex', 0, 4)) + '_vid_' + stamp + extension;
-        const filePath = path.join(GENERATED_DIR, basename);
-        fs.writeFileSync(filePath, buffer);
+            const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+            const extension = path.extname(entry.filename).toLowerCase() || '.mp4';
+            const basename = safeFilename(buffer.toString('hex', 0, 4)) + '_vid_' + stamp + extension;
+            const filePath = path.join(GENERATED_DIR, basename);
+            fs.writeFileSync(filePath, buffer);
 
-        console.log('[video-generator] saved video:', basename, '(' + buffer.length + ' bytes)');
+            console.log('[video-generator] saved video:', basename, '(' + buffer.length + ' bytes)');
 
-        // Clean up ComfyUI output and uploaded input.
-        await comfyui.deleteOutputFile(entry, { history: pid });
-        if (firstImageName) {
-            await comfyui.deleteInputFile(firstImageName).catch(() => {});
-        }
+            // Clean up the ComfyUI output. The uploaded input is removed in the
+            // finally block so a failure after upload never leaks it.
+            await comfyui.deleteOutputFile(entry, { history: pid });
 
-        // Record metadata.
-        const activeLoras = (settings.loras || [])
-            .filter((l) => l && l.on !== false && l.name)
-            .map((l) => ({ name: l.name, strength: Number(l.strength) || 0, triggerWord: l.triggerWord || '' }));
-        const meta = generatedHistory.add({
-            file: '/generated/' + encodeURIComponent(basename),
-            rawFilename: basename,
-            prompt: finalPrompt,
-            model: 'MiniMax H3',
-            width: W,
-            height: H,
-            loras: activeLoras,
-            generationMs: Date.now() - startedAt,
-            video: {
+            // Record metadata.
+            const activeLoras = (settings.loras || [])
+                .filter((l) => l && l.on !== false && l.name)
+                .map((l) => ({ name: l.name, strength: Number(l.strength) || 0, triggerWord: l.triggerWord || '' }));
+            const meta = generatedHistory.add({
+                file: '/generated/' + encodeURIComponent(basename),
+                rawFilename: basename,
+                prompt: finalPrompt,
+                model: 'MiniMax H3',
+                width: W,
+                height: H,
+                loras: activeLoras,
+                generationMs: Date.now() - startedAt,
+                video: {
+                    duration: h3EffectiveDurationSeconds(duration),
+                    frames,
+                    fps: H3_FPS,
+                    mode,
+                    source: options.sourceImageRawFilename || null,
+                }
+            });
+
+            // Optional FaceRefine post-process (runs inside this same lock;
+            // fail-open — a refine failure keeps the base render).
+            return maybeFaceRefine({
+                url: meta.file,
+                filename: basename,
+                width: W,
+                height: H,
                 duration: h3EffectiveDurationSeconds(duration),
                 frames,
                 fps: H3_FPS,
                 mode,
-                source: options.sourceImageRawFilename || null,
+                prompt: finalPrompt,
+                generationMs: meta.generationMs,
+                meta,
+                refined: false
+            }, options);
+        } finally {
+            if (firstImageName) {
+                await comfyui.deleteInputFile(firstImageName).catch(() => {});
             }
-        });
-
-        // Optional FaceRefine post-process (runs inside this same lock;
-        // fail-open — a refine failure keeps the base render).
-        return maybeFaceRefine({
-            url: meta.file,
-            filename: basename,
-            width: W,
-            height: H,
-            duration: h3EffectiveDurationSeconds(duration),
-            frames,
-            fps: H3_FPS,
-            mode,
-            prompt: finalPrompt,
-            generationMs: meta.generationMs,
-            meta,
-            refined: false
-        }, options);
+        }
     }, queueOpts);
 }
 
@@ -2350,7 +2361,8 @@ async function upscaleVideo(rawFilename, options = {}) {
         label: options.label || 'video upscale',
         kind: options.kind || 'video_upscale',
         conversationId: options.conversationId || null,
-        onQueued: options.onQueued || null
+        onQueued: options.onQueued || null,
+        onStart: options.onStart || null
     };
     return withGenerationLock(async () => {
         await ensureGeneratedDir();

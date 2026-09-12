@@ -66,9 +66,11 @@ const IMAGE_MEDIA_WORDS = [
 ];
 // Verb stems so inflected forms ("generate", "generating", "created",
 // "make", "making") are all detected wherever they appear in the sentence.
+// Note: "show" is deliberately absent — "show me the image" asks to display
+// an existing one, so it must not register as a generation verb.
 const GENERATION_VERB_STEMS = [
     'generat', 'creat', 'mak', 'render', 'produc', 'paint', 'draw',
-    'imagin', 'design', 'illustrat', 'compos', 'show'
+    'imagin', 'design', 'illustrat', 'compos'
 ];
 const IMAGE_WORD_RE = new RegExp('\\b(?:' + IMAGE_MEDIA_WORDS.join('|') + ')s?\\b', 'i');
 const GENERATION_VERB_RE = new RegExp('\\b(?:' + GENERATION_VERB_STEMS.join('|') + ')\\w*\\b', 'i');
@@ -299,10 +301,9 @@ function normalizeCreativeMode(value) {
 // of a dog") or ends the turn ("generate a dreamy image", "draw me a
 // portrait"). Tweaks ("make the image brighter", "change the image to
 // sunset") do not match — the noun must be followed by of/about/with/for,
-// punctuation, or end-of-turn. "show" is excluded from the verbs: "show me
-// the image" asks to display the existing one, not generate.
+// punctuation, or end-of-turn.
 const EXPLICIT_NEW_IMAGE_RE = new RegExp(
-    '\\b(?:' + GENERATION_VERB_STEMS.filter((s) => s !== 'show').join('|') + ')\\w*' +
+    '\\b(?:' + GENERATION_VERB_STEMS.join('|') + ')\\w*' +
     '\\b(?:\\s+[\\w\']+){0,6}?\\s+(?:' + IMAGE_MEDIA_WORDS.join('|') + ')s?\\b' +
     '\\s*(?:of\\b|about\\b|with\\b|for\\b|featuring\\b|showing\\b|$|[,.!?:;])',
     'i'
@@ -1340,7 +1341,8 @@ async function upscaleImage(rawFilename, options = {}) {
         label: options.label || 'image upscale',
         kind: options.kind || 'image_upscale',
         conversationId: options.conversationId || null,
-        onQueued: options.onQueued || null
+        onQueued: options.onQueued || null,
+        onStart: options.onStart || null
     };
     return withGenerationLock(async () => {
         await ensureGeneratedDir();
@@ -1515,7 +1517,8 @@ async function generateImage(prompt, options = {}) {
         label: options.label || 'image generation',
         kind: options.kind || 'image_generation',
         conversationId: options.conversationId || null,
-        onQueued: options.onQueued || null
+        onQueued: options.onQueued || null,
+        onStart: options.onStart || null
     };
     return withGenerationLock(async () => {
         await ensureGeneratedDir();
@@ -1651,7 +1654,7 @@ const EDIT_TRANSFORM_RE =
 const EDIT_REMOVE_RE =
     /\b(?:remov\w*|delet\w*|eras\w*|eliminat\w*)\b[\s\S]{0,40}?\b(?:the|this|that|these|those|it|them|him|her|my|your)\b/i;
 
-function detectEditIntent(message) {
+function detectEditIntent(message, hasImageContext = false) {
     const text = String(message || '');
     if (!text.trim()) return null;
     if (isConceptQuestion(text)) return null;
@@ -1668,6 +1671,10 @@ function detectEditIntent(message) {
     // "change the prompt into ...") is a generation modify — a full regen of
     // the rewritten prompt — never an identity edit of the pixels.
     if (/\bprompts?\b/i.test(text)) return null;
+    // These phrases are context-free on their own ("remove the background
+    // noise", "replace the text with X") — only treat them as an edit when an
+    // image task is actually active, otherwise they hijack plain chat.
+    if (!hasImageContext) return null;
     if (EDIT_SUBSTITUTE_RE.test(text)) return { intent: 'image_edit' };
     if (EDIT_TRANSFORM_RE.test(text)) return { intent: 'image_edit' };
     if (EDIT_REMOVE_RE.test(text)) return { intent: 'image_edit' };
@@ -1717,7 +1724,7 @@ function detectImageModifyIntent(message, hasActiveImageTask) {
     // Narrow intents own their phrasing — never steal from them.
     try {
         if (detectUpscaleIntent(text)) return null;
-        if (detectEditIntent(text)) return null;
+        if (detectEditIntent(text, hasActiveImageTask)) return null;
     } catch (err) { /* fall through — treat as non-narrow */ }
     if (isExplicitNewImageRequest(text)) return null;
     if (!IMAGE_MODIFY_VERB_RE.test(text)) return null;
@@ -1922,7 +1929,8 @@ async function editImage(sourceAbsPath, instruction, options = {}) {
         label: options.label || 'image edit',
         kind: options.kind || 'image_edit',
         conversationId: options.conversationId || null,
-        onQueued: options.onQueued || null
+        onQueued: options.onQueued || null,
+        onStart: options.onStart || null
     };
     return withGenerationLock(async () => {
         await ensureGeneratedDir();
@@ -2055,6 +2063,7 @@ module.exports = {
     withGenerationLock,
     getQueueStatus: generationQueue.getStatus,
     cancelQueued: generationQueue.cancelQueued,
+    isActive: generationQueue.isActive,
     detectIntent,
     buildImagePrompt,
     imageRequestStrength,
