@@ -34,6 +34,10 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 // Exit code used to signal the start.bat wrapper to restart in the same terminal.
 const RESTART_EXIT_CODE = 100;
 
+// When this process came up. Exposed by GET /api/activity and used to note the
+// lifecycle event in the activity feed.
+const serverStartedAt = new Date().toISOString();
+
 // --- MIME Types ---
 
 const MIME_TYPES = {
@@ -71,6 +75,7 @@ const videoGenerator = require('./services/video-generator');
 const faceRefine = require('./services/face-refine');
 const modelSetup = require('./services/model-setup');
 const generatedHistory = require('./services/generated-history');
+const activityLog = require('./services/activity-log');
 const comfyui = require('./services/comfyui');
 const vramManager = require('./services/vram-manager');
 const taskRouter = require('./services/task-router');
@@ -261,6 +266,23 @@ async function handleAPI(req, res, urlPath) {
         return true;
     }
 
+    // GET /api/ollama/status — Ollama dashboard widget: active chat model,
+    // installed count and the models currently loaded in memory.
+    if (urlPath === '/api/ollama/status' && req.method === 'GET') {
+        try {
+            const status = await providerManager.getOllamaStatus();
+            const config = configManager.getConfig();
+            json(res, 200, {
+                ...status,
+                provider: config.provider || 'ollama',
+                model: config.model || null
+            });
+        } catch (err) {
+            json(res, 500, { error: err.message });
+        }
+        return true;
+    }
+
     // GET /api/ai/models — catalog + install status merged
     if (urlPath === '/api/ai/models' && req.method === 'GET') {
         const catalog = models.getAllModels();
@@ -326,6 +348,7 @@ async function handleAPI(req, res, urlPath) {
         if (!model) { json(res, 400, { error: 'model is required' }); return true; }
         try {
             const result = await providerManager.unloadModel(provider, model);
+            activityLog.record({ type: 'unload', title: 'Model unloaded', detail: model });
             json(res, 200, result);
         } catch (err) {
             json(res, 502, { error: err.message });
@@ -579,6 +602,16 @@ async function handleAPI(req, res, urlPath) {
         return true;
     }
 
+    // GET /api/activity — recent activity feed for the dashboard widget
+    if (urlPath === '/api/activity' && req.method === 'GET') {
+        json(res, 200, {
+            entries: activityLog.list(30),
+            uptime: process.uptime(),
+            startedAt: serverStartedAt
+        });
+        return true;
+    }
+
     // DELETE /api/generated/:id — delete a generated image (history + file)
     const genDeleteMatch = urlPath.match(/^\/api\/generated\/([^/]+)$/);
     if (genDeleteMatch && req.method === 'DELETE') {
@@ -663,6 +696,7 @@ async function handleAPI(req, res, urlPath) {
                 return true;
             }
             await comfyui.freeModels();
+            activityLog.record({ type: 'unload', title: 'VRAM freed', detail: 'ComfyUI models unloaded' });
             json(res, 200, { ok: true, freed: 'comfyui-models' });
         } catch (err) {
             json(res, 500, { error: err.message });
@@ -2635,6 +2669,7 @@ async function handleUnloadModel(req, res) {
         }
 
         const result = await providers.unloadModel(provider, model);
+        activityLog.record({ type: 'unload', title: 'Model unloaded', detail: model });
         json(res, 200, result);
     } catch (err) {
         json(res, 502, { error: err.message });
@@ -2706,6 +2741,11 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
     console.log(`JARVIS server running at http://localhost:${PORT}`);
+    activityLog.record({
+        type: 'system',
+        title: 'Server started',
+        detail: 'http://localhost:' + PORT
+    });
 });
 
 server.on('error', (err) => {

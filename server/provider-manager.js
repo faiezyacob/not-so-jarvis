@@ -29,6 +29,38 @@ async function getProviders() {
     ];
 }
 
+// Detailed Ollama status for the dashboard widget: installed model count plus
+// the models currently loaded into memory (`/api/ps`) with their VRAM use.
+async function getOllamaStatus() {
+    try {
+        const [tagsRes, psRes] = await Promise.all([
+            fetch(OLLAMA_URL + '/api/tags', { signal: AbortSignal.timeout(3000) }),
+            fetch(OLLAMA_URL + '/api/ps', { signal: AbortSignal.timeout(3000) }).catch(() => null)
+        ]);
+        if (!tagsRes.ok) return { online: false, installed: 0, running: [] };
+        const tags = await tagsRes.json();
+
+        let running = [];
+        if (psRes && psRes.ok) {
+            const ps = await psRes.json();
+            running = (ps.models || []).map(m => ({
+                name: m.name || m.model || '',
+                sizeBytes: m.size || 0,
+                vramBytes: m.size_vram || 0,
+                expiresAt: m.expires_at || null
+            }));
+        }
+
+        return {
+            online: true,
+            installed: (tags.models || []).length,
+            running
+        };
+    } catch {
+        return { online: false, installed: 0, running: [] };
+    }
+}
+
 /* ---------- Installed Model Discovery ---------- */
 
 async function getInstalledModelsOllama() {
@@ -227,6 +259,7 @@ function formatBytes(bytes) {
 
 module.exports = {
     getProviders,
+    getOllamaStatus,
     getAllInstalledModels,
     downloadModelOllama,
     getDownloadStatus,

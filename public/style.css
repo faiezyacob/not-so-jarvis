@@ -1595,6 +1595,9 @@ em {
 }
 
 .monitor-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
     font-family: var(--font-mono);
     font-size: 10px;
     font-weight: 600;
@@ -1603,6 +1606,13 @@ em {
     text-transform: uppercase;
     padding: 4px 0 8px;
     border-bottom: 1px solid var(--border-color);
+}
+
+.monitor-clock {
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.5px;
+    color: var(--text-dim);
 }
 
 /* --- Metric Cards --- */
@@ -1834,37 +1844,127 @@ em {
     100% { transform: translateX(400%); }
 }
 
-/* --- Monitor Footer --- */
+/* --- Ollama Card --- */
 
-.monitor-footer {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-top: auto;
-    padding-top: 12px;
-    border-top: 1px solid var(--border-color);
-    position: sticky;
-    bottom: 0;
-    background: rgba(15, 18, 16, 0.5);
+.ollama-detail {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
-.footer-label {
+/* --- Activity Card --- */
+
+.activity-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 190px;
+    overflow-y: auto;
+    margin-top: 2px;
+}
+
+.activity-list::-webkit-scrollbar {
+    width: 3px;
+}
+
+.activity-list::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.activity-list::-webkit-scrollbar-thumb {
+    background: rgba(108, 255, 154, 0.12);
+    border-radius: 2px;
+}
+
+.activity-empty {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-dim);
+}
+
+.activity-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 5px 6px;
+    border-radius: 5px;
+    border: 1px solid transparent;
+    transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.activity-item--clickable {
+    cursor: pointer;
+}
+
+.activity-item--clickable:hover {
+    background: var(--accent-faint);
+    border-color: var(--border-color);
+}
+
+.activity-icon {
+    flex: 0 0 auto;
+    width: 16px;
+    height: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    line-height: 1;
+    color: var(--accent-dim);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+}
+
+.activity-item--unload .activity-icon {
+    color: #e07a5f;
+    border-color: rgba(224, 122, 95, 0.3);
+}
+
+.activity-item--system .activity-icon {
+    color: var(--text-dim);
+}
+
+.activity-body {
+    min-width: 0;
+    flex: 1 1 auto;
+}
+
+.activity-top {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.activity-title {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.activity-time {
+    flex: 0 0 auto;
     font-family: var(--font-mono);
     font-size: 9px;
-    font-weight: 600;
-    letter-spacing: 2px;
-    color: var(--accent-dim);
-    text-transform: uppercase;
-    padding: 2px 8px;
-    border: 1px solid rgba(108, 255, 154, 0.15);
-    border-radius: 3px;
+    color: var(--text-dim);
+    letter-spacing: 0.3px;
 }
 
-.footer-timestamp {
+.activity-detail {
     font-family: var(--font-mono);
     font-size: 10px;
-    color: var(--text-dim);
-    letter-spacing: 0.5px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-top: 1px;
 }
 
 /* --- Responsive --- */
@@ -1936,10 +2036,6 @@ em {
     .metric-card {
         flex: 1;
         min-width: 160px;
-    }
-
-    .monitor-footer {
-        width: 100%;
     }
 }
 
@@ -2901,6 +2997,13 @@ em {
     cursor: pointer;
     transition: all 0.2s ease;
     text-transform: uppercase;
+}
+
+a.modal-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    text-decoration: none;
 }
 
 .modal-btn-cancel {

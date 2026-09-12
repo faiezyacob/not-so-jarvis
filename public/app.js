@@ -50,14 +50,14 @@ const canvasContexts = {
 // --- Widget Settings ---
 
 const WIDGET_SETTINGS_KEY = 'jarvis-widget-settings';
-const WIDGET_IDS = { cpu: 'cpuCard', ram: 'ramCard', vram: 'vramCard', weather: 'weatherCard', generated: 'generatedWidget', comfyui: 'comfyuiCard' };
+const WIDGET_IDS = { cpu: 'cpuCard', ram: 'ramCard', vram: 'vramCard', weather: 'weatherCard', generated: 'generatedWidget', comfyui: 'comfyuiCard', ollama: 'ollamaCard', activity: 'activityCard' };
 
 function loadWidgetSettings() {
     try {
         const saved = localStorage.getItem(WIDGET_SETTINGS_KEY);
-        if (saved) return { comfyui: true, ...JSON.parse(saved) };
+        if (saved) return { comfyui: true, ollama: true, activity: true, ...JSON.parse(saved) };
     } catch {}
-    return { cpu: true, ram: true, vram: true, weather: true, generated: true, comfyui: true };
+    return { cpu: true, ram: true, vram: true, weather: true, generated: true, comfyui: true, ollama: true, activity: true };
 }
 
 function saveWidgetSettings(settings) {
@@ -76,7 +76,7 @@ function applyWidgetSettings(settings) {
 const SETTINGS_PANEL_KEY = 'jarvis-settings-panel';
 
 const WIDGET_ORDER_KEY = 'jarvis-widget-order';
-const DEFAULT_WIDGET_ORDER = ['cpuCard', 'ramCard', 'vramCard', 'weatherCard', 'generatedWidget', 'comfyuiCard'];
+const DEFAULT_WIDGET_ORDER = ['cpuCard', 'ramCard', 'vramCard', 'weatherCard', 'generatedWidget', 'comfyuiCard', 'ollamaCard', 'activityCard'];
 
 function loadWidgetOrder() {
     try {
@@ -105,7 +105,7 @@ function applyWidgetOrder() {
 
     order.forEach(id => {
         const card = cardMap[id];
-        if (card) monitor.insertBefore(card, document.querySelector('.monitor-footer'));
+        if (card) monitor.appendChild(card);
     });
 }
 
@@ -2037,6 +2037,8 @@ async function bootApp() {
     ModelLibrary.init();
     Gallery.init();
     initComfyUI();
+    initOllamaWidget();
+    initActivityWidget();
 
     // Boot conversation + chat
     try {
@@ -2590,5 +2592,151 @@ function updateComfyUIProgress() {
 
 function gb(bytes) {
     return (bytes / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
+}
+
+// --- Ollama Widget ---
+
+const OLLAMA_REFRESH_MS = 5000;
+
+function initOllamaWidget() {
+    fetchOllamaStatus();
+    setInterval(fetchOllamaStatus, OLLAMA_REFRESH_MS);
+}
+
+async function fetchOllamaStatus() {
+    if (!document.getElementById('ollamaStatus')) return;
+    try {
+        const res = await fetch('/api/ollama/status');
+        if (!res.ok) throw new Error('Fetch failed');
+        renderOllamaStatus(await res.json());
+    } catch {
+        renderOllamaStatus({ online: false });
+    }
+}
+
+function renderOllamaStatus(data) {
+    const statusEl = document.getElementById('ollamaStatus');
+    const modelEl = document.getElementById('ollamaModel');
+    const detailEl = document.getElementById('ollamaDetail');
+    if (!statusEl || !modelEl || !detailEl) return;
+
+    if (!data || !data.online) {
+        statusEl.textContent = 'Offline';
+        statusEl.className = 'comfyui-status comfyui-status--offline';
+        modelEl.textContent = 'Ollama not reachable';
+        detailEl.textContent = 'Start Ollama to enable chat';
+        return;
+    }
+
+    statusEl.textContent = 'Online';
+    statusEl.className = 'comfyui-status comfyui-status--online';
+    modelEl.textContent = data.model || 'No model selected';
+
+    const running = Array.isArray(data.running) ? data.running : [];
+    if (running.length > 0) {
+        const names = running.map((r) => String(r.name || '').split(':')[0]).filter(Boolean);
+        const vram = running.reduce((sum, r) => sum + (Number(r.vramBytes) || 0), 0);
+        detailEl.textContent = names.join(', ') + (vram > 0 ? ' \u00B7 ' + gb(vram) + ' VRAM' : '');
+    } else {
+        const installed = Number(data.installed) || 0;
+        detailEl.textContent = installed + ' installed \u00B7 none loaded';
+    }
+}
+
+// --- Activity Widget ---
+
+const ACTIVITY_REFRESH_MS = 5000;
+const ACTIVITY_ICONS = {
+    image: '\u25A3',
+    edit: '\u270E',
+    video: '\u25B6',
+    upscale: '\u2B06',
+    unload: '\u2B07',
+    system: '\u25CF'
+};
+
+function initActivityWidget() {
+    fetchActivity();
+    setInterval(fetchActivity, ACTIVITY_REFRESH_MS);
+}
+
+async function fetchActivity() {
+    if (!document.getElementById('activityList')) return;
+    try {
+        const res = await fetch('/api/activity');
+        if (!res.ok) throw new Error('Fetch failed');
+        const data = await res.json();
+        renderActivity(data.entries || []);
+    } catch {
+        // Keep the last successful render.
+    }
+}
+
+function renderActivity(entries) {
+    const listEl = document.getElementById('activityList');
+    if (!listEl) return;
+
+    if (!entries.length) {
+        listEl.innerHTML = '<div class="activity-empty">No recent activity.</div>';
+        return;
+    }
+
+    listEl.innerHTML = '';
+    entries.slice(0, 8).forEach((entry) => {
+        const row = document.createElement('div');
+        row.className = 'activity-item activity-item--' + (entry.type || 'system');
+        if (entry.detail) row.title = entry.detail;
+
+        const icon = document.createElement('span');
+        icon.className = 'activity-icon';
+        icon.textContent = ACTIVITY_ICONS[entry.type] || ACTIVITY_ICONS.system;
+
+        const body = document.createElement('div');
+        body.className = 'activity-body';
+
+        const top = document.createElement('div');
+        top.className = 'activity-top';
+        const title = document.createElement('span');
+        title.className = 'activity-title';
+        title.textContent = entry.title || 'Activity';
+        const time = document.createElement('span');
+        time.className = 'activity-time';
+        time.textContent = relativeTime(entry.timestamp);
+        top.appendChild(title);
+        top.appendChild(time);
+
+        body.appendChild(top);
+        if (entry.detail) {
+            const detail = document.createElement('div');
+            detail.className = 'activity-detail';
+            detail.textContent = entry.detail;
+            body.appendChild(detail);
+        }
+
+        row.appendChild(icon);
+        row.appendChild(body);
+
+        if (entry.file && window.Gallery && typeof Gallery.openFromUrl === 'function') {
+            row.classList.add('activity-item--clickable');
+            row.addEventListener('click', () => Gallery.openFromUrl(entry.file));
+        }
+        listEl.appendChild(row);
+    });
+}
+
+function relativeTime(iso) {
+    let value = String(iso || '');
+    // Timestamps written before the log kept a timezone are UTC without the
+    // trailing Z; parse them as UTC so they don't read hours off.
+    if (value && !/[zZ]|[+-]\d{2}:?\d{2}$/.test(value)) value += 'Z';
+    const then = Date.parse(value);
+    if (!Number.isFinite(then)) return '';
+    const seconds = Math.max(0, Math.floor((Date.now() - then) / 1000));
+    if (seconds < 45) return 'just now';
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return minutes + 'm ago';
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return hours + 'h ago';
+    return Math.floor(hours / 24) + 'd ago';
 }
 

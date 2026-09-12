@@ -8,6 +8,7 @@
 const systemMonitor = require('./system-monitor');
 const providers = require('../server/providers');
 const comfyui = require('./comfyui');
+const activityLog = require('./activity-log');
 
 // Percentage of VRAM memory used above which we unload the other model before
 // starting the next action. Configurable via VRAM_UNLOAD_THRESHOLD.
@@ -56,6 +57,7 @@ async function freeVRAMBeforeImage() {
     try {
         await providers.unloadModel(provider, model);
         console.log(`[vram-manager] VRAM ${usage}% > ${UNLOAD_THRESHOLD}%; unloaded chat model "${model}" before image generation`);
+        activityLog.record({ type: 'unload', title: 'Chat model unloaded', detail: model + ' \u00B7 to free VRAM' });
         lastChatModel = null;
         return { freed: true, unloaded: model, usage };
     } catch (err) {
@@ -76,6 +78,7 @@ async function freeVRAMBeforeChat() {
         }
         await comfyui.freeModels();
         console.log(`[vram-manager] VRAM ${usage}% > ${UNLOAD_THRESHOLD}%; unloaded ComfyUI models before chat`);
+        activityLog.record({ type: 'unload', title: 'ComfyUI models unloaded', detail: 'to free VRAM before chat' });
         return { freed: true, unloaded: 'comfyui-models', usage };
     } catch (err) {
         console.warn('[vram-manager] Failed to free ComfyUI VRAM before chat:', err.message);

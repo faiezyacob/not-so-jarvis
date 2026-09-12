@@ -11,6 +11,8 @@
 const fs = require('fs');
 const path = require('path');
 
+const activityLog = require('./activity-log');
+
 const GENERATED_DIR = path.join(__dirname, '..', 'data', 'generated');
 const HISTORY_PATH = path.join(__dirname, '..', 'data', 'generated-history.json');
 
@@ -133,6 +135,38 @@ function publicMeta(entry) {
     };
 }
 
+// Map a freshly recorded generation to a dashboard ACTIVITY entry. The type
+// is inferred from metadata plus the filename markers the pipelines use
+// (`_edit_`, `_refined_`, `_up_`). Best-effort: activity logging must never
+// break a generation.
+function recordActivity(entry) {
+    try {
+        const raw = entry.rawFilename || '';
+        const prompt = String(entry.prompt || '').trim();
+        const detail = prompt.length > 140 ? prompt.slice(0, 137) + '\u2026' : prompt;
+        let type = 'image';
+        let title = 'Image generated';
+        if (entry.upscale) {
+            type = 'upscale';
+            title = entry.video ? 'Video upscaled' : 'Image upscaled';
+        } else if (entry.video) {
+            type = 'video';
+            title = entry.video.refined ? 'Video face-refined' : 'Video generated';
+        } else if (raw.includes('_edit_')) {
+            type = 'edit';
+            title = 'Image edited';
+        }
+        activityLog.record({
+            type,
+            title,
+            detail: detail || (entry.model || ''),
+            file: entry.file
+        });
+    } catch (err) {
+        console.warn('[generated-history] Activity record failed:', err.message);
+    }
+}
+
 // Record a freshly generated image. Returns the added entry (public shape).
 function add(meta) {
     ensureLoaded();
@@ -156,6 +190,7 @@ function add(meta) {
     history = history.filter((e) => e.id !== entry.id);
     history.unshift(entry);
     saveHistory(history);
+    recordActivity(entry);
     return publicMeta(entry);
 }
 

@@ -52,7 +52,7 @@
         const children = upscaleChildMap(widgetImages);
         let count = 0;
         for (const img of widgetImages) {
-            if (count >= 6) break;
+            if (count >= 3) break;
             // An upscaled output replaces its original in the grid — hide the
             // original tile and show the upscaled output with a compare badge.
             if (!img.upscale && children.has(lastSegment(img.file))) continue;
@@ -338,7 +338,7 @@
 
         if (src) {
             const downloadLink = document.createElement('a');
-            downloadLink.className = 'modal-btn';
+            downloadLink.className = 'modal-btn modal-btn-primary';
             downloadLink.textContent = video ? 'Download Video' : 'Download Image';
             downloadLink.title = 'Save this file to your downloads';
             downloadLink.href = src;
@@ -1246,7 +1246,7 @@
         if (!video && img.seed !== undefined && img.seed !== null) {
             const seedBtn = document.createElement('button');
             seedBtn.type = 'button';
-            seedBtn.className = 'modal-btn';
+            seedBtn.className = 'modal-btn modal-btn-primary';
             seedBtn.textContent = 'Use Seed';
             seedBtn.title = 'Lock this seed for the next generation';
             seedBtn.addEventListener('click', async () => {
@@ -1267,7 +1267,7 @@
 
         if (img.url) {
             const downloadLink = document.createElement('a');
-            downloadLink.className = 'modal-btn';
+            downloadLink.className = 'modal-btn modal-btn-primary';
             downloadLink.textContent = video ? 'Download Video' : 'Download Image';
             downloadLink.title = 'Save this file to your downloads';
             downloadLink.href = img.url;

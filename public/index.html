@@ -113,7 +113,7 @@
                     </div>
                     <!-- General -->
                     <div class="settings-panel active" data-panel="general">
-                        <div class="settings-card" data-search="widgets cpu ram vram weather gallery comfyui dashboard">
+                        <div class="settings-card" data-search="widgets cpu ram vram weather gallery comfyui ollama activity dashboard">
                             <div class="settings-card-title">DASHBOARD WIDGETS</div>
                             <div class="settings-card-sub">Toggle the cards shown in the right monitor column.</div>
                             <div class="settings-widget-grid">
@@ -140,6 +140,14 @@
                             <label class="settings-toggle">
                                 <span class="settings-toggle-label">ComfyUI</span>
                                 <input type="checkbox" checked data-widget="comfyui">
+                            </label>
+                            <label class="settings-toggle">
+                                <span class="settings-toggle-label">Ollama</span>
+                                <input type="checkbox" checked data-widget="ollama">
+                            </label>
+                            <label class="settings-toggle">
+                                <span class="settings-toggle-label">Activity</span>
+                                <input type="checkbox" checked data-widget="activity">
                             </label>
                             </div>
                         </div>
@@ -707,7 +715,10 @@
         </section>
 
         <aside class="system-monitor">
-            <div class="monitor-header">SYSTEM MONITOR</div>
+            <div class="monitor-header">
+                <span class="monitor-title">SYSTEM MONITOR</span>
+                <span class="monitor-clock" id="systemTimestamp"></span>
+            </div>
 
             <div class="metric-card" id="cpuCard">
                 <div class="metric-label">CPU</div>
@@ -762,9 +773,18 @@
                 <button type="button" class="comfyui-cancel-btn" id="comfyuiCancelBtn" style="display:none">Cancel job</button>
             </div>
 
-            <div class="monitor-footer">
-                <span class="footer-label">LOCAL</span>
-                <span class="footer-timestamp" id="systemTimestamp"></span>
+            <div class="metric-card" id="ollamaCard">
+                <div class="metric-label">OLLAMA</div>
+                <div class="comfyui-status" id="ollamaStatus">Checking...</div>
+                <div class="metric-name" id="ollamaModel">Detecting model...</div>
+                <div class="ollama-detail" id="ollamaDetail">-</div>
+            </div>
+
+            <div class="metric-card" id="activityCard">
+                <div class="metric-label">ACTIVITY</div>
+                <div class="activity-list" id="activityList">
+                    <div class="activity-empty">No recent activity.</div>
+                </div>
             </div>
         </aside>
     </main>
