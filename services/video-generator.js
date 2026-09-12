@@ -5,7 +5,7 @@
    I2VA modes), submits it to ComfyUI, and stores
    the finished video so the chat layer can display it.
    SPDX-License-Identifier: GPL-3.0-only
-   Copyright (c) 2025 not-so-jarvis contributors.
+   Copyright (c) 2026 not-so-jarvis.
    Adapted from Mix Studio's working H3 implementation
    (https://github.com/BlackMixture/Mix-Studio, GPL-3.0-only):
    lib/video-workflows.js buildMiniMaxH3Graph + H3 resolution helpers.

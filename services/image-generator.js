@@ -5,7 +5,7 @@
    to ComfyUI, and stores the finished image so
    the chat layer can display it.
    SPDX-License-Identifier: GPL-3.0-only
-   Copyright (c) 2025 not-so-jarvis contributors.
+   Copyright (c) 2026 not-so-jarvis.
    Adapted from Mix Studio (https://github.com/BlackMixture/Mix-Studio,
    GPL-3.0-only): Krea2 workflow graph, S/M/L resolution tiers,
    LoRA chain, and SeedVR2 / Ultimate SD upscale pipelines.
