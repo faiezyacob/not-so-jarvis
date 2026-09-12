@@ -430,6 +430,41 @@ function videoRequestStrength(message) {
     return null;
 }
 
+// --- Requested duration parsing -------------------------------------------------
+//
+// If the user names an explicit length ("animate this image in 15 seconds",
+// "generate a video ... in 5 seconds", "10s clip", "12-second video"), that
+// value wins over the configured default. Otherwise the setting applies.
+// H3 supports 5-15s, so the parsed value is clamped to that range (max 15).
+
+const VIDEO_DURATION_NUM_RE = /(\d+(?:\.\d+)?)\s*(?:-|–|—)?\s*(?:seconds?|secs?|s)\b/gi;
+const VIDEO_DURATION_WORDS = {
+    one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8,
+    nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14,
+    fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20
+};
+const VIDEO_DURATION_WORD_RE =
+    /\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)\s*(?:-|–|—)?\s*(?:seconds?|secs?)\b/gi;
+
+function parseRequestedVideoDuration(message) {
+    const text = String(message || '');
+    if (!text.trim()) return null;
+    let found = null;
+    VIDEO_DURATION_NUM_RE.lastIndex = 0;
+    let match;
+    while ((match = VIDEO_DURATION_NUM_RE.exec(text))) {
+        const n = Number(match[1]);
+        if (Number.isFinite(n) && n > 0 && n <= 120) found = n;
+    }
+    VIDEO_DURATION_WORD_RE.lastIndex = 0;
+    while ((match = VIDEO_DURATION_WORD_RE.exec(text))) {
+        const n = VIDEO_DURATION_WORDS[String(match[1]).toLowerCase()];
+        if (Number.isFinite(n)) found = n;
+    }
+    if (found === null) return null;
+    return h3DurationSeconds(Math.round(found));
+}
+
 // --- H3 Video Director System Prompt (Ollama) --------------------------------
 
 const H3_DIRECTOR_SYSTEM_PROMPT =
@@ -559,6 +594,7 @@ const H3_INTENT_SYSTEM_PROMPT =
     '{"intent": "video_generation", "action": "generate|modify", ' +
     '"user_prompt": "the video concept or scene description", ' +
     '"creative_mode": "none|light|full", "has_reference_image": true|false, ' +
+    '"requested_duration": 5|6|7|8|9|10|11|12|13|14|15|null, ' +
     '"explicit_constraints": []}\n\n' +
 
     'For normal chat:\n' +
@@ -574,6 +610,10 @@ const H3_INTENT_SYSTEM_PROMPT =
     '- "has_reference_image": true when the user references an existing image ' +
     '("this image", "the image above", "use the generated image").\n' +
     '- "modify": an incremental change to an existing video concept.\n' +
+    '- "requested_duration": the video length in seconds when the user names ' +
+    'one explicitly ("in 10 seconds", "15s clip", "12-second video"), ' +
+    'clamped to 5-15 (max 15). Null when the user names no length — then ' +
+    'the configured default applies.\n' +
     '- Normal questions → chat.\n\n' +
 
     'creative_mode rules:\n' +
@@ -615,12 +655,21 @@ async function detectVideoIntent(message, providers, provider, model, think) {
         if (parsed && parsed.intent === 'video_generation') {
             const creative_mode = String(parsed.creative_mode || 'none').toLowerCase();
             const normalized = (creative_mode === 'full' || creative_mode === 'light') ? creative_mode : 'none';
+            // Deterministic parse wins (the LLM often drops the number);
+            // fall back to the classifier's value when it names one.
+            const deterministic = parseRequestedVideoDuration(message);
+            let llmDuration = null;
+            const rawDuration = Number(parsed.requested_duration);
+            if (Number.isFinite(rawDuration) && rawDuration > 0) {
+                llmDuration = h3DurationSeconds(Math.round(rawDuration));
+            }
             return {
                 intent: 'video_generation',
                 action: String(parsed.action || '').toLowerCase() === 'modify' ? 'modify' : 'generate',
                 user_prompt: String(parsed.user_prompt || '').trim() || message,
                 creative_mode: normalized,
                 has_reference_image: Boolean(parsed.has_reference_image),
+                requested_duration: deterministic !== null ? deterministic : llmDuration,
                 explicit_constraints: Array.isArray(parsed.explicit_constraints) ? parsed.explicit_constraints : []
             };
         }
@@ -640,6 +689,7 @@ async function detectVideoIntent(message, providers, provider, model, think) {
             user_prompt: message,
             creative_mode: 'none',
             has_reference_image: hasRef,
+            requested_duration: parseRequestedVideoDuration(message),
             explicit_constraints: []
         };
     }
@@ -740,7 +790,24 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
     }
 
     const videoSettings = effectiveVideoSettings();
-    const durationSeconds = h3DurationSeconds(videoSettings.h3Duration);
+    // Explicit per-request length wins; otherwise the configured default.
+    // The request may carry it as requested_duration (intent classifier) or
+    // duration (server override); fall back to parsing the raw text so a
+    // value is never lost if an upstream caller drops the field.
+    const overrideRaw = structuredRequest
+        ? (structuredRequest.requested_duration !== undefined && structuredRequest.requested_duration !== null
+            ? structuredRequest.requested_duration
+            : structuredRequest.duration)
+        : null;
+    const overrideNum = Number(overrideRaw);
+    const parsedFromText = parseRequestedVideoDuration(
+        (structuredRequest && (structuredRequest.user_prompt || structuredRequest.modification)) || ''
+    );
+    const durationSeconds = Number.isFinite(overrideNum) && overrideNum > 0
+        ? h3DurationSeconds(Math.round(overrideNum))
+        : (parsedFromText !== null
+            ? parsedFromText
+            : h3DurationSeconds(videoSettings.h3Duration));
 
     let userMessage;
     let userMessageImages = null;
@@ -797,7 +864,7 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
             return {
                 mode: parsed.mode || (has_reference_image ? 'i2va' : 't2va'),
                 prompt: String(parsed.prompt).trim(),
-                duration: Math.max(H3_MIN_SECONDS, Math.min(H3_MAX_SECONDS, Number(parsed.duration) || H3_MIN_SECONDS)),
+                duration: durationSeconds,
                 width: Number(parsed.width) || 1024,
                 height: Number(parsed.height) || 768,
             };
@@ -823,7 +890,7 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
     return {
         mode,
         prompt: fallbackPrompt,
-        duration: H3_MIN_SECONDS,
+        duration: durationSeconds,
         width: 1024,
         height: 768,
     };
@@ -1340,7 +1407,11 @@ async function generateVideo(prompt, options = {}) {
 
         const settings = effectiveVideoSettings();
         const mode = options.mode || 't2va';
-        const duration = h3DurationSeconds(settings.h3Duration || options.duration);
+        // Explicit per-request duration wins over the configured default.
+        const requestedDuration = Number(options.duration);
+        const duration = Number.isFinite(requestedDuration) && requestedDuration > 0
+            ? h3DurationSeconds(Math.round(requestedDuration))
+            : h3DurationSeconds(settings.h3Duration);
         const frames = h3FramesForSeconds(duration);
 
         let videoWidth = options.width || 1024;
@@ -1977,6 +2048,7 @@ module.exports = {
     registerGenerationLock,
     detectVideoIntent,
     detectVideoUpscaleIntent,
+    parseRequestedVideoDuration,
     buildH3VideoPrompt,
     modifyH3VideoPrompt,
     buildH3Graph,

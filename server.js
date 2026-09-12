@@ -99,6 +99,35 @@ function resolveChatThink(body) {
     }
 }
 
+// Sampling for creative chat replies. Explicit per-request numbers win;
+// otherwise the persisted Settings > Chat values apply (null = model
+// default). Classification calls always pass temperature 0 explicitly and
+// never read the user setting.
+function resolveChatSampling(body) {
+    const out = {};
+    const pick = (v) => (v === null || v === undefined || v === '' ? NaN : Number(v));
+    let explicitTemp = body ? pick(body.temperature) : NaN;
+    let explicitTopP = body ? pick(body.topP !== undefined ? body.topP : body.top_p) : NaN;
+    if (!Number.isFinite(explicitTemp) || !Number.isFinite(explicitTopP)) {
+        try {
+            const cfg = configManager.getChatSettings();
+            if (!Number.isFinite(explicitTemp) && cfg.temperature !== null && cfg.temperature !== undefined) {
+                const n = Number(cfg.temperature);
+                if (Number.isFinite(n)) explicitTemp = n;
+            }
+            if (!Number.isFinite(explicitTopP) && cfg.topP !== null && cfg.topP !== undefined) {
+                const n = Number(cfg.topP);
+                if (Number.isFinite(n)) explicitTopP = n;
+            }
+        } catch {
+            // fall through to model defaults
+        }
+    }
+    if (Number.isFinite(explicitTemp)) out.temperature = explicitTemp;
+    if (Number.isFinite(explicitTopP)) out.topP = explicitTopP;
+    return out;
+}
+
 // Safe SSE write that never throws after the client detached.
 function sseWrite(res, obj) {
     try {
@@ -108,6 +137,48 @@ function sseWrite(res, obj) {
     } catch {
         return false;
     }
+}
+
+// Detect a hallucinated tool-call JSON blob in a plain chat reply, e.g.
+// {"action": "image_generation", "action_input": "{ \"prompt\": \"...\" }"}
+// or {"intent": "image_generation", "prompt": "..."}. Small chat models emit
+// these when a follow-up tweak slips through to chat instead of the image
+// pipeline. Returns the extracted image prompt, or null when the reply is
+// ordinary chat text.
+function extractLeakedImagePrompt(fullReply) {
+    const text = String(fullReply || '');
+    if (!text.includes('{') || !text.includes('}')) return null;
+    if (!/["']?(?:action|intent)["']?\s*:\s*["']image_generation["']/i.test(text)) return null;
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    if (start !== -1 && end > start) {
+        try {
+            const parsed = JSON.parse(text.slice(start, end + 1));
+            const input = parsed.action_input ?? parsed.input ?? '';
+            if (typeof input === 'string' && input.trim()) {
+                try {
+                    const inner = JSON.parse(input);
+                    if (inner && typeof inner.prompt === 'string' && inner.prompt.trim()) {
+                        return inner.prompt.trim();
+                    }
+                } catch {
+                    // input is a raw prompt string, not nested JSON
+                }
+                const m = String(input).match(/["']?prompt["']?\s*:\s*["']([^"']{3,2000})["']/i);
+                if (m) return m[1].trim();
+                const cleaned = String(input).replace(/^[{\s"']+|[}\s"']+$/g, '').trim();
+                if (cleaned && cleaned.length < 2000) return cleaned;
+            }
+            if (typeof parsed.prompt === 'string' && parsed.prompt.trim()) return parsed.prompt.trim();
+            if (typeof parsed.user_prompt === 'string' && parsed.user_prompt.trim()) {
+                return parsed.user_prompt.trim();
+            }
+        } catch {
+            // Not parseable as a whole — fall through to the regex below.
+        }
+    }
+    const m = text.match(/["']?prompt["']?\s*:\s*["']([^"']{3,2000})["']/i);
+    return m ? m[1].trim() : '';
 }
 
 function readBody(req) {
@@ -271,11 +342,13 @@ async function handleAPI(req, res, urlPath) {
         return true;
     }
 
-    // GET /api/settings/chat — global chat settings (reasoning toggle for
-    // thinking-capable models, on by default).
+    // GET /api/settings/chat — global chat settings (reasoning toggle,
+    // persona/system prompt, sampling). reasoningEnabled is kept top-level
+    // for backwards compatibility with older clients.
     if (urlPath === '/api/settings/chat' && req.method === 'GET') {
         try {
-            json(res, 200, { reasoningEnabled: configManager.getReasoningEnabled() });
+            const settings = configManager.getChatSettings();
+            json(res, 200, { reasoningEnabled: settings.reasoningEnabled, settings });
         } catch (err) {
             json(res, 500, { error: err.message });
         }
@@ -283,12 +356,18 @@ async function handleAPI(req, res, urlPath) {
     }
 
     // POST /api/settings/chat — persist global chat settings
-    // ({ reasoningEnabled: boolean }).
+    // ({ reasoningEnabled, systemPrompt, persona, temperature, topP }).
     if (urlPath === '/api/settings/chat' && req.method === 'POST') {
         try {
-            const body = await readBody(req);
-            const reasoningEnabled = configManager.setReasoningEnabled(body && body.reasoningEnabled);
-            json(res, 200, { ok: true, reasoningEnabled });
+            const body = await readBody(req) || {};
+            const settings = configManager.setChatSettings({
+                reasoningEnabled: body.reasoningEnabled,
+                systemPrompt: body.systemPrompt,
+                persona: body.persona,
+                temperature: body.temperature,
+                topP: body.topP !== undefined ? body.topP : body.top_p
+            });
+            json(res, 200, { ok: true, reasoningEnabled: settings.reasoningEnabled, settings });
         } catch (err) {
             json(res, 400, { error: err.message });
         }
@@ -913,8 +992,9 @@ async function handleChat(req, res) {
         vramManager.rememberChatModel(provider, model);
         await vramManager.freeVRAMBeforeChat();
 
+        const sampling = resolveChatSampling(body);
         const contextMessages = contextBuilder.buildContext(conversationId, message, provider, model, '', chatImages);
-        const reply = await providers.chat(provider, contextMessages, model, { think: resolveChatThink(body) });
+        const reply = await providers.chat(provider, contextMessages, model, { think: resolveChatThink(body), ...sampling });
 
         json(res, 200, { reply });
     } catch (err) {
@@ -1005,7 +1085,7 @@ async function handleChatStream(req, res) {
         // image" edits a source image from a plain-language instruction while
         // preserving the rest (identity-edit LoRA, not a from-scratch regen).
         if (decision.shouldExecuteTool && decision.task === 'image_edit') {
-            const instruction = stripImageRefs(decision.updatedPrompt || message);
+            const instruction = imageGenerator.cleanEditInstruction(stripImageRefs(decision.updatedPrompt || message));
             const activeTask = taskState.getTask(conversationId);
             const action = (decision.intent === 'new_task' || decision.intent === 'switch_task') ? 'generate' : 'modify';
             taskState.setTask(conversationId, {
@@ -1217,6 +1297,11 @@ async function handleChatStream(req, res) {
 
             if (isNew && decision.structuredRequest) {
                 structuredRequest = decision.structuredRequest;
+                // Deterministic duration parse wins when the classifier dropped it.
+                if ((structuredRequest.requested_duration === undefined || structuredRequest.requested_duration === null) &&
+                    typeof videoGenerator.parseRequestedVideoDuration === 'function') {
+                    structuredRequest.requested_duration = videoGenerator.parseRequestedVideoDuration(message);
+                }
                 const defaults = videoGenerator.getVideoDefaults();
                 parameters = Object.assign({}, defaults, structuredRequest.parameters || {});
             } else if (isNew && decision.updatedPrompt) {
@@ -1226,6 +1311,9 @@ async function handleChatStream(req, res) {
                     previous_prompt: activeTask.prompt || '',
                     creative_mode: 'none',
                     has_reference_image: false,
+                    requested_duration: typeof videoGenerator.parseRequestedVideoDuration === 'function'
+                        ? videoGenerator.parseRequestedVideoDuration(message)
+                        : null,
                     explicit_constraints: [],
                     parameters: {}
                 };
@@ -1264,6 +1352,14 @@ async function handleChatStream(req, res) {
                 // a real H3-compliant I2VA/T2VA prompt (with the <Picture 1>
                 // first-frame alignment for I2VA), never the raw user request or
                 // the original image prompt.
+                // An explicit per-request length ("in 10 seconds") wins over the
+                // configured default; otherwise the setting applies (max 15s).
+                const messageDuration = typeof videoGenerator.parseRequestedVideoDuration === 'function'
+                    ? videoGenerator.parseRequestedVideoDuration(message)
+                    : null;
+                if (messageDuration !== null && messageDuration !== undefined) {
+                    structuredRequest.requested_duration = messageDuration;
+                }
                 const director = await videoGenerator.buildH3VideoPrompt(
                     Object.assign({}, structuredRequest, {
                         has_reference_image: videoMode === 'i2va'
@@ -1283,17 +1379,31 @@ async function handleChatStream(req, res) {
                 // Bare "generate the video again": reuse the stored H3 prompt
                 // verbatim with the same I2VA source image (new seed at
                 // generation time gives the fresh variation). No LLM rewrite.
+                // Keeps the previous duration unless the message names a new one.
                 videoMode = activeTask.videoMode ||
                     (activeTask.parameters && activeTask.parameters.videoMode) || 't2va';
                 sourceImageRawFilename = activeTask.sourceImage ||
                     (activeTask.parameters && activeTask.parameters.sourceImage) || null;
                 videoPrompt = activeTask.prompt;
+                const regenDuration = typeof videoGenerator.parseRequestedVideoDuration === 'function'
+                    ? videoGenerator.parseRequestedVideoDuration(message)
+                    : null;
+                const prevDuration = activeTask.parameters && activeTask.parameters.duration;
+                directorDimensions = {
+                    duration: (regenDuration !== null && regenDuration !== undefined)
+                        ? regenDuration
+                        : (Number.isFinite(Number(prevDuration)) ? Number(prevDuration) : undefined),
+                    width: activeTask.parameters && activeTask.parameters.width,
+                    height: activeTask.parameters && activeTask.parameters.height
+                };
             } else {
                 // Continue / modify the active video task. Preserve the I2VA
                 // source image and let the H3 prompt modifier rewrite the whole
                 // H3 prompt from the stored one (never the raw modifier text).
                 // videoModifier is the stripped change, and the last generated
                 // image travels along so the LLM edits with eyes on the frame.
+                // A duration named in the modification ("make it 10 seconds")
+                // applies; otherwise the previous duration is kept.
                 videoMode = activeTask.videoMode ||
                     (activeTask.parameters && activeTask.parameters.videoMode) || 't2va';
                 sourceImageRawFilename = activeTask.sourceImage ||
@@ -1306,6 +1416,17 @@ async function handleChatStream(req, res) {
                     model,
                     { sourceImageRawFilename, think }
                 );
+                const modifyDuration = typeof videoGenerator.parseRequestedVideoDuration === 'function'
+                    ? videoGenerator.parseRequestedVideoDuration(message)
+                    : null;
+                const prevDuration = activeTask.parameters && activeTask.parameters.duration;
+                directorDimensions = {
+                    duration: (modifyDuration !== null && modifyDuration !== undefined)
+                        ? modifyDuration
+                        : (Number.isFinite(Number(prevDuration)) ? Number(prevDuration) : undefined),
+                    width: activeTask.parameters && activeTask.parameters.width,
+                    height: activeTask.parameters && activeTask.parameters.height
+                };
             }
 
             // Set ActiveTask to running, then free VRAM for ComfyUI.
@@ -1328,6 +1449,14 @@ async function handleChatStream(req, res) {
                         duration: directorDimensions ? directorDimensions.duration : undefined,
                         width: directorDimensions ? directorDimensions.width : undefined,
                         height: directorDimensions ? directorDimensions.height : undefined
+                    })
+                });
+            } else if (directorDimensions && directorDimensions.duration !== undefined) {
+                // Modify runs keep the stored prompt lineage but adopt a newly
+                // named duration so follow-up regens inherit it.
+                taskState.setTask(conversationId, {
+                    parameters: Object.assign({}, taskState.getTask(conversationId).parameters, {
+                        duration: directorDimensions.duration
                     })
                 });
             }
@@ -1374,14 +1503,76 @@ async function handleChatStream(req, res) {
         );
 
         let fullReply = '';
+        const sampling = resolveChatSampling(body);
 
         try {
-            for await (const chunk of providers.chatStream(provider, contextMessages, model, { think })) {
+            for await (const chunk of providers.chatStream(provider, contextMessages, model, { think, ...sampling })) {
                 if (chunk.type === 'content') {
                     fullReply += chunk.text;
                     res.write(`data: ${JSON.stringify({ chunk: chunk.text })}\n\n`);
                 } else if (chunk.type === 'stats') {
                     res.write(`data: ${JSON.stringify({ stats: chunk })}\n\n`);
+                }
+            }
+
+            // Defense-in-depth: the chat model sometimes hallucinates a
+            // tool-call JSON blob ({"action": "image_generation", ...})
+            // instead of natural language when a follow-up tweak slipped
+            // through to chat. Never leak that JSON to the user — execute
+            // the intended image modification for real. The frontend
+            // replaces the streamed chunks when the image event arrives,
+            // so the final saved message is the generated image, not JSON.
+            const leakedPrompt = extractLeakedImagePrompt(fullReply);
+            if (leakedPrompt !== null) {
+                const leakTask = taskState.getTask(conversationId);
+                if (leakTask && leakTask.type === 'image' && leakTask.prompt) {
+                    console.warn('[chat] Hallucinated tool-call JSON detected; executing as image modify.');
+                    const basePrompt = leakedPrompt || message;
+                    const leakParams = leakTask.parameters || {};
+                    let imagePrompt = basePrompt;
+                    let attributes = leakParams.attributes || null;
+                    try {
+                        const structuredRequest = {
+                            intent: 'image_generation',
+                            user_prompt: basePrompt,
+                            previous_prompt: leakTask.prompt || '',
+                            creative_mode: leakParams.creative_mode || 'none',
+                            explicit_constraints: leakParams.explicit_constraints || []
+                        };
+                        const enhanced = await imageGenerator.buildImagePrompt(
+                            structuredRequest, providers, provider, model, think
+                        );
+                        if (enhanced && enhanced.prompt) {
+                            imagePrompt = enhanced.prompt;
+                            attributes = enhanced.attributes;
+                        }
+                    } catch (err) {
+                        console.warn('[chat] Leak recovery prompt build failed, using raw prompt:', err.message);
+                    }
+                    const ctxPreviousPrompt = leakTask.prompt || null;
+                    taskState.setTask(conversationId, {
+                        type: 'image',
+                        operation: 'modify',
+                        prompt: imagePrompt,
+                        lastAction: 'modify',
+                        status: 'running'
+                    });
+                    if (attributes) {
+                        taskState.setTask(conversationId, {
+                            parameters: Object.assign({}, taskState.getTask(conversationId).parameters, {
+                                attributes
+                            })
+                        });
+                    }
+                    await vramManager.freeVRAMBeforeImage();
+                    await handleImageGenerationStream(req, res, {
+                        provider, model, conversationId, message,
+                        imagePrompt,
+                        action: 'modify',
+                        previousPrompt: ctxPreviousPrompt,
+                        think
+                    });
+                    return;
                 }
             }
 

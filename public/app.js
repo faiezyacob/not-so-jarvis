@@ -73,6 +73,8 @@ function applyWidgetSettings(settings) {
 
 // --- Widget Order (Drag & Drop) ---
 
+const SETTINGS_PANEL_KEY = 'jarvis-settings-panel';
+
 const WIDGET_ORDER_KEY = 'jarvis-widget-order';
 const DEFAULT_WIDGET_ORDER = ['cpuCard', 'ramCard', 'vramCard', 'weatherCard', 'generatedWidget', 'comfyuiCard'];
 
@@ -245,7 +247,7 @@ function initSettings() {
     const navItems = dropdown.querySelectorAll('.settings-nav-item');
     const panels = dropdown.querySelectorAll('.settings-panel');
     const subtitle = document.getElementById('settingsPanelSubtitle');
-    const selectPanel = (name) => {
+    const selectPanel = (name, save) => {
         const search = document.getElementById('settingsSearch');
         if (search && search.value) {
             search.value = '';
@@ -258,12 +260,21 @@ function initSettings() {
         if (modal) modal.scrollTop = 0;
         const panelsWrap = document.getElementById('settingsPanels');
         if (panelsWrap) panelsWrap.scrollTop = 0;
+        if (save !== false) {
+            try { localStorage.setItem(SETTINGS_PANEL_KEY, name); } catch {}
+        }
     };
     navItems.forEach(item => {
         item.addEventListener('click', () => selectPanel(item.dataset.panel));
     });
     const gotoSystem = document.getElementById('gotoSystemBtn');
     if (gotoSystem) gotoSystem.addEventListener('click', () => selectPanel('system'));
+    try {
+        const savedPanel = localStorage.getItem(SETTINGS_PANEL_KEY);
+        if (savedPanel && dropdown.querySelector('.settings-nav-item[data-panel="' + savedPanel + '"]')) {
+            selectPanel(savedPanel, false);
+        }
+    } catch {}
 
     // Search filters cards/fields by data-search + visible text.
     const searchInput = document.getElementById('settingsSearch');
@@ -1162,6 +1173,173 @@ function initChatProviderSettings() {
     initChatReasoningToggle(providerSelect, modelInput);
     initUnloadModelButton(providerSelect, modelInput);
     initVoiceSettings();
+    initChatPersonaSettings();
+    initChatSamplingSettings();
+}
+
+// --- Chat Persona / System Prompt (Settings > Chat, persisted server-side) ---
+
+const CHAT_PERSONA_PRESETS = {
+    default: '',
+    concise: 'Be concise. Prefer short bullet points and skip filler.',
+    developer: 'You are a senior software engineer. Give precise, production-ready answers with code examples when relevant.',
+    creative: 'You are a creative writing partner. Favor vivid, imaginative language and offer bold variations.',
+    tutor: 'You are a patient study tutor. Explain step by step and check understanding with a short question at the end.',
+    custom: null
+};
+
+function initChatPersonaSettings() {
+    const personaSelect = document.getElementById('chatPersona');
+    const promptInput = document.getElementById('chatSystemPrompt');
+    const statusEl = document.getElementById('chatSettingsStatus');
+    if (!personaSelect || !promptInput) return;
+
+    const setStatus = (msg, isErr) => {
+        if (!statusEl) return;
+        statusEl.textContent = msg;
+        statusEl.style.color = isErr ? '#e07a5f' : '';
+        if (msg) setTimeout(() => { if (statusEl.textContent === msg) statusEl.textContent = ''; }, 2500);
+    };
+
+    const save = async (patch) => {
+        try {
+            const res = await fetch('/api/settings/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(patch)
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.error || 'Save failed');
+            setStatus('Saved');
+            return data.settings || null;
+        } catch (err) {
+            setStatus(err.message, true);
+            return null;
+        }
+    };
+
+    // Load persisted values (new shape { settings } with legacy fallback).
+    fetch('/api/settings/chat').then((res) => res.json()).then((data) => {
+        const s = data.settings || data;
+        if (s && typeof s.systemPrompt === 'string') promptInput.value = s.systemPrompt;
+        if (s && typeof s.persona === 'string' && CHAT_PERSONA_PRESETS.hasOwnProperty(s.persona)) {
+            personaSelect.value = s.persona;
+        } else if (promptInput.value.trim()) {
+            personaSelect.value = 'custom';
+        }
+    }).catch(() => {});
+
+    personaSelect.addEventListener('change', async () => {
+        const preset = personaSelect.value;
+        if (preset !== 'custom' && CHAT_PERSONA_PRESETS.hasOwnProperty(preset)) {
+            promptInput.value = CHAT_PERSONA_PRESETS[preset];
+        }
+        await save({ persona: preset, systemPrompt: promptInput.value });
+    });
+
+    let blurTimer = null;
+    promptInput.addEventListener('input', () => {
+        if (personaSelect.value !== 'custom' && promptInput.value !== (CHAT_PERSONA_PRESETS[personaSelect.value] || '')) {
+            personaSelect.value = 'custom';
+        }
+        if (blurTimer) clearTimeout(blurTimer);
+        blurTimer = setTimeout(async () => {
+            await save({ persona: personaSelect.value, systemPrompt: promptInput.value });
+        }, 800);
+    });
+    promptInput.addEventListener('blur', async () => {
+        if (blurTimer) { clearTimeout(blurTimer); blurTimer = null; }
+        await save({ persona: personaSelect.value, systemPrompt: promptInput.value });
+    });
+}
+
+// --- Chat Sampling: temperature / top_p (Settings > Chat) ---
+
+function initChatSamplingSettings() {
+    const tempInput = document.getElementById('chatTemperature');
+    const topPInput = document.getElementById('chatTopP');
+    const tempValue = document.getElementById('chatTemperatureValue');
+    const topPValue = document.getElementById('chatTopPValue');
+    const resetBtn = document.getElementById('chatSamplingReset');
+    const statusEl = document.getElementById('chatSettingsStatus');
+    if (!tempInput || !topPInput) return;
+
+    const setStatus = (msg, isErr) => {
+        if (!statusEl) return;
+        statusEl.textContent = msg;
+        statusEl.style.color = isErr ? '#e07a5f' : '';
+        if (msg) setTimeout(() => { if (statusEl.textContent === msg) statusEl.textContent = ''; }, 2500);
+    };
+
+    const paint = () => {
+        if (tempValue) tempValue.textContent = tempInput.value === '' ? 'default' : Number(tempInput.value).toFixed(1);
+        if (topPValue) topPValue.textContent = topPInput.value === '' ? 'default' : Number(topPInput.value).toFixed(2);
+    };
+
+    const save = async (patch) => {
+        try {
+            const res = await fetch('/api/settings/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(patch)
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.error || 'Save failed');
+            setStatus('Saved');
+        } catch (err) {
+            setStatus(err.message, true);
+        }
+    };
+
+    // Sliders can't represent "blank = model default" natively, so an empty
+    // value means default; any drag sets a number, reset clears back to blank.
+    const applyLoaded = (s) => {
+        if (s.temperature === null || s.temperature === undefined || s.temperature === '') {
+            tempInput.value = '0.7';
+            tempInput.dataset.default = 'true';
+        } else {
+            tempInput.value = String(s.temperature);
+            delete tempInput.dataset.default;
+        }
+        if (s.topP === null || s.topP === undefined || s.topP === '') {
+            topPInput.value = '0.9';
+            topPInput.dataset.default = 'true';
+        } else {
+            topPInput.value = String(s.topP);
+            delete topPInput.dataset.default;
+        }
+        paint();
+        if (tempValue && tempInput.dataset.default) tempValue.textContent = 'default';
+        if (topPValue && topPInput.dataset.default) topPValue.textContent = 'default';
+    };
+
+    fetch('/api/settings/chat').then((res) => res.json()).then((data) => {
+        applyLoaded(data.settings || data);
+    }).catch(() => paint());
+
+    const onChange = () => {
+        delete tempInput.dataset.default;
+        delete topPInput.dataset.default;
+        paint();
+        save({ temperature: Number(tempInput.value), topP: Number(topPInput.value) });
+    };
+    tempInput.addEventListener('change', onChange);
+    topPInput.addEventListener('change', onChange);
+    tempInput.addEventListener('input', paint);
+    topPInput.addEventListener('input', paint);
+
+    if (resetBtn) {
+        resetBtn.addEventListener('click', async () => {
+            await save({ temperature: null, topP: null });
+            tempInput.dataset.default = 'true';
+            topPInput.dataset.default = 'true';
+            tempInput.value = '0.7';
+            topPInput.value = '0.9';
+            paint();
+            if (tempValue) tempValue.textContent = 'default';
+            if (topPValue) topPValue.textContent = 'default';
+        });
+    }
 }
 
 function initVoiceSettings() {

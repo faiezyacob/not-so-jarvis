@@ -7,7 +7,17 @@ const fs = require('fs');
 const path = require('path');
 
 const CONFIG_PATH = path.join(__dirname, '..', 'data', 'config.json');
-const DEFAULT_CONFIG = { provider: 'ollama', model: 'llama3.2', reasoningEnabled: true };
+const DEFAULT_CONFIG = {
+    provider: 'ollama',
+    model: 'llama3.2',
+    reasoningEnabled: true,
+    chatSystemPrompt: '',
+    chatPersona: 'default',
+    chatTemperature: null,
+    chatTopP: null
+};
+
+const CHAT_PERSONAS = ['default', 'concise', 'developer', 'creative', 'tutor', 'custom'];
 
 function loadConfig() {
     try {
@@ -47,6 +57,71 @@ function setReasoningEnabled(enabled) {
     config.reasoningEnabled = enabled !== false;
     saveConfig(config);
     return config.reasoningEnabled;
+}
+
+// --- Chat controls: persona / system prompt / sampling ---
+
+function sanitizeTemperature(value) {
+    if (value === null || value === undefined || value === '') return null;
+    const n = Number(value);
+    if (!Number.isFinite(n)) throw new Error('temperature must be a number 0-2 (or blank for model default).');
+    if (n < 0 || n > 2) throw new Error('temperature must be between 0 and 2.');
+    return Math.round(n * 100) / 100;
+}
+
+function sanitizeTopP(value) {
+    if (value === null || value === undefined || value === '') return null;
+    const n = Number(value);
+    if (!Number.isFinite(n)) throw new Error('top_p must be a number 0-1 (or blank for model default).');
+    if (n <= 0 || n > 1) throw new Error('top_p must be between 0 and 1.');
+    return Math.round(n * 100) / 100;
+}
+
+function sanitizeSystemPrompt(value) {
+    if (value === null || value === undefined) return '';
+    const s = String(value);
+    if (s.length > 4000) throw new Error('system prompt is too long (max 4000 characters).');
+    return s;
+}
+
+function getChatSettings() {
+    const config = loadConfig();
+    return {
+        reasoningEnabled: config.reasoningEnabled !== false,
+        systemPrompt: typeof config.chatSystemPrompt === 'string' ? config.chatSystemPrompt : '',
+        persona: CHAT_PERSONAS.indexOf(config.chatPersona) !== -1 ? config.chatPersona : 'default',
+        temperature: config.chatTemperature === null || config.chatTemperature === undefined
+            ? null : Number(config.chatTemperature),
+        topP: config.chatTopP === null || config.chatTopP === undefined
+            ? null : Number(config.chatTopP)
+    };
+}
+
+function setChatSettings(patch) {
+    const config = loadConfig();
+    const input = patch || {};
+    if (input.reasoningEnabled !== undefined) {
+        config.reasoningEnabled = input.reasoningEnabled !== false;
+    }
+    if (input.systemPrompt !== undefined) {
+        config.chatSystemPrompt = sanitizeSystemPrompt(input.systemPrompt).trim() ? sanitizeSystemPrompt(input.systemPrompt) : '';
+    }
+    if (input.persona !== undefined) {
+        const p = String(input.persona || 'default').toLowerCase();
+        config.chatPersona = CHAT_PERSONAS.indexOf(p) !== -1 ? p : 'custom';
+    }
+    if (input.temperature !== undefined) {
+        const t = sanitizeTemperature(input.temperature);
+        if (t === null) delete config.chatTemperature;
+        else config.chatTemperature = t;
+    }
+    if (input.topP !== undefined) {
+        const p = sanitizeTopP(input.topP);
+        if (p === null) delete config.chatTopP;
+        else config.chatTopP = p;
+    }
+    saveConfig(config);
+    return getChatSettings();
 }
 
 const IMAGE_SETTINGS_KEY = 'imageGeneration';
@@ -94,4 +169,4 @@ function setVideoSettings(patch) {
     return current;
 }
 
-module.exports = { getConfig, setModelConfig, getReasoningEnabled, setReasoningEnabled, getImageSettings, setImageSettings, getVideoSettings, setVideoSettings };
+module.exports = { getConfig, setModelConfig, getReasoningEnabled, setReasoningEnabled, getChatSettings, setChatSettings, getImageSettings, setImageSettings, getVideoSettings, setVideoSettings };

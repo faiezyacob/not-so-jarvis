@@ -7,6 +7,7 @@
    ============================================ */
 
 const conversationService = require('./conversation-service');
+const configManager = require('./config-manager');
 
 const SYSTEM_PROMPT =
     'You are JARVIS, a local AI assistant running on the user\'s own machine. '
@@ -15,6 +16,10 @@ const SYSTEM_PROMPT =
     + 'user asks you to generate, create, draw, render, or imagine an image, an image '
     + 'is created locally and shown in the conversation. Concept questions about how '
     + 'image generation works are answered as normal chat. '
+    + 'You do NOT execute tools yourself: the system runs generations and edits '
+    + 'for you. Never output JSON tool calls such as {"action": "image_generation", '
+    + '"action_input": ...} or {"intent": "image_generation", ...} — always reply '
+    + 'in plain natural language and describe what you see or will do. '
     + 'Never invent /generated/ image, video, or file links in a plain chat reply: '
     + 'only the image/video tool pipelines can produce /generated/ URLs, and a chat '
     + 'reply without a tool run must not contain any. If the user asks for a '
@@ -30,6 +35,20 @@ function getRelevantMessages(conversationId, query) {
     return [];
 }
 
+// Effective system prompt: base JARVIS guardrails plus the user's custom
+// persona instruction (Settings > Chat). The base prompt is never replaced
+// so the /generated/ link and image-tool guardrails always apply.
+function getSystemPrompt() {
+    let custom = '';
+    try {
+        custom = (configManager.getChatSettings().systemPrompt || '').trim();
+    } catch {
+        custom = '';
+    }
+    if (!custom) return SYSTEM_PROMPT;
+    return SYSTEM_PROMPT + '\n\nAdditional persona instruction from the user:\n' + custom;
+}
+
 function buildContext(conversationId, userMessage, provider, model, activeTaskContext, images) {
     const recent = conversationService
         .getMessages(conversationId)
@@ -37,7 +56,7 @@ function buildContext(conversationId, userMessage, provider, model, activeTaskCo
 
     const messages = [];
 
-    messages.push({ role: 'system', content: SYSTEM_PROMPT });
+    messages.push({ role: 'system', content: getSystemPrompt() });
 
     if (activeTaskContext) {
         messages.push({
@@ -76,4 +95,4 @@ function buildContext(conversationId, userMessage, provider, model, activeTaskCo
     return messages;
 }
 
-module.exports = { buildContext, getRelevantMessages };
+module.exports = { buildContext, getRelevantMessages, getSystemPrompt, SYSTEM_PROMPT };

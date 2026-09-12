@@ -121,6 +121,44 @@
                             <span class="settings-hint" id="chatReasoningHint">Chain-of-thought for thinking-capable models. Off is faster.</span>
                         </div>
                         </div>
+                        <div class="settings-card" data-search="persona system prompt personality assistant behavior custom instruction">
+                            <div class="settings-card-title">PERSONA / SYSTEM PROMPT</div>
+                            <div class="settings-card-sub">Extra instruction prepended to every chat (base JARVIS guardrails always stay on).</div>
+                        <div class="settings-field">
+                            <label class="settings-field-label" for="chatPersona">Persona preset</label>
+                            <select class="settings-select" id="chatPersona">
+                                <option value="default">Default JARVIS</option>
+                                <option value="concise">Concise assistant</option>
+                                <option value="developer">Senior developer</option>
+                                <option value="creative">Creative writer</option>
+                                <option value="tutor">Study tutor</option>
+                                <option value="custom">Custom…</option>
+                            </select>
+                        </div>
+                        <div class="settings-field">
+                            <label class="settings-field-label" for="chatSystemPrompt">Custom instruction</label>
+                            <textarea class="settings-textarea" id="chatSystemPrompt" rows="3" placeholder="e.g. Always answer with short bullet points…"></textarea>
+                            <span class="settings-hint">Blank = default behavior. Saves on blur.</span>
+                        </div>
+                        </div>
+                        <div class="settings-card" data-search="temperature top-p sampling creativity randomness deterministic">
+                            <div class="settings-card-title">SAMPLING</div>
+                            <div class="settings-card-sub">Blank = model default. Lower = focused, higher = creative. Router/classifier calls always stay at temperature 0.</div>
+                        <div class="settings-field">
+                            <label class="settings-field-label" for="chatTemperature">Temperature <span id="chatTemperatureValue">default</span></label>
+                            <input type="range" id="chatTemperature" min="0" max="2" step="0.1" value="">
+                            <span class="settings-hint">0 = deterministic, ~0.7 = balanced, 1.5+ = wild. Clear to use model default.</span>
+                        </div>
+                        <div class="settings-field">
+                            <label class="settings-field-label" for="chatTopP">Top-P <span id="chatTopPValue">default</span></label>
+                            <input type="range" id="chatTopP" min="0.05" max="1" step="0.05" value="">
+                            <span class="settings-hint">Nucleus sampling cutoff. 0.9 is a safe creative default.</span>
+                        </div>
+                        <div class="settings-field">
+                            <button class="settings-browse-btn" id="chatSamplingReset" type="button">Reset sampling to defaults</button>
+                            <span class="settings-save-status" id="chatSettingsStatus"></span>
+                        </div>
+                        </div>
                         <div class="settings-card" data-search="voice speech spoken replies dictation microphone tts auto-send">
                             <div class="settings-card-title">VOICE</div>
                         <div class="settings-field">

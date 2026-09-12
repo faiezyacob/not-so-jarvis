@@ -65,7 +65,9 @@ const ROUTER_SYSTEM_PROMPT =
     'sky darker", "remove the car", "turn it into a watercolor") is new_task with ' +
     'task image_edit, action edit, and shouldExecuteTool true.\n' +
     '- "edit this image/photo", "retouch this" with no attachment edits the latest ' +
-    'generated image: new_task with task image_edit, action edit, shouldExecuteTool true.\n' +
+    'generated image: new_task with task image_edit, action edit, shouldExecuteTool true. ' +
+    'The same applies to content-targeted edit phrasing ("replace the frog with a princess", ' +
+    '"swap the car for a bike", "change the frog into a prince", "remove the car").\n' +
     '- An image task is active and the user asks to animate / bring it to life / ' +
     'turn it into a video / use the image for a video, OR describes motion for ' +
     'the pictured subject ("make her walk", "make it rain", "make him wave"), ' +
@@ -77,8 +79,10 @@ const ROUTER_SYSTEM_PROMPT =
     '- A still-image change while an image task is active ("make her wear a red ' +
     'dress", "change the background") is continue_task with task image_generation ' +
     'and action modify. (The server executes it as a full regen of the rewritten ' +
-    'prompt — never report task image_edit for follow-up tweaks. image_edit is ' +
-    'only for explicit "edit this image" phrasing or an attached upload.)\n' +
+    'prompt — never report task image_edit for vague follow-up tweaks ("make her ' +
+    'wear a red dress", "change the background to a beach"). image_edit is ' +
+    'only for explicit edit phrasing ("edit this image", "replace X with Y", ' +
+    '"swap X for Y", "change X into Y", "remove X") or an attached upload.)\n' +
     '- A still-image change while a VIDEO task is active ("change her dress", ' +
     '"make the background a beach") modifies the video, not the image: ' +
     'continue_task with task video_generation and action modify.\n' +
@@ -405,6 +409,9 @@ async function routeMessage({ message, provider, model, conversationId, hasAttac
                     previous_prompt: activeTask.prompt || '',
                     creative_mode: 'none',
                     has_reference_image: true,
+                    requested_duration: typeof videoGenerator.parseRequestedVideoDuration === 'function'
+                        ? videoGenerator.parseRequestedVideoDuration(message)
+                        : null,
                     explicit_constraints: [],
                     parameters: {}
                 };
@@ -519,6 +526,31 @@ async function routeMessage({ message, provider, model, conversationId, hasAttac
                 shouldExecuteTool: true,
                 updatedPrompt: message
             };
+        }
+    }
+
+    // Vague follow-up tweaks while an image task is active ("change her
+    // bottom to ripped blue jeans", "make her wear a red dress", "change the
+    // background"). These carry no generation verb so the intent classifier
+    // would read them as chat — route them deterministically to a full-regen
+    // modify before the LLM router so a small model can't downgrade them to
+    // chat (where the chat model then leaks a tool-call JSON blob like
+    // {"action": "image_generation", ...} instead of generating anything).
+    // Explicit edits stay above; video nouns stay on the video pipeline.
+    if (activeTask.type === 'image' && activeTask.prompt &&
+        !hasAttachedImage && !videoGenerator.VIDEO_WORD_RE.test(message)) {
+        try {
+            if (imageGenerator.detectImageModifyIntent(message, true)) {
+                return {
+                    intent: 'continue_task',
+                    task: 'image_generation',
+                    action: 'modify',
+                    shouldExecuteTool: true,
+                    updatedPrompt: message
+                };
+            }
+        } catch (err) {
+            console.warn('[task-router] Image modify gate failed:', err.message);
         }
     }
 

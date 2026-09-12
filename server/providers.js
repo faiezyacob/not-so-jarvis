@@ -21,17 +21,44 @@ function resolveThink(model, options) {
     }
 }
 
+// Sampling for creative chat replies. An explicit per-request value wins;
+// otherwise the persisted Settings > Chat value applies (null = model
+// default, omitted from the payload). Classification calls pass an explicit
+// temperature 0 and are never affected by the user setting.
+function resolveSampling(options) {
+    const out = {};
+    const explicitTemp = options && options.temperature !== undefined && options.temperature !== null
+        ? Number(options.temperature) : NaN;
+    const explicitTopP = options && (options.topP !== undefined || options.top_p !== undefined)
+        ? Number(options.topP !== undefined ? options.topP : options.top_p) : NaN;
+    let cfg = null;
+    try {
+        cfg = configManager.getChatSettings();
+    } catch {
+        cfg = null;
+    }
+    const temp = Number.isFinite(explicitTemp) ? explicitTemp
+        : (cfg && cfg.temperature !== null && cfg.temperature !== undefined ? Number(cfg.temperature) : NaN);
+    const topP = Number.isFinite(explicitTopP) ? explicitTopP
+        : (cfg && cfg.topP !== null && cfg.topP !== undefined ? Number(cfg.topP) : NaN);
+    if (Number.isFinite(temp)) out.temperature = temp;
+    if (Number.isFinite(topP)) out.top_p = topP;
+    return out;
+}
+
 async function callOllama(messages, model, options) {
     // Classification calls (router, intent) pass temperature 0 for
-    // deterministic JSON verdicts; creative calls omit it (model default).
+    // deterministic JSON verdicts; creative chat replies fall back to the
+    // persisted Settings > Chat sampling (model default when blank).
     const payload = {
         model: model || 'llama3.2',
         messages: messages,
         stream: false,
         think: resolveThink(model, options)
     };
-    if (options && Number.isFinite(options.temperature)) {
-        payload.options = { temperature: options.temperature };
+    const sampling = resolveSampling(options);
+    if (sampling.temperature !== undefined || sampling.top_p !== undefined) {
+        payload.options = sampling;
     }
     const res = await fetch(OLLAMA_URL + '/api/chat', {
         method: 'POST',
@@ -50,15 +77,20 @@ async function callOllama(messages, model, options) {
 
 // Streaming versions
 async function* streamOllama(messages, model, options) {
+    const body = {
+        model: model || 'llama3.2',
+        messages: messages,
+        stream: true,
+        think: resolveThink(model, options)
+    };
+    const sampling = resolveSampling(options);
+    if (sampling.temperature !== undefined || sampling.top_p !== undefined) {
+        body.options = sampling;
+    }
     const res = await fetch(OLLAMA_URL + '/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            model: model || 'llama3.2',
-            messages: messages,
-            stream: true,
-            think: resolveThink(model, options)
-        })
+        body: JSON.stringify(body)
     });
 
     if (!res.ok) {

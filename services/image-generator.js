@@ -1622,19 +1622,107 @@ const MAX_IDENTITY_EDIT_PIXELS = 2000000;
 const EDIT_REQUIRED_NODES = ['Krea2EditModelPatch', 'Krea2EditGroundedEncode'];
 
 // Explicit edit phrasing aimed at an existing image ("edit this photo",
-// "retouch it"). A narrow deterministic gate like detectUpscaleIntent — the
-// LLM router stays the authority for everything vaguer.
+// "retouch it", "replace the frog with a princess"). A narrow deterministic
+// gate like detectUpscaleIntent — the LLM router stays the authority for
+// everything vaguer.
 const EDIT_SIGNAL_RE = /\b(edit\w*|retouch\w*|recolor\w*|restyle\w*|redraw\w*|inpaint\w*|outpaint\w*|try\s*on)\b/i;
 const EDIT_REF_RE = /\b(this\b|that\b|it\b|them\b|the\s+(?:image|picture|photo|pic)|my\s+(?:image|picture|photo|pic)|your\s+(?:image|picture|photo)|image\w*|pict\w*|pic\b|photo\w*)\b/i;
+
+// Substitution phrasing aimed at content inside the existing image: an edit
+// verb driving at a definite/possessive/pronoun target plus a with/for/by/to/
+// into phrase naming the replacement ("replace the frog with a princess",
+// "swap the car for a bike", "edit the frog with long hair"). Unlike vague
+// attribute tweaks ("change her dress"), an explicit X-with/for-Y substitution
+// names both the target and the replacement, which is exactly what the
+// identity-edit LoRA is for. Bare generation requests ("generate an image of
+// me replacing my car ...") are excluded via the explicit-new-image guard.
+const EDIT_SUBSTITUTE_RE =
+    /\b(?:replac\w*|swap\w*|substitut\w*|edit\w*)\b[\s\S]{0,60}?\b(?:the|this|that|these|those|it|them|him|her|my|your|our)\b[\s\S]{0,60}?\b(?:with|for|by|to|into)\b/i;
+
+// Transformation phrasing ("change the frog into a prince", "turn the cat
+// into a dog"). Only "into" counts — "change her dress to red" (attribute
+// tweak with "to") stays on the full-regen path, where the edit LoRA would
+// return the source unchanged.
+const EDIT_TRANSFORM_RE =
+    /\b(?:chang\w*|turn\w*|convert\w*|transform\w*|morph\w*)\b[\s\S]{0,60}?\b(?:the|this|that|these|those|it|them|him|her|my|your)\b[\s\S]{0,60}?\binto\b/i;
+
+// Removal phrasing aimed at existing content ("remove the frog", "delete the
+// car", "erase the watermark").
+const EDIT_REMOVE_RE =
+    /\b(?:remov\w*|delet\w*|eras\w*|eliminat\w*)\b[\s\S]{0,40}?\b(?:the|this|that|these|those|it|them|him|her|my|your)\b/i;
 
 function detectEditIntent(message) {
     const text = String(message || '');
     if (!text.trim()) return null;
     if (isConceptQuestion(text)) return null;
     const norm = text.toLowerCase().replace(/[-_]/g, ' ').replace(/\s+/g, ' ').trim();
-    if (!EDIT_SIGNAL_RE.test(norm)) return null;
-    if (!EDIT_REF_RE.test(norm)) return null;
-    return { intent: 'image_edit' };
+    if (EDIT_SIGNAL_RE.test(norm) && EDIT_REF_RE.test(norm)) return { intent: 'image_edit' };
+    // Content-targeted edit phrasing. Never fires for fresh generation
+    // requests (a generation verb driving at an image noun), which own the
+    // "replace"/"change" verbs in their own frame ("generate an image of ...").
+    // Explicit video nouns also stay out — the video pipeline owns those
+    // ("turn this into a video"), mirroring the router's VIDEO_WORD_RE guard.
+    if (isExplicitNewImageRequest(text)) return null;
+    if (/\b(?:video|film|clip|movie|animation|footage|reel)\b/i.test(text)) return null;
+    // Meta-talk about the prompt itself ("replace the prompt with ...",
+    // "change the prompt into ...") is a generation modify — a full regen of
+    // the rewritten prompt — never an identity edit of the pixels.
+    if (/\bprompts?\b/i.test(text)) return null;
+    if (EDIT_SUBSTITUTE_RE.test(text)) return { intent: 'image_edit' };
+    if (EDIT_TRANSFORM_RE.test(text)) return { intent: 'image_edit' };
+    if (EDIT_REMOVE_RE.test(text)) return { intent: 'image_edit' };
+    return null;
+}
+
+// Strip leading conversational filler from an edit instruction so the
+// identity-edit grounding encoder gets clean prose ("hahahaha replace the
+// frog with ..." -> "replace the frog with ..."). Only leading tokens are
+// removed; the instruction itself is never rewritten.
+const EDIT_LEADING_FILLER_RE =
+    /^(?:\s*(?:(?:ha)+h?|hehe\w*|hihi\w*|lol|lmao|rofl|omg|wow|hey|hi|hello|ok(?:ay)?|well|so|please|just|actually|can you(?: please)?|could you(?: please)?|would you(?: please)?|i want you to|i'd like you to|i would like you to)[\s,.!;:]+)+/i;
+
+function cleanEditInstruction(text) {
+    return String(text || '').replace(EDIT_LEADING_FILLER_RE, '').trim();
+}
+
+// --- Follow-up modification gate -------------------------------------------------
+//
+// Vague follow-up tweaks of the active image ("change her bottom to ripped
+// blue jeans", "make her wear a red dress", "change the background to a
+// beach") must always run as a full-regen modify — never fall through to
+// chat where a small model hallucinates a tool-call JSON blob
+// ({"action": "image_generation", "action_input": ...}) instead of running
+// anything. This is a narrow deterministic gate like detectUpscaleIntent:
+// it only fires while an image task is active and the LLM router stays the
+// authority for everything else.
+//
+// Explicit identity-edit phrasing ("replace X with Y", "remove X", ...) stays
+// on the edit path (detectEditIntent wins — callers check it first), as do
+// questions, display requests, upscales, fresh generations, and video work.
+
+const IMAGE_MODIFY_VERB_RE = /\b(?:chang\w*|mak\w*|turn\w*|update\w*|switch\w*|wear\w*|dress\w*|put\w*|give\w*|add\w*)\b/i;
+const IMAGE_MODIFY_TARGET_RE = /\b(?:her|him|them|it|this|that|bottom|top|dress|jean|pants?|trousers?|skirt|shirt|blouse|jacket|sweater|gown|kimono|outfit|cloth(?:es|ing)|background|hair(?:style)?|pose|setting|lighting|expression|camera|night|day|sunset|beach|city|forest|room)\b/i;
+const IMAGE_MODIFY_QUESTION_RE = /^(?:what|which|why|who|when|where|how)\b/i;
+
+function detectImageModifyIntent(message, hasActiveImageTask) {
+    if (!hasActiveImageTask) return null;
+    const text = String(message || '');
+    if (!text.trim()) return null;
+    if (isConceptQuestion(text)) return null;
+    // Questions about the image ("what jeans is she wearing?") are chat —
+    // only imperative / declarative tweaks modify.
+    if (IMAGE_MODIFY_QUESTION_RE.test(text.trim())) return null;
+    if (/\?\s*$/.test(text.trim())) return null;
+    if (/\b(?:explain|describe|tell\s+me|show\s+me\s+the\s+(?:image|picture|photo))\b/i.test(text)) return null;
+    // Narrow intents own their phrasing — never steal from them.
+    try {
+        if (detectUpscaleIntent(text)) return null;
+        if (detectEditIntent(text)) return null;
+    } catch (err) { /* fall through — treat as non-narrow */ }
+    if (isExplicitNewImageRequest(text)) return null;
+    if (!IMAGE_MODIFY_VERB_RE.test(text)) return null;
+    if (!IMAGE_MODIFY_TARGET_RE.test(text)) return null;
+    return { intent: 'image_generation', action: 'modify' };
 }
 
 function sameAssetName(a, b) {
@@ -1982,6 +2070,8 @@ module.exports = {
     buildKrea2IdentityEditGraph,
     normalizeIdentityEditDimensions,
     detectEditIntent,
+    cleanEditInstruction,
+    detectImageModifyIntent,
     checkEditAvailability,
     editImage,
     MAX_IDENTITY_EDIT_PIXELS,
