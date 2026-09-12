@@ -564,12 +564,20 @@ const Chat = (() => {
             empty.className = 'chat-empty';
             empty.textContent = 'Start a conversation.';
             chatMessagesEl.appendChild(empty);
-            return;
+        } else {
+            messages.forEach((m) => {
+                addMessageDom(m.role, m.content);
+            });
         }
 
-        messages.forEach((m) => {
-            addMessageDom(m.role, m.content);
-        });
+        // Re-attach the live streaming message when its conversation is
+        // re-opened mid-generation, so the "generating" status and any
+        // streamed content survive a conversation switch.
+        if (activeMessageEl && activeMessageConversationId === Conversations.currentId()) {
+            const empty = chatMessagesEl.querySelector('.chat-empty');
+            if (empty) empty.remove();
+            chatMessagesEl.appendChild(activeMessageEl);
+        }
 
         chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
     }
@@ -608,6 +616,8 @@ const Chat = (() => {
     let activeStreamAbort = null;
     let activeQueueId = null;
     let activeQueueActive = false;
+    let activeMessageEl = null;
+    let activeMessageConversationId = null;
 
     async function cancelActiveStream() {
         if (typeof VoiceOutput !== 'undefined' && VoiceOutput && typeof VoiceOutput.cancel === 'function') {
@@ -741,6 +751,9 @@ const Chat = (() => {
             aiMessageEl.appendChild(contentEl);
             chatMessagesEl.appendChild(aiMessageEl);
 
+            activeMessageEl = aiMessageEl;
+            activeMessageConversationId = conversationId;
+
             removeTypingIndicator();
 
             // Read the stream
@@ -869,6 +882,8 @@ const Chat = (() => {
             activeStreamAbort = null;
             activeQueueId = null;
             activeQueueActive = false;
+            activeMessageEl = null;
+            activeMessageConversationId = null;
             setSendingState(false);
         }
     }
