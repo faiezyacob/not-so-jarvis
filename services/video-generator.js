@@ -2637,6 +2637,7 @@ module.exports = {
     registerGenerationLock,
     detectVideoIntent,
     detectVideoUpscaleIntent,
+    videoRequestStrength,
     parseRequestedVideoDuration,
     buildH3VideoPrompt,
     modifyH3VideoPrompt,

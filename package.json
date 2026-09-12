@@ -4,7 +4,8 @@
   "description": "JARVIS — Local AI Assistant",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test"
   },
   "keywords": ["jarvis", "ai", "assistant", "local"],
   "license": "GPL-3.0-only"

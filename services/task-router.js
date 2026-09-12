@@ -148,8 +148,11 @@ function parseRegenerateRequest(message, activeTaskType) {
     const text = String(message || '');
     if (!text.trim() || !REGENERATE_WORD_RE.test(text)) return null;
     // Questions/exclamations about repetition ("what again?", "not again!",
-    // "stop repeating") are chat, not regenerate commands.
-    if (looksLikeQuestion(text)) return null;
+    // "stop repeating") are chat, not regenerate commands. Deliberately NOT
+    // using looksLikeQuestion here: its auxiliary leads ("do", "can") would
+    // reject imperatives like "do it again" / "can you do it again".
+    if (/\?\s*$/.test(text)) return null;
+    if (/^\s*(?:what|which|why|who|when|where)\b/i.test(text)) return null;
     if (/^\s*(?:no|not|never|stop|don'?t)\b/i.test(text)) return null;
     const hasVideoNoun = videoGenerator.VIDEO_WORD_RE.test(text);
     const hasImageNoun = REGEN_IMAGE_NOUN_RE.test(text);
@@ -174,8 +177,18 @@ function parseRegenerateRequest(message, activeTaskType) {
     // is active) is a cross-modal regenerate — still extract the delta so the
     // caller can build an I2VA video from the last image with the change.
     const crossModal = Boolean(activeTaskType && media !== activeTaskType);
-    const match = text.match(REGENERATE_WORD_RE);
-    let after = match ? text.slice(match.index + match[0].length) : '';
+    // Use the LAST regenerate word: "regenerate the image again" must read as
+    // bare, while "generate the image again but make X" keeps X as the delta.
+    const regenRe = new RegExp(REGENERATE_WORD_RE.source, 'gi');
+    let lastIndex = -1;
+    let lastLength = 0;
+    let match;
+    while ((match = regenRe.exec(text)) !== null) {
+        lastIndex = match.index;
+        lastLength = match[0].length;
+        if (match.index === regenRe.lastIndex) regenRe.lastIndex++;
+    }
+    let after = lastIndex >= 0 ? text.slice(lastIndex + lastLength) : '';
     // Strip the connectors between "again" and the actual change.
     for (let i = 0; i < 3; i++) {
         const next = after.replace(/^\s*(?:[,.!;:]+|\b(?:but|and|with|where|except|though|however|now|please|just|also)\b|\b(?:change(?:s|d)?|chang(?:e|ing)\s+(?:it|that|this|her|him|them)?(?:\s+to)?|to)\b)+\s*/i, '');
@@ -930,5 +943,6 @@ module.exports = {
     buildRouterContext,
     renderActiveTaskContext,
     parseRegenerateRequest,
+    normalizeDecision,
     ROUTER_SYSTEM_PROMPT
 };

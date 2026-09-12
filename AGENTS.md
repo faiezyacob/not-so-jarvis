@@ -98,6 +98,7 @@ data/                 Runtime data (persisted JSON + generated media)
 - Follow existing naming and structure patterns when adding features.
 - Match the existing "plain functions + `module.exports`" module style on the backend.
 - The frontend uses plain global functions and DOM manipulation, not a framework. Feature modules in `public/js/` interact with shared state in `app.js` (e.g., the LoRA stack helpers).
+- **Tests:** run `npm test` (Node's built-in `node --test`, zero-dependency). Suites live in `test/` and cover the router/intent classifiers (`routing.test.js`, `intent.test.js`) with the LLM/storage seams stubbed. Add positive+negative phrase cases here when changing a router regex or gate.
 
 ## Rules / constraints future agents must follow
 
