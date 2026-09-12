@@ -568,7 +568,7 @@ details.settings-card[open] summary.settings-card-title::after {
 
 .settings-widget-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 1fr;
     gap: 8px;
     padding: 4px 0 0;
     background: transparent;
@@ -1904,6 +1904,38 @@ em {
 
 .settings-save-status--error {
     color: #d98c72;
+}
+
+.settings-log {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    line-height: 1.5;
+    letter-spacing: 0.3px;
+    color: var(--text-dim);
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 8px 10px;
+    margin: 0;
+    max-height: 160px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.settings-log::-webkit-scrollbar {
+    width: 6px;
+}
+
+.settings-log::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.settings-log::-webkit-scrollbar-thumb {
+    background: rgba(108, 255, 154, 0.15);
+    border-radius: 3px;
 }
 
 /* --- LoRA Stack (Image Generation Settings) --- */
@@ -3831,4 +3863,128 @@ em {
     .jv-time {
         font-size: 9px;
     }
+}
+
+/* --- First-Run Setup Guide (Settings > Setup) --- */
+
+.settings-nav-dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #e0b25a;
+    margin-left: 6px;
+    vertical-align: middle;
+}
+
+.setup-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    width: 100%;
+}
+
+.setup-group-title {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 1.5px;
+    color: var(--text-secondary);
+    margin-top: 6px;
+}
+
+.setup-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 8px 10px;
+    background: rgba(0, 0, 0, 0.25);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+}
+
+.setup-row-main {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.setup-row-title {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 1.5;
+    color: var(--text-primary);
+    margin-bottom: 2px;
+}
+
+.setup-row-sub {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    line-height: 1.7;
+    color: var(--text-dim);
+    word-break: break-word;
+    overflow-wrap: anywhere;
+}
+
+.setup-row-sub a {
+    color: var(--accent-muted);
+}
+
+.setup-badge {
+    font-family: var(--font-mono);
+    font-size: 8px;
+    font-weight: 600;
+    letter-spacing: 1px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    white-space: nowrap;
+    flex-shrink: 0;
+    margin-top: 1px;
+}
+
+.setup-badge--ok {
+    color: #6cff9a;
+    border: 1px solid rgba(108, 255, 154, 0.4);
+}
+
+.setup-badge--missing {
+    color: #e0b25a;
+    border: 1px solid rgba(224, 178, 90, 0.4);
+}
+
+.setup-warn {
+    color: #d98c72;
+}
+
+.setup-row-btn {
+    width: auto;
+    flex-shrink: 0;
+    align-self: center;
+    padding: 0 12px;
+    white-space: nowrap;
+}
+
+.setup-progress-wrapper {
+    height: 6px;
+    background: rgba(0, 0, 0, 0.4);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    overflow: hidden;
+    margin-bottom: 6px;
+}
+
+.setup-progress-bar {
+    height: 100%;
+    width: 0;
+    background: var(--accent);
+    transition: width 0.3s ease;
+}
+
+.setup-progress-bar--indeterminate {
+    animation: setup-progress-slide 1.2s ease-in-out infinite;
+}
+
+@keyframes setup-progress-slide {
+    0% { margin-left: -40%; width: 40%; }
+    100% { margin-left: 100%; width: 40%; }
 }

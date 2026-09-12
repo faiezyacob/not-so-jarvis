@@ -68,6 +68,8 @@ const models = require('./server/models');
 const providerManager = require('./server/provider-manager');
 const imageGenerator = require('./services/image-generator');
 const videoGenerator = require('./services/video-generator');
+const faceRefine = require('./services/face-refine');
+const modelSetup = require('./services/model-setup');
 const generatedHistory = require('./services/generated-history');
 const comfyui = require('./services/comfyui');
 const vramManager = require('./services/vram-manager');
@@ -422,9 +424,135 @@ async function handleAPI(req, res, urlPath) {
         try {
             const body = await readBody(req);
             const settings = videoGenerator.saveVideoSettings(body || {});
-            json(res, 200, { ok: true, settings });
+            // First-enable auto-install: turning FaceRefine on kicks off the
+            // background ComfyUI-side install (custom nodes + pip packages +
+            // face detector). Non-blocking; the VIDEO panel polls its progress.
+            let faceRefineInstall = null;
+            if (body && (body.faceRefineEnabled === true || body.faceRefineEnabled === 1 ||
+                    String(body.faceRefineEnabled).toLowerCase() === 'true' || String(body.faceRefineEnabled) === '1')) {
+                faceRefineInstall = faceRefine.ensureAutoInstall();
+            }
+            json(res, 200, { ok: true, settings, faceRefineInstall });
         } catch (err) {
             json(res, 400, { error: err.message });
+        }
+        return true;
+    }
+
+    // GET /api/video/face-refine/status — ComfyUI readiness for FaceRefine
+    // (custom nodes loaded, detector model present) + install job state.
+    if (urlPath === '/api/video/face-refine/status' && req.method === 'GET') {
+        try {
+            json(res, 200, await faceRefine.getStatus());
+        } catch (err) {
+            json(res, 500, { error: err.message });
+        }
+        return true;
+    }
+
+    // POST /api/video/face-refine/install — (re)run the ComfyUI-side
+    // FaceRefine install in the background. Returns immediately; poll the
+    // status endpoint for progress. Restart ComfyUI when it finishes.
+    if (urlPath === '/api/video/face-refine/install' && req.method === 'POST') {
+        try {
+            const started = faceRefine.startInstall();
+            json(res, 200, { ok: true, install: started });
+        } catch (err) {
+            json(res, 500, { error: err.message });
+        }
+        return true;
+    }
+
+    // GET /api/setup/status — first-run setup guide state: ComfyUI paths,
+    // Hugging Face token state, per-model install status, per-pack custom
+    // node status, readiness flags, and the background download job.
+    if (urlPath === '/api/setup/status' && req.method === 'GET') {
+        try {
+            json(res, 200, await modelSetup.getStatus());
+        } catch (err) {
+            json(res, 500, { error: err.message });
+        }
+        return true;
+    }
+
+    // POST /api/setup/token — save the Hugging Face token ({ token }).
+    // Best-effort verification via /api/whoami; the token is stored even
+    // when verification is inconclusive (offline), with a warning.
+    if (urlPath === '/api/setup/token' && req.method === 'POST') {
+        try {
+            const body = await readBody(req);
+            const token = String((body && body.token) || '').trim();
+            if (!token) {
+                json(res, 400, { error: 'token is required' });
+                return true;
+            }
+            const check = await modelSetup.verifyToken(token);
+            const stored = configManager.setHuggingFace({
+                token,
+                user: check.user || null,
+                verifiedAt: check.valid ? new Date().toISOString() : null
+            });
+            json(res, 200, {
+                ok: true,
+                valid: check.valid,
+                user: check.user || null,
+                warning: check.valid ? null : check.error,
+                source: 'settings',
+                masked: token.length > 7 ? token.slice(0, 3) + '…' + token.slice(-4) : '•••',
+                storedUser: stored.user || null
+            });
+        } catch (err) {
+            json(res, 500, { error: err.message });
+        }
+        return true;
+    }
+
+    // DELETE /api/setup/token — forget the stored Hugging Face token
+    // (env-provided tokens are unaffected).
+    if (urlPath === '/api/setup/token' && req.method === 'DELETE') {
+        try {
+            configManager.setHuggingFace({ token: null, user: null, verifiedAt: null });
+            json(res, 200, { ok: true });
+        } catch (err) {
+            json(res, 500, { error: err.message });
+        }
+        return true;
+    }
+
+    // POST /api/setup/download — download missing models from Hugging Face
+    // ({ ids: [...] }, or omit for all missing required). Runs in the
+    // background; poll GET /api/setup/status for progress.
+    if (urlPath === '/api/setup/download' && req.method === 'POST') {
+        try {
+            const body = await readBody(req);
+            let ids = Array.isArray(body && body.ids) ? body.ids.map(String) : null;
+            if (!ids) {
+                const status = await modelSetup.getStatus();
+                ids = status.models.filter((m) => !m.installed && (m.required || m.id === 'h3_unet_i2va')).map((m) => m.id);
+            }
+            const started = modelSetup.startDownload(ids);
+            json(res, started.started ? 200 : 409, { ok: started.started, job: started.job, reason: started.reason || null });
+        } catch (err) {
+            json(res, 500, { error: err.message });
+        }
+        return true;
+    }
+
+    // POST /api/setup/install-nodes — git-clone missing custom-node packs
+    // ({ ids: [...] }). Runs in the background; poll GET /api/setup/status.
+    // Restart ComfyUI when it finishes.
+    if (urlPath === '/api/setup/install-nodes' && req.method === 'POST') {
+        try {
+            const body = await readBody(req);
+            const ids = Array.isArray(body && body.ids) ? body.ids.map(String) : [];
+            if (!ids.length) {
+                json(res, 400, { error: 'ids is required' });
+                return true;
+            }
+            const started = modelSetup.startNodeInstall(ids);
+            json(res, started.started ? 200 : 409, { ok: started.started, job: started.job, reason: started.reason || null });
+        } catch (err) {
+            json(res, 500, { error: err.message });
         }
         return true;
     }
@@ -1847,6 +1975,9 @@ async function handleVideoGenerationStream(req, res, opts) {
         if (duration) opts2.duration = duration;
         if (width) opts2.width = width;
         if (height) opts2.height = height;
+        opts2.onProgress = (stage) => {
+            if (stage === 'face-refine') sseWrite(res, { generating: 'Refining faces...' });
+        };
 
         console.log('[video] source image:', opts2.sourceImageRawFilename || null);
         console.log('[video] mode:', opts2.mode || 't2va');
@@ -2016,6 +2147,8 @@ function friendlyVideoError(err) {
         case 'comfyui_missing_nodes':
             return err.message;
         case 'rtx_video_upscale_setup_required':
+            return err.message;
+        case 'facerefine_failed':
             return err.message;
         case 'comfyui_timeout':
             return 'Video generation timed out. ComfyUI may be overloaded — please try again.';

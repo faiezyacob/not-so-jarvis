@@ -300,9 +300,325 @@ function initSettings() {
     initImageGenSettings();
     initUpscaleSettings();
     initVideoSettings();
+    initModelSetup();
     initEngineCards();
     initFreeComfyButton();
     initRestartServerButton();
+}
+
+// --- First-run setup guide (Settings > Setup) ---
+//
+// Status comes from GET /api/setup/status (ComfyUI paths, token state,
+// per-model / per-node install flags, readiness, background job). Downloads
+// and node installs run server-side; this polls for progress while a job is
+// active and lights the nav dot while anything required is still missing.
+
+let setupPollTimer = null;
+
+function escHtml(value) {
+    return String(value == null ? '' : value).replace(/[&<>"']/g, (c) => (
+        c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : c === '"' ? '&quot;' : '&#39;'
+    ));
+}
+
+function setSetupStatus(id, text, isError) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = text || '';
+    el.classList.toggle('settings-save-status--error', !!isError);
+}
+
+async function fetchSetupStatus() {
+    const res = await fetch('/api/setup/status');
+    if (!res.ok) throw new Error('Setup status failed: HTTP ' + res.status);
+    return res.json();
+}
+
+function renderSetupModels(data) {
+    const list = document.getElementById('setupModels');
+    if (!list) return;
+    const groups = [['image', 'IMAGE'], ['video', 'VIDEO'], ['upscale', 'UPSCALE']];
+    let html = '';
+    for (const [key, title] of groups) {
+        const items = (data.models || []).filter((m) => m.group === key);
+        if (!items.length) continue;
+        html += '<div class="setup-group-title">' + title + '</div>';
+        for (const m of items) {
+            const badge = m.installed
+                ? '<span class="setup-badge setup-badge--ok">READY</span>'
+                : '<span class="setup-badge setup-badge--missing">MISSING</span>';
+            const sub = escHtml(m.filename || '(no file configured)') +
+                ' · ' + escHtml(m.sizeLabel || '—') +
+                (m.repo ? ' · <a href="' + escHtml(m.repoUrl || ('https://huggingface.co/' + m.repo)) + '" target="_blank" rel="noreferrer">' + escHtml(m.repo) + '</a>' : '') +
+                (m.required ? '' : ' · optional') +
+                (m.note ? '<br>' + escHtml(m.note) : '') +
+                (!m.installed && !m.url && m.filename && !m.note ? '<br><span class="setup-warn">Unknown source for this filename — place it in ComfyUI models/' + escHtml(m.dest) + '/ by hand.</span>' : '');
+            const btn = m.installed
+                ? ''
+                : (m.url ? '<button class="settings-browse-btn setup-row-btn" type="button" data-setup-download="' + escHtml(m.id) + '">Download</button>' : '');
+            html += '<div class="setup-row">' + badge +
+                '<div class="setup-row-main"><div class="setup-row-title">' + escHtml(m.label) + '</div>' +
+                '<div class="setup-row-sub">' + sub + '</div></div>' + btn + '</div>';
+        }
+    }
+    if (!data.comfyAvailable) {
+        html = '<div class="setup-row"><span class="setup-badge setup-badge--missing">OFFLINE</span>' +
+            '<div class="setup-row-main"><div class="setup-row-title">ComfyUI is unreachable</div>' +
+            '<div class="setup-row-sub">Start ComfyUI, then press Re-check. Downloads land in its models/ folder.</div></div></div>' + html;
+    }
+    list.innerHTML = html;
+    list.querySelectorAll('[data-setup-download]').forEach((btn) => {
+        btn.addEventListener('click', () => setupDownload([btn.getAttribute('data-setup-download')]));
+    });
+    const sub = document.getElementById('setupModelsSub');
+    if (sub) sub.textContent = data.modelRoot ? 'Checked against ' + data.modelRoot : "Checked against ComfyUI's models/ folder.";
+}
+
+function renderSetupNodes(data) {
+    const list = document.getElementById('setupNodes');
+    if (!list) return;
+    let html = '';
+    for (const n of (data.nodes || [])) {
+        const badge = !data.comfyAvailable
+            ? '<span class="setup-badge setup-badge--missing">UNKNOWN</span>'
+            : (n.ready === true
+                ? '<span class="setup-badge setup-badge--ok">READY</span>'
+                : '<span class="setup-badge setup-badge--missing">MISSING</span>');
+        const btn = (data.comfyAvailable && n.ready === false && n.installable)
+            ? '<button class="settings-browse-btn setup-row-btn" type="button" data-setup-node="' + escHtml(n.id) + '">Install</button>'
+            : '';
+        html += '<div class="setup-row">' + badge +
+            '<div class="setup-row-main"><div class="setup-row-title">' + escHtml(n.label) + '</div>' +
+            '<div class="setup-row-sub">' + escHtml(n.nodes.join(', ')) +
+            (n.missing && n.missing.length && data.comfyAvailable ? ' — <span class="setup-warn">missing: ' + escHtml(n.missing.join(', ')) + '</span>' : '') +
+            (n.required ? '' : ' · optional') + (n.nvidiaOnly ? ' · NVIDIA GPU only' : '') +
+            '<br>' + escHtml(n.note || '') + '</div></div>' + btn + '</div>';
+    }
+    list.innerHTML = html;
+    list.querySelectorAll('[data-setup-node]').forEach((btn) => {
+        btn.addEventListener('click', () => setupInstallNodes([btn.getAttribute('data-setup-node')]));
+    });
+}
+
+function renderSetupJob(data) {
+    const job = (data && data.job) || {};
+    const field = document.getElementById('setupProgressField');
+    const bar = document.getElementById('setupProgressBar');
+    const logEl = document.getElementById('setupJobLog');
+    if (field) field.hidden = !(job.running || (job.done && job.log && job.log.length));
+    if (bar) {
+        const cur = job.current || {};
+        const knownTotal = job.running && cur.total > 0;
+        bar.classList.toggle('setup-progress-bar--indeterminate', job.running && !knownTotal);
+        if (knownTotal) {
+            bar.style.width = Math.max(0, Math.min(100, (cur.received / cur.total) * 100)).toFixed(1) + '%';
+        } else if (job.running) {
+            bar.style.width = '100%';
+        } else if (job.done && job.ok) {
+            bar.style.width = '100%';
+        }
+    }
+    if (job.running) {
+        const cur = job.current || {};
+        const mb = (n) => (Number(n) > 0 ? (Number(n) / 1024 / 1024).toFixed(0) + ' MB' : '—');
+        setSetupStatus('setupJobStatus', (job.kind === 'nodes' ? 'Installing nodes' : 'Downloading') +
+            (cur.label ? ': ' + cur.label : '') +
+            (cur.total > 0 ? ' (' + mb(cur.received) + ' / ' + mb(cur.total) + ')' : '') +
+            ' — job ' + (job.finished || 0) + '/' + (job.total || 0));
+    } else if (job.done) {
+        setSetupStatus('setupJobStatus', job.ok ? 'Finished. Press Re-check to refresh.' : ('Failed: ' + (job.error || 'unknown error')), !job.ok);
+    } else {
+        setSetupStatus('setupJobStatus', '');
+    }
+    if (logEl) {
+        if (job.log && job.log.length) {
+            logEl.hidden = false;
+            logEl.textContent = job.log.slice(-12).join('\n');
+            logEl.scrollTop = logEl.scrollHeight;
+        } else {
+            logEl.hidden = true;
+        }
+    }
+}
+
+function renderSetupStatus(data) {
+    renderSetupModels(data);
+    renderSetupNodes(data);
+    renderSetupJob(data);
+
+    const tok = (data && data.token) || {};
+    setSetupStatus('setupHfStatus', tok.configured
+        ? 'Saved (' + tok.source + (tok.user ? ' as ' + tok.user : '') + ', ' + (tok.masked || '•••') + ').'
+        : 'No token saved.', false);
+
+    const ready = (data && data.ready) || {};
+    const bits = [
+        ['Image', ready.image], ['Video', ready.video],
+        ['Upscale', ready.upscale], ['Edit', ready.edit]
+    ];
+    const readyEl = document.getElementById('setupReadyStatus');
+    if (readyEl) {
+        readyEl.textContent = bits.map(([name, ok]) => name + ' ' + (ok ? '✓' : '✗')).join(' · ');
+        readyEl.classList.toggle('settings-save-status--error', bits.some(([, ok]) => !ok));
+    }
+    const dot = document.getElementById('setupNavDot');
+    if (dot) {
+        const incomplete = !data.comfyAvailable || bits.some(([, ok]) => !ok) ||
+            (data.models || []).some((m) => m.required && !m.installed) ||
+            (data.nodes || []).some((n) => n.required && n.ready === false);
+        dot.hidden = !incomplete;
+    }
+}
+
+function stopSetupPoll() {
+    if (setupPollTimer) clearInterval(setupPollTimer);
+    setupPollTimer = null;
+}
+
+function startSetupPoll() {
+    stopSetupPoll();
+    setupPollTimer = setInterval(async () => {
+        try {
+            const data = await fetchSetupStatus();
+            renderSetupStatus(data);
+            if (!data.job || !data.job.running) {
+                stopSetupPoll();
+                const refreshed = await fetchSetupStatus();
+                renderSetupStatus(refreshed);
+            }
+        } catch {
+            // Keep polling; ComfyUI or the server may be restarting.
+        }
+    }, 2500);
+}
+
+async function refreshSetup(message) {
+    try {
+        if (message) setSetupStatus('setupModelsStatus', message);
+        const data = await fetchSetupStatus();
+        renderSetupStatus(data);
+        if (message) setSetupStatus('setupModelsStatus', '');
+        if (data.job && data.job.running) startSetupPoll();
+    } catch (err) {
+        setSetupStatus('setupModelsStatus', 'Could not load setup status: ' + err.message, true);
+    }
+}
+
+async function setupDownload(ids) {
+    try {
+        setSetupStatus('setupModelsStatus', 'Starting download…');
+        const res = await fetch('/api/setup/download', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ids })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok) {
+            setSetupStatus('setupModelsStatus', (data && data.reason === 'already running') ? 'A setup job is already running.' : ('Download failed: ' + ((data && data.error) || res.status)), true);
+            return;
+        }
+        setSetupStatus('setupModelsStatus', '');
+        startSetupPoll();
+    } catch (err) {
+        setSetupStatus('setupModelsStatus', 'Download failed: ' + err.message, true);
+    }
+}
+
+async function setupInstallNodes(ids) {
+    try {
+        setSetupStatus('setupNodesStatus', 'Starting install…');
+        const res = await fetch('/api/setup/install-nodes', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ids })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok) {
+            setSetupStatus('setupNodesStatus', (data && data.reason === 'already running') ? 'A setup job is already running.' : ('Install failed: ' + ((data && data.error) || res.status)), true);
+            return;
+        }
+        setSetupStatus('setupNodesStatus', '');
+        startSetupPoll();
+    } catch (err) {
+        setSetupStatus('setupNodesStatus', 'Install failed: ' + err.message, true);
+    }
+}
+
+function initModelSetup() {
+    const saveBtn = document.getElementById('setupHfSave');
+    if (saveBtn) saveBtn.addEventListener('click', async () => {
+        const input = document.getElementById('setupHfToken');
+        const token = input ? String(input.value || '').trim() : '';
+        if (!token) {
+            setSetupStatus('setupHfStatus', 'Paste a token first (hf_…).', true);
+            return;
+        }
+        setSetupStatus('setupHfStatus', 'Saving…');
+        try {
+            const res = await fetch('/api/setup/token', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ token })
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || !data.ok) {
+                setSetupStatus('setupHfStatus', 'Save failed: ' + ((data && data.error) || res.status), true);
+                return;
+            }
+            if (input) input.value = '';
+            setSetupStatus('setupHfStatus', 'Saved' + (data.user ? ' as ' + data.user : '') +
+                (data.warning ? '. Note: ' + data.warning : '.'), Boolean(data.warning && !data.valid));
+        } catch (err) {
+            setSetupStatus('setupHfStatus', 'Save failed: ' + err.message, true);
+        }
+    });
+    const removeBtn = document.getElementById('setupHfRemove');
+    if (removeBtn) removeBtn.addEventListener('click', async () => {
+        try {
+            await fetch('/api/setup/token', { method: 'DELETE' });
+            setSetupStatus('setupHfStatus', 'Token removed (env-provided tokens still apply).');
+            refreshSetup();
+        } catch (err) {
+            setSetupStatus('setupHfStatus', 'Remove failed: ' + err.message, true);
+        }
+    });
+    const missingBtn = document.getElementById('setupDownloadMissing');
+    if (missingBtn) missingBtn.addEventListener('click', async () => {
+        try {
+            setSetupStatus('setupModelsStatus', 'Starting download…');
+            const res = await fetch('/api/setup/download', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({})
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || !data.ok) {
+                setSetupStatus('setupModelsStatus', (data && data.reason === 'already running') ? 'A setup job is already running.' : ('Download failed: ' + ((data && data.error) || res.status)), true);
+                return;
+            }
+            setSetupStatus('setupModelsStatus', '');
+            startSetupPoll();
+        } catch (err) {
+            setSetupStatus('setupModelsStatus', 'Download failed: ' + err.message, true);
+        }
+    });
+    const refreshBtn = document.getElementById('setupRefresh');
+    if (refreshBtn) refreshBtn.addEventListener('click', () => refreshSetup('Re-checking…'));
+    const nodesBtn = document.getElementById('setupInstallNodes');
+    if (nodesBtn) nodesBtn.addEventListener('click', async () => {
+        try {
+            const data = await fetchSetupStatus();
+            const ids = (data.nodes || []).filter((n) => n.ready === false && n.installable).map((n) => n.id);
+            if (!ids.length) {
+                setSetupStatus('setupNodesStatus', 'Nothing installable is missing.');
+                return;
+            }
+            setupInstallNodes(ids);
+        } catch (err) {
+            setSetupStatus('setupNodesStatus', 'Install failed: ' + err.message, true);
+        }
+    });
+    refreshSetup();
 }
 
 function applySettingsSearch(query) {
@@ -923,6 +1239,108 @@ const VIDEO_HINTS = {
     videoAudioVae: 'minimax_h3_audio_vae_fp32.safetensors'
 };
 
+const VIDEO_FACEREFINE_SELECT_FIELDS = [
+    { key: 'faceRefineDenoise', id: 'videoFaceRefineDenoise' },
+    { key: 'faceRefineSteps', id: 'videoFaceRefineSteps' },
+    { key: 'faceRefineCropFactor', id: 'videoFaceRefineCropFactor' },
+    { key: 'faceRefineCanvasMode', id: 'videoFaceRefineCanvasMode' },
+    { key: 'faceRefineSelect', id: 'videoFaceRefineSelect' }
+];
+
+let faceRefinePollTimer = null;
+
+function faceRefineStatusEl() {
+    return document.getElementById('videoFaceRefineStatus');
+}
+
+function faceRefineLogEl() {
+    return document.getElementById('videoFaceRefineLog');
+}
+
+function setFaceRefineStatus(text, isError) {
+    const el = faceRefineStatusEl();
+    if (!el) return;
+    el.textContent = text || '';
+    el.classList.toggle('settings-save-status--error', !!isError);
+}
+
+function renderFaceRefineStatus(data) {
+    if (!data) {
+        setFaceRefineStatus('Could not check FaceRefine status.', true);
+        return;
+    }
+    const logEl = faceRefineLogEl();
+    const job = data.job || {};
+    if (Array.isArray(job.log) && job.log.length && logEl) {
+        logEl.hidden = false;
+        logEl.textContent = job.log.slice(-12).join('\n');
+        logEl.scrollTop = logEl.scrollHeight;
+    } else if (logEl && !job.running) {
+        logEl.hidden = true;
+    }
+    if (job.running) {
+        setFaceRefineStatus('Installing FaceRefine... (restart ComfyUI when done)');
+        scheduleFaceRefinePoll();
+        return;
+    }
+    if (job.done && !job.ok && job.error) {
+        setFaceRefineStatus('Install failed: ' + job.error, true);
+        return;
+    }
+    if (job.done && job.ok && job.warn) {
+        setFaceRefineStatus(job.warn, true);
+        return;
+    }
+    if (!data.comfyAvailable) {
+        setFaceRefineStatus('ComfyUI unreachable — FaceRefine status unknown.', true);
+        return;
+    }
+    if (data.ready) {
+        setFaceRefineStatus(
+            'Ready' + (data.nativeAudioPresent ? ' (lipsync lock available).' : ' (no lipsync lock — audio passes through).')
+        );
+        return;
+    }
+    const missing = Array.isArray(data.nodesMissing) ? data.nodesMissing : [];
+    if (data.restartRequired || (missing.length && data.packInstalled)) {
+        setFaceRefineStatus('Installed — restart ComfyUI to load the nodes.', true);
+        return;
+    }
+    const parts = [];
+    if (missing.length) parts.push('nodes: ' + missing.join(', '));
+    if (!data.vhsPresent) parts.push('VHS_LoadVideo');
+    if (!data.detectorFound) parts.push('detector ' + (data.detectorName || 'face_yolov8m.pt'));
+    setFaceRefineStatus(
+        parts.length ? 'Missing: ' + parts.join('; ') + '. Press Install.' : 'FaceRefine not installed. Press Install.',
+        true
+    );
+}
+
+function scheduleFaceRefinePoll() {
+    if (faceRefinePollTimer) return;
+    faceRefinePollTimer = setTimeout(async () => {
+        faceRefinePollTimer = null;
+        try {
+            const res = await fetch('/api/video/face-refine/status');
+            const data = await res.json().catch(() => null);
+            renderFaceRefineStatus(data);
+            if (data && data.job && data.job.running) scheduleFaceRefinePoll();
+        } catch {
+            setFaceRefineStatus('Could not check FaceRefine status.', true);
+        }
+    }, 2500);
+}
+
+async function refreshFaceRefineStatus() {
+    try {
+        const res = await fetch('/api/video/face-refine/status');
+        const data = await res.json().catch(() => null);
+        renderFaceRefineStatus(data);
+    } catch {
+        setFaceRefineStatus('Could not check FaceRefine status.', true);
+    }
+}
+
 // --- Video Generation Settings ---
 
 function initVideoSettings() {
@@ -1002,6 +1420,75 @@ function initVideoSettings() {
         });
     });
 
+    // --- FaceRefine: enable toggle, tuning selects, detector, installer ---
+    const faceRefineToggle = document.getElementById('videoFaceRefineEnabled');
+    if (faceRefineToggle) {
+        faceRefineToggle.addEventListener('change', async () => {
+            const enabled = faceRefineToggle.checked;
+            setStatus(enabled ? 'Enabling FaceRefine...' : 'Saving...');
+            try {
+                const res = await fetch('/api/settings/video', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ faceRefineEnabled: enabled })
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    setStatus('Save failed: ' + (data.error || 'Unknown error'), true);
+                    faceRefineToggle.checked = !enabled;
+                    return;
+                }
+                setStatus(enabled ? 'FaceRefine on — checking ComfyUI setup...' : 'FaceRefine off.');
+                // First enable kicks off the background auto-install server-side.
+                refreshFaceRefineStatus();
+            } catch {
+                setStatus('Save failed: connection error', true);
+                faceRefineToggle.checked = !enabled;
+            }
+            setTimeout(() => setStatus(''), 3000);
+        });
+    }
+
+    VIDEO_FACEREFINE_SELECT_FIELDS.forEach(({ key, id }) => {
+        const select = document.getElementById(id);
+        if (!select) return;
+        select.addEventListener('change', () => persistSelect(key, select));
+    });
+
+    const faceRefineDetector = document.getElementById('videoFaceRefineDetector');
+    if (faceRefineDetector) {
+        faceRefineDetector.addEventListener('change', () => persistText('faceRefineDetector', faceRefineDetector));
+        faceRefineDetector.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                faceRefineDetector.blur();
+            }
+        });
+    }
+
+    const faceRefineInstallBtn = document.getElementById('videoFaceRefineInstallBtn');
+    if (faceRefineInstallBtn) {
+        faceRefineInstallBtn.addEventListener('click', async () => {
+            setFaceRefineStatus('Starting FaceRefine install...');
+            try {
+                const res = await fetch('/api/video/face-refine/install', { method: 'POST' });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    setFaceRefineStatus('Install failed: ' + (data.error || 'Unknown error'), true);
+                    return;
+                }
+                if (data.install && data.install.started === false) {
+                    setFaceRefineStatus('Install already running — see log below.');
+                } else {
+                    setFaceRefineStatus('Installing FaceRefine... (restart ComfyUI when done)');
+                }
+                refreshFaceRefineStatus();
+            } catch {
+                setFaceRefineStatus('Install failed: connection error', true);
+            }
+        });
+    }
+
     (async () => {
         try {
             const res = await fetch('/api/settings/video');
@@ -1027,6 +1514,33 @@ function initVideoSettings() {
                 input.placeholder = defaults[key] || VIDEO_HINTS[id] || key;
                 input.title = 'Default: ' + (defaults[key] || VIDEO_HINTS[id] || '');
             });
+
+            const faceRefineToggle = document.getElementById('videoFaceRefineEnabled');
+            if (faceRefineToggle) {
+                const stored = settings.faceRefineEnabled;
+                faceRefineToggle.checked = stored === true || stored === 1 ||
+                    String(stored).toLowerCase() === 'true' || String(stored) === '1' ||
+                    (stored === undefined && defaults.faceRefineEnabled === true);
+            }
+
+            VIDEO_FACEREFINE_SELECT_FIELDS.forEach(({ key, id }) => {
+                const select = document.getElementById(id);
+                if (!select) return;
+                const stored = settings[key];
+                const fallback = (defaults[key] !== undefined && defaults[key] !== null) ? String(defaults[key]) : null;
+                const wanted = (stored !== undefined && stored !== null && stored !== '') ? String(stored) : fallback;
+                const hasOption = Array.from(select.options).some((o) => o.value === wanted);
+                if (wanted !== null && hasOption) select.value = wanted;
+            });
+
+            const faceRefineDetector = document.getElementById('videoFaceRefineDetector');
+            if (faceRefineDetector) {
+                const stored = settings.faceRefineDetector;
+                faceRefineDetector.value = (stored !== undefined && stored !== null && stored !== '') ? stored : '';
+                faceRefineDetector.placeholder = defaults.faceRefineDetector || 'face_yolov8m.pt';
+            }
+
+            refreshFaceRefineStatus();
 
             const choices = data.choices || {};
             loraState.available = Array.isArray(choices.loras) ? choices.loras : [];

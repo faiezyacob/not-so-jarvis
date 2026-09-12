@@ -59,6 +59,32 @@ function normalizeH3AttentionBackend(value) {
     return 'standard';
 }
 
+function envNumber(name, fallback) {
+    const n = Number(process.env[name]);
+    return Number.isFinite(n) ? n : fallback;
+}
+
+// Face canvas modes offered by H3FaceTrackCrop (auto modes size the canvas
+// from the largest crop; manual uses canvas_width/height as typed).
+const FACEREFINE_CANVAS_MODES = Object.freeze(['manual', 'auto_no_downscale', 'auto_capped_768']);
+// Subject ranking rules offered by H3FaceTrackCrop (auto MVP: no manual pick).
+const FACEREFINE_SELECT_MODES = Object.freeze([
+    'largest_face', 'smallest_face', 'left_most', 'right_most',
+    'top_most', 'bottom_most', 'centre_most', 'closest_to_xy', 'detector_score'
+]);
+
+function normalizeFaceRefineCanvasMode(value, fallback) {
+    const v = String(value || '').trim();
+    if (FACEREFINE_CANVAS_MODES.includes(v)) return v;
+    return fallback !== undefined ? fallback : 'auto_capped_768';
+}
+
+function normalizeFaceRefineSelect(value, fallback) {
+    const v = String(value || '').trim();
+    if (FACEREFINE_SELECT_MODES.includes(v)) return v;
+    return fallback !== undefined ? fallback : 'largest_face';
+}
+
 const H3_DEFAULTS = {
     h3Unet: process.env.H3_UNET || 'minimax_h3_fl2va_pruned_int8_convrot.safetensors',
     h3Clip: process.env.H3_CLIP || 'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors',
@@ -71,6 +97,18 @@ const H3_DEFAULTS = {
         : 'standard',
     loras: [],
     loraTriggerWords: {},
+    // H3 FaceRefine post-process (ComfyUI-H3-FaceRefine): optional second H3
+    // pass that re-generates small faces at low denoise and stitches them
+    // back. Off by default; the VIDEO settings panel toggles it per user.
+    faceRefineEnabled: String(process.env.H3_FACEREFINE_ENABLED || '').toLowerCase() === 'true' ||
+        process.env.H3_FACEREFINE_ENABLED === '1',
+    faceRefineDetector: process.env.H3_FACEREFINE_DETECTOR || 'face_yolov8m.pt',
+    faceRefineCropFactor: envNumber('H3_FACEREFINE_CROP', 2.5),
+    faceRefineDenoise: envNumber('H3_FACEREFINE_DENOISE', 0.4),
+    faceRefineSteps: Math.round(envNumber('H3_FACEREFINE_STEPS', 8)),
+    faceRefineCanvasMode: process.env.H3_FACEREFINE_CANVAS || 'auto_capped_768',
+    faceRefineSelect: process.env.H3_FACEREFINE_SELECT || 'largest_face',
+    faceRefineFeather: Math.round(envNumber('H3_FACEREFINE_FEATHER', 24)),
     // Video upscaling (SeedVR2 quality or fast RTX) shares the single global
     // upscale settings in imageGeneration (upscaleResolution/Profile/Noise/
     // PreScale, seedvr2 DiT/VAE/attention, upscaleEngine, upscaleMultiplier) —
@@ -80,7 +118,10 @@ const H3_DEFAULTS = {
 
 const H3_CONFIGURABLE_KEYS = [
     'h3Unet', 'h3Clip', 'h3VideoVae', 'h3AudioVae',
-    'h3Duration', 'h3Size', 'attentionBackend', 'loras', 'loraTriggerWords'
+    'h3Duration', 'h3Size', 'attentionBackend', 'loras', 'loraTriggerWords',
+    'faceRefineEnabled', 'faceRefineDetector', 'faceRefineCropFactor',
+    'faceRefineDenoise', 'faceRefineSteps', 'faceRefineCanvasMode',
+    'faceRefineSelect', 'faceRefineFeather'
 ];
 
 // Shared upscale keys (canonical names in imageGeneration). Posted to
@@ -958,6 +999,22 @@ function effectiveVideoSettings() {
                 value = Object.prototype.hasOwnProperty.call(H3_IMAGE_SIZES, s) ? s : H3_DEFAULTS.h3Size;
             } else if (key === 'attentionBackend') {
                 value = normalizeH3AttentionBackend(value);
+            } else if (key === 'faceRefineEnabled') {
+                value = value === true || value === 1 || String(value).toLowerCase() === 'true' || String(value) === '1';
+            } else if (key === 'faceRefineCanvasMode') {
+                value = normalizeFaceRefineCanvasMode(value, H3_DEFAULTS.faceRefineCanvasMode);
+            } else if (key === 'faceRefineSelect') {
+                value = normalizeFaceRefineSelect(value, H3_DEFAULTS.faceRefineSelect);
+            } else if (key === 'faceRefineCropFactor') {
+                value = clampNumber(value, 1.2, 8, H3_DEFAULTS.faceRefineCropFactor);
+            } else if (key === 'faceRefineDenoise') {
+                value = clampNumber(value, 0.05, 1, H3_DEFAULTS.faceRefineDenoise);
+            } else if (key === 'faceRefineSteps') {
+                value = Math.round(clampNumber(value, 1, 30, H3_DEFAULTS.faceRefineSteps));
+            } else if (key === 'faceRefineFeather') {
+                value = Math.round(clampNumber(value, 0, 128, H3_DEFAULTS.faceRefineFeather));
+            } else if (key === 'faceRefineDetector') {
+                value = String(value || '').trim() || H3_DEFAULTS.faceRefineDetector;
             }
             settings[key] = value;
         }
@@ -1075,6 +1132,22 @@ function saveVideoSettings(patch) {
             if (Object.prototype.hasOwnProperty.call(H3_IMAGE_SIZES, s)) out[key] = s;
         } else if (key === 'attentionBackend') {
             out[key] = normalizeH3AttentionBackend(value);
+        } else if (key === 'faceRefineEnabled') {
+            out[key] = value === true || value === 1 || String(value).toLowerCase() === 'true' || String(value) === '1';
+        } else if (key === 'faceRefineDetector') {
+            out[key] = String(value || '').trim() || null;
+        } else if (key === 'faceRefineCropFactor') {
+            out[key] = clampNumber(value, 1.2, 8, H3_DEFAULTS.faceRefineCropFactor);
+        } else if (key === 'faceRefineDenoise') {
+            out[key] = clampNumber(value, 0.05, 1, H3_DEFAULTS.faceRefineDenoise);
+        } else if (key === 'faceRefineSteps') {
+            out[key] = Math.round(clampNumber(value, 1, 30, H3_DEFAULTS.faceRefineSteps));
+        } else if (key === 'faceRefineCanvasMode') {
+            out[key] = normalizeFaceRefineCanvasMode(value, H3_DEFAULTS.faceRefineCanvasMode);
+        } else if (key === 'faceRefineSelect') {
+            out[key] = normalizeFaceRefineSelect(value, H3_DEFAULTS.faceRefineSelect);
+        } else if (key === 'faceRefineFeather') {
+            out[key] = Math.round(clampNumber(value, 0, 128, H3_DEFAULTS.faceRefineFeather));
         } else if (typeof value === 'string') {
             out[key] = value.trim() || null;
         }
@@ -1328,6 +1401,468 @@ async function validateH3Graph(info, graph) {
     }
 }
 
+// --- H3 FaceRefine post-process graph -----------------------------------------
+//
+// Optional second pass (ComfyUI-H3-FaceRefine, auto MVP): the finished video is
+// re-uploaded, faces are tracked per frame (H3FaceTrackCrop, largest_face by
+// default), the crops are encoded into the AV latent (H3InjectVideoLatent),
+// re-generated at low denoise with per-frame strength scaling
+// (H3PerFrameDenoise), and composited back (H3FaceStitch, rect mask).
+// Mirrors the upstream H3_Face_Refine_Auto_Select template, minus the muted
+// SAM pair and the GGUF loader pair. MiniMaxH3NativeAudioLock is wired only
+// when ComfyUI has it; otherwise the source clip audio is passed through to
+// the save node unchanged.
+
+const FACEREFINE_REQUIRED_NODES = Object.freeze([
+    'H3FaceTrackCrop',
+    'H3InjectVideoLatent',
+    'H3PerFrameDenoise',
+    'H3FaceStitch',
+    'VHS_LoadVideo'
+]);
+
+function buildFaceRefineGraph(opts) {
+    const {
+        prompt,
+        settings = {},
+        videoName,
+        fps = H3_FPS,
+        seed = 0,
+        hasNativeAudio = false
+    } = opts;
+
+    const detector = String(settings.faceRefineDetector || H3_DEFAULTS.faceRefineDetector).trim() ||
+        H3_DEFAULTS.faceRefineDetector;
+
+    const graph = {
+        model: {
+            class_type: 'UNETLoader',
+            inputs: {
+                unet_name: settings.h3Unet || H3_DEFAULTS.h3Unet,
+                weight_dtype: 'default',
+            },
+        },
+        clip: {
+            class_type: 'CLIPLoader',
+            inputs: {
+                clip_name: settings.h3Clip || H3_DEFAULTS.h3Clip,
+                type: 'minimax',
+                device: 'default',
+            },
+        },
+        video_vae: {
+            class_type: 'VAELoader',
+            inputs: { vae_name: settings.h3VideoVae || H3_DEFAULTS.h3VideoVae },
+        },
+        audio_vae: {
+            class_type: 'VAELoader',
+            inputs: { vae_name: settings.h3AudioVae || H3_DEFAULTS.h3AudioVae },
+        },
+        noise: {
+            class_type: 'RandomNoise',
+            inputs: { noise_seed: seed },
+        },
+        sampler_select: {
+            class_type: 'KSamplerSelect',
+            inputs: { sampler_name: 'res_multistep' },
+        },
+        // Source clip. VHS_LoadVideo output slots: 0 = IMAGE, 1 = frame_count,
+        // 2 = audio (matches the upstream template wiring).
+        src: {
+            class_type: 'VHS_LoadVideo',
+            inputs: {
+                video: videoName,
+                force_rate: fps,
+                custom_width: 0,
+                custom_height: 0,
+                frame_load_cap: 0,
+                skip_first_frames: 0,
+                select_every_nth: 1,
+                format: 'None'
+            },
+        },
+        track: {
+            class_type: 'H3FaceTrackCrop',
+            inputs: {
+                images: ['src', 0],
+                detector,
+                confidence: 0.35,
+                crop_factor: clampNumber(settings.faceRefineCropFactor, 1.2, 8, H3_DEFAULTS.faceRefineCropFactor),
+                canvas_width: 768,
+                canvas_height: 768,
+                canvas_mode: normalizeFaceRefineCanvasMode(settings.faceRefineCanvasMode, H3_DEFAULTS.faceRefineCanvasMode),
+                smooth_window: 21,
+                size_smooth_window: 51,
+                smooth_method: 'gaussian',
+                size_mode: 'per_frame',
+                select: normalizeFaceRefineSelect(settings.faceRefineSelect, H3_DEFAULTS.faceRefineSelect),
+                select_index: 0,
+                cut_detection: 'none'
+            },
+        },
+    };
+
+    // Same LoRA chain as the base graph (model-only adapters, no CLIP).
+    const loras = (Array.isArray(settings.loras) ? settings.loras : [])
+        .filter((l) => l && l.on !== false && l.name);
+    let userModelNode = 'model';
+    let loraIndex = 0;
+    for (const lora of loras) {
+        const name = String(lora.name).trim();
+        if (!name) continue;
+        const strength = clampNumber(lora.strength, -100, 100, 0);
+        loraIndex += 1;
+        const key = 'lora' + loraIndex;
+        graph[key] = {
+            class_type: 'LoraLoaderModelOnly',
+            inputs: {
+                model: [userModelNode, 0],
+                lora_name: name,
+                strength_model: strength,
+            },
+        };
+        userModelNode = key;
+    }
+
+    // Same attention patch as the base graph (SageAttention patches only the
+    // guider path; SLA patches both, matching Mix Studio's wiring).
+    const attention = normalizeH3AttentionBackend(settings.attentionBackend);
+    let patchedModelNode = userModelNode;
+    if (attention === 'sageattention') {
+        graph.sage_attention = {
+            class_type: 'PathchSageAttentionKJ',
+            inputs: {
+                model: [userModelNode, 0],
+                sage_attention: 'auto',
+                allow_compile: false,
+            },
+        };
+        patchedModelNode = 'sage_attention';
+    } else if (attention === 'sla') {
+        graph.sla_attention = {
+            class_type: 'H3SLAAttention',
+            inputs: {
+                model: [userModelNode, 0],
+                sparsity_ratio: 0.85,
+                block_size: '64',
+                min_seq_len: 8192,
+                dense_last_steps: 0,
+                protect_audio: true,
+                enabled: true,
+            },
+        };
+        patchedModelNode = 'sla_attention';
+    }
+
+    // Empty AV latent sized by the tracker: canvas_w/h -> width/height and
+    // frame_count -> length are wired (INT link to widget), exactly like the
+    // upstream template, so the crop batch and the latent cannot disagree.
+    // Track outputs: 0 crops, 1 transform, 4 canvas_w, 5 canvas_h, 6 frame_count.
+    graph.condition = {
+        class_type: 'MiniMaxH3ImageToVideo',
+        inputs: {
+            clip: ['clip', 0],
+            vae: ['video_vae', 0],
+            prompt: String(prompt || ''),
+            width: ['track', 4],
+            height: ['track', 5],
+            length: ['track', 6],
+        },
+    };
+
+    graph.inject = {
+        class_type: 'H3InjectVideoLatent',
+        inputs: {
+            av_latent: ['condition', 1],
+            images: ['track', 0],
+            vae: ['video_vae', 0],
+        },
+    };
+
+    // Model path: [attention patch] -> NativeAudioLock? -> PerFrameDenoise ->
+    // guider + scheduler. The per-frame node must sit in the model path and
+    // its model output must reach the guider (upstream 1.1.0 requirement).
+    let modelNode = patchedModelNode;
+    let latentNode = ['inject', 0];
+    if (hasNativeAudio) {
+        graph.audio_lock = {
+            class_type: 'MiniMaxH3NativeAudioLock',
+            inputs: {
+                model: [modelNode, 0],
+                av_latent: ['inject', 0],
+                audio_vae: ['audio_vae', 0],
+                audio: ['src', 2],
+            },
+        };
+        modelNode = 'audio_lock';
+        latentNode = ['audio_lock', 1];
+    }
+
+    graph.perframe = {
+        class_type: 'H3PerFrameDenoise',
+        inputs: {
+            model: [modelNode, 0],
+            av_latent: latentNode,
+            transform: ['track', 1],
+            denoise_multiplier_small_face: 1.0,
+            denoise_multiplier_large_face: 0.35,
+            scale_mode: 'absolute_px',
+            face_px_small: 30,
+            face_px_large: 120,
+            gamma: 1.0,
+            smooth_frames: 9,
+        },
+    };
+
+    // The upstream template ships denoise 0.4 + 8 steps with the turbo LoRA:
+    // short, gentle schedule. Scheduler AND guider both take the patched
+    // per-frame model (see template links 18/16).
+    graph.scheduler = {
+        class_type: 'BasicScheduler',
+        inputs: {
+            model: ['perframe', 2],
+            scheduler: 'simple',
+            steps: Math.round(clampNumber(settings.faceRefineSteps, 1, 30, H3_DEFAULTS.faceRefineSteps)),
+            denoise: clampNumber(settings.faceRefineDenoise, 0.05, 1, H3_DEFAULTS.faceRefineDenoise),
+        },
+    };
+
+    graph.guider = {
+        class_type: 'BasicGuider',
+        inputs: {
+            model: ['perframe', 2],
+            conditioning: ['condition', 0],
+        },
+    };
+
+    graph.sample = {
+        class_type: 'SamplerCustomAdvanced',
+        inputs: {
+            noise: ['noise', 0],
+            guider: ['guider', 0],
+            sampler: ['sampler_select', 0],
+            sigmas: ['scheduler', 0],
+            latent_image: ['perframe', 0],
+        },
+    };
+
+    graph.decode = {
+        class_type: 'VAEDecode',
+        inputs: { samples: ['sample', 0], vae: ['video_vae', 0] },
+    };
+
+    // Rect paste mask, generated internally (no SAM in the auto MVP): only the
+    // face region composites, everything else keeps its original pixels.
+    graph.stitch = {
+        class_type: 'H3FaceStitch',
+        inputs: {
+            base_images: ['src', 0],
+            refined_crops: ['decode', 0],
+            transform: ['track', 1],
+            paste_region: 'face_only',
+            mask_dilation: 16,
+            feather: Math.round(clampNumber(settings.faceRefineFeather, 0, 128, H3_DEFAULTS.faceRefineFeather)),
+            colour_match: 1.0,
+            blend: 1.0,
+            undetected_frames: 'fade_out',
+        },
+    };
+
+    // Original clip audio goes to the save node (lipsync source included);
+    // the refined pass only replaces the pictures.
+    graph.video = {
+        class_type: 'CreateVideo',
+        inputs: { images: ['stitch', 0], audio: ['src', 2], fps },
+    };
+
+    graph.save = {
+        class_type: 'SaveVideo',
+        inputs: {
+            video: ['video', 0],
+            filename_prefix: 'not-so-jarvis/video_refined',
+            format: 'auto',
+            codec: 'auto',
+        },
+    };
+
+    return graph;
+}
+
+// Which FaceRefine nodes ComfyUI knows (checked before queueing so a missing
+// pack fails fast with an install hint instead of a cryptic queue error).
+function faceRefineAvailability(info) {
+    const available = info || {};
+    const missing = FACEREFINE_REQUIRED_NODES.filter((n) => !available[n]);
+    return {
+        missing,
+        hasNativeAudio: Boolean(available.MiniMaxH3NativeAudioLock),
+        ready: missing.length === 0
+    };
+}
+
+// --- FaceRefine execution -----------------------------------------------------
+//
+// Runs INSIDE the caller's generation lock (generateVideo calls it directly,
+// never via withGenerationLock — re-enqueueing from inside a running job
+// would self-deadlock the FIFO). Fail-open by design: any error throws a
+// facerefine_failed error and the caller keeps the base video.
+
+const FACEREFINE_TIMEOUT_MS = 30 * 60 * 1000; // 30 min, same as base video
+
+async function refineVideo(baseRawFilename, opts = {}) {
+    await ensureGeneratedDir();
+
+    const safeName = path.basename(String(baseRawFilename || ''));
+    if (!safeName) {
+        const error = new Error('No source video specified for face refinement.');
+        error.code = 'facerefine_failed';
+        throw error;
+    }
+    const filePath = path.join(GENERATED_DIR, safeName);
+    if (!fs.existsSync(filePath)) {
+        const error = new Error('FaceRefine source not found on disk: ' + safeName);
+        error.code = 'facerefine_failed';
+        throw error;
+    }
+
+    const settings = effectiveVideoSettings();
+    const info = await comfyui.getObjectInfo();
+    const availability = faceRefineAvailability(info);
+    if (!availability.ready) {
+        const error = new Error(
+            'ComfyUI is missing FaceRefine node' + (availability.missing.length > 1 ? 's' : '') + ': ' +
+            availability.missing.join(', ') + '. Enable VIDEO > Face Refinement to auto-install, then restart ComfyUI and try again.'
+        );
+        error.code = 'facerefine_failed';
+        error.missingNodes = availability.missing;
+        throw error;
+    }
+
+    const startedAt = Date.now();
+    const buffer = fs.readFileSync(filePath);
+    const sourceProbe = probeVideoBuffer(buffer, path.extname(safeName));
+    const fps = Number(opts.fps) > 0 ? Number(opts.fps) : H3_FPS;
+    const seed = Number.isInteger(opts.seed) && opts.seed >= 0
+        ? opts.seed
+        : Math.floor(Math.random() * 2 ** 32);
+
+    const uploadName = 'jarvis_facerefine_' + Date.now() + '_' + safeName;
+    const uploaded = await comfyui.uploadImage(buffer, uploadName);
+    const loadName = (uploaded && uploaded.name) || uploadName;
+
+    let basename = null;
+    try {
+        const graph = buildFaceRefineGraph({
+            prompt: opts.prompt || 'refine faces',
+            settings,
+            videoName: loadName,
+            fps,
+            seed,
+            hasNativeAudio: availability.hasNativeAudio
+        });
+        await validateH3Graph(info, graph);
+
+        const pid = await comfyui.queuePrompt(graph);
+        console.log('[video-generator] queued FaceRefine workflow:', pid, '(nativeAudio=' + availability.hasNativeAudio + ')');
+
+        const history = await comfyui.waitForPrompt(pid, { timeoutMs: opts.timeoutMs || FACEREFINE_TIMEOUT_MS });
+        const videoFiles = comfyui.findOutputFiles(history.outputs || {}, /\.(?:mp4|webm|avi|mov)$/i);
+        if (!videoFiles.length) {
+            const error = new Error('ComfyUI finished FaceRefine but produced no video file.');
+            error.code = 'facerefine_failed';
+            throw error;
+        }
+
+        const entry = videoFiles[videoFiles.length - 1];
+        const outBuffer = await comfyui.downloadImage(entry);
+
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const extension = path.extname(entry.filename).toLowerCase() || '.mp4';
+        const root = path.basename(safeName, path.extname(safeName)).replace(/_vid_.*$/, '');
+        basename = safeFilename(root) + '_refined_' + stamp + extension;
+        fs.writeFileSync(path.join(GENERATED_DIR, basename), outBuffer);
+        console.log('[video-generator] saved face-refined video:', basename, '(' + outBuffer.length + ' bytes)');
+
+        await comfyui.deleteOutputFile(entry, { history: pid });
+    } catch (err) {
+        if (!err.code) err.code = 'facerefine_failed';
+        throw err;
+    } finally {
+        await comfyui.deleteInputFile(loadName).catch(() => {});
+    }
+
+    let outWidth = (sourceProbe && sourceProbe.width) || 0;
+    let outHeight = (sourceProbe && sourceProbe.height) || 0;
+    try {
+        const probed = probeVideoBuffer(
+            fs.readFileSync(path.join(GENERATED_DIR, basename)),
+            path.extname(basename)
+        );
+        if (probed) {
+            outWidth = probed.width;
+            outHeight = probed.height;
+        }
+    } catch { /* keep source dims — stitch-back preserves them */ }
+
+    const activeLoras = (settings.loras || [])
+        .filter((l) => l && l.on !== false && l.name)
+        .map((l) => ({ name: l.name, strength: Number(l.strength) || 0, triggerWord: l.triggerWord || '' }));
+    const meta = generatedHistory.add({
+        file: '/generated/' + encodeURIComponent(basename),
+        rawFilename: basename,
+        prompt: opts.prompt || 'Face-refined video',
+        model: 'MiniMax H3 + FaceRefine',
+        width: outWidth || null,
+        height: outHeight || null,
+        loras: activeLoras,
+        generationMs: Date.now() - startedAt,
+        video: {
+            duration: opts.duration || null,
+            frames: opts.frames || null,
+            fps,
+            mode: opts.mode || null,
+            source: opts.sourceImageRawFilename || null,
+            refined: true,
+            refinedFrom: safeName,
+            faceRefine: {
+                detector: settings.faceRefineDetector,
+                denoise: settings.faceRefineDenoise,
+                steps: settings.faceRefineSteps,
+                canvasMode: settings.faceRefineCanvasMode,
+                select: settings.faceRefineSelect,
+                nativeAudioLock: availability.hasNativeAudio
+            }
+        }
+    });
+
+    // The refined video replaces the base render (same replacement semantics
+    // as video upscale): drop the pre-refine file + history entry now that
+    // the refined output is safely recorded.
+    if (safeName && safeName !== basename) {
+        try {
+            const sourceEntry = generatedHistory.list().find((e) => e.rawFilename === safeName);
+            if (sourceEntry && sourceEntry.id) {
+                generatedHistory.remove(sourceEntry.id);
+            } else {
+                const abs = path.join(GENERATED_DIR, safeName);
+                if (abs.startsWith(GENERATED_DIR) && fs.existsSync(abs)) {
+                    try { fs.unlinkSync(abs); } catch (err) { /* ignore */ }
+                }
+            }
+        } catch (err) { /* replacement is best-effort */ }
+    }
+
+    return {
+        url: meta.file,
+        filename: basename,
+        width: outWidth || null,
+        height: outHeight || null,
+        refined: true,
+        generationMs: meta.generationMs,
+        meta
+    };
+}
+
 // --- Source image resolution (for I2VA) ---------------------------------------
 
 function resolveVideoSourceImage(conversationId, explicitFilename) {
@@ -1529,7 +2064,9 @@ async function generateVideo(prompt, options = {}) {
             }
         });
 
-        return {
+        // Optional FaceRefine post-process (runs inside this same lock;
+        // fail-open — a refine failure keeps the base render).
+        return maybeFaceRefine({
             url: meta.file,
             filename: basename,
             width: W,
@@ -1540,9 +2077,49 @@ async function generateVideo(prompt, options = {}) {
             mode,
             prompt: finalPrompt,
             generationMs: meta.generationMs,
-            meta
-        };
+            meta,
+            refined: false
+        }, options);
     }, queueOpts);
+}
+
+async function maybeFaceRefine(baseResult, opts = {}) {
+    // Cheap gate first: no extra ComfyUI calls when the toggle is off.
+    const settings = effectiveVideoSettings();
+    if (!settings.faceRefineEnabled) return baseResult;
+    if (typeof opts.onProgress === 'function') {
+        try { opts.onProgress('face-refine'); } catch { /* progress is best-effort */ }
+    }
+    try {
+        console.log('[video-generator] FaceRefine enabled — refining', baseResult.filename);
+        const refined = await refineVideo(baseResult.filename, {
+            prompt: baseResult.prompt,
+            mode: baseResult.mode,
+            fps: baseResult.fps || H3_FPS,
+            duration: baseResult.duration,
+            frames: baseResult.frames,
+            sourceImageRawFilename: opts.sourceImageRawFilename || null
+        });
+        return {
+            url: refined.url,
+            filename: refined.filename,
+            width: refined.width !== null ? refined.width : baseResult.width,
+            height: refined.height !== null ? refined.height : baseResult.height,
+            duration: baseResult.duration,
+            frames: baseResult.frames,
+            fps: baseResult.fps,
+            mode: baseResult.mode,
+            prompt: baseResult.prompt,
+            generationMs: (baseResult.generationMs || 0) + (refined.generationMs || 0),
+            meta: refined.meta,
+            refined: true
+        };
+    } catch (err) {
+        // Fail-open: a refine failure (no faces, missing nodes, timeout)
+        // must never lose the good base render.
+        console.warn('[video-generator] FaceRefine skipped/failed, keeping base video:', err.message);
+        return Object.assign({}, baseResult, { refined: false, refineError: err.message });
+    }
 }
 
 // --- Video Upscale --------------------------------------------------------------
@@ -2053,6 +2630,16 @@ module.exports = {
     modifyH3VideoPrompt,
     buildH3Graph,
     validateH3Graph,
+    buildFaceRefineGraph,
+    faceRefineAvailability,
+    refineVideo,
+    maybeFaceRefine,
+    FACEREFINE_REQUIRED_NODES,
+    FACEREFINE_CANVAS_MODES,
+    FACEREFINE_SELECT_MODES,
+    normalizeFaceRefineCanvasMode,
+    normalizeFaceRefineSelect,
+    FACEREFINE_TIMEOUT_MS,
     h3DurationSeconds,
     h3FramesForSeconds,
     h3EffectiveDurationSeconds,

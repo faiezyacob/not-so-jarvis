@@ -301,12 +301,19 @@ async function downloadImage(entry) {
     return buf;
 }
 
-// Locate ComfyUI's output directory so we can remove the original copy of a
-// generated image. Tries, in order: an explicit COMFYUI_OUTPUT_DIR override,
-// ComfyUI's --output-directory CLI arg (from /system_stats argv), and a
-// .../ComfyUI/main.py script path (again from argv) with an output/ sibling.
-// Returns null when the directory cannot be determined.
+// Locate ComfyUI's install root (the folder containing main.py) so services
+// can manage files there (custom node installs, input cleanup, ...). Tries,
+// in order: an explicit COMFYUI_ROOT override, ComfyUI's main.py script path
+// (from /system_stats argv), and the Comfy Desktop layout (where argv carries
+// a relative main.py plus --output/--input-directory under
+// <base>/ComfyUI-Shared, while the install lives at
+// <base>/ComfyUI-Installs/ComfyUI/ComfyUI). Returns null when unknown.
 async function resolveComfyRoot() {
+    if (process.env.COMFYUI_ROOT) {
+        const override = path.resolve(process.env.COMFYUI_ROOT);
+        if (fs.existsSync(override)) return override;
+    }
+
     let argv = [];
     try {
         const stats = await getSystemStats();
@@ -317,10 +324,41 @@ async function resolveComfyRoot() {
         const script = String(arg || '');
         if (!/[\\/]main\.py$/i.test(script)) continue;
         const root = path.resolve(path.dirname(script));
-        if (fs.existsSync(root)) return root;
+        if (fs.existsSync(path.join(root, 'main.py'))) return root;
+    }
+
+    // Comfy Desktop: derive the install root from the shared data dir.
+    for (const dir of comfyArgDirs(argv, ['--output-directory', '--output_directory', '--input-directory', '--input_directory'])) {
+        const parent = path.basename(dir);
+        if (parent !== 'ComfyUI-Shared' && parent !== 'output' && parent !== 'input') continue;
+        const base = parent === 'ComfyUI-Shared' ? path.dirname(dir) : path.dirname(path.dirname(dir));
+        const candidate = path.join(base, 'ComfyUI-Installs', 'ComfyUI', 'ComfyUI');
+        if (fs.existsSync(path.join(candidate, 'main.py'))) return candidate;
     }
 
     return null;
+}
+
+// Values of the given CLI flags from ComfyUI's argv (both `--flag value`
+// and `--flag=value` forms), resolved to absolute paths that exist.
+function comfyArgDirs(argv, flags) {
+    const out = [];
+    for (let i = 0; i < argv.length; i += 1) {
+        const arg = String(argv[i] || '');
+        let dir = null;
+        if (flags.indexOf(arg) !== -1) {
+            dir = String(argv[i + 1] || '');
+        } else {
+            for (const flag of flags) {
+                if (arg.indexOf(flag + '=') === 0) dir = arg.slice(flag.length + 1);
+            }
+        }
+        if (dir) {
+            const resolved = path.resolve(dir);
+            if (fs.existsSync(resolved)) out.push(resolved);
+        }
+    }
+    return out;
 }
 
 async function resolveOutputDir() {
@@ -630,6 +668,7 @@ module.exports = {
     downloadSourceImage,
     uploadImage,
     deleteInputFile,
+    resolveComfyRoot,
     resolveModelRoot,
     resolveInputDir,
     sleep

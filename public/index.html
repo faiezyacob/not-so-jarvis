@@ -42,6 +42,7 @@
                     </div>
                     <div class="settings-modal-body">
                 <div class="settings-nav" id="settingsNav">
+                    <button class="settings-nav-item" data-panel="setup">SETUP<span class="settings-nav-dot" id="setupNavDot" hidden></span></button>
                     <button class="settings-nav-item active" data-panel="general">GENERAL</button>
                     <button class="settings-nav-item" data-panel="chat">CHAT</button>
                     <button class="settings-nav-item" data-panel="image">IMAGE</button>
@@ -50,6 +51,64 @@
                     <button class="settings-nav-item" data-panel="system">SYSTEM</button>
                 </div>
                 <div class="settings-panels" id="settingsPanels">
+                    <!-- Setup (first-run model guide) -->
+                    <div class="settings-panel" data-panel="setup">
+                        <div class="settings-card" data-search="setup first run install guide hugging face token models nodes">
+                            <div class="settings-card-title">FIRST-RUN CHECKLIST</div>
+                            <div class="settings-card-sub">A fresh machine needs ComfyUI plus every checkpoint JARVIS generates with. Work top to bottom:</div>
+                            <div class="settings-field">
+                                <span class="settings-hint">1 — Install and start ComfyUI (Desktop or portable), then <b>start this server</b> so the guide can see it.<br>2 — Create a free <b>Hugging Face</b> account, accept the Krea 2 / MiniMax H3 model licenses, create a <b>read</b> access token, paste it below.<br>3 — <b>Download missing</b> models (large — 60 GB+ total; leave it running).<br>4 — <b>Install missing</b> custom nodes, then <b>restart ComfyUI</b>.<br>Green means ready: image, video, upscale and edit each light up below.</span>
+                            </div>
+                            <div class="settings-field">
+                                <span class="settings-save-status" id="setupReadyStatus"></span>
+                            </div>
+                        </div>
+                        <div class="settings-card" data-search="setup hugging face token hf key login access">
+                            <div class="settings-card-title">HUGGING FACE TOKEN</div>
+                            <div class="settings-card-sub">Needed for gated repos (Krea 2, MiniMax H3). Get one at huggingface.co → avatar → Settings → Access Tokens → New token (read). Accept each model's license on its repo page first.</div>
+                            <div class="settings-field-row">
+                                <div class="settings-field">
+                                    <label class="settings-field-label" for="setupHfToken">Token (hf_…)</label>
+                                    <input type="password" class="settings-input" id="setupHfToken" placeholder="hf_…" autocomplete="off">
+                                </div>
+                            </div>
+                            <div class="settings-field">
+                                <button class="settings-browse-btn" id="setupHfSave" type="button">Save token</button>
+                                <button class="settings-browse-btn" id="setupHfRemove" type="button">Remove</button>
+                                <span class="settings-save-status" id="setupHfStatus"></span>
+                            </div>
+                        </div>
+                        <div class="settings-card" data-search="setup models download checkpoints unet clip vae lora seedvr2 upscale">
+                            <div class="settings-card-title">MODELS</div>
+                            <div class="settings-card-sub" id="setupModelsSub">Checked against ComfyUI's models/ folder.</div>
+                            <div class="settings-field">
+                                <div class="setup-list" id="setupModels"></div>
+                            </div>
+                            <div class="settings-field">
+                                <button class="settings-browse-btn" id="setupDownloadMissing" type="button">Download all missing</button>
+                                <button class="settings-browse-btn" id="setupRefresh" type="button">Re-check</button>
+                                <span class="settings-save-status" id="setupModelsStatus"></span>
+                            </div>
+                            <div class="settings-field" id="setupProgressField" hidden>
+                                <div class="setup-progress-wrapper"><div class="setup-progress-bar" id="setupProgressBar"></div></div>
+                                <span class="settings-save-status" id="setupJobStatus"></span>
+                            </div>
+                            <div class="settings-field">
+                                <pre class="settings-log" id="setupJobLog" hidden></pre>
+                            </div>
+                        </div>
+                        <div class="settings-card" data-search="setup custom nodes upscale ultimatesd seedvr2 vhs rtx krea2edit h3 install">
+                            <div class="settings-card-title">CUSTOM NODES (UPSCALE INCLUDED)</div>
+                            <div class="settings-card-sub">Checked against ComfyUI's loaded nodes. Packs install with git into ComfyUI/custom_nodes/ — restart ComfyUI afterwards.</div>
+                            <div class="settings-field">
+                                <div class="setup-list" id="setupNodes"></div>
+                            </div>
+                            <div class="settings-field">
+                                <button class="settings-browse-btn" id="setupInstallNodes" type="button">Install all missing</button>
+                                <span class="settings-save-status" id="setupNodesStatus"></span>
+                            </div>
+                        </div>
+                    </div>
                     <!-- General -->
                     <div class="settings-panel active" data-panel="general">
                         <div class="settings-card" data-search="widgets cpu ram vram weather gallery comfyui dashboard">
@@ -57,28 +116,28 @@
                             <div class="settings-card-sub">Toggle the cards shown in the right monitor column.</div>
                             <div class="settings-widget-grid">
                             <label class="settings-toggle">
-                                <input type="checkbox" checked data-widget="cpu">
                                 <span class="settings-toggle-label">CPU</span>
+                                <input type="checkbox" checked data-widget="cpu">
                             </label>
                             <label class="settings-toggle">
-                                <input type="checkbox" checked data-widget="ram">
                                 <span class="settings-toggle-label">RAM</span>
+                                <input type="checkbox" checked data-widget="ram">
                             </label>
                             <label class="settings-toggle">
-                                <input type="checkbox" checked data-widget="vram">
                                 <span class="settings-toggle-label">VRAM</span>
+                                <input type="checkbox" checked data-widget="vram">
                             </label>
                             <label class="settings-toggle">
-                                <input type="checkbox" checked data-widget="weather">
                                 <span class="settings-toggle-label">Weather</span>
+                                <input type="checkbox" checked data-widget="weather">
                             </label>
                             <label class="settings-toggle">
-                                <input type="checkbox" checked data-widget="generated">
                                 <span class="settings-toggle-label">Gallery</span>
+                                <input type="checkbox" checked data-widget="generated">
                             </label>
                             <label class="settings-toggle">
-                                <input type="checkbox" checked data-widget="comfyui">
                                 <span class="settings-toggle-label">ComfyUI</span>
+                                <input type="checkbox" checked data-widget="comfyui">
                             </label>
                             </div>
                         </div>
@@ -439,6 +498,75 @@
                             <span class="settings-hint">SageAttention patches the guider for speed (needs the KJNodes sageattention package). SLA uses sparse attention (experimental).</span>
                         </div>
                             </div>
+                        </div>
+                        <div class="settings-card" data-search="video face refine facerefine detailer small distant faces enhance denoise install">
+                            <div class="settings-card-title">FACE REFINEMENT</div>
+                            <div class="settings-card-sub">Optional second H3 pass after each video: tracks faces per frame, re-generates them at low denoise, stitches them back. Fixes small/distant faces.</div>
+                        <div class="settings-field">
+                            <label class="settings-toggle">
+                                <span class="settings-toggle-label">Enable face refinement</span>
+                                <input type="checkbox" id="videoFaceRefineEnabled">
+                            </label>
+                            <span class="settings-hint">Runs automatically after every video. First enable auto-installs the ComfyUI nodes + face detector (restart ComfyUI when it finishes).</span>
+                        </div>
+                            <div class="settings-field-row">
+                        <div class="settings-field">
+                            <label class="settings-field-label" for="videoFaceRefineDenoise">Denoise</label>
+                            <select class="settings-select" id="videoFaceRefineDenoise">
+                                <option value="0.25">0.25 gentle</option>
+                                <option value="0.4">0.4 default</option>
+                                <option value="0.55">0.55 strong</option>
+                                <option value="0.7">0.7 rebuild</option>
+                            </select>
+                        </div>
+                        <div class="settings-field">
+                            <label class="settings-field-label" for="videoFaceRefineSteps">Steps</label>
+                            <select class="settings-select" id="videoFaceRefineSteps">
+                                <option value="4">4</option>
+                                <option value="8">8</option>
+                                <option value="12">12</option>
+                            </select>
+                        </div>
+                        <div class="settings-field">
+                            <label class="settings-field-label" for="videoFaceRefineCropFactor">Crop factor</label>
+                            <select class="settings-select" id="videoFaceRefineCropFactor">
+                                <option value="2">2.0 tight</option>
+                                <option value="2.5">2.5 default</option>
+                                <option value="3">3.0 context</option>
+                            </select>
+                        </div>
+                            </div>
+                            <div class="settings-field-row">
+                        <div class="settings-field">
+                            <label class="settings-field-label" for="videoFaceRefineCanvasMode">Canvas</label>
+                            <select class="settings-select" id="videoFaceRefineCanvasMode">
+                                <option value="auto_capped_768">Auto ≤768</option>
+                                <option value="auto_no_downscale">Auto full</option>
+                                <option value="manual">Manual 768</option>
+                            </select>
+                        </div>
+                        <div class="settings-field">
+                            <label class="settings-field-label" for="videoFaceRefineSelect">Subject</label>
+                            <select class="settings-select" id="videoFaceRefineSelect">
+                                <option value="largest_face">Largest face</option>
+                                <option value="centre_most">Centre-most</option>
+                                <option value="detector_score">Detector score</option>
+                            </select>
+                        </div>
+                            </div>
+                        <div class="settings-field">
+                            <label class="settings-field-label" for="videoFaceRefineDetector">Face detector</label>
+                            <input type="text" class="settings-input" id="videoFaceRefineDetector"
+                                placeholder="face_yolov8m.pt" autocomplete="off">
+                            <span class="settings-hint">Ultralytics face model in ComfyUI models/ultralytics/bbox/.</span>
+                        </div>
+                        <div class="settings-field">
+                            <button class="settings-browse-btn" id="videoFaceRefineInstallBtn" type="button">Install / check FaceRefine</button>
+                            <span class="settings-save-status" id="videoFaceRefineStatus"></span>
+                        </div>
+                        <div class="settings-field">
+                            <pre class="settings-log" id="videoFaceRefineLog" hidden></pre>
+                        </div>
                         </div>
                         <div class="settings-card" data-search="video lora stack trigger word strength">
                             <div class="settings-card-title">LORA STACK</div>

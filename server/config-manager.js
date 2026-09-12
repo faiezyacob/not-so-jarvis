@@ -169,4 +169,42 @@ function setVideoSettings(patch) {
     return current;
 }
 
-module.exports = { getConfig, setModelConfig, getReasoningEnabled, setReasoningEnabled, getChatSettings, setChatSettings, getImageSettings, setImageSettings, getVideoSettings, setVideoSettings };
+// --- Hugging Face token (first-run model setup guide) ---
+//
+// Used as the Bearer token for Hugging Face downloads in
+// services/model-setup.js. An HF_TOKEN / HUGGINGFACE_TOKEN env var wins when
+// set; otherwise the token saved through Settings > Setup applies. The raw
+// token is never returned by the status endpoint (only a masked preview).
+
+const HF_SETTINGS_KEY = 'huggingface';
+
+function getHuggingFace() {
+    const config = loadConfig();
+    const stored = config[HF_SETTINGS_KEY];
+    return stored && typeof stored === 'object' ? stored : {};
+}
+
+function getHuggingFaceToken() {
+    if (process.env.HF_TOKEN) return String(process.env.HF_TOKEN).trim();
+    if (process.env.HUGGINGFACE_TOKEN) return String(process.env.HUGGINGFACE_TOKEN).trim();
+    const stored = getHuggingFace();
+    return typeof stored.token === 'string' ? stored.token.trim() : '';
+}
+
+function setHuggingFace(patch) {
+    const config = loadConfig();
+    const current = { ...(config[HF_SETTINGS_KEY] || {}) };
+    for (const [key, value] of Object.entries(patch || {})) {
+        if (key !== 'token' && key !== 'user' && key !== 'verifiedAt') continue;
+        if (value === null || value === undefined || value === '') {
+            delete current[key];
+        } else {
+            current[key] = String(value);
+        }
+    }
+    config[HF_SETTINGS_KEY] = current;
+    saveConfig(config);
+    return current;
+}
+
+module.exports = { getConfig, setModelConfig, getReasoningEnabled, setReasoningEnabled, getChatSettings, setChatSettings, getImageSettings, setImageSettings, getVideoSettings, setVideoSettings, getHuggingFace, getHuggingFaceToken, setHuggingFace };
