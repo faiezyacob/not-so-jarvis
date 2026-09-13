@@ -50,14 +50,14 @@ const canvasContexts = {
 // --- Widget Settings ---
 
 const WIDGET_SETTINGS_KEY = 'jarvis-widget-settings';
-const WIDGET_IDS = { cpu: 'cpuCard', ram: 'ramCard', vram: 'vramCard', weather: 'weatherCard', generated: 'generatedWidget', comfyui: 'comfyuiCard', ollama: 'ollamaCard', activity: 'activityCard' };
+const WIDGET_IDS = { cpu: 'cpuCard', ram: 'ramCard', vram: 'vramCard', weather: 'weatherCard', news: 'newsCard', generated: 'generatedWidget', comfyui: 'comfyuiCard', ollama: 'ollamaCard', activity: 'activityCard' };
 
 function loadWidgetSettings() {
     try {
         const saved = localStorage.getItem(WIDGET_SETTINGS_KEY);
-        if (saved) return { comfyui: true, ollama: true, activity: true, ...JSON.parse(saved) };
+        if (saved) return { comfyui: true, ollama: true, activity: true, news: true, ...JSON.parse(saved) };
     } catch {}
-    return { cpu: true, ram: true, vram: true, weather: true, generated: true, comfyui: true, ollama: true, activity: true };
+    return { cpu: true, ram: true, vram: true, weather: true, news: true, generated: true, comfyui: true, ollama: true, activity: true };
 }
 
 function saveWidgetSettings(settings) {
@@ -76,7 +76,7 @@ function applyWidgetSettings(settings) {
 const SETTINGS_PANEL_KEY = 'jarvis-settings-panel';
 
 const WIDGET_ORDER_KEY = 'jarvis-widget-order';
-const DEFAULT_WIDGET_ORDER = ['cpuCard', 'ramCard', 'vramCard', 'weatherCard', 'generatedWidget', 'comfyuiCard', 'ollamaCard', 'activityCard'];
+const DEFAULT_WIDGET_ORDER = ['cpuCard', 'ramCard', 'vramCard', 'weatherCard', 'newsCard', 'generatedWidget', 'comfyuiCard', 'ollamaCard', 'activityCard'];
 
 function loadWidgetOrder() {
     try {
@@ -2141,6 +2141,8 @@ async function bootApp() {
     setInterval(updateTimestamp, 1000);
 
     initWeather();
+    initNews();
+    initNewsSettings();
     ModelLibrary.init();
     Gallery.init();
     initComfyUI();
@@ -2559,6 +2561,260 @@ async function fetchWeather() {
     } catch {
         setWeatherError('Unable to fetch weather data');
     }
+}
+
+// --- News Widget ---
+
+const NEWS_REFRESH_MS = 15 * 60 * 1000;
+const NEWS_SCOPE_KEY = 'jarvis-news-scope';
+let newsScope = 'all';
+let newsSettingsState = { feeds: [], feedsCustom: false, localArea: '' };
+
+function initNews() {
+    try {
+        const saved = localStorage.getItem(NEWS_SCOPE_KEY);
+        if (saved === 'all' || saved === 'global' || saved === 'local') newsScope = saved;
+    } catch {}
+
+    const scopeEl = document.getElementById('newsScope');
+    if (scopeEl) {
+        scopeEl.querySelectorAll('.news-scope-btn').forEach(btn => {
+            btn.addEventListener('click', () => setNewsScope(btn.dataset.scope));
+        });
+    }
+    applyNewsScope();
+
+    fetchNews();
+    setInterval(fetchNews, NEWS_REFRESH_MS);
+}
+
+function setNewsScope(scope) {
+    if (scope !== 'all' && scope !== 'global' && scope !== 'local') return;
+    newsScope = scope;
+    try { localStorage.setItem(NEWS_SCOPE_KEY, scope); } catch {}
+    applyNewsScope();
+    fetchNews();
+}
+
+function applyNewsScope() {
+    const scopeEl = document.getElementById('newsScope');
+    if (!scopeEl) return;
+    scopeEl.querySelectorAll('.news-scope-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.scope === newsScope);
+    });
+}
+
+async function fetchNews() {
+    const statusEl = document.getElementById('newsStatus');
+    const listEl = document.getElementById('newsList');
+    if (!statusEl || !listEl) return;
+
+    try {
+        const res = await fetch('/api/news?category=' + encodeURIComponent(newsScope));
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        const items = Array.isArray(data.items) ? data.items : [];
+
+        if (newsScope === 'local' && !data.localArea) {
+            statusEl.textContent = 'Set a local area in Settings';
+            statusEl.classList.add('news-status--error');
+            listEl.innerHTML = '';
+            return;
+        }
+
+        if (!items.length) {
+            statusEl.textContent = 'No headlines available';
+            statusEl.classList.add('news-status--error');
+            listEl.innerHTML = '';
+            return;
+        }
+
+        statusEl.textContent = 'LATEST \u00B7 ' + relativeTime(data.fetchedAt);
+        statusEl.classList.remove('news-status--error');
+        listEl.innerHTML = '';
+        items.forEach(item => listEl.appendChild(newsItemEl(item)));
+    } catch {
+        statusEl.textContent = 'Unable to fetch news';
+        statusEl.classList.add('news-status--error');
+        listEl.innerHTML = '';
+    }
+}
+
+function newsItemEl(item) {
+    const link = document.createElement('a');
+    link.className = 'news-item';
+    link.href = item.link;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+
+    const title = document.createElement('span');
+    title.className = 'news-title';
+    title.textContent = item.title;
+
+    const meta = document.createElement('span');
+    meta.className = 'news-meta';
+    const when = relativeTime(item.published);
+    const tags = [];
+    if (newsScope === 'all' && item.category === 'local') tags.push('LOCAL');
+    if (item.source) tags.push(item.source);
+    if (when) tags.push(when);
+    meta.textContent = tags.join(' \u00B7 ');
+
+    link.appendChild(title);
+    if (meta.textContent) link.appendChild(meta);
+    return link;
+}
+
+// --- News Feed Settings (Settings > General) ---
+
+function initNewsSettings() {
+    const addBtn = document.getElementById('newsFeedAdd');
+    const resetBtn = document.getElementById('newsFeedReset');
+    const areaBtn = document.getElementById('newsLocalSave');
+    if (!addBtn || !resetBtn) return;
+
+    addBtn.addEventListener('click', addNewsFeed);
+    resetBtn.addEventListener('click', resetNewsFeeds);
+    if (areaBtn) areaBtn.addEventListener('click', saveNewsLocalArea);
+
+    const labelInput = document.getElementById('newsFeedLabel');
+    if (labelInput) {
+        labelInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') addNewsFeed(); });
+    }
+    const areaInput = document.getElementById('newsLocalArea');
+    if (areaInput) {
+        areaInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') saveNewsLocalArea(); });
+    }
+    loadNewsSettings();
+}
+
+async function loadNewsSettings() {
+    const listEl = document.getElementById('newsFeedList');
+    if (!listEl) return;
+    try {
+        const res = await fetch('/api/news');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        newsSettingsState = {
+            feeds: Array.isArray(data.configuredFeeds) ? data.configuredFeeds : [],
+            feedsCustom: !!data.feedsCustom,
+            localArea: typeof data.localArea === 'string' ? data.localArea : ''
+        };
+        renderNewsFeeds();
+        const areaInput = document.getElementById('newsLocalArea');
+        if (areaInput && !areaInput.value) areaInput.value = newsSettingsState.localArea;
+    } catch {
+        listEl.innerHTML = '';
+    }
+}
+
+function renderNewsFeeds() {
+    const listEl = document.getElementById('newsFeedList');
+    if (!listEl) return;
+    listEl.innerHTML = '';
+
+    if (!newsSettingsState.feedsCustom) {
+        const note = document.createElement('div');
+        note.className = 'news-feed-note';
+        note.textContent = 'Using default feeds (treated as global):';
+        listEl.appendChild(note);
+    }
+
+    newsSettingsState.feeds.forEach((feed, index) => {
+        const row = document.createElement('div');
+        row.className = 'news-feed-row';
+
+        const info = document.createElement('div');
+        info.className = 'news-feed-info';
+        const label = document.createElement('span');
+        label.className = 'news-feed-label';
+        label.textContent = feed.label || feed.url;
+        const url = document.createElement('span');
+        url.className = 'news-feed-url';
+        url.textContent = feed.url;
+        info.appendChild(label);
+        info.appendChild(url);
+
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'news-feed-remove';
+        remove.textContent = '\u00D7';
+        remove.title = 'Remove feed';
+        remove.addEventListener('click', () => removeNewsFeed(index));
+
+        row.appendChild(info);
+        row.appendChild(remove);
+        listEl.appendChild(row);
+    });
+}
+
+async function saveNewsSettings(patch, statusText) {
+    const statusEl = document.getElementById('newsFeedStatus');
+    try {
+        const res = await fetch('/api/news/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(patch)
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Save failed');
+        newsSettingsState = {
+            feeds: Array.isArray(data.feeds) ? data.feeds : [],
+            feedsCustom: !!data.feedsCustom,
+            localArea: typeof data.localArea === 'string' ? data.localArea : ''
+        };
+        renderNewsFeeds();
+        if (statusEl) {
+            statusEl.textContent = statusText;
+            statusEl.classList.remove('settings-save-status--error');
+        }
+        fetchNews();
+    } catch (err) {
+        if (statusEl) {
+            statusEl.textContent = err.message;
+            statusEl.classList.add('settings-save-status--error');
+        }
+    }
+}
+
+async function addNewsFeed() {
+    const urlInput = document.getElementById('newsFeedUrl');
+    const labelInput = document.getElementById('newsFeedLabel');
+    const statusEl = document.getElementById('newsFeedStatus');
+    const url = urlInput ? urlInput.value.trim() : '';
+    if (!url) {
+        if (statusEl) {
+            statusEl.textContent = 'Enter a feed URL first.';
+            statusEl.classList.add('settings-save-status--error');
+        }
+        return;
+    }
+    if (statusEl) {
+        statusEl.textContent = '';
+        statusEl.classList.remove('settings-save-status--error');
+    }
+
+    const feeds = newsSettingsState.feeds.slice();
+    feeds.push({ url, label: labelInput ? labelInput.value.trim() : '' });
+    await saveNewsSettings({ feeds }, 'Feed added.');
+    if (urlInput) urlInput.value = '';
+    if (labelInput) labelInput.value = '';
+}
+
+async function removeNewsFeed(index) {
+    const feeds = newsSettingsState.feeds.slice();
+    feeds.splice(index, 1);
+    await saveNewsSettings({ feeds }, 'Feed removed.');
+}
+
+async function resetNewsFeeds() {
+    await saveNewsSettings({ feeds: [] }, 'Using default feeds.');
+}
+
+async function saveNewsLocalArea() {
+    const areaInput = document.getElementById('newsLocalArea');
+    const area = areaInput ? areaInput.value.trim() : '';
+    await saveNewsSettings({ localArea: area }, area ? 'Local area saved.' : 'Local area cleared.');
 }
 
 // --- ComfyUI Widget ---

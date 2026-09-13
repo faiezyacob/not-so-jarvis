@@ -80,6 +80,7 @@ const activityLog = require('./services/activity-log');
 const comfyui = require('./services/comfyui');
 const vramManager = require('./services/vram-manager');
 const weather = require('./services/weather');
+const news = require('./services/news');
 const taskRouter = require('./services/task-router');
 const taskState = require('./services/task-state');
 const generationQueue = require('./services/generation-queue');
@@ -254,6 +255,50 @@ async function handleAPI(req, res, urlPath) {
             const body = await readBody(req);
             const saved = weather.setLocation(body);
             json(res, 200, { location: { lat: saved.lat, lon: saved.lon, label: saved.label || '' } });
+        } catch (err) {
+            json(res, 400, { error: err.message });
+        }
+        return true;
+    }
+
+    // GET /api/news — headlines for the configured feeds (scope + topic
+    // filters), used by the dashboard NEWS widget.
+    if (urlPath === '/api/news' && req.method === 'GET') {
+        try {
+            const query = new URL(req.url, 'http://localhost').searchParams;
+            const data = await news.fetchNews({
+                category: query.get('category') || 'all',
+                topic: query.get('topic') || '',
+                limit: query.get('limit') || undefined,
+                refresh: query.get('refresh') === '1'
+            });
+            json(res, 200, {
+                ...data,
+                configuredFeeds: news.getFeeds(),
+                feedsCustom: news.hasCustomFeeds(),
+                localArea: news.getLocalArea()
+            });
+        } catch (err) {
+            json(res, 502, { error: err.message });
+        }
+        return true;
+    }
+
+    // POST /api/news/settings — replace feeds (empty resets to defaults) and/or
+    // set the local area used by the "local" news scope.
+    if (urlPath === '/api/news/settings' && req.method === 'POST') {
+        try {
+            const body = await readBody(req);
+            if (body.feeds !== undefined) {
+                if (Array.isArray(body.feeds) && body.feeds.length === 0) news.resetFeeds();
+                else news.setFeeds(body.feeds);
+            }
+            if (body.localArea !== undefined) news.setLocalArea(body.localArea);
+            json(res, 200, {
+                feeds: news.getFeeds(),
+                feedsCustom: news.hasCustomFeeds(),
+                localArea: news.getLocalArea()
+            });
         } catch (err) {
             json(res, 400, { error: err.message });
         }
@@ -1234,8 +1279,9 @@ async function handleSummarize(req, res, id) {
 }
 
 // Build the live environment block injected into a chat turn: machine
-// telemetry (gated on a stats question) and weather (gated on a weather
-// question, with an Open-Meteo lookup). Both are no-ops when irrelevant.
+// telemetry (gated on a stats question), weather (gated on a weather
+// question, with an Open-Meteo lookup), and news (gated on a news question,
+// with an RSS lookup). All are no-ops when irrelevant.
 async function buildEnvironmentContext(message) {
     const parts = [];
     const statsContext = contextBuilder.buildSystemStatsContext(message, systemMonitor.getStats());
@@ -1245,6 +1291,12 @@ async function buildEnvironmentContext(message) {
         if (weatherContext) parts.push(weatherContext);
     } catch (err) {
         console.warn('[weather] context lookup failed:', err.message);
+    }
+    try {
+        const newsContext = await news.buildNewsContext(message);
+        if (newsContext) parts.push(newsContext);
+    } catch (err) {
+        console.warn('[news] context lookup failed:', err.message);
     }
     return parts.join('\n\n');
 }

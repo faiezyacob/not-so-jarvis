@@ -29,7 +29,7 @@ Chat, generate images, edit photos, produce videos with sound, upscale both — 
 - **`@` image references** — type `@` in the composer to attach an earlier generated image as a reference; questions use it as vision input, instructions route to an identity edit, video wording routes to image-to-video
 - **Voice input** — push-to-talk dictation via the browser Web Speech API (optional auto-send)
 - **Spoken replies** — read JARVIS replies aloud via the SpeechSynthesis API, with voice selection and rate control
-- **Live machine & weather awareness** — ask about your CPU/GPU/VRAM or the weather and the assistant is given a gated live snapshot (system telemetry + Open-Meteo) as context, so it answers with real values instead of guessing
+- **Live machine, weather & news awareness** — ask about your CPU/GPU/VRAM, the weather, or the news and the assistant is given a gated live snapshot (system telemetry + Open-Meteo + RSS headlines) as context, so it answers with real values and real sources instead of guessing
 
 ### Image
 
@@ -49,6 +49,7 @@ Chat, generate images, edit photos, produce videos with sound, upscale both — 
 - **System monitoring** — live CPU, RAM, and VRAM/GPU widgets (via `nvidia-smi`) with draggable, reorderable canvas history charts
 - **ComfyUI widget** — live generation status, progress bar, and queue information
 - **Weather widget** — browser geolocation + Open-Meteo; no API key required
+- **News widget** — keyless RSS headlines (BBC, NPR, Hacker News by default, or your own feeds) with ALL / GLOBAL / LOCAL scopes; set a local area and the LOCAL scope searches it. Every headline links out to the source, and asking *"what's the news about X?"* or *"local news"* in chat answers from the same live headlines
 - **Model library** — browse, download, load, unload, and remove models with hardware-compatibility detection
 - **Generated gallery** — thumbnails, full-grid view, preview lightbox with zoom/pan, grouped upscales, and before/after compare
 - **First-run setup guide** — Settings > Setup checks your ComfyUI install, downloads missing models from Hugging Face, and installs missing custom nodes
@@ -110,7 +111,7 @@ When a tool does run, VRAM is freed first (`vram-manager` unloads the chat model
 
 ### Environment awareness
 
-Chat has no tools, so live machine state is injected as system context when relevant. A stats question (*"what's my GPU usage?"*) gets a gated CPU/RAM/GPU/VRAM telemetry snapshot; a weather question (*"will it rain today?"*) gets a live Open-Meteo snapshot for the location reported by the dashboard widget (stored in `data/config.json`). The gates keep unrelated turns lean, and the prompt forbids estimating or inventing values.
+Chat has no tools, so live machine state is injected as system context when relevant. A stats question (*"what's my GPU usage?"*) gets a gated CPU/RAM/GPU/VRAM telemetry snapshot; a weather question (*"will it rain today?"*) gets a live Open-Meteo snapshot for the location reported by the dashboard widget (stored in `data/config.json`); a news question (*"what's the news about AI?"*) gets the live RSS headlines, with a topic search when one can be extracted. "Local news" uses the saved local area; "world news" uses the configured feeds. The gates keep unrelated turns lean, and the prompt forbids estimating or inventing values, forecasts, or headlines.
 
 ### Image generation
 
@@ -255,6 +256,7 @@ services/                 Independent / cross-cutting services
   task-state.js             Per-conversation ActiveTask/TaskContext store (data/task-state.json)
   generated-history.js      Metadata store for generated media
   weather.js                Server-side Open-Meteo lookups + location store; feeds live weather into chat
+  news.js                   Keyless RSS/Atom news reader + feed cache; powers the NEWS widget and chat
   vram-manager.js           Orchestrates unloading chat <-> image/video models based on VRAM pressure
 
 public/                   Frontend
@@ -285,6 +287,7 @@ test/                     Zero-dependency test suites (node --test)
   routing.test.js
   intent.test.js
   generation.test.js
+  news.test.js
 ```
 
 ## Architecture

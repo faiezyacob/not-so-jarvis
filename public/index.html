@@ -127,7 +127,7 @@
                     </div>
                     <!-- General -->
                     <div class="settings-panel active" data-panel="general">
-                        <div class="settings-card" data-search="widgets cpu ram vram weather gallery comfyui ollama activity dashboard">
+                        <div class="settings-card" data-search="widgets cpu ram vram weather news gallery comfyui ollama activity dashboard">
                             <div class="settings-card-title">DASHBOARD WIDGETS</div>
                             <div class="settings-card-sub">Toggle the cards shown in the right monitor column.</div>
                             <div class="settings-widget-grid">
@@ -146,6 +146,10 @@
                             <label class="settings-toggle">
                                 <span class="settings-toggle-label">Weather</span>
                                 <input type="checkbox" checked data-widget="weather">
+                            </label>
+                            <label class="settings-toggle">
+                                <span class="settings-toggle-label">News</span>
+                                <input type="checkbox" checked data-widget="news">
                             </label>
                             <label class="settings-toggle">
                                 <span class="settings-toggle-label">Gallery</span>
@@ -171,6 +175,31 @@
                             <div class="settings-field">
                                 <button class="settings-goto-btn" id="gotoSystemBtn" type="button">Go to System →</button>
                             </div>
+                        </div>
+                        <div class="settings-card" data-search="news rss feeds headlines widget chat">
+                            <div class="settings-card-title">NEWS FEEDS</div>
+                            <div class="settings-card-sub">RSS feeds for the NEWS widget and news questions in chat. Leave empty to use the default feeds.</div>
+                            <div class="settings-news-feeds" id="newsFeedList"></div>
+                            <div class="settings-field-row">
+                                <div class="settings-field">
+                                    <label class="settings-field-label" for="newsLocalArea">Local area</label>
+                                    <input type="text" class="settings-input" id="newsLocalArea" placeholder="e.g. Portland, OR" autocomplete="off">
+                                </div>
+                                <button class="settings-browse-btn" id="newsLocalSave" type="button">Save area</button>
+                            </div>
+                            <div class="settings-field-row">
+                                <div class="settings-field">
+                                    <label class="settings-field-label" for="newsFeedUrl">Feed URL</label>
+                                    <input type="url" class="settings-input" id="newsFeedUrl" placeholder="https://example.com/rss.xml" autocomplete="off">
+                                </div>
+                                <div class="settings-field">
+                                    <label class="settings-field-label" for="newsFeedLabel">Label (optional)</label>
+                                    <input type="text" class="settings-input" id="newsFeedLabel" placeholder="Example News" autocomplete="off">
+                                </div>
+                                <button class="settings-browse-btn" id="newsFeedAdd" type="button">Add feed</button>
+                                <button class="settings-browse-btn" id="newsFeedReset" type="button">Use defaults</button>
+                            </div>
+                            <span class="settings-save-status" id="newsFeedStatus"></span>
                         </div>
                     </div>
 
@@ -767,6 +796,17 @@
                 </div>
                 <div class="weather-detail" id="weatherDetail"></div>
                 <div class="weather-location" id="weatherLocation"></div>
+            </div>
+
+            <div class="metric-card" id="newsCard">
+                <div class="metric-label">NEWS</div>
+                <div class="news-scope" id="newsScope">
+                    <button type="button" class="news-scope-btn" data-scope="all">ALL</button>
+                    <button type="button" class="news-scope-btn" data-scope="global">GLOBAL</button>
+                    <button type="button" class="news-scope-btn" data-scope="local">LOCAL</button>
+                </div>
+                <div class="news-status" id="newsStatus">Loading headlines...</div>
+                <div class="news-list" id="newsList"></div>
             </div>
 
             <div class="metric-card" id="generatedWidget">

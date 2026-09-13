@@ -238,4 +238,73 @@ function setWeather(patch) {
     return current;
 }
 
-module.exports = { getConfig, setModelConfig, getReasoningEnabled, setReasoningEnabled, getChatSettings, setChatSettings, getImageSettings, setImageSettings, getVideoSettings, setVideoSettings, getHuggingFace, getHuggingFaceToken, setHuggingFace, getWeather, setWeather };
+// --- News feeds (dashboard widget + chat context) ---
+
+const NEWS_SETTINGS_KEY = 'news';
+const MAX_NEWS_FEEDS = 20;
+
+function sanitizeFeedUrl(value) {
+    const raw = String(value || '').trim();
+    if (!raw) throw new Error('feed URL is required');
+    let parsed;
+    try {
+        parsed = new URL(raw);
+    } catch {
+        throw new Error('feed URL is not a valid URL');
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        throw new Error('feed URL must start with http:// or https://');
+    }
+    return parsed.toString();
+}
+
+function sanitizeNewsFeeds(feeds) {
+    if (!Array.isArray(feeds)) throw new Error('feeds must be an array');
+    if (feeds.length > MAX_NEWS_FEEDS) throw new Error('too many feeds (max ' + MAX_NEWS_FEEDS + ')');
+    return feeds.map((feed) => {
+        const url = sanitizeFeedUrl(feed && feed.url);
+        const fallback = new URL(url).hostname.replace(/^www\./i, '');
+        const label = String((feed && feed.label) || '').trim().slice(0, 60) || fallback;
+        return { label, url };
+    });
+}
+
+function getNews() {
+    const config = loadConfig();
+    const stored = config[NEWS_SETTINGS_KEY];
+    return stored && typeof stored === 'object' ? stored : {};
+}
+
+function setNews(patch) {
+    const config = loadConfig();
+    const current = { ...(config[NEWS_SETTINGS_KEY] || {}) };
+    const input = patch || {};
+    if (input.feeds !== undefined) {
+        if (Array.isArray(input.feeds) && input.feeds.length === 0) {
+            delete current.feeds;
+        } else {
+            current.feeds = sanitizeNewsFeeds(input.feeds);
+        }
+    }
+    if (input.localArea !== undefined) {
+        const area = String(input.localArea || '').trim().slice(0, 80);
+        if (area) current.localArea = area;
+        else delete current.localArea;
+    }
+    current.updatedAt = new Date().toISOString();
+    config[NEWS_SETTINGS_KEY] = current;
+    saveConfig(config);
+    return current;
+}
+
+function clearNewsFeeds() {
+    const config = loadConfig();
+    const current = { ...(config[NEWS_SETTINGS_KEY] || {}) };
+    delete current.feeds;
+    current.updatedAt = new Date().toISOString();
+    config[NEWS_SETTINGS_KEY] = current;
+    saveConfig(config);
+    return current;
+}
+
+module.exports = { getConfig, setModelConfig, getReasoningEnabled, setReasoningEnabled, getChatSettings, setChatSettings, getImageSettings, setImageSettings, getVideoSettings, setVideoSettings, getHuggingFace, getHuggingFaceToken, setHuggingFace, getWeather, setWeather, getNews, setNews, clearNewsFeeds };
