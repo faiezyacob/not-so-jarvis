@@ -942,6 +942,16 @@ details.settings-card[open] summary.settings-card-title::after {
     color: var(--text-primary);
 }
 
+.conv-title--blurred {
+    filter: blur(4px);
+    transition: filter 0.15s ease;
+}
+
+.conv-item:hover .conv-title--blurred,
+.conv-item.active .conv-title--blurred {
+    filter: none;
+}
+
 .conv-actions {
     display: flex;
     align-items: center;
@@ -978,6 +988,14 @@ details.settings-card[open] summary.settings-card-title::after {
 
 .conv-action--danger:hover {
     color: #e07a5f;
+}
+
+.conv-action--lock.active {
+    color: var(--accent);
+}
+
+.conv-item--private .conv-actions {
+    opacity: 1;
 }
 
 .chat-empty {

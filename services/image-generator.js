@@ -714,6 +714,10 @@ const DEFAULT_SETTINGS = {
     // Remembered trigger words keyed by LoRA name. Kept separate from the
     // active stack so a removed LoRA keeps its trigger word if re-added later.
     loraTriggerWords: {},
+    // When true, AUTO LoRA keywords are matched against the user's original
+    // message before any LLM call (router/intent/prompt builder) can paraphrase
+    // or drop them; matched LoRAs are then force-applied to that generation.
+    autoLoraPreLlm: String(process.env.KREA2_AUTO_LORA_PRE_LLM || 'true').toLowerCase() !== 'false',
     // Image upscaling (SeedVR2 / Ultimate SD for images, RTX fast path for
     // video — adapted from Mix Studio, which defaults video post-upscale to
     // RTX). Profile is "sharp" (sharp DiT variant) or "balanced"; noise is
@@ -739,7 +743,7 @@ const DEFAULT_SETTINGS = {
 
 // Fields the user may override through the settings panel / API. Kept
 // separate from DEFAULT_SETTINGS so we only persist explicit overrides.
-const CONFIGURABLE_KEYS = ['unet', 'clip', 'clipType', 'vae', 'editLora', 'aspectRatio', 'imageSize', 'width', 'height', 'steps', 'cfg', 'seedMode', 'seed', 'variations', 'loras', 'loraTriggerWords',
+const CONFIGURABLE_KEYS = ['unet', 'clip', 'clipType', 'vae', 'editLora', 'aspectRatio', 'imageSize', 'width', 'height', 'steps', 'cfg', 'seedMode', 'seed', 'variations', 'loras', 'loraTriggerWords', 'autoLoraPreLlm',
     'upscaleEngine', 'upscaleMode', 'upscaleResolution', 'upscaleMultiplier', 'upscaleProfile', 'upscaleNoise', 'upscalePreScale',
     'seedvr2Dit', 'seedvr2Vae', 'seedvr2Attention'];
 
@@ -849,6 +853,8 @@ function sanitizeSettings(patch) {
         if (value === null) { out[key] = null; continue; }
         if (key === 'loras') {
             out[key] = sanitizeLoras(value);
+        } else if (key === 'autoLoraPreLlm') {
+            out[key] = !(value === false || value === 0 || String(value).toLowerCase() === 'false' || String(value) === '0');
         } else if (key === 'loraTriggerWords') {
             out[key] = sanitizeLoraTriggerWords(value);
         } else if (key === 'aspectRatio') {
@@ -992,6 +998,42 @@ function resolveTriggerWords(activeLoras, prompt) {
         words.push(word);
     }
     return words;
+}
+
+// Match AUTO LoRA keywords against the user's ORIGINAL message, before any LLM
+// call (router/intent/prompt builder) can paraphrase ("nofilter" -> "no
+// filter") or drop them. Returns the matched LoRA names. Gated by the global
+// autoLoraPreLlm setting.
+function matchAutoLoras(message, settings) {
+    const cfg = settings || effectiveSettings();
+    if (cfg.autoLoraPreLlm === false) return [];
+    const names = [];
+    for (const lora of cfg.loras || []) {
+        if (!lora || !lora.name || lora.mode !== 'auto') continue;
+        if (promptHasKeyword(message, lora.triggerWord)) names.push(lora.name);
+    }
+    return names;
+}
+
+// Force the named auto LoRAs into an already-resolved active stack. Used by the
+// pre-LLM keyword capture so a matched LoRA still applies even if the rewritten
+// prompt no longer contains its keyword. Never revives an OFF entry.
+function mergeForcedLoras(loras, active, forcedNames) {
+    const forced = new Set((forcedNames || [])
+        .map((n) => String(n || '').toLowerCase())
+        .filter(Boolean));
+    if (!forced.size) return active;
+    const present = new Set((active || []).map((l) => String(l.name).toLowerCase()));
+    const out = (active || []).slice();
+    for (const lora of loras || []) {
+        if (!lora || !lora.name) continue;
+        if (lora.mode === 'off') continue;
+        const key = String(lora.name).toLowerCase();
+        if (!forced.has(key) || present.has(key)) continue;
+        out.push(Object.assign({}, lora, { mode: 'on', on: true }));
+        present.add(key);
+    }
+    return out;
 }
 
 // Chain LoraLoader nodes after the base UNET/CLIP loaders. Each active LoRA
@@ -1550,6 +1592,7 @@ async function upscaleImage(rawFilename, options = {}) {
         const meta = generatedHistory.add({
             file: '/generated/' + encodeURIComponent(basename),
             rawFilename: basename,
+            conversationId: options.conversationId || null,
             prompt: String(options.prompt || (sourceMeta && sourceMeta.prompt) || '').trim() || 'Upscaled image',
             model: modelLabel,
             width,
@@ -1642,10 +1685,13 @@ async function generateImage(prompt, options = {}) {
         // prompt is normalized first so a value that already carries a
         // trigger-word prefix (e.g. from task state or generated metadata) is
         // stripped — the words are prepended exactly once, never duplicated.
-        // Explicitly-on LoRAs always apply; auto LoRAs join the stack only when
-        // their keyword appears in the cleaned prompt.
+        // Explicitly-on LoRAs always apply; auto LoRAs join the stack when
+        // their keyword appears in the cleaned prompt. Auto LoRAs matched
+        // against the raw message before the LLM rewrite (options.forcedLoras)
+        // are force-applied even if the rewritten prompt lost the keyword.
         const cleanPrompt = stripLoraTriggerWords(prompt);
-        const activeLoras = resolveActiveLoras(settings.loras, cleanPrompt);
+        let activeLoras = resolveActiveLoras(settings.loras, cleanPrompt);
+        activeLoras = mergeForcedLoras(settings.loras, activeLoras, options.forcedLoras);
         const triggerWords = resolveTriggerWords(activeLoras, cleanPrompt);
         const finalPrompt = triggerWords.length
             ? triggerWords.join(', ') + ', ' + String(cleanPrompt || '')
@@ -1695,6 +1741,7 @@ async function generateImage(prompt, options = {}) {
         const meta = generatedHistory.add({
             file: '/generated/' + encodeURIComponent(basename),
             rawFilename: basename,
+            conversationId: options.conversationId || null,
             prompt: finalPrompt,
             model: 'Krea2',
             loras: activeLoraMeta,
@@ -2077,9 +2124,10 @@ async function editImage(sourceAbsPath, instruction, options = {}) {
 
         // LoRA trigger words are prepended exactly once, same as generation.
         // Auto LoRAs whose keyword appears in the edit instruction join the
-        // user stack passed to the identity-edit graph.
+        // user stack; pre-LLM matched ones are force-applied.
         const cleanInstruction = stripLoraTriggerWords(instruction);
-        const activeLoras = resolveActiveLoras(settings.loras, cleanInstruction);
+        let activeLoras = resolveActiveLoras(settings.loras, cleanInstruction);
+        activeLoras = mergeForcedLoras(settings.loras, activeLoras, options.forcedLoras);
         const triggerWords = resolveTriggerWords(activeLoras, cleanInstruction);
         const finalInstruction = triggerWords.length
             ? triggerWords.join(', ') + ', ' + String(cleanInstruction || '')
@@ -2147,6 +2195,7 @@ async function editImage(sourceAbsPath, instruction, options = {}) {
         const meta = generatedHistory.add({
             file: '/generated/' + encodeURIComponent(basename),
             rawFilename: basename,
+            conversationId: options.conversationId || null,
             prompt: finalInstruction,
             model: 'Krea2 Edit',
             loras: activeLoraMeta,
@@ -2196,6 +2245,8 @@ module.exports = {
     stripLoraTriggerWords,
     resolveActiveLoras,
     resolveTriggerWords,
+    matchAutoLoras,
+    mergeForcedLoras,
     promptHasKeyword,
     loraIsOn,
     buildKrea2T2IGraph,

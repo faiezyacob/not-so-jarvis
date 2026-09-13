@@ -122,16 +122,30 @@ const Chat = (() => {
 
         conversations.forEach((conv) => {
             const item = document.createElement('div');
-            item.className = 'conv-item' + (conv.id === currentId ? ' active' : '');
+            item.className = 'conv-item' + (conv.id === currentId ? ' active' : '') +
+                (conv.private ? ' conv-item--private' : '');
             item.setAttribute('data-id', conv.id);
 
             const title = document.createElement('div');
-            title.className = 'conv-title';
+            title.className = 'conv-title' + (conv.private ? ' conv-title--blurred' : '');
             title.textContent = conv.title || 'Untitled';
-            title.title = conv.title || 'Untitled';
+            title.title = conv.private ? 'Private conversation' : (conv.title || 'Untitled');
 
             const actions = document.createElement('div');
             actions.className = 'conv-actions';
+
+            const lockBtn = document.createElement('button');
+            lockBtn.className = 'conv-action conv-action--lock' + (conv.private ? ' active' : '');
+            lockBtn.title = conv.private
+                ? 'Private — generated media hidden from the gallery'
+                : 'Make private — hide generated media from the gallery';
+            lockBtn.innerHTML = conv.private
+                ? '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>'
+                : '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"></rect><path d="M7 11V7a5 5 0 0 1 9.9-1"></path></svg>';
+            lockBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                onTogglePrivate(conv);
+            });
 
             const renameBtn = document.createElement('button');
             renameBtn.className = 'conv-action';
@@ -151,6 +165,7 @@ const Chat = (() => {
                 onDelete(conv);
             });
 
+            actions.appendChild(lockBtn);
             actions.appendChild(renameBtn);
             actions.appendChild(deleteBtn);
 
@@ -186,6 +201,13 @@ const Chat = (() => {
         const title = window.prompt('Rename conversation:', conv.title || '');
         if (title === null) return;
         await Conversations.rename(conv.id, title.trim() || conv.title);
+    }
+
+    // Toggle the conversation's private/locked state; private conversations
+    // hide their generated media from the shared gallery widget.
+    async function onTogglePrivate(conv) {
+        await Conversations.setPrivate(conv.id, !conv.private);
+        if (window.Gallery && window.Gallery.refresh) window.Gallery.refresh();
     }
 
     async function onDelete(conv) {
@@ -562,6 +584,14 @@ const Chat = (() => {
         }
     }
 
+    // Scroll the message pane only when the streaming element actually belongs
+    // to the conversation on screen, so a background stream can never scroll
+    // (or render into) a different conversation.
+    function scrollActiveStream(el) {
+        if (!el || !chatMessagesEl.contains(el)) return;
+        chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+    }
+
     function renderMessages(messages) {
         chatMessagesEl.innerHTML = '';
 
@@ -738,7 +768,9 @@ const Chat = (() => {
             if (!res.ok) {
                 const errorData = await res.json().catch(() => ({}));
                 removeTypingIndicator();
-                addMessageDom('ai', 'Error: ' + (errorData.error || 'Unknown error'));
+                if (Conversations.currentId() === conversationId) {
+                    addMessageDom('ai', 'Error: ' + (errorData.error || 'Unknown error'));
+                }
                 return;
             }
 
@@ -755,12 +787,21 @@ const Chat = (() => {
 
             aiMessageEl.appendChild(roleLabel);
             aiMessageEl.appendChild(contentEl);
-            chatMessagesEl.appendChild(aiMessageEl);
 
+            // Register the live element before attaching so a conversation
+            // switch always has a reference to re-attach it later.
             activeMessageEl = aiMessageEl;
             activeMessageConversationId = conversationId;
 
             removeTypingIndicator();
+
+            // Only render into the conversation that owns this stream. If the
+            // user switched conversations while the server was routing, leave
+            // the element detached; it is re-attached live (or re-rendered from
+            // persistence) when that conversation is re-opened.
+            if (Conversations.currentId() === conversationId) {
+                chatMessagesEl.appendChild(aiMessageEl);
+            }
 
             // Read the stream
             const reader = res.body.getReader();
@@ -801,7 +842,7 @@ const Chat = (() => {
                             generatingEl.textContent = data.generating;
                             setProgressTitle(data.generating);
                             activeQueueActive = true;
-                            chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+                            scrollActiveStream(aiMessageEl);
                         }
                         if (data.queued) {
                             if (!generatingEl) {
@@ -814,7 +855,7 @@ const Chat = (() => {
                             const pos = data.queued.position || 1;
                             generatingEl.textContent = 'Queued #' + pos + ' — waiting for current generation… (press send to cancel)';
                             setProgressTitle('Queued #' + pos);
-                            chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+                            scrollActiveStream(aiMessageEl);
                         }
                         if (data.progress && generatingEl) {
                             // Live ComfyUI step percentage for the running job.
@@ -832,7 +873,7 @@ const Chat = (() => {
                             if (generatingEl) generatingEl.remove();
                             setProgressTitle('');
                             setAiContent(contentEl, data.image.content);
-                            chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+                            scrollActiveStream(aiMessageEl);
                             generatedMetaCache = null;
                             if (window.Gallery) window.Gallery.refresh();
                         }
@@ -841,7 +882,7 @@ const Chat = (() => {
                             if (generatingEl) generatingEl.remove();
                             setProgressTitle('');
                             setAiContent(contentEl, data.video.content);
-                            chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+                            scrollActiveStream(aiMessageEl);
                             generatedMetaCache = null;
                             if (window.Gallery) window.Gallery.refresh();
                         }
@@ -850,7 +891,7 @@ const Chat = (() => {
                             setProgressTitle('');
                             fullReply += data.chunk;
                             setAiContent(contentEl, fullReply);
-                            chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+                            scrollActiveStream(aiMessageEl);
                         }
                         if (data.stats) {
                             let statsEl = aiMessageEl.querySelector('.message-stats');
@@ -886,10 +927,12 @@ const Chat = (() => {
             }
         } catch (err) {
             removeTypingIndicator();
-            if (err && err.name === 'AbortError') {
-                addMessageDom('ai', 'Cancelled.');
-            } else {
-                addMessageDom('ai', 'Connection error: ' + err.message);
+            if (Conversations.currentId() === conversationId) {
+                if (err && err.name === 'AbortError') {
+                    addMessageDom('ai', 'Cancelled.');
+                } else {
+                    addMessageDom('ai', 'Connection error: ' + err.message);
+                }
             }
         } finally {
             activeStreamAbort = null;

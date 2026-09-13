@@ -350,6 +350,13 @@
                             </select>
                             <span class="settings-save-status" id="loraStatus"></span>
                         </div>
+                        <div class="settings-field">
+                            <label class="settings-toggle">
+                                <span class="settings-toggle-label">Match AUTO keywords before prompt rewrite</span>
+                                <input type="checkbox" id="imageAutoLoraPreLlm" checked>
+                            </label>
+                            <span class="settings-hint">When on, AUTO LoRA keywords are detected in your raw message before the LLM rewrites the prompt, so a paraphrased or dropped keyword still applies the LoRA.</span>
+                        </div>
                         </div>
                         <div class="settings-field">
                             <span class="settings-save-status" id="imageSettingsStatus"></span>

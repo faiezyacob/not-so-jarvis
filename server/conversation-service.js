@@ -66,6 +66,7 @@ function createConversation(data) {
         id: uuid(),
         title: (data && data.title) || 'New Conversation',
         summary: '',
+        private: Boolean(data && data.private),
         createdAt: now,
         updatedAt: now
     };
@@ -89,6 +90,26 @@ function renameConversation(id, title) {
     conv.updatedAt = Date.now();
     saveStore();
     return conv;
+}
+
+// Toggle a conversation's private/locked flag. Private conversations keep
+// their generated media out of the shared gallery.
+function setConversationPrivate(id, isPrivate) {
+    const conv = getConversation(id);
+    if (!conv) return null;
+    conv.private = Boolean(isPrivate);
+    conv.updatedAt = Date.now();
+    saveStore();
+    return conv;
+}
+
+function isPrivateConversation(id) {
+    const conv = getConversation(id);
+    return Boolean(conv && conv.private);
+}
+
+function getPrivateConversationIds() {
+    return store.conversations.filter((c) => c && c.private).map((c) => c.id);
 }
 
 function deleteConversation(id) {
@@ -170,6 +191,9 @@ module.exports = {
     getConversation,
     getAllConversations,
     renameConversation,
+    setConversationPrivate,
+    isPrivateConversation,
+    getPrivateConversationIds,
     deleteConversation,
     addMessage,
     getMessages,

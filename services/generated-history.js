@@ -12,6 +12,7 @@ const fs = require('fs');
 const path = require('path');
 
 const activityLog = require('./activity-log');
+const conversationService = require('../server/conversation-service');
 
 const GENERATED_DIR = path.join(__dirname, '..', 'data', 'generated');
 const HISTORY_PATH = path.join(__dirname, '..', 'data', 'generated-history.json');
@@ -112,6 +113,18 @@ function list() {
     return history.map(publicMeta);
 }
 
+// Public gallery view: same as list() but excludes media produced in private
+// (locked) conversations. Internal lookups (upscale source pairing, deletes)
+// keep using list() so private media can still be managed.
+function listPublic() {
+    ensureLoaded();
+    const privateIds = new Set(conversationService.getPrivateConversationIds());
+    if (!privateIds.size) return history.map(publicMeta);
+    return history
+        .filter((e) => !(e.conversationId && privateIds.has(e.conversationId)))
+        .map(publicMeta);
+}
+
 // Limit to the most recent N entries.
 function listRecent(limit) {
     const all = list();
@@ -141,6 +154,9 @@ function publicMeta(entry) {
 // break a generation.
 function recordActivity(entry) {
     try {
+        // Media from private (locked) conversations stays out of the shared
+        // activity feed too — the feed exposes the file and opens the gallery.
+        if (entry.conversationId && conversationService.isPrivateConversation(entry.conversationId)) return;
         const raw = entry.rawFilename || '';
         const prompt = String(entry.prompt || '').trim();
         const detail = prompt.length > 140 ? prompt.slice(0, 137) + '\u2026' : prompt;
@@ -175,6 +191,7 @@ function add(meta) {
         id: meta.id || makeId(createdAt),
         file: meta.file,
         rawFilename: meta.rawFilename || meta.filename || null,
+        conversationId: meta.conversationId || null,
         prompt: meta.prompt || '',
         model: meta.model || 'Krea2',
         width: meta.width || null,
@@ -226,6 +243,7 @@ module.exports = {
     HISTORY_PATH,
     list,
     listRecent,
+    listPublic,
     add,
     remove,
     makeId

@@ -1815,6 +1815,7 @@ async function refineVideo(baseRawFilename, opts = {}) {
     const meta = generatedHistory.add({
         file: '/generated/' + encodeURIComponent(basename),
         rawFilename: basename,
+        conversationId: opts.conversationId || null,
         prompt: opts.prompt || 'Face-refined video',
         model: 'MiniMax H3 + FaceRefine',
         width: outWidth || null,
@@ -2060,6 +2061,7 @@ async function generateVideo(prompt, options = {}) {
             const meta = generatedHistory.add({
                 file: '/generated/' + encodeURIComponent(basename),
                 rawFilename: basename,
+                conversationId: options.conversationId || null,
                 prompt: finalPrompt,
                 model: 'MiniMax H3',
                 width: W,
@@ -2540,6 +2542,7 @@ async function upscaleVideo(rawFilename, options = {}) {
         const meta = generatedHistory.add({
             file: '/generated/' + encodeURIComponent(basename),
             rawFilename: basename,
+            conversationId: options.conversationId || null,
             prompt: (sourceMeta && sourceMeta.prompt) || 'Upscaled video',
             model: isSeedVr2 ? 'SeedVR2 Video Upscale' : 'RTX Video Super Resolution',
             width: outWidth || null,

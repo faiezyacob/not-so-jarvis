@@ -89,3 +89,45 @@ test('resolveTriggerWords: skips words already in the prompt', () => {
     );
     assert.deepEqual(imageGenerator.resolveTriggerWords(active, 'instafame woman'), []);
 });
+
+// --- matchAutoLoras / mergeForcedLoras (pre-LLM capture) ---------------------
+
+test('matchAutoLoras: matches the raw message keyword, not the rewritten prompt', () => {
+    const settings = {
+        autoLoraPreLlm: true,
+        loras: [
+            { name: 'nofilter.safetensors', mode: 'auto', triggerWord: 'nofilter' },
+            { name: 'realism.safetensors', mode: 'auto', triggerWord: 'realism' }
+        ]
+    };
+    assert.deepEqual(imageGenerator.matchAutoLoras('raw portrait with nofilter', settings), ['nofilter.safetensors']);
+    assert.deepEqual(imageGenerator.matchAutoLoras('a portrait', settings), []);
+});
+
+test('matchAutoLoras: only auto entries, gated by the global setting', () => {
+    const loras = [
+        { name: 'on.safetensors', mode: 'on', triggerWord: 'realism' },
+        { name: 'auto.safetensors', mode: 'auto', triggerWord: 'realism' }
+    ];
+    assert.deepEqual(imageGenerator.matchAutoLoras('realism', { autoLoraPreLlm: true, loras }), ['auto.safetensors']);
+    assert.deepEqual(imageGenerator.matchAutoLoras('realism', { autoLoraPreLlm: false, loras }), []);
+});
+
+test('mergeForcedLoras: force-applies a matched auto entry and normalizes it', () => {
+    const loras = [{ name: 'nofilter.safetensors', mode: 'auto', on: false, strength: 1, triggerWord: 'nofilter' }];
+    const active = imageGenerator.mergeForcedLoras(loras, [], ['nofilter.safetensors']);
+    assert.deepEqual(active.map((l) => l.name), ['nofilter.safetensors']);
+    assert.equal(active[0].on, true);
+    assert.equal(active[0].mode, 'on');
+});
+
+test('mergeForcedLoras: no duplicates and never revives an off entry', () => {
+    const loras = [
+        { name: 'x.safetensors', mode: 'on', on: true, triggerWord: '' },
+        { name: 'off.safetensors', mode: 'off', on: false, triggerWord: '' }
+    ];
+    const active = imageGenerator.resolveActiveLoras(loras, '');
+    const merged = imageGenerator.mergeForcedLoras(loras, active, ['x.safetensors', 'off.safetensors']);
+    assert.deepEqual(merged.map((l) => l.name), ['x.safetensors']);
+});
+

@@ -618,9 +618,10 @@ async function handleAPI(req, res, urlPath) {
         return true;
     }
 
-    // GET /api/generated — all generated image metadata (newest first)
+    // GET /api/generated — all generated image metadata (newest first),
+    // excluding media produced in private (locked) conversations.
     if (urlPath === '/api/generated' && req.method === 'GET') {
-        json(res, 200, { images: generatedHistory.list() });
+        json(res, 200, { images: generatedHistory.listPublic() });
         return true;
     }
 
@@ -882,9 +883,9 @@ async function handleAPI(req, res, urlPath) {
         return true;
     }
 
-    // PATCH /api/conversations/:id (rename)
+    // PATCH /api/conversations/:id (rename and/or toggle private)
     if (convMatch && req.method === 'PATCH') {
-        handleRenameConversation(req, res, decodeURIComponent(convMatch[1]));
+        handleUpdateConversation(req, res, decodeURIComponent(convMatch[1]));
         return true;
     }
 
@@ -1065,13 +1066,19 @@ function handleGetConversation(req, res, id) {
     json(res, 200, conversation);
 }
 
-async function handleRenameConversation(req, res, id) {
+async function handleUpdateConversation(req, res, id) {
     try {
         const body = await readBody(req);
-        const conversation = conversationService.renameConversation(id, body.title);
+        let conversation = conversationService.getConversation(id);
         if (!conversation) {
             json(res, 404, { error: 'Conversation not found' });
             return;
+        }
+        if (body.title !== undefined) {
+            conversation = conversationService.renameConversation(id, body.title) || conversation;
+        }
+        if (body.private !== undefined) {
+            conversation = conversationService.setConversationPrivate(id, body.private) || conversation;
         }
         json(res, 200, conversation);
     } catch (err) {
@@ -1347,6 +1354,9 @@ async function handleChatStream(req, res) {
         // preserving the rest (identity-edit LoRA, not a from-scratch regen).
         if (decision.shouldExecuteTool && decision.task === 'image_edit') {
             const instruction = imageGenerator.cleanEditInstruction(stripImageRefs(decision.updatedPrompt || message));
+            // AUTO LoRA keywords are matched on the raw message before the LLM
+            // router/intent calls, so a paraphrased/dropped keyword still applies.
+            const forcedLoras = imageGenerator.matchAutoLoras(message);
             const activeTask = taskState.getTask(conversationId);
             const action = (decision.intent === 'new_task' || decision.intent === 'switch_task') ? 'generate' : 'modify';
             taskState.setTask(conversationId, {
@@ -1366,6 +1376,7 @@ async function handleChatStream(req, res) {
                 action,
                 previousPrompt: activeTask.prompt || null,
                 sourceOverride: referenceImage ? resolveReferenceSource(referenceImage) : undefined,
+                forcedLoras,
                 think
             });
             return;
@@ -1374,6 +1385,9 @@ async function handleChatStream(req, res) {
         if (decision.shouldExecuteTool && decision.task === 'image_generation') {
             const activeTask = taskState.getTask(conversationId);
             const isNew = decision.intent === 'new_task' || decision.intent === 'switch_task';
+            // AUTO LoRA keywords are matched on the raw message before any LLM
+            // prompt rewrite, so a paraphrased/dropped keyword still applies.
+            const forcedLoras = imageGenerator.matchAutoLoras(message);
             // Regenerate insight: "generate the image again" re-runs the SAME
             // prompt (new seed); "... again but <change>" edits with ONLY the
             // change as the delta so "again" never leaks into the prompt.
@@ -1528,6 +1542,7 @@ async function handleChatStream(req, res) {
                 imagePrompt,
                 action,
                 previousPrompt: ctxPreviousPrompt,
+                forcedLoras,
                 think
             });
             return;
@@ -1867,7 +1882,7 @@ async function handleChatStream(req, res) {
 // "error" event on failure. The active task is only marked completed after the
 // tool actually finishes — never before.
 async function handleImageGenerationStream(req, res, opts) {
-    const { provider, model, conversationId, message, imagePrompt, action, previousPrompt, think } = opts;
+    const { provider, model, conversationId, message, imagePrompt, action, previousPrompt, forcedLoras, think } = opts;
 
     let queueId = null;
     const onClose = () => {
@@ -1906,6 +1921,7 @@ async function handleImageGenerationStream(req, res, opts) {
             const promise = imageGenerator.generateImage(imagePrompt, {
                 provider, model, conversationId, onQueued, onStart,
                 seed: baseSeed + i,
+                forcedLoras,
                 label: 'image generation', kind: 'image_generation'
             });
             queueId = promise.queueId || null;
@@ -2015,7 +2031,7 @@ function resolveGeneratedEditSource(conversationId) {
 // Handle an identity-edit chat request over SSE. Emits a "generating" status
 // event, then an "image" event with the edited result, or an "error" event.
 async function handleImageEditStream(req, res, opts) {
-    const { provider, model, conversationId, message, instruction, action, previousPrompt, sourceOverride, think } = opts;
+    const { provider, model, conversationId, message, instruction, action, previousPrompt, sourceOverride, forcedLoras, think } = opts;
 
     let queueId = null;
     const onClose = () => {
@@ -2058,6 +2074,7 @@ async function handleImageEditStream(req, res, opts) {
 
         const promise = imageGenerator.editImage(source.absPath, instruction, {
             provider, model, conversationId, onQueued, onStart,
+            forcedLoras,
             label: 'image edit', kind: 'image_edit'
         });
         queueId = promise.queueId || null;

@@ -1065,6 +1065,17 @@ function initImageGenSettings() {
     if (seedModeSelect) seedModeSelect.addEventListener('change', () => { syncSeedDisabled(); persistValue('seedMode', seedModeSelect.value, seedModeSelect.value); });
     if (seedInput) seedInput.addEventListener('change', () => persistValue('seed', Math.max(0, Math.floor(Number(seedInput.value) || 0)), seedInput.value));
 
+    // AUTO LoRA keywords can be captured from the raw message before the LLM
+    // rewrite; on by default. Persisted like the other image settings.
+    const autoLoraPreLlmToggle = document.getElementById('imageAutoLoraPreLlm');
+    if (autoLoraPreLlmToggle) {
+        autoLoraPreLlmToggle.addEventListener('change', () => persistValue(
+            'autoLoraPreLlm',
+            autoLoraPreLlmToggle.checked,
+            autoLoraPreLlmToggle.checked ? 'on' : 'off'
+        ));
+    }
+
     (async () => {
         try {
             const res = await fetch('/api/settings/image');
@@ -1128,6 +1139,12 @@ function initImageGenSettings() {
                     : (defaults.seed || 0);
             }
             syncSeedDisabled();
+
+            if (autoLoraPreLlmToggle) {
+                autoLoraPreLlmToggle.checked = settings.autoLoraPreLlm !== false &&
+                    settings.autoLoraPreLlm !== 0 &&
+                    String(settings.autoLoraPreLlm).toLowerCase() !== 'false';
+            }
 
             if (!data.comfyAvailable) {
                 setStatus('ComfyUI unreachable — showing defaults only', true);
@@ -2095,7 +2112,11 @@ async function bootApp() {
 async function renderActiveChat() {
     const conversations = await Conversations.list();
     if (conversations.length > 0) {
-        const messages = await Conversations.select(conversations[0].id);
+        // Reopen the conversation that was last active (persisted in
+        // localStorage), falling back to the newest one if it's gone.
+        const lastActive = Conversations.lastActiveId();
+        const target = conversations.find((c) => c.id === lastActive) || conversations[0];
+        const messages = await Conversations.select(target.id);
         renderMessages(messages);
     } else {
         renderMessages([]);

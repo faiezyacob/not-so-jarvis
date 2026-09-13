@@ -8,6 +8,21 @@ const Conversations = (() => {
     let currentConversationId = null;
     const listeners = [];
 
+    // Remember the last conversation opened so a page reload (including the
+    // server's restart flow, which reloads) reopens it instead of the newest.
+    const LAST_ACTIVE_KEY = 'jarvis-last-conversation';
+
+    function readLastActive() {
+        try { return localStorage.getItem(LAST_ACTIVE_KEY) || null; } catch { return null; }
+    }
+
+    function writeLastActive(id) {
+        try {
+            if (id) localStorage.setItem(LAST_ACTIVE_KEY, id);
+            else localStorage.removeItem(LAST_ACTIVE_KEY);
+        } catch {}
+    }
+
     function onChange(fn) {
         listeners.push(fn);
     }
@@ -18,6 +33,10 @@ const Conversations = (() => {
 
     function currentId() {
         return currentConversationId;
+    }
+
+    function lastActiveId() {
+        return readLastActive();
     }
 
     // --- Backend sync (source of truth for context building) ---
@@ -74,12 +93,14 @@ const Conversations = (() => {
         const data = await api('POST', '/api/conversations', { title: 'New Conversation' });
         await saveConversationToDB(data);
         currentConversationId = data.id;
+        writeLastActive(currentConversationId);
         notify();
         return data;
     }
 
     async function select(id) {
         currentConversationId = id;
+        writeLastActive(id);
         notify();
         return await loadMessages(id);
     }
@@ -102,6 +123,15 @@ const Conversations = (() => {
         return data;
     }
 
+    // Toggle a conversation's private/locked state. Private conversations
+    // keep their generated media out of the shared gallery widget.
+    async function setPrivate(id, isPrivate) {
+        const data = await api('PATCH', '/api/conversations/' + id, { private: Boolean(isPrivate) });
+        await saveConversationToDB(data);
+        notify();
+        return data;
+    }
+
     async function remove(id) {
         await api('DELETE', '/api/conversations/' + id);
         try {
@@ -110,6 +140,7 @@ const Conversations = (() => {
         } catch (e) { console.warn('DB remove failed', e); }
         if (currentConversationId === id) {
             currentConversationId = null;
+            writeLastActive(null);
         }
         notify();
     }
@@ -143,11 +174,13 @@ const Conversations = (() => {
     return {
         onChange,
         currentId,
+        lastActiveId,
         list,
         create,
         select,
         loadMessages,
         rename,
+        setPrivate,
         remove,
         saveUserMessage,
         saveAssistantMessage
