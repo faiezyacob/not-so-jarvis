@@ -1113,7 +1113,13 @@
             '<line x1="14" y1="11" x2="14" y2="17"></line></svg>';
         btn.addEventListener('click', async (e) => {
             e.stopPropagation();
-            if (!window.confirm('Delete this generated image permanently?')) return;
+            const confirmed = await Dialog.confirm({
+                title: 'Delete Image',
+                message: 'Delete this generated image permanently?',
+                confirmText: 'Delete',
+                danger: true
+            });
+            if (!confirmed) return;
             btn.disabled = true;
             try {
                 const partner = deletePartnerFor(img, images || widgetImages);
@@ -1128,7 +1134,7 @@
                 if (onDeleted) onDeleted(removedIds);
                 else if (cell && cell.parentNode) cell.remove();
             } catch (err) {
-                window.alert('Delete failed: ' + err.message);
+                await Dialog.alert({ title: 'Delete Failed', message: 'Delete failed: ' + err.message });
                 btn.disabled = false;
             }
         });
@@ -1275,7 +1281,13 @@
         deleteBtn.className = 'modal-btn modal-btn-danger';
         deleteBtn.textContent = 'Delete Image';
         deleteBtn.addEventListener('click', async () => {
-            if (!window.confirm('Delete this generated image permanently?')) return;
+            const confirmed = await Dialog.confirm({
+                title: 'Delete Image',
+                message: 'Delete this generated image permanently?',
+                confirmText: 'Delete',
+                danger: true
+            });
+            if (!confirmed) return;
             deleteBtn.disabled = true;
             try {
                 // Deleting either side of a group also deletes its partner, so
@@ -1291,7 +1303,7 @@
                 renderWidget();
                 close();
             } catch (err) {
-                window.alert('Delete failed: ' + err.message);
+                await Dialog.alert({ title: 'Delete Failed', message: 'Delete failed: ' + err.message });
                 deleteBtn.disabled = false;
             }
         });
@@ -1342,6 +1354,7 @@
 
     function openGallery() {
         const { container, body, closeBtn } = buildModalShell('GENERATED IMAGES');
+        container.classList.add('gallery-modal--all');
         const modal = openModal(container);
         const close = modal.close;
 
@@ -1357,7 +1370,7 @@
         body.appendChild(empty);
         body.appendChild(pager);
 
-        const PAGE_SIZE = 16;
+        const PAGE_SIZE = 9;   // 3 x 3 grid
         const state = { images: [], page: 0 };
 
         // An upscaled output replaces its original in the grid — hide the

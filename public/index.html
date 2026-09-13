@@ -356,20 +356,13 @@
                         </div>
                         <div class="settings-card" data-search="lora stack trigger word strength attach">
                             <div class="settings-card-title">LORA STACK</div>
-                            <div class="settings-card-sub">Attach LoRAs, each with its own strength. ON applies always, OFF never, AUTO applies only when its keyword appears in your prompt.</div>
+                            <div class="settings-card-sub">Attach LoRAs to every generation. Stacked in order, each with its own strength.</div>
                         <div class="settings-field">
                             <div class="lora-list" id="loraList"></div>
                             <select class="settings-select" id="loraAddSelect">
                                 <option value="">— Add LoRA —</option>
                             </select>
                             <span class="settings-save-status" id="loraStatus"></span>
-                        </div>
-                        <div class="settings-field">
-                            <label class="settings-toggle">
-                                <span class="settings-toggle-label">Match AUTO keywords before prompt rewrite</span>
-                                <input type="checkbox" id="imageAutoLoraPreLlm" checked>
-                            </label>
-                            <span class="settings-hint">When on, AUTO LoRA keywords are detected in your raw message before the LLM rewrites the prompt, so a paraphrased or dropped keyword still applies the LoRA.</span>
                         </div>
                         </div>
                         <div class="settings-field">
@@ -395,20 +388,17 @@
                                     <span class="engine-card-desc">Image only</span>
                                 </button>
                             </div>
-                        <div class="settings-field">
-                            <label class="settings-field-label" for="upscaleEngine">Engine</label>
-                            <select class="settings-select" id="upscaleEngine">
+                            <select class="settings-select" id="upscaleEngine" style="display:none;">
                                 <option value="rtx">RTX (fast video)</option>
                                 <option value="seedvr2">SeedVR2</option>
                                 <option value="ultimate">Ultimate SD</option>
                             </select>
-                            <span class="settings-hint">RTX is video-only (images fall back to SeedVR2). Ultimate SD is image-only (videos fall back to RTX).</span>
-                        </div>
+                            <span class="settings-hint">RTX is video-only and always scales by the Multiplier (images fall back to SeedVR2). SeedVR2 handles images and video; Ultimate SD is image-only. Both use the Mode setting below.</span>
                         </div>
                         <div class="settings-card" data-search="upscale mode target resolution multiplier scale">
                             <div class="settings-card-title">SCALE</div>
                             <div class="settings-field-row">
-                        <div class="settings-field">
+                        <div class="settings-field" id="upscaleModeField">
                             <label class="settings-field-label" for="upscaleMode">Mode</label>
                             <select class="settings-select" id="upscaleMode">
                                 <option value="target">Target resolution</option>
@@ -422,6 +412,7 @@
                                 <option value="1440">1440p</option>
                                 <option value="2160">2160p</option>
                             </select>
+                            <span class="settings-hint">Target short-side resolution for SeedVR2 and Ultimate SD.</span>
                         </div>
                         <div class="settings-field" id="upscaleMultiplierField">
                             <label class="settings-field-label" for="upscaleMultiplier">Multiplier</label>
@@ -431,8 +422,11 @@
                                 <option value="3">3x</option>
                                 <option value="4">4x</option>
                             </select>
-                            <span class="settings-hint">Scale factor for Multiplier mode (images) and RTX video upscale.</span>
+                            <span class="settings-hint">RTX scale factor, or the source scale for SeedVR2/Ultimate SD in Multiplier mode.</span>
                         </div>
+                            </div>
+                            <div class="settings-warning" id="upscaleMultiplierWarning" style="display:none;">
+                                4x RTX video upscale scales both sides by 4 (16x the pixels), so VRAM use and the downloaded file size rise sharply. Video upscales also hold the full source and output in system RAM. Lower the multiplier if ComfyUI runs out of memory.
                             </div>
                         </div>
                         <details class="settings-card settings-advanced" data-search="seedvr2 detail profile sharp balanced noise pre-resize dit vae attention" open>
@@ -847,7 +841,22 @@
         </div>
     </div>
 
+    <div class="modal-overlay" id="appDialogOverlay">
+        <div class="modal" role="dialog" aria-modal="true">
+            <div class="modal-header" id="appDialogHeader">
+                <!-- Populated by Dialog -->
+            </div>
+            <div class="modal-body" id="appDialogBody">
+                <!-- Populated by Dialog -->
+            </div>
+            <div class="modal-footer" id="appDialogFooter">
+                <!-- Populated by Dialog -->
+            </div>
+        </div>
+    </div>
+
     <script src="js/db.js"></script>
+    <script src="js/dialog.js"></script>
     <script src="js/markdown.js"></script>
     <script src="js/video-player.js"></script>
     <script src="js/hardware-compat.js"></script>

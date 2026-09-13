@@ -198,7 +198,12 @@ const Chat = (() => {
     }
 
     async function onRename(conv) {
-        const title = window.prompt('Rename conversation:', conv.title || '');
+        const title = await Dialog.prompt({
+            title: 'Rename Conversation',
+            value: conv.title || '',
+            placeholder: 'Conversation title',
+            confirmText: 'Rename'
+        });
         if (title === null) return;
         await Conversations.rename(conv.id, title.trim() || conv.title);
     }
@@ -211,7 +216,13 @@ const Chat = (() => {
     }
 
     async function onDelete(conv) {
-        if (!window.confirm('Delete conversation "' + (conv.title || 'Untitled') + '" and all its messages?')) {
+        const confirmed = await Dialog.confirm({
+            title: 'Delete Conversation',
+            message: 'Delete "' + (conv.title || 'Untitled') + '" and all its messages?',
+            confirmText: 'Delete',
+            danger: true
+        });
+        if (!confirmed) {
             return;
         }
         await Conversations.remove(conv.id);

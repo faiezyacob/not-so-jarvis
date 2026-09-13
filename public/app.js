@@ -777,13 +777,13 @@ function initFreeComfyButton() {
             const data = await res.json().catch(() => ({}));
 
             if (!res.ok) {
-                window.alert('Free failed: ' + (data.error || 'Unknown error'));
+                await Dialog.alert({ title: 'Free Failed', message: 'Free failed: ' + (data.error || 'Unknown error') });
                 return;
             }
 
-            window.alert('ComfyUI models unloaded and memory freed');
+            await Dialog.alert({ title: 'Memory Freed', message: 'ComfyUI models unloaded and memory freed' });
         } catch (err) {
-            window.alert('Connection error: ' + err.message);
+            await Dialog.alert({ title: 'Connection Error', message: 'Connection error: ' + err.message });
         } finally {
             freeBtn.disabled = false;
             freeBtn.textContent = 'Free model';
@@ -799,10 +799,9 @@ function initFreeComfyButton() {
 // allowed.
 //
 // LoRA stack: users attach LoRAs from the list ComfyUI reports (LoraLoader
-// lora_name entries). Each attached LoRA has an on/off/auto mode, a strength
-// slider, and an optional trigger word. In AUTO the trigger word is the
-// keyword that must appear in the prompt for the LoRA to apply. The stack is
-// persisted as settings.loras[] and chained into the Krea2 workflow by the
+// lora_name entries). Each attached LoRA has an on/off toggle, a strength
+// slider, and an optional trigger word. The stack is persisted as
+// settings.loras[] and chained into the Krea2 workflow by the
 // image-generator service. Trigger words are prepended to the prompt.
 
 const IMAGE_GEN_FIELDS = [
@@ -821,14 +820,13 @@ const LORA_STRENGTH_STEP = 0.05;
 function initLoraStack(opts) {
     const o = opts || {};
     return {
-        loras: [],          // [{ name, strength, mode, on, triggerWord }] current attached stack
+        loras: [],          // [{ name, strength, on, triggerWord }] current attached stack
         triggerMemory: {},  // { [loraName]: triggerWord } remembered even after removal
         available: [],      // lora filenames ComfyUI reports
         listEl: null,
         addSelect: null,
         statusEl: null,
         endpoint: o.endpoint || '/api/settings/image',  // where the stack is persisted
-        autoEnabled: o.auto === true,  // image stacks expose the AUTO mode
         listId: o.listId || 'loraList',
         addSelectId: o.addSelectId || 'loraAddSelect',
         statusId: o.statusId || 'loraStatus'
@@ -843,46 +841,18 @@ function loraStatus(state, text, isError) {
 }
 
 function loraRow(state, lora, index) {
-    const mode = lora.mode || (lora.on === false ? 'off' : 'on');
     const row = document.createElement('div');
-    row.className = 'lora-row'
-        + (mode === 'off' ? ' lora-row--off' : '')
-        + (mode === 'auto' ? ' lora-row--auto' : '');
+    row.className = 'lora-row' + (lora.on === false ? ' lora-row--off' : '');
 
-    let modeControl;
-    if (state.autoEnabled) {
-        // Image-only three-state control: ON applies always, OFF never, AUTO
-        // applies only when the keyword below appears in the prompt.
-        modeControl = document.createElement('div');
-        modeControl.className = 'lora-mode';
-        modeControl.title = 'ON: always applied - OFF: never - AUTO: applied when the keyword appears in the prompt';
-        [['on', 'ON'], ['off', 'OFF'], ['auto', 'AUTO']].forEach(([value, label]) => {
-            const btn = document.createElement('button');
-            btn.type = 'button';
-            btn.dataset.mode = value;
-            btn.textContent = label;
-            if (value === mode) btn.classList.add('is-active');
-            btn.addEventListener('click', () => {
-                lora.mode = value;
-                lora.on = value === 'on';
-                renderLoraStack(state);
-                saveLoraStack(state);
-            });
-            modeControl.appendChild(btn);
-        });
-    } else {
-        modeControl = document.createElement('input');
-        modeControl.type = 'checkbox';
-        modeControl.className = 'lora-row-toggle';
-        modeControl.checked = mode !== 'off';
-        modeControl.title = 'Toggle LoRA';
-        modeControl.addEventListener('change', () => {
-            const next = modeControl.checked ? 'on' : 'off';
-            lora.mode = next;
-            lora.on = next === 'on';
-            saveLoraStack(state);
-        });
-    }
+    const toggle = document.createElement('input');
+    toggle.type = 'checkbox';
+    toggle.className = 'lora-row-toggle';
+    toggle.checked = lora.on !== false;
+    toggle.title = 'Toggle LoRA';
+    toggle.addEventListener('change', () => {
+        lora.on = toggle.checked;
+        saveLoraStack(state);
+    });
 
     const nameWrap = document.createElement('div');
     nameWrap.className = 'lora-name-wrap';
@@ -896,11 +866,9 @@ function loraRow(state, lora, index) {
     const triggerInput = document.createElement('input');
     triggerInput.type = 'text';
     triggerInput.className = 'lora-trigger-word';
-    triggerInput.placeholder = mode === 'auto' ? 'keyword' : 'trigger word';
+    triggerInput.placeholder = 'trigger word';
     triggerInput.value = lora.triggerWord || '';
-    triggerInput.title = mode === 'auto'
-        ? 'Auto keyword: this LoRA is applied only when the word appears in the prompt (and is used as its trigger word)'
-        : 'Trigger word prepended to prompt';
+    triggerInput.title = 'Trigger word prepended to prompt';
     triggerInput.addEventListener('change', () => {
         const word = triggerInput.value.trim();
         lora.triggerWord = word;
@@ -944,7 +912,7 @@ function loraRow(state, lora, index) {
         saveLoraStack(state);
     });
 
-    row.appendChild(modeControl);
+    row.appendChild(toggle);
     row.appendChild(nameWrap);
     row.appendChild(strength);
     row.appendChild(strengthVal);
@@ -1006,7 +974,7 @@ async function saveLoraStack(state) {
             loraStatus(state, 'Save failed: ' + (data.error || 'Unknown error'), true);
             return;
         }
-        const count = state.loras.filter(l => (l.mode || (l.on === false ? 'off' : 'on')) !== 'off').length;
+        const count = state.loras.filter(l => l.on !== false).length;
         loraStatus(state, count
             ? 'Saved ' + count + ' LoRA' + (count > 1 ? 's' : '')
             : 'No active LoRAs');
@@ -1033,7 +1001,6 @@ function initLoraSettings(state) {
         state.loras.push({
             name,
             strength: 1,
-            mode: 'on',
             on: true,
             triggerWord: state.triggerMemory[name] || ''
         });
@@ -1053,7 +1020,7 @@ function initImageGenSettings() {
     if (statusEl) statusEl.style.display = 'none';
     let saved = {};
 
-    const loraState = initLoraStack({ auto: true });
+    const loraState = initLoraStack();
     initLoraSettings(loraState);
 
     const setStatus = (text, isError) => {
@@ -1146,17 +1113,6 @@ function initImageGenSettings() {
     if (seedModeSelect) seedModeSelect.addEventListener('change', () => { syncSeedDisabled(); persistValue('seedMode', seedModeSelect.value, seedModeSelect.value); });
     if (seedInput) seedInput.addEventListener('change', () => persistValue('seed', Math.max(0, Math.floor(Number(seedInput.value) || 0)), seedInput.value));
 
-    // AUTO LoRA keywords can be captured from the raw message before the LLM
-    // rewrite; on by default. Persisted like the other image settings.
-    const autoLoraPreLlmToggle = document.getElementById('imageAutoLoraPreLlm');
-    if (autoLoraPreLlmToggle) {
-        autoLoraPreLlmToggle.addEventListener('change', () => persistValue(
-            'autoLoraPreLlm',
-            autoLoraPreLlmToggle.checked,
-            autoLoraPreLlmToggle.checked ? 'on' : 'off'
-        ));
-    }
-
     (async () => {
         try {
             const res = await fetch('/api/settings/image');
@@ -1197,10 +1153,7 @@ function initImageGenSettings() {
             loraState.loras = Array.isArray(settings.loras) ? settings.loras.map((l) => ({
                 name: l.name,
                 strength: clampLoraStrength(l.strength),
-                mode: (l.mode === 'on' || l.mode === 'off' || l.mode === 'auto')
-                    ? l.mode
-                    : (l.on === false ? 'off' : 'on'),
-                on: l.on === true,
+                on: l.on !== false,
                 triggerWord: (l.triggerWord !== undefined && l.triggerWord !== null)
                     ? String(l.triggerWord)
                     : (loraState.triggerMemory[l.name] || '')
@@ -1220,12 +1173,6 @@ function initImageGenSettings() {
                     : (defaults.seed || 0);
             }
             syncSeedDisabled();
-
-            if (autoLoraPreLlmToggle) {
-                autoLoraPreLlmToggle.checked = settings.autoLoraPreLlm !== false &&
-                    settings.autoLoraPreLlm !== 0 &&
-                    String(settings.autoLoraPreLlm).toLowerCase() !== 'false';
-            }
 
             if (!data.comfyAvailable) {
                 setStatus('ComfyUI unreachable — showing defaults only', true);
@@ -1281,17 +1228,34 @@ function initUpscaleSettings() {
         const engine = engineSel ? engineSel.value : 'rtx';
         const mode = modeSel ? modeSel.value : 'target';
 
+        // RTX ignores mode/target resolution and always scales by the
+        // multiplier; SeedVR2 and Ultimate SD either target a short-side
+        // resolution or scale by the multiplier. Show only the control the
+        // active engine actually reads.
+        const isRtx = engine === 'rtx';
+
+        const modeField = document.getElementById('upscaleModeField');
+        if (modeField) modeField.style.display = isRtx ? 'none' : '';
+
         const resField = document.getElementById('upscaleResolutionField');
+        if (resField) resField.style.display = (!isRtx && mode === 'target') ? '' : 'none';
+
         const multField = document.getElementById('upscaleMultiplierField');
-        if (resField) resField.style.display = mode === 'target' ? '' : 'none';
-        // Multiplier doubles as the RTX video scale factor, so keep it visible
-        // when RTX is selected even in target mode.
-        if (multField) multField.style.display = (mode === 'multiplier' || engine === 'rtx') ? '' : 'none';
+        if (multField) multField.style.display = (isRtx || mode === 'multiplier') ? '' : 'none';
 
         ['upscaleProfileField', 'upscaleNoiseField', 'upscalePreScaleField', 'upscaleDiTField', 'upscaleVaeField', 'upscaleAttentionField'].forEach((id) => {
             const el = document.getElementById(id);
             if (el) el.style.display = engine === 'seedvr2' ? '' : 'none';
         });
+
+        const multSel = document.getElementById('upscaleMultiplier');
+        const warningEl = document.getElementById('upscaleMultiplierWarning');
+        if (warningEl) {
+            const is4x = multSel && Number(multSel.value) >= 4;
+            // Ultimate SD is image-only and falls back to RTX for video, so it
+            // shares the same 4x video cost; SeedVR2 ignores the multiplier.
+            warningEl.style.display = (engine !== 'seedvr2' && is4x) ? '' : 'none';
+        }
     };
 
     const persistSelect = async (key, select) => {
@@ -1358,6 +1322,9 @@ function initUpscaleSettings() {
 
     if (engineSel) engineSel.addEventListener('change', syncVisibility);
     if (modeSel) modeSel.addEventListener('change', syncVisibility);
+
+    const multiplierSel = document.getElementById('upscaleMultiplier');
+    if (multiplierSel) multiplierSel.addEventListener('change', syncVisibility);
 
     (async () => {
         try {
@@ -1725,10 +1692,7 @@ function initVideoSettings() {
             loraState.loras = Array.isArray(settings.loras) ? settings.loras.map((l) => ({
                 name: l.name,
                 strength: clampLoraStrength(l.strength),
-                mode: (l.mode === 'on' || l.mode === 'off' || l.mode === 'auto')
-                    ? l.mode
-                    : (l.on === false ? 'off' : 'on'),
-                on: l.on === true,
+                on: l.on !== false,
                 triggerWord: (l.triggerWord !== undefined && l.triggerWord !== null)
                     ? String(l.triggerWord)
                     : (loraState.triggerMemory[l.name] || '')
@@ -2072,7 +2036,7 @@ function initUnloadModelButton(providerSelect, modelInput) {
     unloadBtn.addEventListener('click', async () => {
         const model = modelInput.value.trim();
         if (!model) {
-            window.alert('Enter a model name first.');
+            await Dialog.alert({ title: 'No Model', message: 'Enter a model name first.' });
             return;
         }
 
@@ -2089,13 +2053,13 @@ function initUnloadModelButton(providerSelect, modelInput) {
             const data = await res.json().catch(() => ({}));
 
             if (!res.ok) {
-                window.alert('Unload failed: ' + (data.error || 'Unknown error'));
+                await Dialog.alert({ title: 'Unload Failed', message: 'Unload failed: ' + (data.error || 'Unknown error') });
                 return;
             }
 
-            window.alert('Model unloaded: ' + model);
+            await Dialog.alert({ title: 'Model Unloaded', message: 'Model unloaded: ' + model });
         } catch (err) {
-            window.alert('Connection error: ' + err.message);
+            await Dialog.alert({ title: 'Connection Error', message: 'Connection error: ' + err.message });
         } finally {
             unloadBtn.disabled = false;
             unloadBtn.textContent = 'Unload model';
@@ -2109,7 +2073,13 @@ function initRestartServerButton() {
 
     restartBtn.addEventListener('click', async (e) => {
         e.stopPropagation();
-        if (!window.confirm('Restart the JARVIS server now? The page will reload once it comes back up.')) {
+        const confirmed = await Dialog.confirm({
+            title: 'Restart Server',
+            message: 'Restart the JARVIS server now? The page will reload once it comes back up.',
+            confirmText: 'Restart',
+            warning: true
+        });
+        if (!confirmed) {
             return;
         }
 
@@ -2139,7 +2109,7 @@ function initRestartServerButton() {
 
         restartBtn.disabled = false;
         restartBtn.textContent = 'Restart server';
-        window.alert('Server did not come back up. Start it manually with start.bat.');
+        await Dialog.alert({ title: 'Restart Failed', message: 'Server did not come back up. Start it manually with start.bat.' });
     });
 }
 

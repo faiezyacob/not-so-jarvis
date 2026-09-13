@@ -63,8 +63,11 @@ Chat, generate images, edit photos, produce videos with sound, upscale both — 
 ## Requirements
 
 - **Node.js** — no `npm install` needed (zero dependencies)
+- **NVIDIA GPU with 16 GB VRAM is required** to run the full image, video, and upscale stack (Krea2, MiniMax H3, SeedVR2). VRAM is freed and reloaded between chat and generation as needed via `vram-manager`.
 - **[Ollama](https://ollama.com)** running at `localhost:11434` for chat
 - **Optional, for image/video/upscale:** [ComfyUI](https://github.com/comfyanonymous/ComfyUI) with the Krea2 / MiniMax H3 models and custom nodes. The in-app **Settings > Setup** guide can install these for you.
+
+> **Reference machine.** Developed and tested on **16 GB VRAM + 64 GB system RAM**. 64 GB of system RAM is recommended for video upscaling, which holds the full source and the upscaled output in memory (see [Upscaling](#upscaling)).
 
 ## Quick start
 
@@ -135,6 +138,8 @@ One shared **UPSCALE** configuration applies to both media. Engine mapping follo
 | Videos | SeedVR2 or fast RTX (default; an Ultimate SD selection falls back to RTX) |
 
 Say *"upscale this image"* or *"upscale this video"* (also *"make it higher res"*); the source is resolved from the conversation's last generated image or video. Upscaled images are grouped with their original in the gallery, where **Compare** opens a before/after slider. Video upscales replace the original file and report the before → after dimensions.
+
+> **Memory note (4x video upscale).** With the RTX engine, choosing **4x** scales both dimensions by 4 — **16x the pixels** — so VRAM use and the downloaded file size rise sharply. A video upscale also reads the entire source into system RAM and holds the full upscaled output in memory before writing it. On a 16 GB card or a lower-RAM machine, prefer **2x** unless you have headroom, and drop the multiplier if ComfyUI runs out of memory. The SeedVR2 video path ignores the multiplier and targets the configured short-side resolution instead. The in-app UPSCALE panel shows a warning whenever 4x is selected with RTX (or Ultimate SD, which falls back to RTX for video).
 
 ### LoRA stack
 
