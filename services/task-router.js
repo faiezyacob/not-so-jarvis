@@ -628,9 +628,13 @@ async function routeMessage({ message, provider, model, conversationId, hasAttac
     // modify before the LLM router so a small model can't downgrade them to
     // chat (where the chat model then leaks a tool-call JSON blob like
     // {"action": "image_generation", ...} instead of generating anything).
-    // Explicit edits stay above; video nouns stay on the video pipeline.
+    // Explicit edits stay above; video nouns and image-to-video phrasings
+    // ("animate this image", "make it walk", ...) stay on the video pipeline.
+    // Without the I2V guard, an instruction suffix like "make it mindblowing"
+    // matches the modify verb+target and gets misrouted to a still-image regen.
     if (activeTask.type === 'image' && activeTask.prompt &&
-        !hasAttachedImage && !videoGenerator.VIDEO_WORD_RE.test(message)) {
+        !hasAttachedImage && !videoGenerator.VIDEO_WORD_RE.test(message) &&
+        !videoGenerator.I2V_REF_RE.test(message)) {
         try {
             if (imageGenerator.detectImageModifyIntent(message, true)) {
                 return {

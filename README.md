@@ -316,7 +316,7 @@ See `AGENTS.md` for architecture notes and contribution constraints.
 
 ## License
 
-not-so-jarvis is free software licensed under the **GNU General Public License v3.0 only** (`GPL-3.0-only`). See [LICENSE](LICENSE) or <https://www.gnu.org/licenses/gpl-3.0.html>.
+not-so-jarvis is free software licensed under the **GNU General Public License v3.0 only** (`GPL-3.0-only`). not-so-jarvis does not claim ownership of media users create.
 
 ```
 not-so-jarvis — a local AI assistant dashboard.
@@ -334,4 +334,4 @@ You should have received a copy of the GNU General Public License along with
 this program. If not, see <https://www.gnu.org/licenses/>.
 ```
 
-It includes adaptations from **Mix Studio** (<https://github.com/BlackMixture/Mix-Studio>), also licensed under GPL-3.0. Adapted components include the Krea2 text-to-image workflow graph, SeedVR2 / Ultimate SD / RTX upscale pipelines, and the MiniMax H3 video workflow in `services/image-generator.js` and `services/video-generator.js` (plus related resolution-tier, LoRA-chain, and compare-viewer logic). The original Mix Studio copyright notices are preserved in the adapted source files. Changes vs. upstream: simplified to plain text-to-image and first-frame video paths (no region/edit/outpaint modes, no turbo/long-context/reference-video paths), chat-driven intent routing, and `not-so-jarvis/` output prefixes.
+This project includes source code developed by **Mix Studio** (<https://github.com/BlackMixture/Mix-Studio>)

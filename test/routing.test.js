@@ -115,6 +115,17 @@ test('routeMessage: "another image" runs the image classifier as a new task', as
     assert.equal(d.shouldExecuteTool, true);
 });
 
+test('routeMessage: "animate this image" with an image task routes to video, not an image modify', async () => {
+    stub({
+        getTask: () => ({ type: 'image', prompt: 'a cat' }),
+        detectVideoIntent: async () => ({ intent: 'video_generation', action: 'generate', user_prompt: 'animate this image. make it mindblowing.' })
+    });
+    const d = await route('animate this image. make it mindblowing.');
+    assert.equal(d.task, 'video_generation');
+    assert.equal(d.intent, 'switch_task');
+    assert.equal(d.shouldExecuteTool, true);
+});
+
 // --- normalizeDecision through the LLM router --------------------------------
 
 test('routeMessage: an unknown router task never executes a tool', async () => {

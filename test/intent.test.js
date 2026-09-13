@@ -135,3 +135,45 @@ test('detectVideoUpscaleIntent: requires an explicit video noun', () => {
 test('detectVideoUpscaleIntent: concept questions do not fire', () => {
     assert.equal(videoGenerator.detectVideoUpscaleIntent('what is video upscaling?'), null);
 });
+
+// --- stripVideoRequestMeta / isRawRequestEcho --------------------------------
+
+test('stripVideoRequestMeta: removes video scaffolding and meta filler', () => {
+    assert.equal(videoGenerator.stripVideoRequestMeta('animate this image. make it mindblowing.'), '');
+    assert.equal(videoGenerator.stripVideoRequestMeta('generate a video of a dog running'), 'a dog running');
+    assert.equal(videoGenerator.stripVideoRequestMeta('make a cinematic video of a city at night'), 'a city at night');
+    assert.equal(videoGenerator.stripVideoRequestMeta('bring this image to life'), '');
+});
+
+test('stripVideoRequestMeta: preserves concrete concepts', () => {
+    assert.equal(videoGenerator.stripVideoRequestMeta('a cat on a sunny beach'), 'a cat on a sunny beach');
+    assert.equal(videoGenerator.stripVideoRequestMeta('wild horses running through a river'), 'wild horses running through a river');
+});
+
+test('isRawRequestEcho: flags an echoed instruction, allows a rewritten prompt', () => {
+    assert.equal(videoGenerator.isRawRequestEcho('[Shot 1] animate this image. make it mindblowing.', 'animate this image. make it mindblowing.'), true);
+    assert.equal(videoGenerator.isRawRequestEcho('[Shot 1] the subject turns to face the camera as light sweeps across the scene', 'animate this image. make it mindblowing.'), false);
+    assert.equal(videoGenerator.isRawRequestEcho('[Shot 1] a dog running on a beach', 'a dog running on a beach'), false);
+});
+
+// --- parseDirectorJson (lenient H3 director response reader) ------------------
+
+test('parseDirectorJson: reads a normal JSON envelope', () => {
+    const parsed = videoGenerator.parseDirectorJson('{"mode":"i2va","prompt":"[Shot 1] a scene"}');
+    assert.equal(parsed.mode, 'i2va');
+    assert.equal(parsed.prompt, '[Shot 1] a scene');
+});
+
+test('parseDirectorJson: salvages a prompt with raw newlines in the JSON string', () => {
+    const raw = '{"mode":"i2va","prompt":"integrated_multimodal_description:\n[Shot 1] A dog runs across sand.\n\noverall_soundscape:\nWaves."}';
+    const parsed = videoGenerator.parseDirectorJson(raw);
+    assert.ok(parsed);
+    assert.equal(parsed.mode, 'i2va');
+    assert.match(parsed.prompt, /A dog runs across sand\./);
+    assert.match(parsed.prompt, /overall_soundscape:/);
+});
+
+test('parseDirectorJson: returns null for a non-JSON reply', () => {
+    assert.equal(videoGenerator.parseDirectorJson('not json at all'), null);
+});
+

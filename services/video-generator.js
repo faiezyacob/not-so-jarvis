@@ -512,95 +512,104 @@ function parseRequestedVideoDuration(message) {
 
 const H3_DIRECTOR_SYSTEM_PROMPT =
     'You are JARVIS\'s H3 Video Director. You convert video requests into MiniMax H3 compliant ' +
-    'prompts following the official H3 Video Prompt Writing Guide.\\n\\n' +
+    'prompts following the official H3 Video Prompt Writing Guide.\n\n' +
 
-    'OUTPUT FORMAT — always output a JSON object:\\n' +
-    '{"mode": "t2va"|"i2va", "prompt": "..."}\\n\\n' +
+    'CONVERSION RULE — CRITICAL:\n' +
+    '- The user request is an instruction, never a scene description. Do NOT quote, repeat, or ' +
+    'paraphrase it back, and do NOT place it in the output prompt.\n' +
+    '- Vague directives ("animate this image", "generate a video", "make it mindblowing", ' +
+    '"make a cool clip", "bring it to life", "be creative") must be translated into a specific, ' +
+    'concrete sequence: subject action, environment, motion, camera movement, lighting, and sound.\n' +
+    '- Imperative words such as "animate", "generate", "create", "mindblowing", "epic", "cool", ' +
+    '"video", and "image" must NEVER appear in the output prompt.\n\n' +
 
-    'MODE RULES:\\n' +
-    '- "t2va": Text-to-Video-Audio. No reference image.\\n' +
-    '- "i2va": Image-to-Video-Audio. A reference image is provided as the first frame.\\n' +
-    '- For I2VA, the prompt MUST reference <Picture 1>.\\n' +
-    '- For I2VA, always include this exact alignment line:\\n' +
-    '"For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced."\\n' +
-    '- Never leave <Picture 1> empty or replace it with a blank space.\\n\\n' +
+    'OUTPUT FORMAT — always output a JSON object:\n' +
+    '{"mode": "t2va"|"i2va", "prompt": "..."}\n\n' +
 
-    'SHOT RULE — CRITICAL:\\n' +
-    '- Use ONLY [Shot 1] by default.\\n' +
+    'MODE RULES:\n' +
+    '- "t2va": Text-to-Video-Audio. No reference image.\n' +
+    '- "i2va": Image-to-Video-Audio. A reference image is provided as the first frame.\n' +
+    '- For I2VA, the prompt MUST reference <Picture 1>.\n' +
+    '- For I2VA, always include this exact alignment line:\n' +
+    '"For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced."\n' +
+    '- Never leave <Picture 1> empty or replace it with a blank space.\n\n' +
+
+    'SHOT RULE — CRITICAL:\n' +
+    '- Use ONLY [Shot 1] by default.\n' +
     '- Do NOT create [Shot 2], [Shot 3], or any additional shots unless the user explicitly requests ' +
-    'multiple shots, a scene change, a cut, a transition to another scene, or separate shots.\\n' +
-    '- A continuous action MUST remain entirely inside [Shot 1].\\n' +
-    '- Do NOT use timestamps to divide a continuous action into multiple shots.\\n' +
-    '- Do NOT create additional shots simply because the action changes over time.\\n' +
-    '- If the user does not specify a shot change, assume the entire video is one continuous shot.\\n\\n' +
+    'multiple shots, a scene change, a cut, a transition to another scene, or separate shots.\n' +
+    '- A continuous action MUST remain entirely inside [Shot 1].\n' +
+    '- Do NOT use timestamps to divide a continuous action into multiple shots.\n' +
+    '- Do NOT create additional shots simply because the action changes over time.\n' +
+    '- If the user does not specify a shot change, assume the entire video is one continuous shot.\n\n' +
 
-    'PROMPT STRUCTURE:\\n\\n' +
+    'PROMPT STRUCTURE:\n\n' +
 
-    'integrated_multimodal_description:\\n' +
+    'integrated_multimodal_description:\n' +
     '[Shot 1] Describe the complete continuous sequence: starting visual state, subject appearance, ' +
     'environment, composition, lighting, camera position, action, movement, reactions, and natural ' +
-    'visual evolution throughout the video.\\n' +
+    'visual evolution throughout the video.\n' +
     'For I2VA, describe the reference image as the starting state and explain how the action naturally ' +
-    'continues from that frame.\\n\\n' +
+    'continues from that frame.\n\n' +
 
-    'overall_soundscape:\\n' +
+    'overall_soundscape:\n' +
     'Describe environmental and diegetic sounds that naturally match the visual action. Include relevant ' +
-    'ambience such as footsteps, wind, rain, traffic, crowd noise, object movement, or other physical sounds.\\n\\n' +
+    'ambience such as footsteps, wind, rain, traffic, crowd noise, object movement, or other physical sounds.\n\n' +
 
-    'non_diegetic_music:\\n' +
-    'Describe suitable background music when appropriate, or write "N/A" when no music is needed.\\n\\n' +
+    'non_diegetic_music:\n' +
+    'Describe suitable background music when appropriate, or write "N/A" when no music is needed.\n\n' +
 
-    'I2VA ACTION TIMING — CRITICAL:\\n' +
-    '- The reference image is the first frame, not a static introductory pause.\\n' +
-    '- Unless the user explicitly requests a delay, the requested action MUST begin at 0.00 seconds.\\n' +
-    '- NEVER invent a 2-5 second pause before the action.\\n' +
-    '- NEVER delay the action simply to separate the reference image from the motion.\\n' +
-    '- The reference image establishes the starting state at 0.00 seconds.\\n' +
-    '- Describe the action beginning immediately from that starting state.\\n' +
-    '- Only introduce delayed timing when the user explicitly specifies it.\\n\\n' +
+    'I2VA ACTION TIMING — CRITICAL:\n' +
+    '- The reference image is the first frame, not a static introductory pause.\n' +
+    '- Unless the user explicitly requests a delay, the requested action MUST begin at 0.00 seconds.\n' +
+    '- NEVER invent a 2-5 second pause before the action.\n' +
+    '- NEVER delay the action simply to separate the reference image from the motion.\n' +
+    '- The reference image establishes the starting state at 0.00 seconds.\n' +
+    '- Describe the action beginning immediately from that starting state.\n' +
+    '- Only introduce delayed timing when the user explicitly specifies it.\n\n' +
 
-    'CONTINUOUS ACTION:\\n' +
-    '- Describe how the action develops naturally from beginning to end within [Shot 1].\\n' +
+    'CONTINUOUS ACTION:\n' +
+    '- Describe how the action develops naturally from beginning to end within [Shot 1].\n' +
     '- You may describe progression such as "begins", "then", "continues", "gradually", and "ends" ' +
-    'without creating additional shots.\\n' +
+    'without creating additional shots.\n' +
     '- Use timestamps only when the user explicitly specifies timing or when timing is essential to a ' +
-    'specific requested event.\\n\\n' +
+    'specific requested event.\n\n' +
 
-    'CREATIVE RULES:\\n' +
+    'CREATIVE RULES:\n' +
     '- When the user says "be creative", act as a director: decide natural movement, pacing, camera ' +
-    'motion, soundscape, and music that serve the visual concept.\\n' +
+    'motion, soundscape, and music that serve the visual concept.\n' +
     '- For I2VA, preserve the subject identity, clothing, hairstyle, environment, composition, colors, ' +
-    'key objects, and visual style from <Picture 1>.\\n' +
+    'key objects, and visual style from <Picture 1>.\n' +
     '- Never change the subject\'s identity, clothing, hairstyle, setting, or important objects unless ' +
-    'the user explicitly asks for the change.\\n' +
-    '- When the user gives a specific action, center the video on that action while preserving the reference image.\\n' +
+    'the user explicitly asks for the change.\n' +
+    '- When the user gives a specific action, center the video on that action while preserving the reference image.\n' +
     '- Camera movement should be concrete and purposeful: push in, pull out, pan, tilt, tracking, arc, ' +
-    'static, handheld, etc.\\n' +
-    '- Do not invent dialogue. Preserve user-provided dialogue exactly.\\n' +
-    '- Do not invent on-screen text. Preserve user-provided on-screen text exactly.\\n' +
+    'static, handheld, etc.\n' +
+    '- Do not invent dialogue. Preserve user-provided dialogue exactly.\n' +
+    '- Do not invent on-screen text. Preserve user-provided on-screen text exactly.\n' +
     '- Avoid generic filler such as "highly detailed", "stunning visuals", "cinematic masterpiece", ' +
-    '"8K", "professional quality", or "beautiful lighting".\\n' +
-    '- Prefer concrete, observable visual and audio descriptions over abstract praise.\\n\\n' +
+    '"8K", "professional quality", or "beautiful lighting".\n' +
+    '- Prefer concrete, observable visual and audio descriptions over abstract praise.\n\n' +
 
-    'I2VA FIRST-FRAME RULE:\\n' +
+    'I2VA FIRST-FRAME RULE:\n' +
     'When a reference image is available, the first-frame alignment line must explicitly identify ' +
     '<Picture 1>. The visual description must describe what happens FROM that starting frame. Do not ' +
-    'describe a separate introductory scene before the requested action.\\n\\n' +
+    'describe a separate introductory scene before the requested action.\n\n' +
 
-    'TECHNICAL SETTINGS & VIDEO DURATION:\\n' +
-    '- The target video duration is determined by application settings and provided in the request context.\\n' +
-    '- Craft the pacing, continuous action, movement speed, and audio evolution to fit naturally within this duration.\\n' +
-    '- Do NOT override or invent technical generation parameters.\\n' +
-    '- Your responsibility is the H3 mode and creative prompt only.\\n\\n' +
+    'TECHNICAL SETTINGS & VIDEO DURATION:\n' +
+    '- The target video duration is determined by application settings and provided in the request context.\n' +
+    '- Craft the pacing, continuous action, movement speed, and audio evolution to fit naturally within this duration.\n' +
+    '- Do NOT override or invent technical generation parameters.\n' +
+    '- Your responsibility is the H3 mode and creative prompt only.\n\n' +
 
-    'FINAL CHECK BEFORE OUTPUT:\\n' +
-    '- Default to exactly ONE shot: [Shot 1].\\n' +
-    '- Only use additional shots when explicitly requested by the user.\\n' +
-    '- If I2VA, confirm the exact <Picture 1> alignment line is present.\\n' +
-    '- Confirm the requested action begins at 0.00 seconds unless the user explicitly requested a delay.\\n' +
-    '- Confirm there is no artificial introductory pause.\\n' +
-    '- Confirm unrelated reference-image details are preserved.\\n' +
-    '- Output ONLY the JSON object.\\n\\n' +
+    'FINAL CHECK BEFORE OUTPUT:\n' +
+    '- Default to exactly ONE shot: [Shot 1].\n' +
+    '- Only use additional shots when explicitly requested by the user.\n' +
+    '- If I2VA, confirm the exact <Picture 1> alignment line is present.\n' +
+    '- Confirm the requested action begins at 0.00 seconds unless the user explicitly requested a delay.\n' +
+    '- Confirm there is no artificial introductory pause.\n' +
+    '- Confirm unrelated reference-image details are preserved.\n' +
+    '- Output ONLY the JSON object.\n\n' +
 
     'Respond with ONLY the JSON object.';
 
@@ -676,6 +685,55 @@ function parseIntentJson(raw) {
     if (braceStart === -1 || braceEnd === -1 || braceEnd <= braceStart) return null;
     text = text.slice(braceStart, braceEnd + 1);
     try { return JSON.parse(text); } catch { return null; }
+}
+
+// The H3 director is asked to return {"mode": ..., "prompt": "..."} where the
+// prompt is a multi-line H3 document. Models frequently embed real newlines
+// (and sometimes unescaped quotes) inside that JSON string, which makes strict
+// JSON.parse fail even though the content is perfectly good. This lenient
+// reader salvages the prompt instead of discarding it and echoing the user.
+function parseDirectorJson(raw) {
+    const strict = parseIntentJson(raw);
+    if (strict && typeof strict.prompt === 'string' && strict.prompt.trim()) return strict;
+
+    const text = String(raw || '');
+    const keyIdx = text.search(/"prompt"\s*:\s*"/i);
+    if (keyIdx === -1) return null;
+    const colonIdx = text.indexOf(':', keyIdx);
+    const startQuote = text.indexOf('"', colonIdx);
+    if (startQuote === -1) return null;
+
+    let out = '';
+    let i = startQuote + 1;
+    while (i < text.length) {
+        const ch = text[i];
+        if (ch === '\\') {
+            const next = text[i + 1];
+            if (next === 'n') out += '\n';
+            else if (next === 't') out += '\t';
+            else if (next === 'r') out += '\r';
+            else if (next === '"') out += '"';
+            else if (next === '\\') out += '\\';
+            else out += (next === undefined ? '\\' : next);
+            i += 2;
+            continue;
+        }
+        if (ch === '"') {
+            // A quote ends the string only when the remainder is the JSON tail;
+            // otherwise it is an unescaped quote inside the prompt text.
+            const rest = text.slice(i + 1).trim();
+            if (rest === '' || rest.startsWith('}') || rest.startsWith(',')) break;
+            out += ch;
+            i += 1;
+            continue;
+        }
+        out += ch;
+        i += 1;
+    }
+    const prompt = out.trim();
+    if (!prompt) return null;
+    const modeMatch = text.match(/"mode"\s*:\s*"(t2va|i2va)"/i);
+    return { mode: modeMatch ? modeMatch[1].toLowerCase() : undefined, prompt };
 }
 
 async function detectVideoIntent(message, providers, provider, model, think) {
@@ -805,6 +863,47 @@ function hasFuzzyVideoUpscaleSignal(norm) {
 
 // --- H3 Prompt Building -------------------------------------------------------
 
+// The director LLM is the authority that converts a request into an H3 prompt.
+// When it fails or echoes, the fallback must still never forward the user's
+// imperative verbatim to H3. These helpers strip the request scaffolding
+// ("generate a video of", "animate this image", "make it mindblowing") and
+// detect an echoing director reply so it can be retried instead of accepted.
+const VIDEO_REQUEST_SCAFFOLD_RE = [
+    /\b(?:please\s+)?(?:can|could|would|will)\s+you\s+(?:please\s+)?/gi,
+    /\b(?:generate|create|make|render|produce|record|shoot)\s+(?:me\s+)?(?:a|an|the)?\s*(?:[\w'-]+\s+){0,3}?(?:video|film|clip|movie|animation|reel|footage)\b(?:\s+(?:of|about|from|using|with|for))?/gi,
+    /\b(?:animate|bring)\s+(?:this|that|the|it)\b(?:\s+(?:image|photo|picture))?(?:\s+to\s+life)?/gi,
+    /\bturn\s+(?:this|that|the)\b(?:\s+(?:image|photo|picture))?\s+into\b/gi,
+    /\b(?:use|using|from|with)\s+(?:this|that|the)\s+(?:image|photo|picture|generated\s+image)\b/gi,
+    /\b(?:this|that|the)\s+(?:image|photo|picture|generated\s+image)\b/gi,
+    /\bmake\s+(?:it|this|that)\s+(?:mind\s*blowing|mindblown|epic|amazing|awesome|incredible|breathtaking|stunning|beautiful|gorgeous|next\s*level|badass|insane|crazy|wild|cool|great|perfect|flawless|cinematic)\b/gi,
+    /\b(?:be\s+creative|surprise\s+me)\b/gi
+];
+
+function stripVideoRequestMeta(text) {
+    let out = String(text || '');
+    for (const re of VIDEO_REQUEST_SCAFFOLD_RE) out = out.replace(re, ' ');
+    return out
+        .replace(/^[\s,.;:!?]+/, '')
+        .replace(/\s*[,.;:!?]+\s*/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+// True when a director response merely repeats the user's instruction instead
+// of rewriting it. Only checked when the raw turn is itself an instruction, so
+// a concrete concept ("a dog on a beach") legitimately reappearing is fine.
+function isRawRequestEcho(prompt, raw) {
+    const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+    const p = norm(prompt);
+    const r = norm(raw);
+    if (!p) return true;
+    if (r.length < 8) return false;
+    if (!/\b(?:animate|generat|creat|mak|render|produc|record|shoot|bring)\w*\b|\bmind\s*blowing\b|\bsurprise\s+me\b|\bbe\s+creative\b/i.test(raw)) {
+        return false;
+    }
+    return p.includes(r);
+}
+
 async function buildH3VideoPrompt(structuredRequest, providers, provider, model, sourceImageRawFilename, conversationId, think) {
     const { user_prompt, creative_mode, has_reference_image, previous_prompt, explicit_constraints } = structuredRequest;
     const isModify = Boolean(previous_prompt && structuredRequest.modification);
@@ -894,37 +993,95 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
         }
     }
 
-    try {
-        const userMsg = { role: 'user', content: userMessage };
-        if (userMessageImages) userMsg.images = userMessageImages;
-        const raw = await providers.chat(provider, [
-            { role: 'system', content: H3_DIRECTOR_SYSTEM_PROMPT },
-            userMsg
-        ], model, { think });
+    const requestRaw = String(
+        (isModify ? structuredRequest.modification : user_prompt) || user_prompt || ''
+    ).trim();
 
-        const parsed = parseIntentJson(raw);
-        if (parsed && parsed.prompt) {
-            return {
-                mode: parsed.mode || (has_reference_image ? 'i2va' : 't2va'),
-                prompt: String(parsed.prompt).trim(),
-                duration: durationSeconds,
-                width: Number(parsed.width) || 1024,
-                height: Number(parsed.height) || 768,
-            };
+    // Run the director LLM, retrying once when it returns unparseable JSON or
+    // merely echoes the user's instruction instead of rewriting it. The raw
+    // directive must never reach H3.
+    for (let attempt = 0; attempt < 2; attempt++) {
+        const retryNote = attempt > 0
+            ? '\n\nYour previous answer was invalid. Convert the request into a concrete visual ' +
+              'scene description. Do NOT quote or repeat the user\'s instruction ("animate this ' +
+              'image", "make it mindblowing"), and never include the words "animate", "generate", ' +
+              '"mindblowing", "epic", or "video" in the prompt. Output ONLY the JSON object.'
+            : '';
+        try {
+            const userMsg = { role: 'user', content: userMessage + retryNote };
+            if (userMessageImages) userMsg.images = userMessageImages;
+            const raw = await providers.chat(provider, [
+                { role: 'system', content: H3_DIRECTOR_SYSTEM_PROMPT },
+                userMsg
+            ], model, { think });
+
+            const parsed = parseDirectorJson(raw);
+            if (parsed && parsed.prompt && !isRawRequestEcho(parsed.prompt, requestRaw)) {
+                return {
+                    mode: parsed.mode || (has_reference_image ? 'i2va' : 't2va'),
+                    prompt: String(parsed.prompt).trim(),
+                    duration: durationSeconds,
+                    width: Number(parsed.width) || 1024,
+                    height: Number(parsed.height) || 768,
+                };
+            }
+            console.warn('[video-generator] H3 director returned an invalid or echoing prompt (attempt ' + (attempt + 1) + ')');
+        } catch (err) {
+            console.warn('[video-generator] H3 prompt builder failed:', err.message);
         }
-    } catch (err) {
-        console.warn('[video-generator] H3 prompt builder failed:', err.message);
     }
 
-    // Fallback: wrap the raw user request in basic H3 structure.
+    // Last LLM resort: a plain-text (no JSON envelope) rewrite. Some models
+    // write a good scene description but cannot wrap it in valid JSON.
+    try {
+        const liteSystem =
+            'You are JARVIS\'s video scene writer. Rewrite the user\'s request into a single, ' +
+            'concrete, cinematic description of one continuous shot for a video generation model. ' +
+            'Describe the subject, setting, action and motion, camera movement, lighting, and sound ' +
+            'in one paragraph. Do NOT quote, repeat, or include the user\'s instruction, imperative ' +
+            'verbs, or filler words such as "animate", "generate", "mindblowing", "epic", or ' +
+            '"video". Output the description only — no JSON, no labels, no markdown.';
+        const raw = await providers.chat(provider, [
+            { role: 'system', content: liteSystem },
+            { role: 'user', content: userMessage }
+        ], model, { think });
+        const lite = String(raw || '').trim();
+        if (lite && !/^\{/.test(lite) && !isRawRequestEcho(lite, requestRaw)) {
+            const liteAlignment = has_reference_image
+                ? 'For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\n\n'
+                : '';
+            return {
+                mode: has_reference_image ? 'i2va' : 't2va',
+                prompt: liteAlignment +
+                    'integrated_multimodal_description:\n[Shot 1] ' + lite + '\n\n' +
+                    'overall_soundscape:\nAmbient environmental sounds matching the scene.\n\n' +
+                    'non_diegetic_music:\nN/A',
+                duration: durationSeconds,
+                width: 1024,
+                height: 768,
+            };
+        }
+        console.warn('[video-generator] H3 lite rewrite returned an invalid or echoing prompt');
+    } catch (err) {
+        console.warn('[video-generator] H3 lite rewrite failed:', err.message);
+    }
+
+    // Fallback: never forward the user's raw imperative. Strip the video-request
+    // scaffolding and meta filler, then describe what remains. If the request
+    // carried no concrete subject, use a neutral mode-appropriate line.
     const mode = has_reference_image ? 'i2va' : 't2va';
+    const concept = stripVideoRequestMeta(requestRaw) || (
+        has_reference_image
+            ? 'the subject from the reference image comes to life with natural, continuous motion'
+            : 'a cinematic scene with natural movement and camera motion'
+    );
     const alignmentLine = has_reference_image
         ? 'For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\n\n'
         : '';
     const fallbackPrompt =
         alignmentLine +
         'integrated_multimodal_description:\n' +
-        '[Shot 1] ' + user_prompt + '\n\n' +
+        '[Shot 1] ' + concept + '\n\n' +
         'overall_soundscape:\n' +
         'Ambient environmental sounds matching the scene.\n\n' +
         'non_diegetic_music:\n' +
@@ -2649,6 +2806,9 @@ module.exports = {
     videoRequestStrength,
     parseRequestedVideoDuration,
     buildH3VideoPrompt,
+    parseDirectorJson,
+    stripVideoRequestMeta,
+    isRawRequestEcho,
     modifyH3VideoPrompt,
     buildH3Graph,
     validateH3Graph,
