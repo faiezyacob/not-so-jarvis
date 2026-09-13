@@ -797,6 +797,17 @@ function resolveSeed(settings, requestedSeed) {
 
 // Normalize a client-supplied LoRA list. Drops entries without a name and
 // clamps strength to Mix Studio's -100..100 range (the UI uses 0..2).
+//
+// Each entry carries a three-state `mode`:
+//   'on'   — applied to every generation
+//   'off'  — never applied
+//   'auto' — applied only when its trigger word appears in the prompt; the
+//            trigger word acts as the keyword. Legacy entries without a mode
+//            derive it from the boolean `on` flag.
+//
+// `on` is kept as a derived convenience field: it is true only for explicit
+// 'on' entries, so every legacy `l.on` filter keeps working and never picks up
+// an auto LoRA by accident (auto is resolved per-prompt).
 function sanitizeLoras(value) {
     if (!Array.isArray(value)) return [];
     const out = [];
@@ -804,10 +815,13 @@ function sanitizeLoras(value) {
         const name = String((item && item.name) || '').trim();
         if (!name) continue;
         const triggerWord = String((item && item.triggerWord) || '').trim();
+        const explicit = item && (item.mode === 'on' || item.mode === 'off' || item.mode === 'auto');
+        const mode = explicit ? item.mode : ((item && item.on === false) ? 'off' : 'on');
         out.push({
             name,
             strength: clampNumber(item.strength, -100, 100, 1),
-            on: item.on !== false,
+            mode,
+            on: mode === 'on',
             triggerWord: triggerWord || ''
         });
     }
@@ -927,6 +941,57 @@ function diffusionModelLoader(unetName) {
         return { class_type: 'UnetLoaderGGUF', inputs: { unet_name: name } };
     }
     return { class_type: 'UNETLoader', inputs: { unet_name: name, weight_dtype: 'default' } };
+}
+
+// True when a stored LoRA entry is explicitly enabled (mode 'on', or a legacy
+// entry with on:true). Auto entries report false: they only apply when their
+// keyword matches the prompt, resolved per-prompt by resolveActiveLoras().
+function loraIsOn(lora) {
+    if (!lora) return false;
+    if (lora.mode === 'auto' || lora.mode === 'off') return false;
+    if (lora.mode === 'on') return true;
+    return lora.on !== false;
+}
+
+// Whole-token match of an auto LoRA's keyword against a prompt. Boundaries are
+// non-alphanumeric so "realism" matches "a realism portrait" but not
+// "surrealism", and filenames/words stay intact.
+function promptHasKeyword(prompt, keyword) {
+    const kw = String(keyword || '').trim();
+    if (!kw) return false;
+    const escaped = kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp('(^|[^a-z0-9])' + escaped + '($|[^a-z0-9])', 'i').test(String(prompt || ''));
+}
+
+// Resolve which LoRAs apply to a given prompt: explicit 'on' entries always,
+// 'auto' entries only when their keyword appears in the prompt. Returns entries
+// ready for buildLoraChain (on:true), in their configured order.
+function resolveActiveLoras(loras, prompt) {
+    const active = [];
+    for (const lora of loras || []) {
+        if (!lora || !lora.name) continue;
+        const matchesAuto = lora.mode === 'auto' && promptHasKeyword(prompt, lora.triggerWord);
+        if (loraIsOn(lora) || matchesAuto) {
+            // Normalize to an enabled entry so downstream graph builders that
+            // key off `on` apply it without further mode logic.
+            active.push(Object.assign({}, lora, { mode: 'on', on: true }));
+        }
+    }
+    return active;
+}
+
+// Trigger words to prepend for the resolved stack, skipping any word the prompt
+// already contains so an auto keyword the user typed is never duplicated.
+function resolveTriggerWords(activeLoras, prompt) {
+    const words = [];
+    for (const lora of activeLoras || []) {
+        const word = String((lora && lora.triggerWord) || '').trim();
+        if (!word) continue;
+        if (promptHasKeyword(prompt, word)) continue;
+        if (words.some((w) => w.toLowerCase() === word.toLowerCase())) continue;
+        words.push(word);
+    }
+    return words;
 }
 
 // Chain LoraLoader nodes after the base UNET/CLIP loaders. Each active LoRA
@@ -1577,15 +1642,16 @@ async function generateImage(prompt, options = {}) {
         // prompt is normalized first so a value that already carries a
         // trigger-word prefix (e.g. from task state or generated metadata) is
         // stripped — the words are prepended exactly once, never duplicated.
+        // Explicitly-on LoRAs always apply; auto LoRAs join the stack only when
+        // their keyword appears in the cleaned prompt.
         const cleanPrompt = stripLoraTriggerWords(prompt);
-        const triggerWords = (settings.loras || [])
-            .filter((l) => l && l.on && l.name && l.triggerWord)
-            .map((l) => l.triggerWord);
+        const activeLoras = resolveActiveLoras(settings.loras, cleanPrompt);
+        const triggerWords = resolveTriggerWords(activeLoras, cleanPrompt);
         const finalPrompt = triggerWords.length
             ? triggerWords.join(', ') + ', ' + String(cleanPrompt || '')
             : String(cleanPrompt || '');
 
-        const graph = buildKrea2T2IGraph(finalPrompt, Object.assign({}, options, { seed, settings }));
+        const graph = buildKrea2T2IGraph(finalPrompt, Object.assign({}, options, { seed, settings: Object.assign({}, settings, { loras: activeLoras }) }));
 
         const info = await comfyui.getObjectInfo();
         await validateGraphAgainstComfy(info, graph);
@@ -1623,15 +1689,15 @@ async function generateImage(prompt, options = {}) {
         await comfyui.deleteOutputFile(entry, { history: pid });
 
         // Record lightweight metadata so the Generated gallery can show it.
-        const activeLoras = (settings.loras || [])
-            .filter((l) => l && l.on && l.name)
+        const activeLoraMeta = activeLoras
+            .filter((l) => l && l.name)
             .map((l) => ({ name: l.name, strength: Number(l.strength) || 0, triggerWord: l.triggerWord || '' }));
         const meta = generatedHistory.add({
             file: '/generated/' + encodeURIComponent(basename),
             rawFilename: basename,
             prompt: finalPrompt,
             model: 'Krea2',
-            loras: activeLoras,
+            loras: activeLoraMeta,
             seed,
             width: settings.width,
             height: settings.height,
@@ -1891,8 +1957,11 @@ function buildKrea2IdentityEditGraph(instruction, loadName, options = {}) {
 
     let model = ['identity_lora', 0];
     let n = 0;
-    for (const l of settings.loras || []) {
-        if (!l || l.on === false || !l.name || sameAssetName(l.name, editLora)) continue;
+    const hasResolved = Array.isArray(options.activeLoras);
+    const userLoras = hasResolved ? options.activeLoras : (settings.loras || []);
+    for (const l of userLoras) {
+        if (!l || !l.name || sameAssetName(l.name, editLora)) continue;
+        if (!hasResolved && (l.mode ? (l.mode !== 'on') : l.on === false)) continue;
         n += 1;
         const key = 'user_lora_' + n;
         graph[key] = {
@@ -2007,10 +2076,11 @@ async function editImage(sourceAbsPath, instruction, options = {}) {
             : normalizeIdentityEditDimensions(settings.width, settings.height);
 
         // LoRA trigger words are prepended exactly once, same as generation.
+        // Auto LoRAs whose keyword appears in the edit instruction join the
+        // user stack passed to the identity-edit graph.
         const cleanInstruction = stripLoraTriggerWords(instruction);
-        const triggerWords = (settings.loras || [])
-            .filter((l) => l && l.on && l.name && l.triggerWord)
-            .map((l) => l.triggerWord);
+        const activeLoras = resolveActiveLoras(settings.loras, cleanInstruction);
+        const triggerWords = resolveTriggerWords(activeLoras, cleanInstruction);
         const finalInstruction = triggerWords.length
             ? triggerWords.join(', ') + ', ' + String(cleanInstruction || '')
             : String(cleanInstruction || '');
@@ -2030,6 +2100,7 @@ async function editImage(sourceAbsPath, instruction, options = {}) {
         try {
             const graph = buildKrea2IdentityEditGraph(finalInstruction, loadName, {
                 settings,
+                activeLoras,
                 seed,
                 width: dims.width,
                 height: dims.height,
@@ -2070,15 +2141,15 @@ async function editImage(sourceAbsPath, instruction, options = {}) {
         }
 
         const { width, height } = readImageDimensions(path.join(GENERATED_DIR, basename));
-        const activeLoras = (settings.loras || [])
-            .filter((l) => l && l.on && l.name)
+        const activeLoraMeta = activeLoras
+            .filter((l) => l && l.name)
             .map((l) => ({ name: l.name, strength: Number(l.strength) || 0, triggerWord: l.triggerWord || '' }));
         const meta = generatedHistory.add({
             file: '/generated/' + encodeURIComponent(basename),
             rawFilename: basename,
             prompt: finalInstruction,
             model: 'Krea2 Edit',
-            loras: activeLoras,
+            loras: activeLoraMeta,
             width: width || dims.width,
             height: height || dims.height,
             generationMs: Date.now() - startedAt,
@@ -2123,6 +2194,10 @@ module.exports = {
     MAX_SEED,
     generateImage,
     stripLoraTriggerWords,
+    resolveActiveLoras,
+    resolveTriggerWords,
+    promptHasKeyword,
+    loraIsOn,
     buildKrea2T2IGraph,
     buildLoraChain,
     buildKrea2IdentityEditGraph,

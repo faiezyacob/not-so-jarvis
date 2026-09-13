@@ -90,7 +90,7 @@ function getAllConversations() {
     return tx(STORES.conversations, 'readonly', (store) => {
         return reqToPromise(store.getAll());
     }).then((items) => {
-        return (items || []).sort((a, b) => b.updatedAt - a.updatedAt);
+        return (items || []).sort((a, b) => b.createdAt - a.createdAt);
     });
 }
 

@@ -51,7 +51,7 @@ function saveStore() {
 // --- Helpers ---
 
 function sortConversations(list) {
-    return list.slice().sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    return list.slice().sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
 }
 
 function sortMessages(list) {

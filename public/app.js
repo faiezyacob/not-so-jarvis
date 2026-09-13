@@ -718,9 +718,10 @@ function initFreeComfyButton() {
 // allowed.
 //
 // LoRA stack: users attach LoRAs from the list ComfyUI reports (LoraLoader
-// lora_name entries). Each attached LoRA has an on/off toggle, a strength
-// slider, and an optional trigger word. The stack is persisted as
-// settings.loras[] and chained into the Krea2 workflow by the
+// lora_name entries). Each attached LoRA has an on/off/auto mode, a strength
+// slider, and an optional trigger word. In AUTO the trigger word is the
+// keyword that must appear in the prompt for the LoRA to apply. The stack is
+// persisted as settings.loras[] and chained into the Krea2 workflow by the
 // image-generator service. Trigger words are prepended to the prompt.
 
 const IMAGE_GEN_FIELDS = [
@@ -739,13 +740,14 @@ const LORA_STRENGTH_STEP = 0.05;
 function initLoraStack(opts) {
     const o = opts || {};
     return {
-        loras: [],          // [{ name, strength, on, triggerWord }] current attached stack
+        loras: [],          // [{ name, strength, mode, on, triggerWord }] current attached stack
         triggerMemory: {},  // { [loraName]: triggerWord } remembered even after removal
         available: [],      // lora filenames ComfyUI reports
         listEl: null,
         addSelect: null,
         statusEl: null,
         endpoint: o.endpoint || '/api/settings/image',  // where the stack is persisted
+        autoEnabled: o.auto === true,  // image stacks expose the AUTO mode
         listId: o.listId || 'loraList',
         addSelectId: o.addSelectId || 'loraAddSelect',
         statusId: o.statusId || 'loraStatus'
@@ -760,18 +762,46 @@ function loraStatus(state, text, isError) {
 }
 
 function loraRow(state, lora, index) {
+    const mode = lora.mode || (lora.on === false ? 'off' : 'on');
     const row = document.createElement('div');
-    row.className = 'lora-row' + (lora.on === false ? ' lora-row--off' : '');
+    row.className = 'lora-row'
+        + (mode === 'off' ? ' lora-row--off' : '')
+        + (mode === 'auto' ? ' lora-row--auto' : '');
 
-    const toggle = document.createElement('input');
-    toggle.type = 'checkbox';
-    toggle.className = 'lora-row-toggle';
-    toggle.checked = lora.on !== false;
-    toggle.title = 'Toggle LoRA';
-    toggle.addEventListener('change', () => {
-        lora.on = toggle.checked;
-        saveLoraStack(state);
-    });
+    let modeControl;
+    if (state.autoEnabled) {
+        // Image-only three-state control: ON applies always, OFF never, AUTO
+        // applies only when the keyword below appears in the prompt.
+        modeControl = document.createElement('div');
+        modeControl.className = 'lora-mode';
+        modeControl.title = 'ON: always applied - OFF: never - AUTO: applied when the keyword appears in the prompt';
+        [['on', 'ON'], ['off', 'OFF'], ['auto', 'AUTO']].forEach(([value, label]) => {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.dataset.mode = value;
+            btn.textContent = label;
+            if (value === mode) btn.classList.add('is-active');
+            btn.addEventListener('click', () => {
+                lora.mode = value;
+                lora.on = value === 'on';
+                renderLoraStack(state);
+                saveLoraStack(state);
+            });
+            modeControl.appendChild(btn);
+        });
+    } else {
+        modeControl = document.createElement('input');
+        modeControl.type = 'checkbox';
+        modeControl.className = 'lora-row-toggle';
+        modeControl.checked = mode !== 'off';
+        modeControl.title = 'Toggle LoRA';
+        modeControl.addEventListener('change', () => {
+            const next = modeControl.checked ? 'on' : 'off';
+            lora.mode = next;
+            lora.on = next === 'on';
+            saveLoraStack(state);
+        });
+    }
 
     const nameWrap = document.createElement('div');
     nameWrap.className = 'lora-name-wrap';
@@ -785,9 +815,11 @@ function loraRow(state, lora, index) {
     const triggerInput = document.createElement('input');
     triggerInput.type = 'text';
     triggerInput.className = 'lora-trigger-word';
-    triggerInput.placeholder = 'trigger word';
+    triggerInput.placeholder = mode === 'auto' ? 'keyword' : 'trigger word';
     triggerInput.value = lora.triggerWord || '';
-    triggerInput.title = 'Trigger word prepended to prompt';
+    triggerInput.title = mode === 'auto'
+        ? 'Auto keyword: this LoRA is applied only when the word appears in the prompt (and is used as its trigger word)'
+        : 'Trigger word prepended to prompt';
     triggerInput.addEventListener('change', () => {
         const word = triggerInput.value.trim();
         lora.triggerWord = word;
@@ -831,7 +863,7 @@ function loraRow(state, lora, index) {
         saveLoraStack(state);
     });
 
-    row.appendChild(toggle);
+    row.appendChild(modeControl);
     row.appendChild(nameWrap);
     row.appendChild(strength);
     row.appendChild(strengthVal);
@@ -893,7 +925,7 @@ async function saveLoraStack(state) {
             loraStatus(state, 'Save failed: ' + (data.error || 'Unknown error'), true);
             return;
         }
-        const count = state.loras.filter(l => l.on !== false).length;
+        const count = state.loras.filter(l => (l.mode || (l.on === false ? 'off' : 'on')) !== 'off').length;
         loraStatus(state, count
             ? 'Saved ' + count + ' LoRA' + (count > 1 ? 's' : '')
             : 'No active LoRAs');
@@ -920,6 +952,7 @@ function initLoraSettings(state) {
         state.loras.push({
             name,
             strength: 1,
+            mode: 'on',
             on: true,
             triggerWord: state.triggerMemory[name] || ''
         });
@@ -939,7 +972,7 @@ function initImageGenSettings() {
     if (statusEl) statusEl.style.display = 'none';
     let saved = {};
 
-    const loraState = initLoraStack();
+    const loraState = initLoraStack({ auto: true });
     initLoraSettings(loraState);
 
     const setStatus = (text, isError) => {
@@ -1072,7 +1105,10 @@ function initImageGenSettings() {
             loraState.loras = Array.isArray(settings.loras) ? settings.loras.map((l) => ({
                 name: l.name,
                 strength: clampLoraStrength(l.strength),
-                on: l.on !== false,
+                mode: (l.mode === 'on' || l.mode === 'off' || l.mode === 'auto')
+                    ? l.mode
+                    : (l.on === false ? 'off' : 'on'),
+                on: l.on === true,
                 triggerWord: (l.triggerWord !== undefined && l.triggerWord !== null)
                     ? String(l.triggerWord)
                     : (loraState.triggerMemory[l.name] || '')
@@ -1591,7 +1627,10 @@ function initVideoSettings() {
             loraState.loras = Array.isArray(settings.loras) ? settings.loras.map((l) => ({
                 name: l.name,
                 strength: clampLoraStrength(l.strength),
-                on: l.on !== false,
+                mode: (l.mode === 'on' || l.mode === 'off' || l.mode === 'auto')
+                    ? l.mode
+                    : (l.on === false ? 'off' : 'on'),
+                on: l.on === true,
                 triggerWord: (l.triggerWord !== undefined && l.triggerWord !== null)
                     ? String(l.triggerWord)
                     : (loraState.triggerMemory[l.name] || '')

@@ -22,6 +22,12 @@ const Chat = (() => {
     let mentionToken = 0;
     let generatedMetaCache = null;
 
+    const BASE_TITLE = document.title || 'NOT-SO-JARVIS';
+
+    function setProgressTitle(text) {
+        document.title = text ? text + ' · ' + BASE_TITLE : BASE_TITLE;
+    }
+
     const ATTACH_MAX = 3;
     const ATTACH_MAX_BYTES = 10 * 1024 * 1024;
     const ATTACH_MIME = {
@@ -793,6 +799,7 @@ const Chat = (() => {
                             }
                             generatingLabel = data.generating;
                             generatingEl.textContent = data.generating;
+                            setProgressTitle(data.generating);
                             activeQueueActive = true;
                             chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
                         }
@@ -806,20 +813,24 @@ const Chat = (() => {
                             activeQueueActive = false;
                             const pos = data.queued.position || 1;
                             generatingEl.textContent = 'Queued #' + pos + ' — waiting for current generation… (press send to cancel)';
+                            setProgressTitle('Queued #' + pos);
                             chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
                         }
                         if (data.progress && generatingEl) {
                             // Live ComfyUI step percentage for the running job.
                             if (data.progress.idle) {
                                 generatingEl.textContent = generatingLabel || 'Finishing…';
+                                setProgressTitle(generatingLabel || 'Finishing…');
                             } else if (data.progress.max > 0) {
                                 const pct = Math.max(0, Math.min(100, Math.round((data.progress.value / data.progress.max) * 100)));
                                 generatingEl.textContent = (generatingLabel || 'Generating') + ' ' + pct + '%';
+                                setProgressTitle((generatingLabel || 'Generating') + ' ' + pct + '%');
                             }
                         }
                         if (data.image) {
                             fullReply = data.image.content;
                             if (generatingEl) generatingEl.remove();
+                            setProgressTitle('');
                             setAiContent(contentEl, data.image.content);
                             chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
                             generatedMetaCache = null;
@@ -828,6 +839,7 @@ const Chat = (() => {
                         if (data.video) {
                             fullReply = data.video.content;
                             if (generatingEl) generatingEl.remove();
+                            setProgressTitle('');
                             setAiContent(contentEl, data.video.content);
                             chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
                             generatedMetaCache = null;
@@ -835,6 +847,7 @@ const Chat = (() => {
                         }
                         if (data.chunk) {
                             if (generatingEl) generatingEl.remove();
+                            setProgressTitle('');
                             fullReply += data.chunk;
                             setAiContent(contentEl, fullReply);
                             chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
@@ -884,6 +897,7 @@ const Chat = (() => {
             activeQueueActive = false;
             activeMessageEl = null;
             activeMessageConversationId = null;
+            setProgressTitle('');
             setSendingState(false);
         }
     }
