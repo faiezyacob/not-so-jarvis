@@ -3265,6 +3265,10 @@ a.modal-btn {
 
 .gallery-overlay {
     z-index: 400;
+    /* The full-screen blur behind a grid of media is expensive to repaint;
+       use a flat scrim instead so the overlay opens instantly. */
+    backdrop-filter: none;
+    background: rgba(0, 0, 0, 0.85);
 }
 
 .gallery-modal {
@@ -3336,6 +3340,55 @@ a.modal-btn {
     height: 100%;
     object-fit: cover;
     display: block;
+}
+
+.gallery-pagination {
+    position: sticky;
+    bottom: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    margin-top: 14px;
+    padding: 10px 0 4px;
+    background: linear-gradient(to top, var(--bg-secondary) 75%, transparent);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.4px;
+    color: var(--text-secondary);
+}
+
+.gallery-page-info {
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--text-dim);
+}
+
+.gallery-page-btn {
+    height: 26px;
+    padding: 0 12px;
+    background: transparent;
+    border: 1px solid var(--border-color);
+    border-radius: 5px;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.6px;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.gallery-page-btn:hover:not(:disabled) {
+    background: var(--accent-faint);
+    border-color: var(--border-focus);
+    color: var(--accent);
+}
+
+.gallery-page-btn:disabled {
+    opacity: 0.35;
+    cursor: default;
 }
 
 /* --- Generated Image Preview --- */

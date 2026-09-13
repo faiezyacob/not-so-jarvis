@@ -72,7 +72,10 @@ Chat, generate images, edit photos, produce videos with sound, upscale both — 
 npm start
 ```
 
-On Windows you can instead double-click `start.bat`, which relaunches the server automatically when it exits with code `100` (used by Settings > System > Restart).
+Or use the launcher for your platform, which installs **Node.js LTS** for you if it is missing and relaunches the server automatically when it exits with code `100` (used by Settings > System > Restart):
+
+- **Windows** — double-click `start.bat`
+- **macOS / Linux** — `bash start.sh`
 
 Then open **http://localhost:3001**.
 
@@ -220,7 +223,10 @@ Copy `.env.example` to `.env` and adjust as needed. Variables already set by the
 
 ```
 server.js                 Entry point — raw HTTP server, all API routing, static file serving
-start.bat                 Windows launcher with exit-code-100 restart loop
+start.bat                 Windows launcher (installs Node if missing, exit-code-100 restart loop)
+start.sh                  macOS/Linux launcher (same behavior)
+install-node.ps1          Windows Node.js LTS installer (winget, then official MSI)
+install-node.sh           macOS/Linux Node.js LTS installer (brew/apt/dnf/pacman, then official tarball)
 package.json              Zero dependencies
 .env.example              Documented environment template
 

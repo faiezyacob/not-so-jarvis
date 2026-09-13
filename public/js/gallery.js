@@ -21,6 +21,32 @@
         return /\.(mp4|webm|mov)$/i.test(meta.file || '');
     }
 
+    // Grid tiles load the cached low-res thumbnail instead of the full PNG, so
+    // opening the gallery stays light. If the thumbnail has not been generated
+    // yet (or fails), fall back to the original file once.
+    function thumbUrl(meta) {
+        return '/generated/thumb/' + encodeURIComponent(lastSegment(meta.file));
+    }
+
+    function createThumbImage(meta, onBroken, allowFallback) {
+        const image = document.createElement('img');
+        image.alt = meta.prompt || 'Generated image';
+        image.loading = 'lazy';
+        let fellBack = false;
+        image.addEventListener('error', () => {
+            // Videos have no meaningful original-image fallback, so let the
+            // caller drop the element and keep just the play badge.
+            if (allowFallback !== false && !fellBack && meta.url) {
+                fellBack = true;
+                image.src = meta.url;
+                return;
+            }
+            if (onBroken) onBroken();
+        });
+        image.src = thumbUrl(meta);
+        return image;
+    }
+
     // --- Fetching ---
 
     async function fetchImages() {
@@ -67,30 +93,21 @@
                 if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openPreview(img); }
             });
             if (isVideo(img)) {
+                // Poster frame only (minted server-side) plus the CSS play
+                // badge. The clip itself never loads in the grid.
                 cell.classList.add('generated-thumb--video');
-                const vid = document.createElement('video');
-                vid.src = img.url;
-                vid.preload = 'metadata';
-                vid.muted = true;
-                vid.playsInline = true;
-                vid.addEventListener('error', () => {
-                    cell.classList.add('generated-thumb--broken');
-                    cell.textContent = 'VID';
-                });
-                cell.appendChild(vid);
+                const poster = createThumbImage(img, () => poster.remove(), false);
+                poster.alt = '';
+                cell.appendChild(poster);
             } else {
-                const thumb = document.createElement('img');
-                thumb.src = img.url;
-                thumb.alt = img.prompt || 'Generated image';
-                thumb.loading = 'lazy';
-                thumb.addEventListener('error', () => {
+                const thumb = createThumbImage(img, () => {
                     cell.classList.add('generated-thumb--broken');
                     cell.textContent = 'IMG';
                 });
                 cell.appendChild(thumb);
             }
             if (!isVideo(img) && img.upscale && img.upscale.source) cell.appendChild(makeCompareBadge('generated-compare-badge'));
-            cell.appendChild(makeDeleteButton(img, cell));
+            cell.appendChild(makeDeleteButton(img, cell, widgetImages));
             gridEl.appendChild(cell);
             count += 1;
         }
@@ -1079,9 +1096,11 @@
     }
 
     // Build a delete button wired to img.id. On success it removes the image
-    // from the in-memory widget list and re-renders the grid; the cell DOM
-    // node is also removed when present (e.g. inside the View All overlay).
-    function makeDeleteButton(img, cell) {
+    // from the in-memory widget list and re-renders the grid. `images` is the
+    // list the tile came from (widget or View All) so a grouped delete can find
+    // the upscale partner; `onDeleted(removedIds)` lets the View All overlay
+    // re-render its current page instead of just yanking the DOM node.
+    function makeDeleteButton(img, cell, images, onDeleted) {
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'gallery-delete-btn';
@@ -1097,7 +1116,7 @@
             if (!window.confirm('Delete this generated image permanently?')) return;
             btn.disabled = true;
             try {
-                const partner = deletePartnerFor(img, widgetImages);
+                const partner = deletePartnerFor(img, images || widgetImages);
                 const removedIds = [img.id];
                 if (partner && partner.id !== img.id) {
                     await deleteImage(partner);
@@ -1106,7 +1125,8 @@
                 await deleteImage(img);
                 widgetImages = widgetImages.filter((w) => removedIds.indexOf(w.id) === -1);
                 renderWidget();
-                if (cell && cell.parentNode) cell.remove();
+                if (onDeleted) onDeleted(removedIds);
+                else if (cell && cell.parentNode) cell.remove();
             } catch (err) {
                 window.alert('Delete failed: ' + err.message);
                 btn.disabled = false;
@@ -1290,6 +1310,36 @@
 
     // --- View All overlay ---
 
+    // One grid tile in the View All overlay. `images` is the full list (for
+    // grouped deletes) and `onDeleted` re-renders the overlay.
+    function buildGalleryCell(img, images, onDeleted) {
+        const cell = document.createElement('div');
+        cell.className = 'gallery-cell';
+        cell.title = img.prompt || img.id;
+        cell.setAttribute('role', 'button');
+        cell.tabIndex = 0;
+        cell.addEventListener('click', () => openPreview(img));
+        cell.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openPreview(img); }
+        });
+        if (isVideo(img)) {
+            // Poster frame only — see renderWidget. The clip loads only in the
+            // preview lightbox.
+            cell.classList.add('gallery-cell--video');
+            const poster = createThumbImage(img, () => poster.remove(), false);
+            poster.alt = '';
+            cell.appendChild(poster);
+        } else {
+            cell.appendChild(createThumbImage(img, () => {
+                cell.classList.add('gallery-cell--broken');
+                cell.textContent = 'IMG';
+            }));
+        }
+        if (!isVideo(img) && img.upscale && img.upscale.source) cell.appendChild(makeCompareBadge('gallery-compare-badge'));
+        cell.appendChild(makeDeleteButton(img, cell, images, onDeleted));
+        return cell;
+    }
+
     function openGallery() {
         const { container, body, closeBtn } = buildModalShell('GENERATED IMAGES');
         const modal = openModal(container);
@@ -1297,62 +1347,88 @@
 
         const grid = document.createElement('div');
         grid.className = 'gallery-grid';
-        body.appendChild(grid);
-
         const empty = document.createElement('div');
         empty.className = 'chat-empty';
-        empty.textContent = 'No generated images yet.';
-        body.appendChild(empty);
+        empty.textContent = 'Loading…';
+        const pager = document.createElement('div');
+        pager.className = 'gallery-pagination';
 
-        fetchImages().then((images) => {
-            empty.remove();
-            if (!images.length) {
+        body.appendChild(grid);
+        body.appendChild(empty);
+        body.appendChild(pager);
+
+        const PAGE_SIZE = 16;
+        const state = { images: [], page: 0 };
+
+        // An upscaled output replaces its original in the grid — hide the
+        // original tile and show the upscaled output instead.
+        function visibleImages() {
+            const children = upscaleChildMap(state.images);
+            return state.images.filter((img) => img.upscale || !children.has(lastSegment(img.file)));
+        }
+
+        function render() {
+            const visible = visibleImages();
+            const pageCount = Math.max(1, Math.ceil(visible.length / PAGE_SIZE));
+            if (state.page > pageCount - 1) state.page = pageCount - 1;
+            if (state.page < 0) state.page = 0;
+
+            grid.innerHTML = '';
+            pager.innerHTML = '';
+
+            if (!visible.length) {
+                grid.style.display = 'none';
+                empty.style.display = '';
                 empty.textContent = 'No generated images yet.';
-                body.appendChild(empty);
                 return;
             }
-            const children = upscaleChildMap(images);
-            images.forEach((img) => {
-                // An upscaled output replaces its original in the grid — hide
-                // the original tile and show the upscaled output instead.
-                if (!img.upscale && children.has(lastSegment(img.file))) return;
+            grid.style.display = '';
+            empty.style.display = 'none';
 
-                const cell = document.createElement('div');
-                cell.className = 'gallery-cell';
-                cell.title = img.prompt || img.id;
-                cell.setAttribute('role', 'button');
-                cell.tabIndex = 0;
-                cell.addEventListener('click', () => openPreview(img));
-                cell.addEventListener('keydown', (e) => {
-                    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openPreview(img); }
-                });
-                if (isVideo(img)) {
-                    cell.classList.add('gallery-cell--video');
-                    const vid = document.createElement('video');
-                    vid.src = img.url;
-                    vid.preload = 'metadata';
-                    vid.muted = true;
-                    vid.playsInline = true;
-                    vid.addEventListener('error', () => {
-                        cell.classList.add('gallery-cell--broken');
-                        cell.textContent = 'VID';
-                    });
-                    cell.appendChild(vid);
-                } else {
-                    const thumb = document.createElement('img');
-                    thumb.src = img.url;
-                    thumb.alt = img.prompt || 'Generated image';
-                    thumb.loading = 'lazy';
-                    thumb.addEventListener('error', () => {
-                        cell.classList.add('gallery-cell--broken');
-                        cell.textContent = 'IMG';
-                    });
-                    cell.appendChild(thumb);
-                }
-                if (!isVideo(img) && img.upscale && img.upscale.source) cell.appendChild(makeCompareBadge('gallery-compare-badge'));
-                cell.appendChild(makeDeleteButton(img, cell));
-                grid.appendChild(cell);
+            const start = state.page * PAGE_SIZE;
+            visible.slice(start, start + PAGE_SIZE).forEach((img) => {
+                grid.appendChild(buildGalleryCell(img, state.images, (removedIds) => {
+                    state.images = state.images.filter((w) => removedIds.indexOf(w.id) === -1);
+                    render();
+                }));
             });
+
+            const info = document.createElement('span');
+            info.className = 'gallery-page-info';
+            info.textContent = 'Page ' + (state.page + 1) + ' / ' + pageCount + ' · ' + visible.length + ' item' + (visible.length === 1 ? '' : 's');
+            pager.appendChild(info);
+
+            if (pageCount > 1) {
+                const prev = document.createElement('button');
+                prev.type = 'button';
+                prev.className = 'gallery-page-btn';
+                prev.textContent = '\u2039 Prev';
+                prev.disabled = state.page === 0;
+                prev.addEventListener('click', () => {
+                    state.page -= 1;
+                    render();
+                    body.scrollTop = 0;
+                });
+
+                const next = document.createElement('button');
+                next.type = 'button';
+                next.className = 'gallery-page-btn';
+                next.textContent = 'Next \u203a';
+                next.disabled = state.page >= pageCount - 1;
+                next.addEventListener('click', () => {
+                    state.page += 1;
+                    render();
+                    body.scrollTop = 0;
+                });
+
+                pager.insertBefore(prev, info);
+                pager.appendChild(next);
+            }
+        }
+
+        fetchImages().then((images) => {
+            state.images = images;
+            render();
         }).catch(() => {
             empty.textContent = 'Could not load generated images.';
         });

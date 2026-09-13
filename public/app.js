@@ -400,6 +400,51 @@ function renderSetupNodes(data) {
     });
 }
 
+function renderSetupTools(data) {
+    const list = document.getElementById('setupTools');
+    if (!list) return;
+    const tools = data.tools || [];
+    let html = '';
+    for (const t of tools) {
+        const badge = t.available
+            ? '<span class="setup-badge setup-badge--ok">READY</span>'
+            : '<span class="setup-badge setup-badge--missing">MISSING</span>';
+        const sub = t.available
+            ? escHtml(t.version || 'installed') + (t.source ? ' · ' + escHtml(t.source) : '')
+            : escHtml(t.manual || '') +
+              (t.manager ? ' · via ' + escHtml(t.manager) : '') +
+              (t.note ? '<br>' + escHtml(t.note) : '');
+        const btn = (!t.available && t.installable)
+            ? '<button class="settings-browse-btn setup-row-btn" type="button" data-setup-tool="' + escHtml(t.id) + '">Install</button>'
+            : '';
+        html += '<div class="setup-row">' + badge +
+            '<div class="setup-row-main"><div class="setup-row-title">' + escHtml(t.label) + '</div>' +
+            '<div class="setup-row-sub">' + sub + '</div></div>' + btn + '</div>';
+    }
+    if (!tools.length) {
+        html = '<div class="setup-row"><div class="setup-row-main"><div class="setup-row-sub">No optional tools.</div></div></div>';
+    }
+    list.innerHTML = html;
+    list.querySelectorAll('[data-setup-tool]').forEach((btn) => {
+        btn.addEventListener('click', () => setupInstallTool(btn.getAttribute('data-setup-tool')));
+    });
+
+    const active = tools.find((t) => t.job && (t.job.running || (t.job.done && t.job.log && t.job.log.length)));
+    const logEl = document.getElementById('setupToolsLog');
+    if (active) {
+        const job = active.job;
+        if (job.running) setSetupStatus('setupToolsStatus', 'Installing ' + active.label + '…');
+        else if (job.done) setSetupStatus('setupToolsStatus', job.ok ? (job.warn || 'Finished.') : ('Failed: ' + (job.error || 'unknown error')), !job.ok);
+        if (logEl && job.log && job.log.length) {
+            logEl.hidden = false;
+            logEl.textContent = job.log.slice(-12).join('\n');
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+    } else if (logEl) {
+        logEl.hidden = true;
+    }
+}
+
 function renderSetupJob(data) {
     const job = (data && data.job) || {};
     const field = document.getElementById('setupProgressField');
@@ -444,6 +489,7 @@ function renderSetupJob(data) {
 function renderSetupStatus(data) {
     renderSetupModels(data);
     renderSetupNodes(data);
+    renderSetupTools(data);
     renderSetupJob(data);
 
     const tok = (data && data.token) || {};
@@ -481,7 +527,8 @@ function startSetupPoll() {
         try {
             const data = await fetchSetupStatus();
             renderSetupStatus(data);
-            if (!data.job || !data.job.running) {
+            const toolRunning = (data.tools || []).some((t) => t.job && t.job.running);
+            if ((!data.job || !data.job.running) && !toolRunning) {
                 stopSetupPoll();
                 const refreshed = await fetchSetupStatus();
                 renderSetupStatus(refreshed);
@@ -541,6 +588,26 @@ async function setupInstallNodes(ids) {
         startSetupPoll();
     } catch (err) {
         setSetupStatus('setupNodesStatus', 'Install failed: ' + err.message, true);
+    }
+}
+
+async function setupInstallTool(id) {
+    try {
+        setSetupStatus('setupToolsStatus', 'Starting install…');
+        const res = await fetch('/api/setup/install-ffmpeg', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok) {
+            setSetupStatus('setupToolsStatus', (data && data.reason === 'already running') ? 'A setup job is already running.' : ('Install failed: ' + ((data && data.error) || res.status)), true);
+            return;
+        }
+        setSetupStatus('setupToolsStatus', '');
+        startSetupPoll();
+    } catch (err) {
+        setSetupStatus('setupToolsStatus', 'Install failed: ' + err.message, true);
     }
 }
 
@@ -616,6 +683,20 @@ function initModelSetup() {
             setupInstallNodes(ids);
         } catch (err) {
             setSetupStatus('setupNodesStatus', 'Install failed: ' + err.message, true);
+        }
+    });
+    const toolsBtn = document.getElementById('setupInstallTools');
+    if (toolsBtn) toolsBtn.addEventListener('click', async () => {
+        try {
+            const data = await fetchSetupStatus();
+            const t = (data.tools || []).find((x) => !x.available && x.installable);
+            if (!t) {
+                setSetupStatus('setupToolsStatus', 'Nothing installable is missing.');
+                return;
+            }
+            setupInstallTool(t.id);
+        } catch (err) {
+            setSetupStatus('setupToolsStatus', 'Install failed: ' + err.message, true);
         }
     });
     refreshSetup();

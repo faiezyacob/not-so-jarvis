@@ -75,6 +75,7 @@ const videoGenerator = require('./services/video-generator');
 const faceRefine = require('./services/face-refine');
 const modelSetup = require('./services/model-setup');
 const generatedHistory = require('./services/generated-history');
+const thumbnail = require('./services/thumbnail');
 const activityLog = require('./services/activity-log');
 const comfyui = require('./services/comfyui');
 const vramManager = require('./services/vram-manager');
@@ -529,7 +530,22 @@ async function handleAPI(req, res, urlPath) {
     // node status, readiness flags, and the background download job.
     if (urlPath === '/api/setup/status' && req.method === 'GET') {
         try {
-            json(res, 200, await modelSetup.getStatus());
+            const status = await modelSetup.getStatus();
+            try { status.tools = [await thumbnail.getFfmpegStatus()]; } catch { status.tools = []; }
+            json(res, 200, status);
+        } catch (err) {
+            json(res, 500, { error: err.message });
+        }
+        return true;
+    }
+
+    // POST /api/setup/install-ffmpeg — best-effort install of the optional
+    // ffmpeg binary used for gallery video posters (winget/brew/apt). Runs in
+    // the background; poll GET /api/setup/status (status.tools[].job).
+    if (urlPath === '/api/setup/install-ffmpeg' && req.method === 'POST') {
+        try {
+            const started = thumbnail.startFfmpegInstall();
+            json(res, started.started ? 200 : 409, { ok: started.started, job: started.job, reason: started.reason || null });
         } catch (err) {
             json(res, 500, { error: err.message });
         }
@@ -915,7 +931,24 @@ async function handleAPI(req, res, urlPath) {
         return true;
     }
 
-    // GET /generated/:file — serve generated images
+    // GET /generated/thumb/:file — serve the cached gallery thumbnail. Thumbs
+    // are produced in the background; until one exists we return 404 (no-store)
+    // and the frontend falls back to the full image for that tile.
+    const thumbMatch = urlPath.match(/^\/generated\/thumb\/([^/]+)$/);
+    if (thumbMatch && req.method === 'GET') {
+        const rawName = path.basename(decodeURIComponent(thumbMatch[1]));
+        const buffer = thumbnail.read(rawName);
+        if (!buffer) {
+            res.writeHead(404, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' });
+            res.end('No thumbnail');
+            return true;
+        }
+        res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=31536000, immutable' });
+        res.end(buffer);
+        return true;
+    }
+
+    // GET /generated/:file — serve generated images/videos
     const generatedMatch = urlPath.match(/^\/generated\/([^/]+)$/);
     if (generatedMatch && req.method === 'GET') {
         const filename = decodeURIComponent(generatedMatch[1]);
@@ -925,10 +958,7 @@ async function handleAPI(req, res, urlPath) {
             send404(res);
             return true;
         }
-        const ext = path.extname(fullPath).toLowerCase();
-        const contentType = MIME_TYPES[ext] || 'application/octet-stream';
-        res.writeHead(200, { 'Content-Type': contentType, 'Cache-Control': 'public, max-age=31536000, immutable' });
-        fs.createReadStream(fullPath).pipe(res);
+        sendMediaFile(req, res, fullPath);
         return true;
     }
 
@@ -942,10 +972,7 @@ async function handleAPI(req, res, urlPath) {
             send404(res);
             return true;
         }
-        const ext = path.extname(fullPath).toLowerCase();
-        const contentType = MIME_TYPES[ext] || 'application/octet-stream';
-        res.writeHead(200, { 'Content-Type': contentType, 'Cache-Control': 'public, max-age=31536000, immutable' });
-        fs.createReadStream(fullPath).pipe(res);
+        sendMediaFile(req, res, fullPath);
         return true;
     }
 
@@ -2780,6 +2807,55 @@ function send404(res) {
     res.end('404 Not Found');
 }
 
+// Stream a generated/uploaded media file, honouring HTTP Range requests.
+// Without Range support a `<video preload="metadata">` makes the browser
+// download the entire clip, which is what made the gallery so heavy; with it
+// the browser fetches just the moov atom/seeked ranges.
+function sendMediaFile(req, res, fullPath) {
+    const ext = path.extname(fullPath).toLowerCase();
+    const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+    let size;
+    try {
+        size = fs.statSync(fullPath).size;
+    } catch (err) {
+        send404(res);
+        return;
+    }
+    const baseHeaders = {
+        'Content-Type': contentType,
+        'Accept-Ranges': 'bytes',
+        'Cache-Control': 'public, max-age=31536000, immutable'
+    };
+    const range = req.headers.range;
+    if (range) {
+        const match = /^bytes=(\d*)-(\d*)$/.exec(String(range).trim());
+        if (match) {
+            let start = match[1] === '' ? null : parseInt(match[1], 10);
+            let end = match[2] === '' ? null : parseInt(match[2], 10);
+            if (start === null && end !== null) {
+                start = Math.max(0, size - end);
+                end = size - 1;
+            } else if (start !== null && end === null) {
+                end = size - 1;
+            }
+            if (start !== null && end !== null && start <= end && start < size) {
+                end = Math.min(end, size - 1);
+                res.writeHead(206, Object.assign({}, baseHeaders, {
+                    'Content-Range': 'bytes ' + start + '-' + end + '/' + size,
+                    'Content-Length': end - start + 1
+                }));
+                fs.createReadStream(fullPath, { start, end }).pipe(res);
+                return;
+            }
+            res.writeHead(416, { 'Content-Range': 'bytes */' + size });
+            res.end();
+            return;
+        }
+    }
+    res.writeHead(200, Object.assign({}, baseHeaders, { 'Content-Length': size }));
+    fs.createReadStream(fullPath).pipe(res);
+}
+
 // --- Server ---
 
 systemMonitor.init();
@@ -2798,6 +2874,7 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
     console.log(`JARVIS server running at http://localhost:${PORT}`);
+    thumbnail.warm();
     activityLog.record({
         type: 'system',
         title: 'Server started',

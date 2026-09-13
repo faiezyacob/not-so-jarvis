@@ -12,6 +12,7 @@ const fs = require('fs');
 const path = require('path');
 
 const activityLog = require('./activity-log');
+const thumbnail = require('./thumbnail');
 const conversationService = require('../server/conversation-service');
 
 const GENERATED_DIR = path.join(__dirname, '..', 'data', 'generated');
@@ -207,6 +208,7 @@ function add(meta) {
     history = history.filter((e) => e.id !== entry.id);
     history.unshift(entry);
     saveHistory(history);
+    thumbnail.schedule(entry.rawFilename);
     recordActivity(entry);
     return publicMeta(entry);
 }
@@ -223,6 +225,7 @@ function remove(id) {
 
     const raw = entry.rawFilename || lastPathSegment(entry.file);
     if (raw) {
+        thumbnail.remove(raw);
         const abs = path.join(GENERATED_DIR, path.basename(raw));
         if (abs.startsWith(GENERATED_DIR) && fs.existsSync(abs)) {
             try { fs.unlinkSync(abs); } catch (err) { /* ignore — record already removed */ }
