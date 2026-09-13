@@ -863,6 +863,15 @@ function hasFuzzyVideoUpscaleSignal(norm) {
 
 // --- H3 Prompt Building -------------------------------------------------------
 
+// A plain-text reply is only accepted when it is a plausible description, not a
+// one-word refusal or an error message.
+function looksLikeValidLitePrompt(text) {
+    const t = String(text || '').trim();
+    if (t.length < 20) return false;
+    if (/^(?:i\s+(?:can'?t|cannot|won'?t|am unable)|sorry|as an ai|i'?m not able)\b/i.test(t)) return false;
+    return true;
+}
+
 // The director LLM is the authority that converts a request into an H3 prompt.
 // When it fails or echoes, the fallback must still never forward the user's
 // imperative verbatim to H3. These helpers strip the request scaffolding
@@ -1046,7 +1055,7 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
             { role: 'user', content: userMessage }
         ], model, { think });
         const lite = String(raw || '').trim();
-        if (lite && !/^\{/.test(lite) && !isRawRequestEcho(lite, requestRaw)) {
+        if (looksLikeValidLitePrompt(lite) && !/^\{/.test(lite) && !isRawRequestEcho(lite, requestRaw)) {
             const liteAlignment = has_reference_image
                 ? 'For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\n\n'
                 : '';

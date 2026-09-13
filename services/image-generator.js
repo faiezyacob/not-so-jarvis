@@ -495,7 +495,88 @@ const PROMPT_BUILDER_SYSTEM_PROMPT =
     '- Modification: {"changed": ["field"], "attributes": {field: value, ...}, ' +
     '"prompt": "..."}';
 
+// Escape raw control characters that appear inside JSON string literals. Models
+// often emit a multi-line prompt value with real newlines, which makes
+// JSON.parse fail even though the payload is otherwise well-formed.
+function repairJsonControlChars(text) {
+    let out = '';
+    let inString = false;
+    let escaped = false;
+    for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+        if (escaped) { out += ch; escaped = false; continue; }
+        if (ch === '\\') { out += ch; escaped = true; continue; }
+        if (ch === '"') { inString = !inString; out += ch; continue; }
+        if (inString) {
+            if (ch === '\n') { out += '\\n'; continue; }
+            if (ch === '\r') { out += '\\r'; continue; }
+            if (ch === '\t') { out += '\\t'; continue; }
+        }
+        out += ch;
+    }
+    return out;
+}
+
+// Pull a single string field out of a malformed JSON reply (last resort).
+function extractJsonStringField(text, field) {
+    const m = new RegExp('"' + field + '"\\s*:\\s*"').exec(text);
+    if (!m) return null;
+    let i = m.index + m[0].length;
+    let out = '';
+    while (i < text.length) {
+        const ch = text[i];
+        if (ch === '\\') {
+            const next = text[i + 1];
+            if (next === 'n') out += '\n';
+            else if (next === 't') out += '\t';
+            else if (next === 'r') out += '\r';
+            else if (next === '"') out += '"';
+            else if (next === '\\') out += '\\';
+            else out += (next === undefined ? '\\' : next);
+            i += 2;
+            continue;
+        }
+        if (ch === '"') {
+            const rest = text.slice(i + 1).trim();
+            if (rest === '' || rest.startsWith(',') || rest.startsWith('}')) break;
+            out += ch;
+            i += 1;
+            continue;
+        }
+        out += ch;
+        i += 1;
+    }
+    return out;
+}
+
+// Pull a balanced object field (attributes) out of a malformed JSON reply.
+function extractJsonObjectField(text, field) {
+    const m = new RegExp('"' + field + '"\\s*:\\s*\\{').exec(text);
+    if (!m) return null;
+    let i = m.index + m[0].length;
+    let depth = 1;
+    let inString = false;
+    let escaped = false;
+    const start = i;
+    for (; i < text.length && depth > 0; i++) {
+        const ch = text[i];
+        if (escaped) { escaped = false; continue; }
+        if (ch === '\\') { escaped = true; continue; }
+        if (ch === '"') { inString = !inString; continue; }
+        if (inString) continue;
+        if (ch === '{') depth++;
+        else if (ch === '}') depth--;
+    }
+    try {
+        return JSON.parse(repairJsonControlChars('{' + text.slice(start, i - 1) + '}'));
+    } catch (err) {
+        return null;
+    }
+}
+
 // Strip code fences and isolate the JSON payload from the enhancer's reply.
+// Falls back to a lenient repair (raw newlines inside strings) and finally to
+// field extraction so a good prompt is never discarded over formatting.
 function parseEnhancerJson(raw) {
     if (!raw) return null;
     let text = String(raw).trim();
@@ -505,11 +586,16 @@ function parseEnhancerJson(raw) {
     const braceEnd = text.lastIndexOf('}');
     if (braceStart === -1 || braceEnd === -1 || braceEnd <= braceStart) return null;
     text = text.slice(braceStart, braceEnd + 1);
-    try {
-        return JSON.parse(text);
-    } catch (err) {
-        return null;
-    }
+
+    try { return JSON.parse(text); } catch (err) { /* repair below */ }
+    try { return JSON.parse(repairJsonControlChars(text)); } catch (err) { /* extract below */ }
+
+    const prompt = extractJsonStringField(text, 'prompt');
+    if (!prompt) return null;
+    const out = { prompt };
+    const attributes = extractJsonObjectField(text, 'attributes');
+    if (attributes) out.attributes = attributes;
+    return out;
 }
 
 // Coerce a parsed attributes object into the canonical shape. Returns null when
@@ -549,12 +635,49 @@ function mergeVisualAttributes(base, updated, changedKeys) {
     return any ? out : null;
 }
 
+// True when the enhancer merely repeats the concept instead of expanding it.
+function isImagePromptEcho(prompt, raw) {
+    const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+    const p = norm(prompt);
+    const r = norm(raw);
+    if (!p) return true;
+    if (!r) return false;
+    if (p === r) return true;
+    if (/\b(?:generat|creat|mak|render|draw|paint|imagin|illustrat)\w*\b|\bmind\s*blowing\b|\bsurprise\s+me\b|\bbe\s+creative\b/i.test(raw) &&
+        p.includes(r)) {
+        return true;
+    }
+    return false;
+}
+
+// A plain-text reply is only accepted when it is a plausible description, not a
+// one-word refusal or an error message.
+function looksLikeValidLitePrompt(text) {
+    const t = String(text || '').trim();
+    if (t.length < 20) return false;
+    if (/^(?:i\s+(?:can'?t|cannot|won'?t|am unable)|sorry|as an ai|i'?m not able)\b/i.test(t)) return false;
+    return true;
+}
+
+// Plain-text enhancer used when the JSON-envelope builder fails twice.
+const PROMPT_BUILDER_LITE_SYSTEM_PROMPT =
+    'You are JARVIS\'s creative visual director for a local image-generation ' +
+    'pipeline (Krea2/ComfyUI). Rewrite the request into ONE complete, concrete ' +
+    'visual prompt of one or two sentences. Fill missing visual information with ' +
+    'specific, usable detail; never pad with generic filler such as "cinematic", ' +
+    '"highly detailed", "photorealistic", or "professional". Never change the ' +
+    'subject or drop an explicit detail the user gave. Do NOT quote or repeat the ' +
+    'user\'s instruction, and never include imperative or meta words such as ' +
+    '"generate", "create", "make", "mindblowing", "epic", or "be creative". ' +
+    'Output the prompt only — no JSON, no labels, no markdown.';
+
 // Use the conversational model to build the final image-generation prompt from
 // the structured intent data. Returns { prompt, attributes } so modifications
 // can deterministically preserve untouched details. In modify mode the current
 // prompt + current attributes are the source of truth: only the targeted fields
 // change and every other field is copied verbatim from the stored attributes.
-// Falls back to the raw concept + prior attributes on failure.
+// The enhancer is retried, then a plain-text rewrite is attempted, and only if
+// both fail does it fall back to a sanitized concept (never the raw request).
 async function buildImagePrompt(structuredRequest, providers, provider, model, think) {
     const { user_prompt, creative_mode, explicit_constraints, base_prompt, modification, previous_prompt, base_attributes } = structuredRequest;
     const isModify = Boolean(base_prompt && modification);
@@ -591,23 +714,50 @@ async function buildImagePrompt(structuredRequest, providers, provider, model, t
         userMessage += 'Output ONLY the JSON described in the system prompt.';
     }
 
+    const requestRaw = String((isModify ? modification : user_prompt) || user_prompt || '').trim();
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+        const retryNote = attempt > 0
+            ? '\n\nYour previous answer was invalid. Expand the request into a concrete visual ' +
+              'prompt. Do NOT quote or repeat the user\'s words. Output ONLY the JSON object.'
+            : '';
+        try {
+            const raw = await providers.chat(provider, [
+                { role: 'system', content: PROMPT_BUILDER_SYSTEM_PROMPT },
+                { role: 'user', content: userMessage + retryNote }
+            ], model, { think });
+
+            const parsed = parseEnhancerJson(raw);
+            const prompt = parsed && typeof parsed.prompt === 'string' ? parsed.prompt.trim() : '';
+            if (prompt && !isImagePromptEcho(prompt, requestRaw)) {
+                let attributes = normalizeAttributes(parsed.attributes);
+                if (isModify) {
+                    attributes = mergeVisualAttributes(base_attributes, parsed.attributes, parsed.changed);
+                }
+                return { prompt, attributes };
+            }
+            console.warn('[image-generator] Prompt builder returned an invalid or echoing prompt (attempt ' + (attempt + 1) + ')');
+        } catch (err) {
+            console.warn('[image-generator] Prompt builder failed:', err.message);
+        }
+    }
+
+    // Plain-text retry: same request, no JSON envelope.
     try {
         const raw = await providers.chat(provider, [
-            { role: 'system', content: PROMPT_BUILDER_SYSTEM_PROMPT },
+            { role: 'system', content: PROMPT_BUILDER_LITE_SYSTEM_PROMPT },
             { role: 'user', content: userMessage }
         ], model, { think });
-
-        const parsed = parseEnhancerJson(raw);
-        const prompt = parsed && typeof parsed.prompt === 'string' ? parsed.prompt.trim() : '';
-        if (prompt) {
-            let attributes = normalizeAttributes(parsed.attributes);
-            if (isModify) {
-                attributes = mergeVisualAttributes(base_attributes, parsed.attributes, parsed.changed);
-            }
-            return { prompt, attributes };
+        const lite = String(raw || '').trim();
+        if (looksLikeValidLitePrompt(lite) && !/^\{/.test(lite) && !isImagePromptEcho(lite, requestRaw)) {
+            return {
+                prompt: lite,
+                attributes: isModify ? (base_attributes || null) : null
+            };
         }
+        console.warn('[image-generator] Prompt builder lite retry returned an invalid or echoing prompt');
     } catch (err) {
-        console.warn('[image-generator] Prompt builder failed, using raw prompt:', err.message);
+        console.warn('[image-generator] Prompt builder lite retry failed:', err.message);
     }
 
     if (isModify) {
@@ -617,7 +767,14 @@ async function buildImagePrompt(structuredRequest, providers, provider, model, t
             attributes: base_attributes || null
         };
     }
-    return { prompt: user_prompt, attributes: null };
+    // Last resort: never forward the raw imperative — keep only the subject.
+    const sanitized = stripCreativeMetaInstructions(
+        (extractImageSubject(user_prompt || '').prompt || '').trim()
+    );
+    return {
+        prompt: sanitized || String(user_prompt || '').trim() || 'a detailed imaginative scene',
+        attributes: null
+    };
 }
 
 // --- Resolution (Aspect Ratio + Size) ------------------------------------------
@@ -2115,6 +2272,9 @@ module.exports = {
     isActive: generationQueue.isActive,
     detectIntent,
     buildImagePrompt,
+    parseEnhancerJson,
+    isImagePromptEcho,
+    repairJsonControlChars,
     imageRequestStrength,
     isExplicitNewImageRequest,
     isVagueImageConcept,

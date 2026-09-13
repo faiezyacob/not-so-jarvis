@@ -177,3 +177,32 @@ test('parseDirectorJson: returns null for a non-JSON reply', () => {
     assert.equal(videoGenerator.parseDirectorJson('not json at all'), null);
 });
 
+// --- parseEnhancerJson / isImagePromptEcho -----------------------------------
+
+test('parseEnhancerJson: reads a normal JSON envelope with attributes', () => {
+    const parsed = imageGenerator.parseEnhancerJson('{"prompt":"A cat on a wall","attributes":{"subject":"a cat"}}');
+    assert.equal(parsed.prompt, 'A cat on a wall');
+    assert.equal(parsed.attributes.subject, 'a cat');
+});
+
+test('parseEnhancerJson: repairs raw newlines inside the JSON string', () => {
+    const raw = '{"prompt":"A cat on a wall.\nWarm light.","attributes":{"subject":"a cat"}}';
+    const parsed = imageGenerator.parseEnhancerJson(raw);
+    assert.ok(parsed);
+    assert.match(parsed.prompt, /A cat on a wall\./);
+    assert.match(parsed.prompt, /Warm light\./);
+    assert.equal(parsed.attributes.subject, 'a cat');
+});
+
+test('parseEnhancerJson: extracts the prompt from a badly malformed reply', () => {
+    const parsed = imageGenerator.parseEnhancerJson('here: {"prompt": "A fox in a meadow", }');
+    assert.ok(parsed);
+    assert.equal(parsed.prompt, 'A fox in a meadow');
+});
+
+test('isImagePromptEcho: flags verbatim echoes, allows expansions', () => {
+    assert.equal(imageGenerator.isImagePromptEcho('a cat', 'a cat'), true);
+    assert.equal(imageGenerator.isImagePromptEcho('A cat sitting on a brick wall at dusk', 'a cat'), false);
+    assert.equal(imageGenerator.isImagePromptEcho('generate an image of a cat', 'generate an image of a cat'), true);
+});
+
