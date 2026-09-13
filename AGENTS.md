@@ -40,6 +40,7 @@ services/             Independent services (monitoring, image generation, ComfyU
   task-state.js         Per-conversation ActiveTask/TaskContext store (persisted to data/task-state.json)
   activity-log.js       Persisted ring buffer of notable events (data/activity-log.json); powers the ACTIVITY widget
   generated-history.js  Metadata store for generated images (data/generated-history.json)
+  weather.js            Server-side Open-Meteo lookups + location store; feeds live weather into chat context
   vram-manager.js       Orchestrates unloading chat<->image models based on VRAM pressure
   model-setup.js        First-run setup guide: HF-token model downloads + custom-node checks
 public/               Frontend
@@ -60,7 +61,7 @@ data/                 Runtime data (persisted JSON + generated media)
 ## Purpose of each important directory
 
 - **`server/`** — Server-side application logic. These modules are required by `server.js` and do the actual work: chat, conversations, providers, config, model catalog.
-- **`services/`** — Cross-cutting / independent services. `image-generator.js`, `comfyui.js`, and `vram-manager.js` together form the image generation pipeline. `system-monitor.js` provides telemetry. `generated-history.js` persists image metadata.
+- **`services/`** — Cross-cutting / independent services. `image-generator.js`, `comfyui.js`, and `vram-manager.js` together form the image generation pipeline. `system-monitor.js` provides telemetry, and `weather.js` provides server-side weather lookups for chat. `generated-history.js` persists image metadata.
 - **`public/`** — Everything served to the browser. `app.js` is the main entry; `public/js/*` are feature modules loaded as plain scripts (no modules/bundler).
 - **`data/`** — Runtime persistence. JSON files are the source of truth for config/conversations/history; generated images land in `data/generated/`.
 
@@ -70,6 +71,11 @@ data/                 Runtime data (persisted JSON + generated media)
 - **ComfyUI** (`http://127.0.0.1:8188`, overridable via `COMFYUI_URL`) — image generation via `services/comfyui.js`. Raw ComfyUI failures are classified (`classifyComfyError`) into stable codes (`comfyui_oom`/`comfyui_missing_model`/`comfyui_missing_node`/`comfyui_validation_error`) with actionable hints, and idempotent reads (`getObjectInfo`, `downloadImage`, `/history` polling) use bounded `withRetry` backoff for transient unreachable/5xx errors.
 - **Krea2 workflow** — assembled in `services/image-generator.js` (`buildKrea2T2IGraph`), using UNET/CLIP/VAE models configured through settings or env vars (`KREA2_*` in `.env.example`).
 - **VRAM manager** — `services/vram-manager.js` unloads the chat model before image generation (and vice versa) when GPU VRAM exceeds a threshold (`VRAM_UNLOAD_THRESHOLD`, default 80%).
+- **Open-Meteo weather** — `services/weather.js` fetches current conditions (no API key) for the browser-reported location. The dashboard widget POSTs its geolocation to `/api/weather/location`; the server persists it in `data/config.json` (`weather` key) and injects a gated snapshot into chat context. `GET /api/weather` returns the cached current conditions.
+
+## Chat environment context
+
+- Both chat paths (`handleChat`, `handleChatStream`) call `buildEnvironmentContext(message)` before `contextBuilder.buildContext`, appending a system message with live telemetry (`contextBuilder.buildSystemStatsContext`, gated on `SYSTEM_QUERY_RE`) and weather (`weather.buildWeatherContext`, gated on `WEATHER_QUERY_RE`). The gates keep unrelated turns lean, and the prompts instruct the model to use only the supplied values and never invent numbers or a forecast. Telemetry now includes GPU utilization (`system-monitor._readVRAM`).
 
 ## Important architectural patterns
 

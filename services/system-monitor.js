@@ -221,6 +221,7 @@ class SystemMonitor {
                         const temperature = parseInt(parts[4], 10);
 
                         this._stats.gpu.name = name;
+                        this._stats.gpu.usage = isNaN(utilization) ? 0 : utilization;
                         this._stats.gpu.temperature = isNaN(temperature) ? null : temperature;
                         this._stats.vram.available = true;
                         this._stats.vram.total = Math.round(totalMB / 1024 * 10) / 10;

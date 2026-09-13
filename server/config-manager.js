@@ -207,4 +207,35 @@ function setHuggingFace(patch) {
     return current;
 }
 
-module.exports = { getConfig, setModelConfig, getReasoningEnabled, setReasoningEnabled, getChatSettings, setChatSettings, getImageSettings, setImageSettings, getVideoSettings, setVideoSettings, getHuggingFace, getHuggingFaceToken, setHuggingFace };
+// --- Weather location (dashboard widget reports the browser's geolocation) ---
+
+const WEATHER_SETTINGS_KEY = 'weather';
+
+function sanitizeCoordinate(value, min, max) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < min || n > max) {
+        throw new Error('coordinate out of range');
+    }
+    return Math.round(n * 10000) / 10000;
+}
+
+function getWeather() {
+    const config = loadConfig();
+    const stored = config[WEATHER_SETTINGS_KEY];
+    return stored && typeof stored === 'object' ? stored : {};
+}
+
+function setWeather(patch) {
+    const config = loadConfig();
+    const current = { ...(config[WEATHER_SETTINGS_KEY] || {}) };
+    const input = patch || {};
+    if (input.lat !== undefined) current.lat = sanitizeCoordinate(input.lat, -90, 90);
+    if (input.lon !== undefined) current.lon = sanitizeCoordinate(input.lon, -180, 180);
+    if (input.label !== undefined) current.label = String(input.label || '').slice(0, 120);
+    current.updatedAt = new Date().toISOString();
+    config[WEATHER_SETTINGS_KEY] = current;
+    saveConfig(config);
+    return current;
+}
+
+module.exports = { getConfig, setModelConfig, getReasoningEnabled, setReasoningEnabled, getChatSettings, setChatSettings, getImageSettings, setImageSettings, getVideoSettings, setVideoSettings, getHuggingFace, getHuggingFaceToken, setHuggingFace, getWeather, setWeather };

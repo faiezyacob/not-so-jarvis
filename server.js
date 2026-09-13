@@ -78,6 +78,7 @@ const generatedHistory = require('./services/generated-history');
 const activityLog = require('./services/activity-log');
 const comfyui = require('./services/comfyui');
 const vramManager = require('./services/vram-manager');
+const weather = require('./services/weather');
 const taskRouter = require('./services/task-router');
 const taskState = require('./services/task-state');
 const generationQueue = require('./services/generation-queue');
@@ -234,6 +235,27 @@ async function handleAPI(req, res, urlPath) {
     if (urlPath === '/api/stats' && req.method === 'GET') {
         const stats = systemMonitor.getStats();
         json(res, 200, stats);
+        return true;
+    }
+
+    // GET /api/weather — current weather for the stored location (if any).
+    if (urlPath === '/api/weather' && req.method === 'GET') {
+        const location = weather.getLocation();
+        const current = await weather.fetchCurrent();
+        json(res, 200, { location, current });
+        return true;
+    }
+
+    // POST /api/weather/location — the dashboard weather widget reports the
+    // browser's geolocation so the chat assistant can answer weather questions.
+    if (urlPath === '/api/weather/location' && req.method === 'POST') {
+        try {
+            const body = await readBody(req);
+            const saved = weather.setLocation(body);
+            json(res, 200, { location: { lat: saved.lat, lon: saved.lon, label: saved.label || '' } });
+        } catch (err) {
+            json(res, 400, { error: err.message });
+        }
         return true;
     }
 
@@ -1177,6 +1199,22 @@ async function handleSummarize(req, res, id) {
     }
 }
 
+// Build the live environment block injected into a chat turn: machine
+// telemetry (gated on a stats question) and weather (gated on a weather
+// question, with an Open-Meteo lookup). Both are no-ops when irrelevant.
+async function buildEnvironmentContext(message) {
+    const parts = [];
+    const statsContext = contextBuilder.buildSystemStatsContext(message, systemMonitor.getStats());
+    if (statsContext) parts.push(statsContext);
+    try {
+        const weatherContext = await weather.buildWeatherContext(message);
+        if (weatherContext) parts.push(weatherContext);
+    } catch (err) {
+        console.warn('[weather] context lookup failed:', err.message);
+    }
+    return parts.join('\n\n');
+}
+
 async function handleChat(req, res) {
     try {
         const body = await readBody(req);
@@ -1211,7 +1249,8 @@ async function handleChat(req, res) {
         await vramManager.freeVRAMBeforeChat();
 
         const sampling = resolveChatSampling(body);
-        const contextMessages = contextBuilder.buildContext(conversationId, message, provider, model, '', chatImages);
+        const environmentContext = await buildEnvironmentContext(message);
+        const contextMessages = contextBuilder.buildContext(conversationId, message, provider, model, '', chatImages, environmentContext);
         const reply = await providers.chat(provider, contextMessages, model, { think: resolveChatThink(body), ...sampling });
 
         json(res, 200, { reply });
@@ -1727,7 +1766,8 @@ async function handleChatStream(req, res) {
             decision.intent === 'task_question'
                 ? taskRouter.renderActiveTaskContext(taskState.getTask(conversationId))
                 : '',
-            chatVision
+            chatVision,
+            await buildEnvironmentContext(message)
         );
 
         let fullReply = '';

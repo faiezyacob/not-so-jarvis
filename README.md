@@ -29,6 +29,7 @@ Chat, generate images, edit photos, produce videos with sound, upscale both — 
 - **`@` image references** — type `@` in the composer to attach an earlier generated image as a reference; questions use it as vision input, instructions route to an identity edit, video wording routes to image-to-video
 - **Voice input** — push-to-talk dictation via the browser Web Speech API (optional auto-send)
 - **Spoken replies** — read JARVIS replies aloud via the SpeechSynthesis API, with voice selection and rate control
+- **Live machine & weather awareness** — ask about your CPU/GPU/VRAM or the weather and the assistant is given a gated live snapshot (system telemetry + Open-Meteo) as context, so it answers with real values instead of guessing
 
 ### Image
 
@@ -100,6 +101,10 @@ Every message flows through `task-router.js` before any tool runs. The router de
 A fast regex signal decides whether a structured LLM classifier is needed; the classifier's JSON is the authority on execution — the chat model's free-text reply never triggers a tool. Deterministic pre-LLM gates own narrow intents (upscaling, typo-tolerant phrasings, bare *"again"*, anaphoric *"another image"*, explicit new-generation requests) so small chat models cannot downgrade them to chat. Classification runs at temperature 0.
 
 When a tool does run, VRAM is freed first (`vram-manager` unloads the chat model to make room), the workflow is queued, and results stream back into the conversation. Once the chat model is needed again, the image/video models are unloaded in turn.
+
+### Environment awareness
+
+Chat has no tools, so live machine state is injected as system context when relevant. A stats question (*"what's my GPU usage?"*) gets a gated CPU/RAM/GPU/VRAM telemetry snapshot; a weather question (*"will it rain today?"*) gets a live Open-Meteo snapshot for the location reported by the dashboard widget (stored in `data/config.json`). The gates keep unrelated turns lean, and the prompt forbids estimating or inventing values.
 
 ### Image generation
 
@@ -238,6 +243,7 @@ services/                 Independent / cross-cutting services
   task-router.js            Context-aware intent/action router (ActiveTask continuation)
   task-state.js             Per-conversation ActiveTask/TaskContext store (data/task-state.json)
   generated-history.js      Metadata store for generated media
+  weather.js                Server-side Open-Meteo lookups + location store; feeds live weather into chat
   vram-manager.js           Orchestrates unloading chat <-> image/video models based on VRAM pressure
 
 public/                   Frontend

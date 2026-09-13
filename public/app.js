@@ -2380,6 +2380,7 @@ function initWeather() {
     navigator.geolocation.getCurrentPosition(
         (pos) => {
             weatherCoords = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+            reportWeatherLocation(weatherCoords.lat, weatherCoords.lon);
             fetchWeather();
             setInterval(fetchWeather, WEATHER_REFRESH_MS);
         },
@@ -2388,6 +2389,18 @@ function initWeather() {
         },
         { timeout: 10000 }
     );
+}
+
+// Report the browser's coordinates (and a label when known) to the server so
+// the chat assistant can answer weather questions with live data.
+function reportWeatherLocation(lat, lon, label) {
+    try {
+        fetch('/api/weather/location', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ lat: lat, lon: lon, label: label || '' })
+        }).catch(() => {});
+    } catch (err) { /* ignore — best effort */ }
 }
 
 function setWeatherError(msg) {
@@ -2431,6 +2444,7 @@ async function fetchWeather() {
         );
         document.getElementById('weatherLocation').textContent =
             data.timezone || (weatherCoords.lat.toFixed(2) + ', ' + weatherCoords.lon.toFixed(2));
+        reportWeatherLocation(weatherCoords.lat, weatherCoords.lon, data.timezone);
     } catch {
         setWeatherError('Unable to fetch weather data');
     }
