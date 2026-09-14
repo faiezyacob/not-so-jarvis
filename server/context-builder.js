@@ -38,6 +38,17 @@ function getRelevantMessages(conversationId, query) {
     return [];
 }
 
+// Director approval cards are persisted as a [[director:{...}]] marker inside
+// the assistant message. It is UI state, not conversation content, so strip it
+// before the message reaches the chat model.
+const DIRECTOR_MARKER_RE = /\n*\[\[director:\{[^\n]*?\}\]\]/g;
+
+function stripDirectorMarkers(content) {
+    return String(content === undefined || content === null ? '' : content)
+        .replace(DIRECTOR_MARKER_RE, '')
+        .trim();
+}
+
 // Effective system prompt: base JARVIS guardrails plus the user's custom
 // persona instruction (Settings > Chat). The base prompt is never replaced
 // so the /generated/ link and image-tool guardrails always apply.
@@ -90,10 +101,10 @@ function buildContext(conversationId, userMessage, provider, model, activeTaskCo
     }
 
     recent.forEach((m) => {
-        messages.push({ role: m.role, content: m.content });
+        messages.push({ role: m.role, content: stripDirectorMarkers(m.content) });
     });
 
-    const current = { role: 'user', content: userMessage };
+    const current = { role: 'user', content: stripDirectorMarkers(userMessage) };
     if (Array.isArray(images) && images.length > 0) {
         current.images = images.slice(0, 3);
     }
@@ -159,5 +170,6 @@ module.exports = {
     isSystemStatsQuery,
     formatSystemStats,
     buildSystemStatsContext,
+    stripDirectorMarkers,
     SYSTEM_QUERY_RE
 };

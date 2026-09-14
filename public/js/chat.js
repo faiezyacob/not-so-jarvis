@@ -588,10 +588,19 @@ const Chat = (() => {
     // Videos are handed to the custom VideoPlayer synchronously so the
     // conversation message never depends on observer timing.
     function setAiContent(contentEl, markdown) {
-        contentEl.innerHTML = Markdown.parse(markdown);
+        // Director cards are persisted as a [[director:{...}]] marker inside the
+        // markdown. Pull them out before parsing, then render the interactive
+        // card after the content (image/video) so it behaves across reloads.
+        const parsed = (window.DirectorUI && typeof window.DirectorUI.extract === 'function')
+            ? window.DirectorUI.extract(markdown)
+            : { text: markdown, cards: [] };
+        contentEl.innerHTML = Markdown.parse(parsed.text);
         collapseUpscalePairs(contentEl);
         if (window.VideoPlayer && typeof window.VideoPlayer.scan === 'function') {
             window.VideoPlayer.scan(contentEl);
+        }
+        if (window.DirectorUI && typeof window.DirectorUI.render === 'function') {
+            parsed.cards.forEach((card) => window.DirectorUI.render(contentEl, card));
         }
     }
 
@@ -624,6 +633,10 @@ const Chat = (() => {
             const empty = chatMessagesEl.querySelector('.chat-empty');
             if (empty) empty.remove();
             chatMessagesEl.appendChild(activeMessageEl);
+        }
+
+        if (window.DirectorUI && typeof window.DirectorUI.hydrate === 'function') {
+            window.DirectorUI.hydrate(chatMessagesEl, Conversations.currentId());
         }
 
         chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
@@ -692,16 +705,21 @@ const Chat = (() => {
         sendMessage();
     }
 
-    async function sendMessage() {
+    async function sendMessage(options) {
+        const override = options && typeof options === 'object' ? options : null;
         if (typeof VoiceInput !== 'undefined' && VoiceInput && typeof VoiceInput.stop === 'function') {
             VoiceInput.stop();
         }
         if (typeof VoiceOutput !== 'undefined' && VoiceOutput && typeof VoiceOutput.cancel === 'function') {
             VoiceOutput.cancel();
         }
-        const text = chatInput.value.trim();
-        const attachments = pendingAttachments.slice();
-        const reference = pendingReference;
+        const text = override && typeof override.text === 'string'
+            ? override.text.trim()
+            : chatInput.value.trim();
+        // A Director action is a self-contained turn: drafts are ignored so a
+        // pending attachment can never leak into an approval click.
+        const attachments = override ? [] : pendingAttachments.slice();
+        const reference = override ? null : pendingReference;
         if (!text && !attachments.length && !reference) return;
 
         let conversationId = Conversations.currentId();
@@ -733,9 +751,11 @@ const Chat = (() => {
         const userText = parts.join('\n\n');
 
         addMessageDom('user', userText);
-        chatInput.value = '';
-        clearAttachments();
-        clearReference();
+        if (!override) {
+            chatInput.value = '';
+            clearAttachments();
+            clearReference();
+        }
 
         // Persist user message to backend (context builder source)
         let userMsg;
@@ -771,7 +791,8 @@ const Chat = (() => {
                     think,
                     message: userText || text,
                     images: visionImages,
-                    references: reference ? [reference.filename] : []
+                    references: reference ? [reference.filename] : [],
+                    directorAction: override && override.directorAction ? override.directorAction : undefined
                 }),
                 signal: activeStreamAbort.signal
             });
@@ -897,6 +918,18 @@ const Chat = (() => {
                             generatedMetaCache = null;
                             if (window.Gallery) window.Gallery.refresh();
                         }
+                        if (data.director) {
+                            fullReply = data.director.content;
+                            if (generatingEl) generatingEl.remove();
+                            setProgressTitle('');
+                            setAiContent(contentEl, data.director.content);
+                            scrollActiveStream(aiMessageEl);
+                            generatedMetaCache = null;
+                            if (window.Gallery) window.Gallery.refresh();
+                            if (window.DirectorUI && typeof window.DirectorUI.hydrate === 'function') {
+                                window.DirectorUI.hydrate(chatMessagesEl, conversationId);
+                            }
+                        }
                         if (data.chunk) {
                             if (generatingEl) generatingEl.remove();
                             setProgressTitle('');
@@ -925,7 +958,10 @@ const Chat = (() => {
                 await Conversations.saveAssistantMessage(conversationId, fullReply);
                 renderConversationList();
                 if (typeof VoiceOutput !== 'undefined' && VoiceOutput && typeof VoiceOutput.speak === 'function') {
-                    VoiceOutput.speak(fullReply);
+                    const spoken = (window.DirectorUI && typeof window.DirectorUI.strip === 'function')
+                        ? window.DirectorUI.strip(fullReply)
+                        : fullReply;
+                    VoiceOutput.speak(spoken);
                 }
             }
 
@@ -1007,6 +1043,7 @@ const Chat = (() => {
         init,
         refreshConversationList,
         addMessageDom,
+        renderMessages,
         sendMessage,
         cancelActiveStream
     };

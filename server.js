@@ -85,6 +85,7 @@ const news = require('./services/news');
 const taskRouter = require('./services/task-router');
 const taskState = require('./services/task-state');
 const generationQueue = require('./services/generation-queue');
+const director = require('./services/director/director');
 const GENERATED_DIR = path.join(__dirname, 'data', 'generated');
 const IMAGES_DIR = path.join(__dirname, 'data', 'images');
 const UPLOAD_MIME_TO_EXT = {
@@ -687,6 +688,26 @@ async function handleAPI(req, res, urlPath) {
         return true;
     }
 
+    // GET /api/director/state — the active production for a conversation, so
+    // the chat UI can restore approval-card interactivity after a reload.
+    if (urlPath === '/api/director/state' && req.method === 'GET') {
+        const query = new URL(req.url, 'http://localhost').searchParams;
+        const conversationId = query.get('conversationId') || '';
+        const production = director.getProduction(conversationId);
+        json(res, 200, {
+            production: production ? {
+                id: production.id,
+                status: production.status,
+                duration: (production.video && production.video.duration) || null,
+                image: (production.image && production.image.url) || null,
+                video: production.videoUrl || null,
+                brief: production.brief || null,
+                error: production.error || ''
+            } : null
+        });
+        return true;
+    }
+
     // GET /api/activity — recent activity feed for the dashboard widget
     if (urlPath === '/api/activity' && req.method === 'GET') {
         json(res, 200, {
@@ -1194,6 +1215,7 @@ function handleDeleteConversation(req, res, id) {
     }
     removeConversationImages(messages, id);
     taskState.clearTask(id);
+    director.removeProduction(id);
     json(res, 200, { ok: true });
 }
 
@@ -1292,7 +1314,9 @@ async function handleSummarize(req, res, id) {
         const body = await readBody(req);
         const provider = body.provider || 'ollama';
         const model = body.model || '';
-        const messages = conversationService.getMessages(id);
+        const messages = conversationService.getMessages(id).map((m) => Object.assign({}, m, {
+            content: contextBuilder.stripDirectorMarkers(m.content)
+        }));
         if (messages.length === 0) {
             json(res, 200, { summary: '' });
             return;
@@ -1422,6 +1446,66 @@ async function handleChatStream(req, res) {
         // small chat model can never downgrade it to a chat reply.
         if (comfyuiLauncher.isStartComfyRequest(message)) {
             await handleStartComfyUIChat(req, res, { conversationId, message });
+            return;
+        }
+
+        // Director Mode. The Director owns multi-stage productions before the
+        // generic router so an approval card action or a brief change is never
+        // misread as chat. Ordinary requests fall through untouched.
+        const directorCtx = { conversationId, message, provider, model, think, referenceImage };
+        const requestedDirectorAction = director.normalizeAction(body.directorAction);
+        let activeProduction = director.getProduction(conversationId);
+        if (requestedDirectorAction) {
+            if (!activeProduction) {
+                const text = 'Director \u2014 There is no active production to act on.';
+                sseWrite(res, { chunk: text });
+                sseWrite(res, { done: true, fullReply: text });
+                res.end();
+                return;
+            }
+            await handleDirectorAction(req, res, directorCtx, activeProduction, requestedDirectorAction);
+            return;
+        }
+        if (activeProduction && director.isOpen(activeProduction)) {
+            const classified = director.classifyMessage(message, activeProduction);
+            if (classified) {
+                await handleDirectorAction(req, res, directorCtx, activeProduction, classified);
+                return;
+            }
+            // The message did not answer or continue the open production. A
+            // stale one (a failed stage after a restart, or a card the user has
+            // moved on from) must not suppress the workflow question: if this is
+            // a new video request, supersede it and ask again.
+            if (!director.isActive(activeProduction)) {
+                if (director.wantsDirectorMode(message)) {
+                    director.removeProduction(conversationId);
+                    await handleDirectorStart(req, res, directorCtx);
+                    return;
+                }
+                if (director.wantsDirectMode(message)) {
+                    director.removeProduction(conversationId);
+                    activeProduction = null;
+                } else if (director.shouldOfferModeChoice(message, {
+                    activeTaskType: taskState.getTask(conversationId).type
+                })) {
+                    director.removeProduction(conversationId);
+                    await handleDirectorModeChoice(req, res, directorCtx);
+                    return;
+                }
+            }
+        }
+        if ((!activeProduction || !director.isOpen(activeProduction)) &&
+            director.wantsDirectorMode(message)) {
+            await handleDirectorStart(req, res, directorCtx);
+            return;
+        }
+        // Any other video request stops and asks which workflow to use, rather
+        // than guessing between a direct render and Director mode.
+        if ((!activeProduction || !director.isOpen(activeProduction)) &&
+            director.shouldOfferModeChoice(message, {
+                activeTaskType: taskState.getTask(conversationId).type
+            })) {
+            await handleDirectorModeChoice(req, res, directorCtx);
             return;
         }
 
@@ -1982,6 +2066,331 @@ async function handleChatStream(req, res) {
     }
 }
 
+// --- Director Mode -----------------------------------------------------------
+//
+// The Director coordinates multi-stage productions (opening frame -> approval
+// -> H3 video). It decides WHAT to run; the existing image/video pipelines run
+// it. These helpers only wire the SSE stream and the production state.
+
+// Stage names accepted by the activity feed / card renderer.
+function directorStageLabel(stage) {
+    if (stage === 'video') return 'Creating video';
+    if (stage === 'image') return 'Creating opening frame';
+    return 'Directing';
+}
+
+// Director stages interleave chat-model planning with ComfyUI generations. The
+// normal workflow tracks the chat model so freeVRAMBeforeImage/BeforeChat can
+// evict the other model under memory pressure; the Director must do the same or
+// both models stay resident (the RAM/VRAM spike).
+async function prepareDirectorLlm(provider, model) {
+    vramManager.rememberChatModel(provider, model);
+    await vramManager.freeVRAMBeforeChat();
+}
+
+// Start a fresh production. From-scratch requests generate an opening frame and
+// stop for approval; requests that reference an existing image skip straight to
+// the video stage with that image as the approved first frame.
+async function handleDirectorStart(req, res, ctx) {
+    const { conversationId, message, provider, model, think, referenceImage } = ctx;
+    sseWrite(res, { generating: 'Director \u2014 Planning production\u2026' });
+    try {
+        await prepareDirectorLlm(provider, model);
+        const production = await director.createProduction({
+            conversationId, message, provider, model, think, referenceImage
+        });
+        activityLog.record({
+            type: 'generation',
+            title: 'Production started',
+            detail: production.brief && production.brief.subject
+                ? production.brief.subject
+                : message,
+            conversationId
+        });
+        taskState.setTask(conversationId, {
+            type: 'video',
+            operation: 'generate',
+            prompt: production.brief.originalRequest || message,
+            originalPrompt: production.brief.originalRequest || message,
+            status: 'running',
+            lastAction: 'director production'
+        });
+        if (production.sourceImage) {
+            await runDirectorVideoStage(req, res, ctx, production);
+            return;
+        }
+        await runDirectorImageStage(req, res, ctx, production, {});
+    } catch (err) {
+        console.error('[director] start failed:', err.message);
+        sseWrite(res, { error: 'Director could not plan this production: ' + err.message });
+        res.end();
+    }
+}
+
+// Stop and ask whether to build the video directly or through Director mode.
+async function handleDirectorModeChoice(req, res, ctx) {
+    const { conversationId, message, referenceImage } = ctx;
+    try {
+        const production = director.createModeChoice({ conversationId, message, referenceImage });
+        sseWrite(res, {
+            director: director.buildCard(production, director.renderModeChoiceContent(production))
+        });
+        res.end();
+    } catch (err) {
+        console.error('[director] mode choice failed:', err.message);
+        sseWrite(res, { error: 'Could not ask about the workflow: ' + err.message });
+        res.end();
+    }
+}
+
+// Generate (or regenerate) the opening frame from the canonical brief.
+async function runDirectorImageStage(req, res, ctx, production, options) {
+    const { provider, model, conversationId, message, think } = ctx;
+    const regenerate = Boolean(options && options.regenerate);
+    let imagePrompt = options && options.prompt ? options.prompt : null;
+    try {
+        if (!imagePrompt) {
+            if (regenerate && production.image && production.image.prompt) {
+                // Same brief, same prompt, fresh seed — the requested new frame.
+                imagePrompt = production.image.prompt;
+            } else {
+                await prepareDirectorLlm(provider, model);
+                imagePrompt = await director.buildImageStagePrompt(production, { provider, model, think });
+            }
+        }
+        director.markImageRunning(production);
+        taskState.setTask(conversationId, {
+            type: 'image',
+            operation: 'generate',
+            prompt: imagePrompt,
+            lastAction: 'director opening frame',
+            status: 'running'
+        });
+        sseWrite(res, {
+            generating: 'Director \u2014 ' + directorStageLabel('image') + '\u2026'
+        });
+        vramManager.rememberChatModel(provider, model);
+        await vramManager.freeVRAMBeforeImage();
+        const seed = regenerate ? Math.floor(Math.random() * 2 ** 32) : undefined;
+        await handleImageGenerationStream(req, res, {
+            provider, model, conversationId, message,
+            imagePrompt,
+            action: 'generate',
+            previousPrompt: null,
+            think,
+            seed,
+            director: { productionId: production.id }
+        });
+    } catch (err) {
+        console.error('[director] image stage failed:', err.message);
+        const friendly = friendlyImageError(err);
+        director.markImageFailed(production, friendly);
+        sseWrite(res, { director: director.buildCard(production, director.renderFailureContent(production, 'image', friendly)) });
+        res.end();
+    }
+}
+
+// Generate the H3 video from the approved frame + canonical brief + duration.
+async function runDirectorVideoStage(req, res, ctx, production) {
+    const { provider, model, conversationId, message, think } = ctx;
+    try {
+        director.markVideoRunning(production);
+        sseWrite(res, {
+            generating: 'Director \u2014 ' + directorStageLabel('video') + '\u2026'
+        });
+        await prepareDirectorLlm(provider, model);
+        const stage = await director.buildVideoStageRequest(production, { provider, model, think });
+        taskState.setTask(conversationId, {
+            type: 'video',
+            operation: 'generate',
+            prompt: stage.videoPrompt,
+            videoMode: stage.videoMode,
+            sourceImage: stage.sourceImageRawFilename,
+            parameters: Object.assign({}, taskState.getTask(conversationId).parameters, {
+                duration: stage.duration,
+                width: stage.width,
+                height: stage.height
+            }),
+            lastAction: 'director video',
+            status: 'running'
+        });
+        vramManager.rememberChatModel(provider, model);
+        await vramManager.freeVRAMBeforeImage();
+        await handleVideoGenerationStream(req, res, {
+            provider, model, conversationId, message,
+            videoPrompt: stage.videoPrompt,
+            structuredRequest: stage.structuredRequest,
+            action: 'generate',
+            previousPrompt: null,
+            videoMode: stage.videoMode,
+            sourceImageRawFilename: stage.sourceImageRawFilename,
+            duration: stage.duration,
+            width: stage.width,
+            height: stage.height,
+            think,
+            director: { productionId: production.id }
+        });
+    } catch (err) {
+        console.error('[director] video stage failed:', err.message);
+        const friendly = friendlyVideoError(err);
+        director.markVideoFailed(production, friendly);
+        sseWrite(res, { director: director.buildCard(production, director.renderFailureContent(production, 'video', friendly)) });
+        res.end();
+    }
+}
+
+// Build and run an ordinary (non-Director) MiniMax H3 video from a request the
+// user chose to render directly. Mirrors the video branch of handleChatStream's
+// fresh-generation path, but driven by the parked request text.
+async function runDirectVideoFromRequest(req, res, ctx, requestText) {
+    const { provider, model, conversationId, think } = ctx;
+    const message = String(requestText || '').trim();
+    if (!message) {
+        sseWrite(res, { error: 'Tell me what the video should show.' });
+        res.end();
+        return;
+    }
+    await prepareDirectorLlm(provider, model);
+    let structuredRequest;
+    try {
+        structuredRequest = await videoGenerator.detectVideoIntent(message, providers, provider, model, think);
+    } catch (err) {
+        structuredRequest = { intent: 'chat' };
+    }
+    if (!structuredRequest || structuredRequest.intent !== 'video_generation') {
+        const text = "I couldn't turn that into a video request. Tell me what the video should show.";
+        sseWrite(res, { chunk: text });
+        sseWrite(res, { done: true, fullReply: text });
+        res.end();
+        return;
+    }
+
+    const defaults = videoGenerator.getVideoDefaults();
+    const parameters = Object.assign({}, defaults, structuredRequest.parameters || {});
+    const modeInfo = videoGenerator.resolveVideoMode(conversationId, message, structuredRequest);
+    const videoMode = modeInfo.videoMode;
+    const sourceImageRawFilename = modeInfo.sourceImage ? modeInfo.sourceImage.rawFilename : null;
+    const messageDuration = typeof videoGenerator.parseRequestedVideoDuration === 'function'
+        ? videoGenerator.parseRequestedVideoDuration(message)
+        : null;
+    if (messageDuration !== null && messageDuration !== undefined) {
+        structuredRequest.requested_duration = messageDuration;
+    }
+
+    sseWrite(res, { generating: 'Generating video...' });
+    const direction = await videoGenerator.buildH3VideoPrompt(
+        Object.assign({}, structuredRequest, { has_reference_image: videoMode === 'i2va' }),
+        providers, provider, model, sourceImageRawFilename, conversationId, think
+    );
+    const videoPrompt = direction.prompt;
+    const dimensions = { duration: direction.duration, width: direction.width, height: direction.height };
+
+    taskState.setTask(conversationId, {
+        type: 'video',
+        operation: 'generate',
+        prompt: videoPrompt,
+        videoMode,
+        sourceImage: sourceImageRawFilename,
+        lastAction: message,
+        status: 'running'
+    });
+    taskState.setTask(conversationId, {
+        originalPrompt: videoPrompt,
+        parameters: Object.assign({}, parameters, {
+            videoMode,
+            sourceImage: sourceImageRawFilename,
+            duration: dimensions.duration,
+            width: dimensions.width,
+            height: dimensions.height
+        })
+    });
+
+    vramManager.rememberChatModel(provider, model);
+    await vramManager.freeVRAMBeforeImage();
+    await handleVideoGenerationStream(req, res, {
+        provider, model, conversationId, message,
+        videoPrompt,
+        structuredRequest,
+        action: 'generate',
+        previousPrompt: null,
+        videoMode,
+        sourceImageRawFilename,
+        duration: dimensions.duration,
+        width: dimensions.width,
+        height: dimensions.height,
+        think
+    });
+}
+
+// Execute an approval-card action (button click or a typed decision).
+async function handleDirectorAction(req, res, ctx, production, action) {
+    const { conversationId, message, provider, model, think } = ctx;
+    if (action.productionId && production && action.productionId !== production.id) {
+        const text = 'Director \u2014 That card belongs to an earlier production. ' +
+            'Use the newest Director card, or start a new production.';
+        sseWrite(res, { chunk: text });
+        sseWrite(res, { done: true, fullReply: text });
+        res.end();
+        return;
+    }
+    const validation = director.validateAction(production, action);
+    if (!validation.ok) {
+        sseWrite(res, { chunk: 'Director \u2014 ' + validation.reason });
+        sseWrite(res, { done: true, fullReply: 'Director \u2014 ' + validation.reason });
+        res.end();
+        return;
+    }
+
+    if (action.type === director.ACTIONS.CANCEL) {
+        const status = generationQueue.getStatus();
+        if (status.active && (!conversationId || status.active.conversationId === conversationId)) {
+            imageGenerator.cancelActive(status.active.id);
+            comfyui.interrupt().catch(() => {});
+        }
+        director.cancel(production);
+        taskState.clearTask(conversationId);
+        const text = 'Director \u2014 Production cancelled.';
+        sseWrite(res, { chunk: text });
+        sseWrite(res, { done: true, fullReply: text });
+        res.end();
+        return;
+    }
+
+    if (action.type === director.ACTIONS.CHOOSE_DIRECT) {
+        const request = production.pendingRequest || message;
+        director.removeProduction(conversationId);
+        await runDirectVideoFromRequest(req, res, ctx, request);
+        return;
+    }
+
+    if (action.type === director.ACTIONS.CHOOSE_DIRECTOR) {
+        await prepareDirectorLlm(provider, model);
+        await director.buildProductionFromChoice(production, { provider, model, think });
+        if (production.sourceImage) {
+            await runDirectorVideoStage(req, res, ctx, production);
+        } else {
+            await runDirectorImageStage(req, res, ctx, production, {});
+        }
+        return;
+    }
+
+    if (action.type === director.ACTIONS.APPROVE || action.type === director.ACTIONS.GENERATE_VIDEO) {
+        await runDirectorVideoStage(req, res, ctx, production);
+        return;
+    }
+
+    if (action.type === director.ACTIONS.MODIFY_DIRECTION) {
+        const feedback = String(action.direction || message || '').trim();
+        await prepareDirectorLlm(provider, model);
+        const prompt = await director.applyDirectionUpdate(production, feedback, { provider, model, think });
+        await runDirectorImageStage(req, res, ctx, production, { regenerate: true, prompt });
+        return;
+    }
+
+    // regenerate_image
+    await runDirectorImageStage(req, res, ctx, production, { regenerate: true });
+}
+
 // Handle a "start ComfyUI" chat command over the already-open SSE stream.
 // Shows a status line while the process boots, then streams a short result
 // reply (which the client persists like any other assistant message).
@@ -2047,9 +2456,15 @@ async function handleImageGenerationStream(req, res, opts) {
     try {
         // Variations: generate 1-4 images in one turn. A fixed seed gives a
         // reproducible set (seed, seed+1, ...); random mode picks a fresh base.
+        // A Director frame is always a single image from one seed.
         const genSettings = imageGenerator.effectiveSettings();
-        const variations = Math.max(1, Math.min(4, Number(genSettings.variations) || 1));
-        const baseSeed = imageGenerator.resolveSeed(genSettings, null);
+        const variations = opts.director
+            ? 1
+            : Math.max(1, Math.min(4, Number(genSettings.variations) || 1));
+        const baseSeed = imageGenerator.resolveSeed(
+            genSettings,
+            opts.director ? opts.seed : null
+        );
 
         sseWrite(res, { generating: variations > 1 ? 'Generating ' + variations + ' images...' : 'Generating image...' });
 
@@ -2065,6 +2480,54 @@ async function handleImageGenerationStream(req, res, opts) {
             results.push(await promise);
         }
         const result = results[0];
+
+        // Director opening frame: record it on the production and stop at the
+        // approval checkpoint. The video stage only runs after the user approves.
+        if (opts.director && opts.director.productionId) {
+            const production = director.getProduction(conversationId);
+            if (production) {
+                let rawFilename = String(result.url || '').split('?')[0].split('/').pop();
+                try { rawFilename = decodeURIComponent(rawFilename); } catch (err) { /* keep raw */ }
+                director.markImageReady(production, {
+                    url: result.url,
+                    rawFilename,
+                    prompt: imagePrompt,
+                    seed: result.seed
+                });
+                const existingDirectorParams = taskState.getTask(conversationId).parameters || {};
+                taskState.setTask(conversationId, {
+                    type: 'image',
+                    operation: 'generate',
+                    prompt: imagePrompt,
+                    generatedAsset: result.url,
+                    parameters: Object.assign({}, existingDirectorParams, {
+                        width: result.width,
+                        height: result.height,
+                        seed: result.seed
+                    }),
+                    lastImage: {
+                        prompt: imagePrompt,
+                        originalPrompt: taskState.getTask(conversationId).originalPrompt || imagePrompt,
+                        creative_mode: 'none',
+                        explicit_constraints: production.brief.explicitConstraints || [],
+                        attributes: production.image ? production.image.attributes : null
+                    },
+                    status: 'completed',
+                    lastAction: 'director opening frame'
+                });
+                const imageMarkdown = results
+                    .map((r) => '![' + 'opening frame' + '](' + r.url + ')')
+                    .join('\n\n');
+                sseWrite(res, {
+                    director: director.buildCard(
+                        production,
+                        director.renderImageApprovalContent(production, imageMarkdown)
+                    )
+                });
+                res.end();
+                return;
+            }
+        }
 
         // Tool succeeded — now update task context and generate the user-facing
         // response based on the actual result.
@@ -2116,6 +2579,32 @@ async function handleImageGenerationStream(req, res, opts) {
         res.end();
     } catch (err) {
         console.error('[image-generator] Generation failed:', err.message, '\n', err.stack);
+        if (opts.director && opts.director.productionId) {
+            const production = director.getProduction(conversationId);
+            if (production) {
+                if (err.code === 'generation_cancelled') {
+                    director.cancel(production);
+                    sseWrite(res, {
+                        director: director.buildCard(
+                            production,
+                            director.renderCancelledContent(production)
+                        )
+                    });
+                } else {
+                    taskState.setTask(conversationId, { status: 'failed' });
+                    const friendly = friendlyImageError(err);
+                    director.markImageFailed(production, friendly);
+                    sseWrite(res, {
+                        director: director.buildCard(
+                            production,
+                            director.renderFailureContent(production, 'image', friendly)
+                        )
+                    });
+                }
+                res.end();
+                return;
+            }
+        }
         if (err.code !== 'generation_cancelled') {
             taskState.setTask(conversationId, { status: 'failed' });
         }
@@ -2366,6 +2855,45 @@ async function handleVideoGenerationStream(req, res, opts) {
         // upscale. No automatic pass here.
         const finalResult = result;
 
+        // Director production: the approved frame is now a finished video.
+        if (opts.director && opts.director.productionId) {
+            const production = director.getProduction(conversationId);
+            if (production) {
+                director.markVideoReady(production, {
+                    url: finalResult.url,
+                    prompt: videoPrompt
+                });
+                const existingDirectorParams = taskState.getTask(conversationId).parameters || {};
+                taskState.setTask(conversationId, {
+                    type: 'video',
+                    operation: 'generate',
+                    prompt: videoPrompt,
+                    generatedAsset: finalResult.url,
+                    videoMode: finalResult.mode || opts2.mode || 'i2va',
+                    sourceImage: opts2.sourceImageRawFilename || null,
+                    parameters: Object.assign({}, existingDirectorParams, {
+                        width: finalResult.width || existingDirectorParams.width || null,
+                        height: finalResult.height || existingDirectorParams.height || null,
+                        duration: (production.video && production.video.duration) || null,
+                        video: (finalResult.meta && finalResult.meta.video) || existingDirectorParams.video || null
+                    }),
+                    status: 'completed',
+                    lastAction: 'director video'
+                });
+                const videoMarkdown =
+                    '<video class="md-video" preload="metadata" playsinline src="' +
+                    finalResult.url + '"></video>';
+                sseWrite(res, {
+                    director: director.buildCard(
+                        production,
+                        director.renderVideoCompleteContent(production, videoMarkdown)
+                    )
+                });
+                res.end();
+                return;
+            }
+        }
+
         // Mark the task completed with the video result.
         const existingParams = taskState.getTask(conversationId).parameters || {};
         taskState.setTask(conversationId, {
@@ -2412,6 +2940,32 @@ async function handleVideoGenerationStream(req, res, opts) {
         res.end();
     } catch (err) {
         console.error('[video-generator] Generation failed:', err.message, '\n', err.stack);
+        if (opts.director && opts.director.productionId) {
+            const production = director.getProduction(conversationId);
+            if (production) {
+                if (err.code === 'generation_cancelled') {
+                    director.cancel(production);
+                    sseWrite(res, {
+                        director: director.buildCard(
+                            production,
+                            director.renderCancelledContent(production)
+                        )
+                    });
+                } else {
+                    taskState.setTask(conversationId, { status: 'failed' });
+                    const friendly = friendlyVideoError(err);
+                    director.markVideoFailed(production, friendly);
+                    sseWrite(res, {
+                        director: director.buildCard(
+                            production,
+                            director.renderFailureContent(production, 'video', friendly)
+                        )
+                    });
+                }
+                res.end();
+                return;
+            }
+        }
         if (err.code !== 'generation_cancelled') {
             taskState.setTask(conversationId, { status: 'failed' });
         }

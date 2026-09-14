@@ -2160,6 +2160,7 @@ async function bootApp() {
     Chat.init();
     if (window.VoiceInput && typeof window.VoiceInput.init === 'function') window.VoiceInput.init();
     if (window.VoiceOutput && typeof window.VoiceOutput.init === 'function') window.VoiceOutput.init();
+    if (window.ChatLora && typeof window.ChatLora.init === 'function') window.ChatLora.init();
     await Chat.refreshConversationList();
     renderActiveChat();
 }
@@ -2172,52 +2173,14 @@ async function renderActiveChat() {
         const lastActive = Conversations.lastActiveId();
         const target = conversations.find((c) => c.id === lastActive) || conversations[0];
         const messages = await Conversations.select(target.id);
-        renderMessages(messages);
+        // Delegate to the Chat renderer so the boot view matches the live view:
+        // director cards, upscale pairs, video players, and uploaded images are
+        // all handled by Chat.setAiContent (the duplicate renderer here skipped
+        // director-marker extraction, leaking the raw [[director:...]] text).
+        Chat.renderMessages(messages);
     } else {
-        renderMessages([]);
+        Chat.renderMessages([]);
     }
-}
-
-function renderMessages(messages) {
-    const chatMessagesEl = document.getElementById('chatMessages');
-    chatMessagesEl.innerHTML = '';
-
-    if (!messages || messages.length === 0) {
-        const empty = document.createElement('div');
-        empty.className = 'chat-empty';
-        empty.textContent = 'Start a conversation. Ask me anything.';
-        chatMessagesEl.appendChild(empty);
-        return;
-    }
-
-    messages.forEach((m) => {
-        renderMessageIn(m, chatMessagesEl);
-    });
-    chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
-}
-
-function renderMessageIn(message, container) {
-    const role = message.role;
-    const el = document.createElement('div');
-    el.className = 'message message--' + (role === 'assistant' ? 'ai' : 'user');
-
-    const roleLabel = document.createElement('div');
-    roleLabel.className = 'message-role';
-    roleLabel.textContent = role === 'assistant' ? 'JARVIS' : 'USER';
-
-    const contentEl = document.createElement('div');
-    contentEl.className = 'message-content';
-
-    // Use markdown parser for AI messages, plain text for user messages
-    if (role === 'assistant') {
-        contentEl.innerHTML = Markdown.parse(message.content);
-    } else {
-        contentEl.textContent = message.content;
-    }
-
-    el.appendChild(roleLabel);
-    el.appendChild(contentEl);
-    container.appendChild(el);
 }
 
 // --- Canvas Setup ---
