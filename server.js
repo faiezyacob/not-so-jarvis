@@ -78,6 +78,7 @@ const generatedHistory = require('./services/generated-history');
 const thumbnail = require('./services/thumbnail');
 const activityLog = require('./services/activity-log');
 const comfyui = require('./services/comfyui');
+const comfyuiLauncher = require('./services/comfyui-launcher');
 const vramManager = require('./services/vram-manager');
 const weather = require('./services/weather');
 const news = require('./services/news');
@@ -809,12 +810,38 @@ async function handleAPI(req, res, urlPath) {
         return true;
     }
 
+    // POST /api/comfyui/start — launch a local ComfyUI server (Desktop
+    // standalone or portable) as a detached background process and wait for
+    // its API to come online. Powers the COMFYUI widget's Start button.
+    if (urlPath === '/api/comfyui/start' && req.method === 'POST') {
+        try {
+            const result = await comfyuiLauncher.start();
+            if (result.alreadyRunning) {
+                json(res, 200, { ok: true, alreadyRunning: true });
+            } else {
+                activityLog.record({
+                    type: 'system',
+                    title: 'ComfyUI started',
+                    detail: result.label ? 'Launched via ' + result.label : 'Launched'
+                });
+                json(res, 200, { ok: true, started: true, method: result.method || null });
+            }
+        } catch (err) {
+            json(res, 502, { error: err.message });
+        }
+        return true;
+    }
+
     // GET /api/comfyui/status — ComfyUI availability, queue and device stats
     if (urlPath === '/api/comfyui/status' && req.method === 'GET') {
         try {
             const available = await comfyui.isAvailable();
             if (!available) {
-                json(res, 200, { available: false, queue: null, system_stats: null });
+                const launchStatus = await comfyuiLauncher.getLaunchInfo().catch(() => ({ canStart: false }));
+                json(res, 200, {
+                    available: false, queue: null, system_stats: null,
+                    canStart: !!launchStatus.canStart, startMethod: launchStatus.method || null
+                });
                 return true;
             }
             const [queue, systemStats] = await Promise.all([
@@ -1391,6 +1418,13 @@ async function handleChatStream(req, res) {
             'X-Accel-Buffering': 'no'
         });
 
+        // Deterministic "start ComfyUI" command. Handled before the router so a
+        // small chat model can never downgrade it to a chat reply.
+        if (comfyuiLauncher.isStartComfyRequest(message)) {
+            await handleStartComfyUIChat(req, res, { conversationId, message });
+            return;
+        }
+
         // Route the message through the context-aware task router. The router
         // decides (before any tool runs) whether this message should start a new
         // task, continue/modify the active task, answer a question about it, or
@@ -1945,6 +1979,39 @@ async function handleChatStream(req, res) {
             res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
             res.end();
         }
+    }
+}
+
+// Handle a "start ComfyUI" chat command over the already-open SSE stream.
+// Shows a status line while the process boots, then streams a short result
+// reply (which the client persists like any other assistant message).
+async function handleStartComfyUIChat(req, res, opts) {
+    const { conversationId, message } = opts;
+    try {
+        if (await comfyui.isAvailable()) {
+            const reply = 'ComfyUI is already running.';
+            sseWrite(res, { chunk: reply });
+            sseWrite(res, { done: true, fullReply: reply });
+            res.end();
+            return;
+        }
+
+        sseWrite(res, { generating: 'Starting ComfyUI...' });
+        console.log('[comfyui] Start requested from chat:', conversationId);
+        const result = await comfyuiLauncher.start();
+        activityLog.record({
+            type: 'system',
+            title: 'ComfyUI started',
+            detail: result.label ? 'Launched via ' + result.label : 'Launched'
+        });
+        const reply = 'ComfyUI is up and reachable now. You can generate images and videos.';
+        sseWrite(res, { chunk: reply });
+        sseWrite(res, { done: true, fullReply: reply });
+        res.end();
+    } catch (err) {
+        console.error('[comfyui] Start failed:', err.message);
+        sseWrite(res, { error: 'I could not start ComfyUI. ' + err.message });
+        res.end();
     }
 }
 

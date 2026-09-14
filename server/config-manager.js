@@ -307,4 +307,45 @@ function clearNewsFeeds() {
     return current;
 }
 
-module.exports = { getConfig, setModelConfig, getReasoningEnabled, setReasoningEnabled, getChatSettings, setChatSettings, getImageSettings, setImageSettings, getVideoSettings, setVideoSettings, getHuggingFace, getHuggingFaceToken, setHuggingFace, getWeather, setWeather, getNews, setNews, clearNewsFeeds };
+// --- ComfyUI launcher (start a local ComfyUI server from the widget/chat) ---
+//
+// `root` is the ComfyUI install folder (containing main.py) and is cached
+// automatically the first time it can be resolved. `startCommand` is an
+// optional shell command that overrides auto-detection entirely. Both can
+// also be supplied through COMFYUI_ROOT / COMFYUI_START_CMD env vars.
+
+const COMFYUI_SETTINGS_KEY = 'comfyui';
+
+function sanitizeStartCommand(value) {
+    if (value === null || value === undefined) return '';
+    const s = String(value).trim();
+    if (s.length > 2000) throw new Error('start command is too long (max 2000 characters).');
+    return s;
+}
+
+function getComfyUI() {
+    const config = loadConfig();
+    const stored = config[COMFYUI_SETTINGS_KEY];
+    return stored && typeof stored === 'object' ? stored : {};
+}
+
+function setComfyUI(patch) {
+    const config = loadConfig();
+    const current = { ...(config[COMFYUI_SETTINGS_KEY] || {}) };
+    const input = patch || {};
+    if (input.startCommand !== undefined) {
+        const cmd = sanitizeStartCommand(input.startCommand);
+        if (cmd) current.startCommand = cmd;
+        else delete current.startCommand;
+    }
+    if (input.root !== undefined) {
+        const root = String(input.root || '').trim();
+        if (root) current.root = root;
+        else delete current.root;
+    }
+    config[COMFYUI_SETTINGS_KEY] = current;
+    saveConfig(config);
+    return current;
+}
+
+module.exports = { getConfig, setModelConfig, getReasoningEnabled, setReasoningEnabled, getChatSettings, setChatSettings, getImageSettings, setImageSettings, getVideoSettings, setVideoSettings, getHuggingFace, getHuggingFaceToken, setHuggingFace, getWeather, setWeather, getNews, setNews, clearNewsFeeds, getComfyUI, setComfyUI };

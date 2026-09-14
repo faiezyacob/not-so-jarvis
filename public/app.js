@@ -1824,6 +1824,7 @@ function initChatProviderSettings() {
     modelInput.addEventListener('change', () => {
         setChatModel(modelInput.value.trim());
         refreshReasoningVisibility(modelInput);
+        if (typeof ModelSwitcher !== 'undefined') ModelSwitcher.refreshLabel();
     });
 
     initChatReasoningToggle(providerSelect, modelInput);
@@ -2144,6 +2145,7 @@ async function bootApp() {
     initNews();
     initNewsSettings();
     ModelLibrary.init();
+    if (typeof ModelSwitcher !== 'undefined') ModelSwitcher.init();
     Gallery.init();
     initComfyUI();
     initOllamaWidget();
@@ -2822,6 +2824,7 @@ async function saveNewsLocalArea() {
 const COMFYUI_REFRESH_MS = 1000;
 let comfyuiProgress = null; // { value, max } from ComfyUI's /ws relayed via SSE
 let comfyuiEvents = null;
+let comfyuiStarting = false;
 
 function initComfyUI() {
     fetchComfyUIStatus();
@@ -2831,6 +2834,45 @@ function initComfyUI() {
     if (cancelBtn && !cancelBtn.dataset.bound) {
         cancelBtn.dataset.bound = '1';
         cancelBtn.addEventListener('click', cancelComfyUIJob);
+    }
+    const startBtn = document.getElementById('comfyuiStartBtn');
+    if (startBtn && !startBtn.dataset.bound) {
+        startBtn.dataset.bound = '1';
+        startBtn.addEventListener('click', startComfyUI);
+    }
+}
+
+// Launch a local ComfyUI server through POST /api/comfyui/start. The request
+// stays open while ComfyUI boots, so the widget keeps showing "Starting..."
+// until the server reports it is reachable.
+async function startComfyUI() {
+    if (comfyuiStarting) return;
+    comfyuiStarting = true;
+    const btn = document.getElementById('comfyuiStartBtn');
+    const detailEl = document.getElementById('comfyuiDetail');
+    if (btn) {
+        btn.disabled = true;
+        btn.textContent = 'Starting...';
+    }
+    if (detailEl) detailEl.textContent = 'Launching ComfyUI...';
+    try {
+        const res = await fetch('/api/comfyui/start', { method: 'POST' });
+        if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            throw new Error(data.error || 'Start failed');
+        }
+        await fetchComfyUIStatus();
+    } catch (err) {
+        if (detailEl) detailEl.textContent = 'Start failed: ' + err.message;
+        if (typeof Dialog !== 'undefined' && Dialog && typeof Dialog.alert === 'function') {
+            Dialog.alert({ title: 'Could not start ComfyUI', message: err.message });
+        }
+    } finally {
+        comfyuiStarting = false;
+        if (btn) {
+            btn.disabled = false;
+            btn.textContent = 'Start ComfyUI';
+        }
     }
 }
 
@@ -2908,15 +2950,32 @@ function updateComfyUIDisplay(data) {
     const cancelBtn = document.getElementById('comfyuiCancelBtn');
     if (!statusEl || !detailEl || !valueEl || !progressWrap) return;
 
+    const startBtn = document.getElementById('comfyuiStartBtn');
+
     if (!data || !data.available) {
         statusEl.textContent = 'Offline';
         statusEl.className = 'comfyui-status comfyui-status--offline';
         valueEl.style.display = 'none';
         progressWrap.style.display = 'none';
-        detailEl.textContent = 'ComfyUI not reachable';
+        detailEl.textContent = data && data.canStart === false
+            ? 'ComfyUI not reachable — set COMFYUI_START_CMD to enable starting'
+            : 'ComfyUI not reachable';
         if (cancelBtn) cancelBtn.style.display = 'none';
+        if (startBtn) {
+            if (comfyuiStarting) {
+                startBtn.style.display = '';
+                startBtn.disabled = true;
+                startBtn.textContent = 'Starting...';
+            } else {
+                startBtn.style.display = data && data.canStart === false ? 'none' : '';
+                startBtn.disabled = false;
+                startBtn.textContent = 'Start ComfyUI';
+            }
+        }
         return;
     }
+
+    if (startBtn) startBtn.style.display = 'none';
 
     const running = (data.queue && data.queue.queue_running) || [];
     const pending = (data.queue && data.queue.queue_pending) || [];

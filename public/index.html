@@ -16,6 +16,23 @@
             <span class="header-subtitle">LOCAL INTELLIGENCE SYSTEM</span>
         </div>
         <div class="header-right">
+            <div class="model-switcher-wrap">
+                <button class="model-pill" id="modelPill" type="button" aria-haspopup="true" aria-expanded="false" title="Switch chat model">
+                    <span class="model-pill-dot" id="modelPillDot"></span>
+                    <span class="model-pill-name" id="modelPillName">No model</span>
+                    <svg class="model-pill-caret" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="6 9 12 15 18 9"></polyline>
+                    </svg>
+                </button>
+                <div class="model-switcher" id="modelSwitcher" hidden>
+                    <div class="model-switcher-head">
+                        <span class="model-switcher-title">CHAT MODEL</span>
+                        <span class="model-switcher-sub" id="modelSwitcherSub"></span>
+                    </div>
+                    <div class="model-switcher-list" id="modelSwitcherList"></div>
+                    <button class="model-switcher-browse" id="modelSwitcherBrowse" type="button">Browse models…</button>
+                </div>
+            </div>
             <span class="status-label">SYSTEM ONLINE</span>
             <span class="status-dot"></span>
             <button class="settings-btn" id="settingsBtn" aria-label="Settings">
@@ -825,6 +842,7 @@
                     <div class="comfyui-progress-bar" id="comfyuiProgressBar"></div>
                 </div>
                 <div class="comfyui-detail" id="comfyuiDetail">-</div>
+                <button type="button" class="comfyui-start-btn" id="comfyuiStartBtn" style="display:none">Start ComfyUI</button>
                 <button type="button" class="comfyui-cancel-btn" id="comfyuiCancelBtn" style="display:none">Cancel job</button>
             </div>
 
@@ -860,6 +878,22 @@
             </div>
             <div class="model-library-hardware" id="modelLibraryHardware">
                 <!-- Populated by JS -->
+            </div>
+            <div class="model-library-toolbar" id="modelLibraryToolbar">
+                <input type="text" class="ml-search" id="mlSearch" placeholder="Search models…" autocomplete="off" aria-label="Search models">
+                <div class="ml-filters" id="mlFilters" role="tablist">
+                    <button type="button" class="ml-filter active" data-filter="all">All</button>
+                    <button type="button" class="ml-filter" data-filter="installed">Installed</button>
+                    <button type="button" class="ml-filter" data-filter="available">Available</button>
+                    <button type="button" class="ml-filter" data-filter="recommended">Recommended</button>
+                    <button type="button" class="ml-filter" data-filter="fits">Fits my GPU</button>
+                </div>
+                <select class="ml-sort" id="mlSort" aria-label="Sort models">
+                    <option value="fit">Best fit</option>
+                    <option value="size-asc">Smallest first</option>
+                    <option value="size-desc">Largest first</option>
+                    <option value="name">Name (A–Z)</option>
+                </select>
             </div>
             <div class="model-library-grid" id="modelLibraryGrid">
                 <!-- Populated by JS -->
@@ -901,6 +935,7 @@
     <script src="js/video-player.js"></script>
     <script src="js/hardware-compat.js"></script>
     <script src="js/model-library.js"></script>
+    <script src="js/model-switcher.js"></script>
     <script src="js/conversations.js"></script>
     <script src="js/chat.js"></script>
     <script src="js/voice-input.js"></script>

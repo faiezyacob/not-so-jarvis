@@ -9,6 +9,17 @@ const ModelLibrary = (function () {
     let cachedHardware = null;
     let activeDownloads = new Map();
 
+    const state = {
+        hardware: null,
+        models: [],
+        extraInstalled: [],
+        running: new Set(),
+        active: '',
+        filter: 'all',
+        sort: 'fit',
+        query: ''
+    };
+
     function init() {
         var btn = document.getElementById('modelLibraryBtn');
         var closeBtn = document.getElementById('modelLibraryClose');
@@ -21,6 +32,43 @@ const ModelLibrary = (function () {
         });
         document.addEventListener('keydown', function (e) {
             if (e.key === 'Escape' && isOpen) close();
+        });
+
+        var search = document.getElementById('mlSearch');
+        if (search) {
+            search.addEventListener('input', function () {
+                state.query = search.value;
+                render();
+            });
+        }
+
+        var filters = document.getElementById('mlFilters');
+        if (filters) {
+            filters.addEventListener('click', function (e) {
+                var chip = e.target.closest('.ml-filter');
+                if (!chip) return;
+                state.filter = chip.getAttribute('data-filter') || 'all';
+                filters.querySelectorAll('.ml-filter').forEach(function (el) {
+                    el.classList.toggle('active', el === chip);
+                });
+                render();
+            });
+        }
+
+        var sort = document.getElementById('mlSort');
+        if (sort) {
+            sort.addEventListener('change', function () {
+                state.sort = sort.value;
+                render();
+            });
+        }
+
+        window.addEventListener('jarvis-model-changed', function () {
+            if (isOpen) refreshLibrary();
+            else if (state.active) {
+                state.active = getActiveModel();
+                render();
+            }
         });
     }
 
@@ -43,26 +91,53 @@ const ModelLibrary = (function () {
         }
     }
 
+    function baseName(name) {
+        if (!name) return '';
+        return String(name).split(':')[0].trim().toLowerCase();
+    }
+
+    function getActiveModel() {
+        try {
+            if (typeof getChatModel === 'function') return getChatModel();
+        } catch (e) {}
+        return state.active;
+    }
+
     async function refreshLibrary() {
         var hardwareEl = document.getElementById('modelLibraryHardware');
         var gridEl = document.getElementById('modelLibraryGrid');
         if (!hardwareEl || !gridEl) return;
 
         hardwareEl.innerHTML = '<div class="ml-hardware-loading">Fetching hardware data...</div>';
-        gridEl.innerHTML = '';
+        gridEl.innerHTML = '<div class="ml-loading">Loading models...</div>';
 
-        var hardware = await HardwareCompat.fetchLatestStats();
+        var results = await Promise.all([
+            HardwareCompat.fetchLatestStats(),
+            fetch('/api/ai/models').then(function (r) { return r.ok ? r.json() : null; }).catch(function () { return null; }),
+            fetch('/api/ollama/status').then(function (r) { return r.ok ? r.json() : null; }).catch(function () { return null; })
+        ]);
+
+        var hardware = results[0];
+        var modelsData = results[1];
+        var status = results[2];
+
         cachedHardware = hardware;
+        state.hardware = hardware;
+        state.models = (modelsData && modelsData.models) || [];
+        state.extraInstalled = (modelsData && modelsData.extraInstalled) || [];
+        state.running = new Set();
+        if (status && Array.isArray(status.running)) {
+            status.running.forEach(function (r) { state.running.add(baseName(r.name)); });
+        }
+        state.active = (status && status.model) || getActiveModel() || '';
 
         renderHardwareBanner(hardwareEl, hardware);
 
-        try {
-            var resp = await fetch('/api/ai/models');
-            var data = await resp.json();
-            renderModelCards(gridEl, data.models || [], hardware, data.extraInstalled || []);
-        } catch (err) {
-            gridEl.innerHTML = '<div class="ml-error">Failed to load model catalog: ' + err.message + '</div>';
+        if (!modelsData) {
+            gridEl.innerHTML = '<div class="ml-error">Failed to load model catalog.</div>';
+            return;
         }
+        render();
     }
 
     function renderHardwareBanner(container, hardware) {
@@ -104,55 +179,163 @@ const ModelLibrary = (function () {
             + '<div class="ml-hardware-row">' + gpuSection + ramSection + '</div>';
     }
 
-    function renderModelCards(container, models, hardware, extraInstalled) {
-        var catalogModels = models.filter(function (m) { return !m.installed; });
-        var installedModels = models.filter(function (m) { return m.installed; });
+    /* ---------- Filtering / sorting ---------- */
 
-        if (installedModels.length > 0 || extraInstalled.length > 0) {
-            var hdr = document.createElement('div');
-            hdr.className = 'ml-section-header';
-            hdr.textContent = 'Installed Models';
-            container.appendChild(hdr);
-
-            installedModels.forEach(function (m) {
-                container.appendChild(createModelCard(m, hardware, true));
-            });
-            extraInstalled.forEach(function (m) {
-                container.appendChild(createInstalledExtraCard(m, hardware));
-            });
-
-            var divider = document.createElement('div');
-            divider.className = 'ml-section-divider';
-            container.appendChild(divider);
-        }
-
-        var catalogHdr = document.createElement('div');
-        catalogHdr.className = 'ml-section-header';
-        catalogHdr.textContent = 'Available to Download';
-        container.appendChild(catalogHdr);
-
-        var sorted = catalogModels.slice().sort(function (a, b) {
-            return (a.estimatedVramBytes || a.downloadSizeBytes || 0) - (b.estimatedVramBytes || b.downloadSizeBytes || 0);
+    function buildEntries() {
+        var entries = [];
+        state.models.forEach(function (m) {
+            entries.push(catalogEntry(m));
         });
-        sorted.forEach(function (m) {
-            container.appendChild(createModelCard(m, hardware, false));
+        state.extraInstalled.forEach(function (m) {
+            entries.push(extraEntry(m));
+        });
+        return entries;
+    }
+
+    function catalogEntry(m) {
+        var installed = Boolean(m.installed);
+        return {
+            raw: m,
+            id: m.id,
+            displayName: m.displayName || m.id,
+            provider: m.provider || 'ollama',
+            installed: installed,
+            extra: false,
+            sizeBytes: m.downloadSizeBytes || 0,
+            compat: HardwareCompat.checkModelHardwareCompatibility(m, state.hardware),
+            recommended: Boolean(m.recommended),
+            searchText: [m.displayName, m.id, m.parameterSize, m.category, m.description]
+                .filter(Boolean).join(' ').toLowerCase()
+        };
+    }
+
+    function extraEntry(m) {
+        return {
+            raw: m,
+            id: m.id,
+            displayName: m.displayName || m.id,
+            provider: m.provider || 'ollama',
+            installed: true,
+            extra: true,
+            sizeBytes: m.sizeBytes || 0,
+            compat: HardwareCompat.checkModelHardwareCompatibility(m, state.hardware),
+            recommended: false,
+            searchText: [m.displayName, m.id, m.provider].filter(Boolean).join(' ').toLowerCase()
+        };
+    }
+
+    function matchesFilter(entry) {
+        if (state.query && entry.searchText.indexOf(state.query.trim().toLowerCase()) === -1) return false;
+        switch (state.filter) {
+            case 'installed': return entry.installed;
+            case 'available': return !entry.installed;
+            case 'recommended': return entry.recommended;
+            case 'fits': return entry.compat && entry.compat.level === 'good';
+            default: return true;
+        }
+    }
+
+    function entrySize(entry) {
+        return entry.raw.estimatedVramBytes || entry.sizeBytes || 0;
+    }
+
+    function sortEntries(list) {
+        var rank = { good: 0, warning: 1, critical: 2, unknown: 3 };
+        return list.slice().sort(function (a, b) {
+            if (state.sort === 'name') return String(a.id).localeCompare(String(b.id));
+            if (state.sort === 'size-asc') return entrySize(a) - entrySize(b);
+            if (state.sort === 'size-desc') return entrySize(b) - entrySize(a);
+            var ra = rank[a.compat.level] != null ? rank[a.compat.level] : 3;
+            var rb = rank[b.compat.level] != null ? rank[b.compat.level] : 3;
+            if (ra !== rb) return ra - rb;
+            return entrySize(a) - entrySize(b);
         });
     }
 
-    function createModelCard(model, hardware, installed) {
+    function sectionHeader(text) {
+        var hdr = document.createElement('div');
+        hdr.className = 'ml-section-header';
+        hdr.textContent = text;
+        return hdr;
+    }
+
+    function sectionDivider() {
+        var divider = document.createElement('div');
+        divider.className = 'ml-section-divider';
+        return divider;
+    }
+
+    function render() {
+        var grid = document.getElementById('modelLibraryGrid');
+        if (!grid) return;
+
+        var filtered = buildEntries().filter(matchesFilter);
+
+        if (!filtered.length) {
+            grid.innerHTML = '<div class="ml-empty">No models match your filters.</div>';
+            return;
+        }
+
+        grid.innerHTML = '';
+
+        if (state.filter === 'all') {
+            var installed = sortEntries(filtered.filter(function (e) { return e.installed; }));
+            var available = sortEntries(filtered.filter(function (e) { return !e.installed; }));
+
+            if (installed.length) {
+                grid.appendChild(sectionHeader('Installed Models · ' + installed.length));
+                installed.forEach(function (e) { grid.appendChild(createModelCard(e)); });
+            }
+            if (available.length) {
+                if (installed.length) grid.appendChild(sectionDivider());
+                grid.appendChild(sectionHeader('Available to Download · ' + available.length));
+                available.forEach(function (e) { grid.appendChild(createModelCard(e)); });
+            }
+            return;
+        }
+
+        var labels = {
+            installed: 'Installed Models',
+            available: 'Available to Download',
+            recommended: 'Recommended',
+            fits: 'Fits your GPU'
+        };
+        grid.appendChild(sectionHeader((labels[state.filter] || 'Models') + ' · ' + filtered.length));
+        sortEntries(filtered).forEach(function (e) { grid.appendChild(createModelCard(e)); });
+    }
+
+    /* ---------- Cards ---------- */
+
+    function stateBadges(entry) {
+        var isActive = entry.installed && baseName(entry.id) === baseName(state.active);
+        var isRunning = state.running.has(baseName(entry.id));
+        var html = '';
+        if (isActive) html += '<span class="ml-state-badge ml-state-active">Active</span>';
+        else if (entry.installed) html += '<span class="ml-state-badge ml-installed">Installed</span>';
+        if (isRunning) html += '<span class="ml-state-badge ml-state-loaded">In VRAM</span>';
+        return html;
+    }
+
+    function compatBarHtml(compat) {
+        if (!compat || compat.estimatedVram == null || compat.usableVram <= 0) return '';
+        var pct = Math.max(4, Math.min(100, Math.round((compat.estimatedVram / compat.usableVram) * 100)));
+        var cls = HardwareCompat.getCompatibilityClass(compat.level);
+        return '<div class="ml-vram-bar"><div class="ml-vram-bar-fill ' + cls + '" style="width:' + pct + '%"></div></div>'
+            + '<div class="ml-vram-bar-label">~' + compat.estimatedVram + ' GB of ' + compat.usableVram + ' GB usable</div>';
+    }
+
+    function createModelCard(entry) {
+        var model = entry.raw;
         var card = document.createElement('div');
         card.className = 'ml-model-card';
-        card.setAttribute('data-model-id', model.id);
+        card.setAttribute('data-model-id', entry.id);
 
-        var compat = HardwareCompat.checkModelHardwareCompatibility(model, hardware);
+        var compat = entry.compat;
         var compatClass = HardwareCompat.getCompatibilityClass(compat.level);
         card.classList.add('ml-card-' + compatClass);
 
-        var downloadSize = HardwareCompat.formatBytes(model.downloadSizeBytes);
-
-        var vramLine = model.estimatedVramBytes != null
-            ? 'Estimated VRAM: ~' + compat.estimatedVram + ' GB'
-            : 'Estimated VRAM: unknown';
+        var isActive = entry.installed && baseName(entry.id) === baseName(state.active);
+        var downloadSize = HardwareCompat.formatBytes(entry.sizeBytes);
 
         var gpuLine = '';
         if (compat.gpuName && compat.vramTotal > 0) {
@@ -161,7 +344,25 @@ const ModelLibrary = (function () {
             gpuLine = 'No GPU detected';
         }
 
-        var compatBadge = '<div class="ml-compat-badge ' + compatClass + '">' + compat.label + '</div>';
+        var hardwareHtml;
+        if (entry.extra) {
+            hardwareHtml = '<div class="ml-card-hardware">'
+                + '<div class="ml-card-hardware-row">Size: ' + downloadSize + '</div>'
+                + '</div>';
+        } else {
+            var vramLine = model.estimatedVramBytes != null
+                ? 'Estimated VRAM: ~' + compat.estimatedVram + ' GB'
+                : 'Estimated VRAM: unknown';
+            hardwareHtml = '<div class="ml-card-hardware">'
+                + '<div class="ml-card-hardware-row">' + vramLine + '</div>'
+                + (gpuLine ? '<div class="ml-card-hardware-row ml-card-hardware-dim">' + gpuLine + '</div>' : '')
+                + '<div class="ml-card-hardware-row ml-card-hardware-dim">Download size: ' + downloadSize + '</div>'
+                + '</div>';
+        }
+
+        var compatBadge = entry.extra
+            ? ''
+            : '<div class="ml-compat-badge ' + compatClass + '">' + compat.label + '</div>';
 
         var capabilitiesHtml = '';
         if (model.capabilities && model.capabilities.length > 0) {
@@ -188,43 +389,55 @@ const ModelLibrary = (function () {
         var categoryBadge = model.category
             ? '<span class="ml-category-badge">' + model.category + '</span>'
             : '';
-        var recommendedBadge = model.recommended
+        var recommendedBadge = entry.recommended
             ? '<span class="ml-recommended-badge">★</span>'
-            : '';
-
-        var statusHtml = installed
-            ? '<div class="ml-status-badge ml-installed">Installed</div>'
             : '';
 
         var notesHtml = model.hardwareNotes
             ? '<div class="ml-hardware-notes">' + model.hardwareNotes + '</div>'
             : '';
 
+        var specs = entry.extra
+            ? entry.provider + (model.sizeDisplay ? ' · ' + model.sizeDisplay : '')
+            : model.parameterSize + ' · ' + categoryBadge;
+
+        var description = entry.extra
+            ? 'Not in JARVIS catalog. Available on your provider.'
+            : model.description;
+
+        var actions;
+        if (entry.installed) {
+            actions = (isActive
+                ? '<button class="ml-use-btn" disabled>Active</button>'
+                : '<button class="ml-use-btn" data-model-id="' + entry.id + '" data-provider="' + entry.provider + '">Use Model</button>')
+                + '<button class="ml-remove-btn" data-model-id="' + entry.id + '" data-provider="' + entry.provider + '">Remove</button>';
+        } else {
+            actions = '<button class="ml-download-btn" data-model-id="' + entry.id + '" data-provider="' + entry.provider + '">Download</button>';
+        }
+
         card.innerHTML = '<div class="ml-card-top">'
-            + '<div class="ml-card-title">' + recommendedBadge + model.displayName + ' ' + statusHtml + '</div>'
-            + '<div class="ml-card-specs">' + model.parameterSize + ' · ' + categoryBadge + '</div>'
+            + '<div class="ml-card-title">' + recommendedBadge + entry.displayName + ' ' + stateBadges(entry) + '</div>'
+            + '<div class="ml-card-specs">' + specs + '</div>'
             + '</div>'
-            + '<div class="ml-card-description">' + model.description + '</div>'
+            + '<div class="ml-card-description">' + description + '</div>'
             + capabilitiesHtml
             + reasoningHtml
             + notesHtml
-            + '<div class="ml-card-hardware">'
-            + '<div class="ml-card-hardware-row">' + vramLine + '</div>'
-            + (gpuLine ? '<div class="ml-card-hardware-row ml-card-hardware-dim">' + gpuLine + '</div>' : '')
-            + '<div class="ml-card-hardware-row ml-card-hardware-dim">Download size: ' + downloadSize + '</div>'
-            + '</div>'
+            + hardwareHtml
+            + compatBarHtml(entry.extra ? null : compat)
             + compatBadge
-            + '<div class="ml-card-actions">'
-            + (installed
-                ? '<button class="ml-use-btn" data-model-id="' + model.id + '" data-provider="' + model.provider + '">Use Model</button>'
-                    + '<button class="ml-remove-btn" data-model-id="' + model.id + '" data-provider="' + model.provider + '">Remove</button>'
-                : '<button class="ml-download-btn" data-model-id="' + model.id + '" data-provider="' + model.provider + '">Download</button>'
-            )
-            + '</div>';
+            + '<div class="ml-download-progress" data-progress="' + entry.id + '" hidden><div class="ml-download-progress-fill"></div></div>'
+            + '<div class="ml-card-actions">' + actions + '</div>';
 
-        if (installed) {
-            card.querySelector('.ml-use-btn').addEventListener('click', function () {
-                handleUseModelClick(model);
+        if (entry.installed) {
+            var useBtn = card.querySelector('.ml-use-btn:not([disabled])');
+            if (useBtn) useBtn.addEventListener('click', function () {
+                if (entry.extra) {
+                    applyModel(model);
+                    close();
+                } else {
+                    handleUseModelClick(model);
+                }
             });
             card.querySelector('.ml-remove-btn').addEventListener('click', function () {
                 handleRemoveClick(model);
@@ -247,27 +460,7 @@ const ModelLibrary = (function () {
         return card;
     }
 
-    function createInstalledExtraCard(model, hardware) {
-        var card = document.createElement('div');
-        card.className = 'ml-model-card ml-card-extra-installed';
-        card.setAttribute('data-model-id', model.id);
-
-        card.innerHTML = '<div class="ml-card-top">'
-            + '<div class="ml-card-title">' + model.displayName + ' <div class="ml-status-badge ml-installed">Installed</div></div>'
-            + '<div class="ml-card-specs">' + model.provider + (model.sizeDisplay ? ' · ' + model.sizeDisplay : '') + '</div>'
-            + '</div>'
-            + '<div class="ml-card-description">Not in JARVIS catalog. Available on your provider.</div>'
-            + '<div class="ml-card-actions">'
-            + '<button class="ml-use-btn" data-model-id="' + model.id + '" data-provider="' + model.provider + '">Use Model</button>'
-            + '</div>';
-
-        card.querySelector('.ml-use-btn').addEventListener('click', function () {
-            applyModel(model);
-            close();
-        });
-
-        return card;
-    }
+    /* ---------- Download flow ---------- */
 
     async function handleDownloadClick(model) {
         var hardware = cachedHardware || await HardwareCompat.fetchLatestStats();
@@ -444,8 +637,7 @@ const ModelLibrary = (function () {
                     }
                     return;
                 }
-                var gridEl = document.getElementById('modelLibraryGrid');
-                if (gridEl) refreshLibrary();
+                refreshLibrary();
             } catch (err) {
                 if (removeBtn) {
                     removeBtn.textContent = 'Error';
@@ -457,11 +649,13 @@ const ModelLibrary = (function () {
 
     async function startRealDownload(model) {
         var btn = document.querySelector('[data-model-id="' + model.id + '"].ml-download-btn');
+        var progressEl = document.querySelector('[data-progress="' + model.id + '"]');
         if (btn) {
             btn.disabled = true;
             btn.textContent = 'Starting...';
             btn.classList.add('ml-downloading');
         }
+        if (progressEl) progressEl.hidden = false;
 
         try {
             var resp = await fetch('/api/ai/models/download', {
@@ -477,31 +671,37 @@ const ModelLibrary = (function () {
                     btn.classList.remove('ml-downloading');
                     btn.classList.add('ml-download-error');
                 }
+                if (progressEl) progressEl.hidden = true;
                 return;
             }
 
             activeDownloads.set(model.id, status.id);
-            pollDownloadProgress(model, status.id, btn);
+            pollDownloadProgress(model, status.id, btn, progressEl);
         } catch (err) {
             if (btn) {
                 btn.textContent = 'Error';
                 btn.classList.remove('ml-downloading');
                 btn.classList.add('ml-download-error');
             }
+            if (progressEl) progressEl.hidden = true;
         }
     }
 
-    async function pollDownloadProgress(model, downloadId, btn) {
+    async function pollDownloadProgress(model, downloadId, btn, progressEl) {
         var done = false;
         while (!done) {
             await new Promise(function (r) { setTimeout(r, 1000); });
             try {
                 var resp = await fetch('/api/ai/models/download/' + downloadId);
                 var status = await resp.json();
+                var pct = status.progress || 0;
 
                 if (btn) {
-                    var pct = status.progress || 0;
                     btn.textContent = pct > 0 ? 'Downloading... ' + pct + '%' : status.status || 'Downloading...';
+                }
+                if (progressEl) {
+                    var fill = progressEl.querySelector('.ml-download-progress-fill');
+                    if (fill) fill.style.width = pct + '%';
                 }
 
                 if (status.state === 'completed') {
@@ -513,8 +713,8 @@ const ModelLibrary = (function () {
                         btn.classList.add('ml-downloaded');
                         btn.disabled = true;
                     }
-                    var gridEl = document.getElementById('modelLibraryGrid');
-                    if (gridEl) refreshLibrary();
+                    if (progressEl) progressEl.hidden = true;
+                    refreshLibrary();
                 } else if (status.state === 'error') {
                     done = true;
                     activeDownloads.delete(model.id);
@@ -524,6 +724,7 @@ const ModelLibrary = (function () {
                         btn.classList.add('ml-download-error');
                         btn.disabled = false;
                     }
+                    if (progressEl) progressEl.hidden = true;
                 }
             } catch {
                 done = true;
@@ -575,6 +776,9 @@ const ModelLibrary = (function () {
             modelInput.dispatchEvent(new Event('change'));
         }
         if (providerSelect) providerSelect.dispatchEvent(new Event('change'));
+
+        state.active = modelId;
+        window.dispatchEvent(new CustomEvent('jarvis-model-changed', { detail: { model: modelId, provider: provider } }));
     }
 
     function showModal() {

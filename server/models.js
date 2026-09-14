@@ -45,6 +45,17 @@ const MODEL_CATALOG = [
         hardwareNotes: 'Best with 16GB+ VRAM; full offloading to GPU'
     },
     {
+        id: 'satgeze/gemma4-12b-uncensored-1.5m:latest',
+        provider: 'ollama',
+        displayName: 'gemma4 12B Uncensored',
+        parameterSize: '12B',
+        category: 'medium',
+        recommended: false,
+        capabilities: ['vision', 'tools', 'thinking', 'audio'],
+        description: 'Uncensored community fine-tune of gemma4 12B with a 1.5M context window, tuned for reduced refusals while keeping multimodal and tool-calling support.',
+        hardwareNotes: 'Best with 16GB+ VRAM; full offloading to GPU'
+    },
+    {
         id: 'qwen3.8:27b',
         provider: 'ollama',
         displayName: 'Qwen 3.8 27B',
@@ -78,6 +89,7 @@ const MODEL_HARDWARE_ESTIMATES = {
     'llama3.2:3b':                              { vramBytes:   2147483648,  ramBytes: null,  downloadSizeBytes:  2147483648 },
     'qwen3.5:9b':                               { vramBytes:   7086696038,  ramBytes: null,  downloadSizeBytes:  7086696038 },
     'gemma4:12b':                               { vramBytes:   8160892928,  ramBytes: null,  downloadSizeBytes:  8160892928 },
+    'satgeze/gemma4-12b-uncensored-1.5m:latest': { vramBytes:  8160892928,  ramBytes: null,  downloadSizeBytes:  8160892928 },
     'qwen3.8:27b':                              { vramBytes:   19327352832,  ramBytes: null,  downloadSizeBytes:  19327352832 },
     'orcarouter/Qwen3.8-27B-Uncensored:q4_K_M': { vramBytes:   19327352832,  ramBytes: null,  downloadSizeBytes:  19327352832 }
 };
