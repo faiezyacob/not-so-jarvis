@@ -279,6 +279,7 @@ async function buildProductionFromChoice(production, { provider, model, think })
 
     production.type = productionPlan.TYPES.VIDEO_PRODUCTION;
     production.brief = brief;
+    production.briefModified = false;
     production.video = { duration: Number(duration) > 0 ? Number(duration) : defaultVideoDuration(), width: null, height: null };
     production.sourceImage = sourceImage || null;
     production.image = sourceImage
@@ -307,7 +308,10 @@ async function buildProductionFromChoice(production, { provider, model, think })
 // Build the opening-frame prompt from the brief via the existing image prompt
 // builder. Stores the resulting prompt on the plan so regeneration reuses it.
 async function buildImageStagePrompt(production, { provider, model, think }) {
-    const concept = prompts.composeImageConcept(production.brief);
+    // While the brief is still the user's original ask, carry their exact
+    // wording too; after a direction change the updated brief is authoritative.
+    const authoritative = production.briefModified ? '' : production.brief.originalRequest;
+    const concept = prompts.composeImageConcept(production.brief, { authoritative });
     const structuredRequest = {
         intent: 'image_generation',
         user_prompt: concept,
@@ -341,6 +345,9 @@ async function buildImageStagePrompt(production, { provider, model, think }) {
 // frame prompt from the updated brief (never by appending to the old prompt).
 async function applyDirectionUpdate(production, feedback, { provider, model, think }) {
     production.brief = await updateBrief(production.brief, feedback, { provider, model, think });
+    // The brief is now the user's edited intent, so stop carrying the original
+    // request verbatim (it would reassert the pre-edit direction).
+    production.briefModified = true;
     productionPlan.set(production.conversationId, production);
     return buildImageStagePrompt(production, { provider, model, think });
 }
@@ -428,10 +435,11 @@ async function buildVideoStageRequest(production, { provider, model, think }) {
     const duration = Number(production.video && production.video.duration) > 0
         ? Number(production.video.duration)
         : defaultVideoDuration();
+    const authoritative = production.briefModified ? '' : production.brief.originalRequest;
     const structuredRequest = {
         intent: 'video_generation',
         action: 'generate',
-        user_prompt: prompts.composeVideoDirection(production.brief, duration),
+        user_prompt: prompts.composeVideoDirection(production.brief, duration, { authoritative }),
         previous_prompt: '',
         creative_mode: 'none',
         has_reference_image: Boolean(sourceImageRawFilename),

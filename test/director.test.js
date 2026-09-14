@@ -194,6 +194,64 @@ test('buildBrief falls back to the heuristic when the LLM fails', async () => {
     assert.ok(brief.subject.length > 0);
 });
 
+test('composeVideoDirection/composeImageConcept carry details and the authoritative wording', () => {
+    const brief = productionPlan.normalizeBrief({
+        subject: 'a knight',
+        action: 'charging forward',
+        originalRequest: 'make a cute movie of a knight with a red cape and a golden sword',
+        details: 'a red cape, a golden sword'
+    });
+    const video = prompts.composeVideoDirection(brief, 10, { authoritative: brief.originalRequest });
+    assert.match(video, /a red cape, a golden sword/);
+    assert.match(video, /golden sword/);
+    assert.match(video, /authoritative/i);
+    const image = prompts.composeImageConcept(brief, { authoritative: brief.originalRequest });
+    assert.match(image, /red cape/);
+});
+
+test('mergeBrief preserves the details catch-all across an update', () => {
+    const base = productionPlan.normalizeBrief({
+        subject: 'a knight',
+        details: 'a red cape',
+        originalRequest: 'a knight'
+    });
+    const updated = director.mergeBrief(base, { details: 'a red cape, a silver shield' });
+    assert.equal(updated.details, 'a red cape, a silver shield');
+});
+
+test('buildVideoStageRequest drops the original wording once the brief is edited', async () => {
+    providers.chat = async (provider, messages) => {
+        const sys = String((messages[0] && messages[0].content) || '');
+        if (/H3 Video Director/i.test(sys)) {
+            return JSON.stringify({ mode: 'i2va', prompt: '[Shot 1] The knight charges.' });
+        }
+        return '{}';
+    };
+    const id = conversationId('authoritative');
+    const production = productionPlan.create({
+        conversationId: id,
+        brief: { subject: 'a knight', originalRequest: 'the original knight request' },
+        video: { duration: 5 },
+        originalRequest: 'the original knight request'
+    });
+    productionPlan.set(id, production);
+    director.markImageReady(production, {
+        url: '/generated/f.png', rawFilename: 'f.png', prompt: 'F', seed: 1
+    });
+
+    const first = await director.buildVideoStageRequest(production, {
+        provider: 'ollama', model: 'test-model', think: false
+    });
+    assert.match(first.structuredRequest.user_prompt, /the original knight request/);
+
+    production.briefModified = true;
+    const second = await director.buildVideoStageRequest(production, {
+        provider: 'ollama', model: 'test-model', think: false
+    });
+    assert.doesNotMatch(second.structuredRequest.user_prompt, /the original knight request/);
+    productionPlan.remove(id);
+});
+
 test('composeImageConcept and composeVideoDirection read from the brief', () => {
     const brief = productionPlan.normalizeBrief({
         subject: 'a young woman',

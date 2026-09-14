@@ -17,9 +17,11 @@ const BRIEF_SYSTEM_PROMPT =
     '{"subject": "...", "setting": "...", "action": "...", "mood": "...", ' +
     '"visualStyle": "...", "camera": "...", "cameraMovement": "...", ' +
     '"temporal": "...", "sound": "...", "aspectRatio": "...", "shots": "1", ' +
-    '"explicitConstraints": []}\n\n' +
+    '"explicitConstraints": [], "details": "..."}\n\n' +
     'Rules:\n' +
     '- Capture ONLY what the user asked for. Do not invent a different subject or setting.\n' +
+    '- Preserve the user\'s own wording for every specific (nouns, names, wardrobe, props, ' +
+    'colors, dialogue, on-screen text, named styles, brands, exact event order).\n' +
     '- "subject": who/what the production follows (e.g. "a young Asian woman").\n' +
     '- "setting": where it happens (e.g. "a Tokyo street at night").\n' +
     '- "action": what the subject does (e.g. "walking toward the camera").\n' +
@@ -27,12 +29,16 @@ const BRIEF_SYSTEM_PROMPT =
     '- "visualStyle": the look (e.g. "photorealistic cinematic").\n' +
     '- "camera": the shot framing (e.g. "medium tracking shot").\n' +
     '- "cameraMovement": how the camera moves (e.g. "slow tracking forward").\n' +
-    '- "temporal": how the action develops over the video duration.\n' +
+    '- "temporal": how the action develops over the video — NOT the duration.\n' +
     '- "sound": diegetic ambience / music direction, or "" if unspecified.\n' +
     '- "aspectRatio": only when the user names one (e.g. "16:9"), else "".\n' +
     '- "shots": ALWAYS "1" unless the user explicitly asks for multiple shots/scenes ' +
     '(e.g. "a 3-shot sequence"), in which case their number as a string.\n' +
     '- "explicitConstraints": array of hard constraints the user states, else [].\n' +
+    '- "details": free-form, comma-separated list of every other specific the user gave ' +
+    '(props, wardrobe, named styles, dialogue, on-screen text, exact sequence). This is ' +
+    'the safety net — if a specific does not fit a field above, it MUST appear here. ' +
+    'Never leave details empty when the user asked for specifics.\n' +
     '- Empty string for any field the user did not specify. Do not fill it with guesses.';
 
 // Update the canonical brief from a natural-language direction change.
@@ -48,6 +54,11 @@ const BRIEF_UPDATE_SYSTEM_PROMPT =
     '- Changing a camera request replaces the old camera / cameraMovement values.\n' +
     '- Changing the look replaces visualStyle, not the subject.\n' +
     '- Never add unrelated creative details and never drop existing ones.\n' +
+    '- A change to a specific that has no dedicated field (wardrobe, prop, color, ' +
+    'dialogue, on-screen text) MUST be applied inside "details" (replace the old value, ' +
+    'do not append a new one).\n' +
+    '- Keep "details" as the free-form catch-all for every specific the structured fields ' +
+    'do not cover. Never empty it out.\n' +
     '- "shots" stays "1" unless the user explicitly asks for multiple shots.\n' +
     '- Output the final brief, not a description of the edit.';
 
@@ -70,8 +81,11 @@ function sentence(text) {
 
 // Compose the opening-frame image concept from the brief. Used as the image
 // pipeline's user prompt so the frame matches the production, not the raw text.
-function composeImageConcept(brief) {
+// `opts.authoritative` is the user's own wording (only while the brief is still
+// unmodified) and is included so specifics the brief paraphrased away survive.
+function composeImageConcept(brief, opts = {}) {
     const b = brief || {};
+    const authoritative = cleanFragment(opts.authoritative);
     const subject = cleanFragment(b.subject) || 'a cinematic subject';
     const head = cleanFragment([subject, cleanFragment(b.action)].filter(Boolean).join(' '));
     const setting = cleanFragment(b.setting);
@@ -83,8 +97,12 @@ function composeImageConcept(brief) {
         .filter(Boolean).join(', ');
     if (camera) lines.push(sentence('Camera: ' + camera));
     if (cleanFragment(b.aspectRatio)) lines.push(sentence('Aspect ratio: ' + b.aspectRatio));
+    if (cleanFragment(b.details)) lines.push(sentence('Specific details: ' + b.details));
     if (Array.isArray(b.explicitConstraints) && b.explicitConstraints.length) {
         lines.push(sentence('Constraints: ' + b.explicitConstraints.join('; ')));
+    }
+    if (authoritative) {
+        lines.push(sentence('Honor every specific in the user\'s request: "' + authoritative + '"'));
     }
     return lines.join(' ');
 }
@@ -92,14 +110,20 @@ function composeImageConcept(brief) {
 // Compose the H3 video-direction request from the brief + duration. The H3
 // director LLM expands this into a full H3 prompt; it names the requested
 // duration and the one-shot default explicitly so the timeline is right.
-function composeVideoDirection(brief, duration) {
+function composeVideoDirection(brief, duration, opts = {}) {
     const b = brief || {};
+    const authoritative = cleanFragment(opts.authoritative);
     const seconds = Number(duration) > 0 ? Math.round(Number(duration)) : null;
     const subject = cleanFragment(b.subject) || 'the subject';
     const action = cleanFragment(b.action) || 'moves with natural, continuous motion';
     const setting = cleanFragment(b.setting);
     const shots = Number(b.shots) > 1 ? Math.round(Number(b.shots)) : 1;
     const lines = [];
+    // The user's own wording leads so the H3 director cannot miss the intent;
+    // the structured direction below then tells it how to develop that intent.
+    if (authoritative) {
+        lines.push('User\'s request (authoritative — honor every specific): "' + authoritative + '"');
+    }
     lines.push(
         'Animate the reference image as a continuous shot: ' + subject + ' ' + action +
         (setting ? ' in ' + setting : '') + '.'
@@ -109,6 +133,7 @@ function composeVideoDirection(brief, duration) {
     const camera = [cleanFragment(b.camera), cleanFragment(b.cameraMovement)]
         .filter(Boolean).join(', ');
     if (camera) lines.push(sentence('Camera: ' + camera));
+    if (cleanFragment(b.details)) lines.push(sentence('Specific details: ' + b.details));
     if (cleanFragment(b.temporal)) lines.push(sentence('Temporal progression: ' + b.temporal));
     if (cleanFragment(b.sound)) lines.push(sentence('Sound: ' + b.sound));
     if (seconds) {
@@ -151,6 +176,7 @@ function heuristicBrief(message, duration) {
         aspectRatio: '',
         shots: '1',
         explicitConstraints: [],
+        details: '',
         creativeMode: 'none'
     };
 }

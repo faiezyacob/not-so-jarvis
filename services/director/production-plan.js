@@ -105,6 +105,10 @@ function emptyBrief() {
         aspectRatio: '',
         shots: '1',
         explicitConstraints: [],
+        // Free-form catch-all for specifics the structured fields don't cover
+        // (wardrobe, props, dialogue, named styles, exact event order). Without
+        // it the extractor paraphrases those away and the video ignores them.
+        details: '',
         creativeMode: 'none'
     };
 }
@@ -148,6 +152,7 @@ function create({ conversationId, brief, video, sourceImage, originalRequest }) 
         },
         image: null,
         sourceImage: sourceImage || null,
+        briefModified: false,
         videoPrompt: '',
         videoUrl: null,
         error: '',
@@ -183,6 +188,7 @@ function createModeChoice({ conversationId, message, duration, referenceImage })
         sourceImage: null,
         referenceImage: referenceImage || null,
         pendingRequest: String(message || ''),
+        briefModified: false,
         videoPrompt: '',
         videoUrl: null,
         error: '',
