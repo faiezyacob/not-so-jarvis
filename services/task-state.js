@@ -66,7 +66,12 @@ function createEmptyTask() {
         parameters: {},             // relevant generation parameters
         lastAction: '',             // high level description of last action
         status: 'idle',             // 'idle' | 'running' | 'completed' | 'failed'
-        lastImage: null             // image lineage { prompt, originalPrompt, creative_mode, explicit_constraints, attributes } — survives video tasks so "another image" still knows the style
+        lastImage: null,            // image lineage { prompt, originalPrompt, creative_mode, explicit_constraints, attributes } — survives video tasks so "another image" still knows the style
+        // Intent Resolver's parked clarification. When the resolver cannot
+        // safely decide an action (e.g. a video request with no Direct-video
+        // vs Director-mode choice), the request is parked here so the next
+        // turn can resolve it instead of guessing or losing the request.
+        pendingAction: null         // { intent, mode, request, reason, createdAt } | null
     };
 }
 
@@ -100,10 +105,34 @@ function hasTask(conversationId) {
     return Boolean(task && task.type);
 }
 
+// --- Pending action (Intent Resolver clarification state) ---------------------
+
+function getPendingAction(conversationId) {
+    if (!conversationId) return null;
+    const task = tasks.get(conversationId);
+    return (task && task.pendingAction) || null;
+}
+
+function setPendingAction(conversationId, action) {
+    if (!conversationId) return null;
+    const task = getTask(conversationId);
+    task.pendingAction = action || null;
+    tasks.set(conversationId, task);
+    saveStore();
+    return task.pendingAction;
+}
+
+function clearPendingAction(conversationId) {
+    return setPendingAction(conversationId, null);
+}
+
 module.exports = {
     createEmptyTask,
     getTask,
     setTask,
     clearTask,
-    hasTask
+    hasTask,
+    getPendingAction,
+    setPendingAction,
+    clearPendingAction
 };

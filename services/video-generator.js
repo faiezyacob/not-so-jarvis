@@ -613,6 +613,26 @@ const H3_DIRECTOR_SYSTEM_PROMPT =
 
     'Respond with ONLY the JSON object.';
 
+// Appended to the H3 director system prompt when a production explicitly wants a
+// cut sequence (Director mode). It overrides the one-shot default above and
+// encodes the official H3 guide's shot / cut syntax.
+const H3_MULTISHOT_ADDENDUM =
+    '\n\nOVERRIDE \u2014 MULTI-SHOT DIRECTION (this production IS a cut sequence):\n' +
+    '- IGNORE the "SHOT RULE" and the one-shot "FINAL CHECK" defaults above. Follow this instead.\n' +
+    '- Use exactly the numbered shots in the SHOT PLAN, in order, and no others.\n' +
+    '- [Shot 1] carries NO timestamp.\n' +
+    '- Every later shot begins with a strictly increasing cut time inside the target duration, ' +
+    'formatted exactly like: "[Shot 2] At 00:03.500, the camera cuts to ..." (MM:SS.mmm).\n' +
+    '- Use cut language such as "the camera cuts to", "the shot cuts to", "the shot transitions to", ' +
+    '"the shot changes to", or "the shot switches to". Cross-dissolve, fade, or wipe only when the plan calls for one.\n' +
+    '- Every cut MUST introduce new information about the subject, space, state, viewpoint, or time. ' +
+    'Never cut only to change distance or a slight angle \u2014 use camera motion inside the shot for that.\n' +
+    '- Keep subject identity, wardrobe, colors, key objects, and setting consistent across all shots.\n' +
+    '- Write camera motion inside a shot as a natural English action using motion type plus optional ' +
+    'amplitude and optional speed (e.g. "The camera pushes in with small amplitude at slow speed toward ...").\n' +
+    '- Speakers keep stable IDs like (S1); put spoken words inside <d>[Language] ...</d>.\n' +
+    '- The last cut time must stay within the video duration; the final shot ends the video.\n';
+
 // --- H3 Video Prompt Modifier (for conversational modifications) ---------------
 
 const H3_MODIFIER_SYSTEM_PROMPT =
@@ -734,6 +754,52 @@ function parseDirectorJson(raw) {
     if (!prompt) return null;
     const modeMatch = text.match(/"mode"\s*:\s*"(t2va|i2va)"/i);
     return { mode: modeMatch ? modeMatch[1].toLowerCase() : undefined, prompt };
+}
+
+// A structured request may carry an explicit cut plan (Director mode). Returns
+// the ordered shot descriptions, or [] for the normal one-shot pipeline.
+function resolveShotPlan(structuredRequest) {
+    const req = structuredRequest || {};
+    const raw = req.shot_plan || req.shotPlan || req.shots_plan;
+    if (!Array.isArray(raw)) return [];
+    return raw.map((s) => String(s || '').trim()).filter(Boolean).slice(0, 8);
+}
+
+// Count the [Shot N] markers in an H3 prompt. Used to reject a director rewrite
+// that ignored a multi-shot direction and stayed on a single shot.
+function countH3Shots(prompt) {
+    return (String(prompt || '').match(/\[Shot\s+\d+\]/g) || []).length;
+}
+
+// HH/MM:SS.mmm as required by the H3 guide ("00:03.500").
+function formatCutTime(seconds) {
+    const total = Math.max(0, Number(seconds) || 0);
+    const minutes = Math.floor(total / 60);
+    const rest = total - minutes * 60;
+    const ss = rest.toFixed(3);
+    const padded = ss.length < 6 ? ('000000' + ss).slice(-6) : ss;
+    return String(minutes).padStart(2, '0') + ':' + padded;
+}
+
+// Deterministic multi-shot H3 document used when the director LLM fails. Cut
+// times are distributed evenly across the duration (strictly increasing, inside
+// the duration), and [Shot 1] carries no timestamp.
+function buildMultiShotFallbackPrompt({ shotPlan, hasReferenceImage, durationSeconds }) {
+    const shots = Array.isArray(shotPlan) ? shotPlan.filter(Boolean) : [];
+    if (!shots.length) return '';
+    const alignmentLine = hasReferenceImage
+        ? 'For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\n\n'
+        : '';
+    const duration = Number(durationSeconds) > 0 ? Number(durationSeconds) : 0;
+    const parts = shots.map((desc, index) => {
+        if (index === 0) return '[Shot 1] ' + desc;
+        const cut = duration > 0 ? (duration * index) / shots.length : index;
+        return '[Shot ' + (index + 1) + '] At ' + formatCutTime(cut) + ', the camera cuts to ' + desc;
+    });
+    return alignmentLine +
+        'integrated_multimodal_description:\n' + parts.join(' ') + '\n\n' +
+        'overall_soundscape:\nAmbient environmental sounds and physical action sounds matching the scene.\n\n' +
+        'non_diegetic_music:\nN/A';
 }
 
 async function detectVideoIntent(message, providers, provider, model, think) {
@@ -916,6 +982,8 @@ function isRawRequestEcho(prompt, raw) {
 async function buildH3VideoPrompt(structuredRequest, providers, provider, model, sourceImageRawFilename, conversationId, think) {
     const { user_prompt, creative_mode, has_reference_image, previous_prompt, explicit_constraints } = structuredRequest;
     const isModify = Boolean(previous_prompt && structuredRequest.modification);
+    const shotPlan = resolveShotPlan(structuredRequest);
+    const multiShot = shotPlan.length > 1;
 
     let visionAvailable = false;
     let sourceImageBase64 = null;
@@ -1002,6 +1070,15 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
         }
     }
 
+    // Director mode: hand the H3 director the explicit cut plan so its rewrite
+    // covers every planned shot with strictly increasing cut times.
+    if (multiShot && !isModify) {
+        userMessage +=
+            '\n\nSHOT PLAN (authoritative \u2014 exactly these shots, in order):\n' +
+            shotPlan.map((desc, index) => '[Shot ' + (index + 1) + '] ' + desc).join('\n') +
+            '\nOutput exactly ' + shotPlan.length + ' shots with strictly increasing cut times.';
+    }
+
     const requestRaw = String(
         (isModify ? structuredRequest.modification : user_prompt) || user_prompt || ''
     ).trim();
@@ -1014,18 +1091,24 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
             ? '\n\nYour previous answer was invalid. Convert the request into a concrete visual ' +
               'scene description. Do NOT quote or repeat the user\'s instruction ("animate this ' +
               'image", "make it mindblowing"), and never include the words "animate", "generate", ' +
-              '"mindblowing", "epic", or "video" in the prompt. Output ONLY the JSON object.'
+              '"mindblowing", "epic", or "video" in the prompt.' +
+              (multiShot
+                  ? ' You MUST include every shot from the SHOT PLAN as [Shot 1], [Shot 2], ... ' +
+                    'with strictly increasing cut times inside the duration.'
+                  : '') +
+              ' Output ONLY the JSON object.'
             : '';
         try {
             const userMsg = { role: 'user', content: userMessage + retryNote };
             if (userMessageImages) userMsg.images = userMessageImages;
             const raw = await providers.chat(provider, [
-                { role: 'system', content: H3_DIRECTOR_SYSTEM_PROMPT },
+                { role: 'system', content: H3_DIRECTOR_SYSTEM_PROMPT + (multiShot ? H3_MULTISHOT_ADDENDUM : '') },
                 userMsg
             ], model, { think });
 
             const parsed = parseDirectorJson(raw);
-            if (parsed && parsed.prompt && !isRawRequestEcho(parsed.prompt, requestRaw)) {
+            if (parsed && parsed.prompt && !isRawRequestEcho(parsed.prompt, requestRaw) &&
+                (!multiShot || countH3Shots(parsed.prompt) >= 2)) {
                 return {
                     mode: parsed.mode || (has_reference_image ? 'i2va' : 't2va'),
                     prompt: String(parsed.prompt).trim(),
@@ -1056,6 +1139,17 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
         ], model, { think });
         const lite = String(raw || '').trim();
         if (looksLikeValidLitePrompt(lite) && !/^\{/.test(lite) && !isRawRequestEcho(lite, requestRaw)) {
+            if (multiShot) {
+                return {
+                    mode: has_reference_image ? 'i2va' : 't2va',
+                    prompt: buildMultiShotFallbackPrompt({
+                        shotPlan, hasReferenceImage: has_reference_image, durationSeconds
+                    }),
+                    duration: durationSeconds,
+                    width: 1024,
+                    height: 768,
+                };
+            }
             const liteAlignment = has_reference_image
                 ? 'For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\n\n'
                 : '';
@@ -1079,6 +1173,19 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
     // scaffolding and meta filler, then describe what remains. If the request
     // carried no concrete subject, use a neutral mode-appropriate line.
     const mode = has_reference_image ? 'i2va' : 't2va';
+    // Director mode still gets its planned cut sequence even if every LLM step
+    // failed; the shot plan is deterministic and H3-compliant.
+    if (multiShot) {
+        return {
+            mode,
+            prompt: buildMultiShotFallbackPrompt({
+                shotPlan, hasReferenceImage: has_reference_image, durationSeconds
+            }),
+            duration: durationSeconds,
+            width: 1024,
+            height: 768,
+        };
+    }
     const concept = stripVideoRequestMeta(requestRaw) || (
         has_reference_image
             ? 'the subject from the reference image comes to life with natural, continuous motion'
@@ -2815,6 +2922,11 @@ module.exports = {
     videoRequestStrength,
     parseRequestedVideoDuration,
     buildH3VideoPrompt,
+    H3_MULTISHOT_ADDENDUM,
+    resolveShotPlan,
+    countH3Shots,
+    formatCutTime,
+    buildMultiShotFallbackPrompt,
     parseDirectorJson,
     stripVideoRequestMeta,
     isRawRequestEcho,

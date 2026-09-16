@@ -59,6 +59,12 @@ function mergeBrief(base, parsed) {
             }
             continue;
         }
+        if (key === 'shotList') {
+            if (Array.isArray(parsed.shotList) && parsed.shotList.length) {
+                out.shotList = parsed.shotList;
+            }
+            continue;
+        }
         const value = parsed[key];
         if (value !== undefined && value !== null && String(value).trim()) {
             out[key] = String(value).trim();
@@ -436,15 +442,21 @@ async function buildVideoStageRequest(production, { provider, model, think }) {
         ? Number(production.video.duration)
         : defaultVideoDuration();
     const authoritative = production.briefModified ? '' : production.brief.originalRequest;
+    // A Director production is cut like a film: plan the shot list up front so
+    // the direction, the H3 system prompt addendum, and the state all agree.
+    const shotList = prompts.planShots(production.brief, duration, { authoritative });
     const structuredRequest = {
         intent: 'video_generation',
         action: 'generate',
-        user_prompt: prompts.composeVideoDirection(production.brief, duration, { authoritative }),
+        user_prompt: prompts.composeVideoDirection(production.brief, duration, { authoritative, shotList }),
         previous_prompt: '',
         creative_mode: 'none',
         has_reference_image: Boolean(sourceImageRawFilename),
         requested_duration: duration,
         explicit_constraints: production.brief.explicitConstraints || [],
+        shots: shotList.length,
+        shot_plan: shotList,
+        multi_shot: shotList.length > 1,
         parameters: {}
     };
     const director = await videoGenerator.buildH3VideoPrompt(
@@ -456,6 +468,9 @@ async function buildVideoStageRequest(production, { provider, model, think }) {
         production.conversationId,
         think
     );
+    // Record the planned cut count on the production so the card can show it.
+    production.video = Object.assign({}, production.video, { shots: shotList.length });
+    productionPlan.set(production.conversationId, production);
     return {
         videoPrompt: director.prompt,
         structuredRequest,
@@ -473,7 +488,8 @@ function markerData(production) {
     return {
         id: production.id,
         status: production.status,
-        duration: (production.video && production.video.duration) || null
+        duration: (production.video && production.video.duration) || null,
+        shots: shotCountOf(production) || null
     };
 }
 
@@ -498,13 +514,42 @@ function imageUrlOf(production) {
     return (production.image && production.image.url) || null;
 }
 
+// How many shots the production is cut into (2+ means a real cut sequence).
+function shotCountOf(production) {
+    if (!production) return 0;
+    // A parked mode choice has no cut plan yet — the user may still pick Direct
+    // video, which stays a single continuous shot.
+    if (production.type === productionPlan.TYPES.MODE_CHOICE ||
+        production.status === productionPlan.STATUS.AWAITING_MODE_CHOICE) {
+        return 0;
+    }
+    const stored = Number(production && production.video && production.video.shots);
+    if (Number.isFinite(stored) && stored > 0) return stored;
+    try {
+        const duration = Number(production && production.video && production.video.duration) || 0;
+        const authoritative = production.briefModified
+            ? ''
+            : ((production.brief && production.brief.originalRequest) || '');
+        return prompts.planShots((production && production.brief) || {}, duration, { authoritative }).length;
+    } catch (err) {
+        return 0;
+    }
+}
+
+function shotCountLabel(production) {
+    const count = shotCountOf(production);
+    return count > 1 ? count + '-shot' : '';
+}
+
 // The persisted assistant message for the approval checkpoint: director intro,
 // the opening frame, and the marker the UI turns into the action card.
 function renderImageApprovalContent(production, imageMarkdown) {
+    const plan = shotCountLabel(production);
     const intro =
         '**Director** \u2014 Opening frame ready.\n\n' +
         'I\'ve created the proposed opening frame for your ' + durationLabel(production) +
-        ' video. This image will be used as the starting frame.';
+        ' video. This image will be used as the starting frame.' +
+        (plan ? ' I\'ll direct it as a ' + plan + ' sequence.' : '');
     return intro + '\n\n' + imageMarkdown + markerLine(production);
 }
 
@@ -515,14 +560,15 @@ function renderModeChoiceContent(production) {
         '**Direct video** generates the ' + durationLabel(production) +
         ' video straight away.\n\n' +
         '**Director mode** creates an opening frame first, waits for your approval, ' +
-        'then directs the video from that frame.' +
+        'then directs the video from that frame as a multi-shot sequence.' +
         markerLine(production);
 }
 
 function renderVideoCompleteContent(production, videoMarkdown) {
+    const plan = shotCountLabel(production);
     const intro =
         '**Director** \u2014 Your ' + durationLabel(production) +
-        ' video is ready.';
+        ' video is ready.' + (plan ? ' Cut as a ' + plan + ' sequence.' : '');
     return intro + '\n\n' + videoMarkdown + markerLine(production);
 }
 
@@ -544,6 +590,7 @@ function buildCard(production, content) {
         productionId: production.id,
         status: production.status,
         duration: (production.video && production.video.duration) || null,
+        shots: shotCountOf(production) || null,
         image: imageUrlOf(production),
         video: production.videoUrl || null,
         error: production.error || '',
@@ -579,6 +626,7 @@ module.exports = {
     renderCancelledContent,
     stripMarkers,
     durationLabel,
+    shotCountOf,
     getProduction: productionPlan.get,
     isOpen: productionPlan.isOpen,
     isAwaitingApproval: productionPlan.isAwaitingApproval,

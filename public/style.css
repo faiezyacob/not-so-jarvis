@@ -55,6 +55,47 @@ body {
     color: #fff;
 }
 
+/* --- Scrollbars (global) --- */
+
+* {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(108, 255, 154, 0.15) transparent;
+}
+
+::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+}
+
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+    background: rgba(108, 255, 154, 0.15);
+    border-radius: 2px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(108, 255, 154, 0.3);
+}
+
+::-webkit-scrollbar-corner {
+    background: transparent;
+}
+
+.settings-panels::-webkit-scrollbar,
+.settings-log::-webkit-scrollbar {
+    width: 6px;
+}
+
+.conversation-list::-webkit-scrollbar,
+.system-monitor::-webkit-scrollbar,
+.news-list::-webkit-scrollbar,
+.activity-list::-webkit-scrollbar {
+    width: 3px;
+}
+
 /* --- Header --- */
 
 .header {
@@ -595,19 +636,6 @@ body {
     display: block;
 }
 
-.settings-panels::-webkit-scrollbar {
-    width: 6px;
-}
-
-.settings-panels::-webkit-scrollbar-track {
-    background: transparent;
-}
-
-.settings-panels::-webkit-scrollbar-thumb {
-    background: rgba(108, 255, 154, 0.15);
-    border-radius: 3px;
-}
-
 .settings-panel {
     display: none;
     flex-direction: column;
@@ -1121,19 +1149,6 @@ details.settings-card[open] summary.settings-card-title::after {
     gap: 2px;
 }
 
-.conversation-list::-webkit-scrollbar {
-    width: 3px;
-}
-
-.conversation-list::-webkit-scrollbar-track {
-    background: transparent;
-}
-
-.conversation-list::-webkit-scrollbar-thumb {
-    background: rgba(108, 255, 154, 0.12);
-    border-radius: 2px;
-}
-
 .conv-item {
     display: flex;
     align-items: center;
@@ -1251,19 +1266,6 @@ details.settings-card[open] summary.settings-card-title::after {
     display: flex;
     flex-direction: column;
     gap: 20px;
-}
-
-.chat-messages::-webkit-scrollbar {
-    width: 4px;
-}
-
-.chat-messages::-webkit-scrollbar-track {
-    background: transparent;
-}
-
-.chat-messages::-webkit-scrollbar-thumb {
-    background: rgba(108, 255, 154, 0.15);
-    border-radius: 2px;
 }
 
 /* --- Messages --- */
@@ -2111,19 +2113,6 @@ em {
     overflow-y: auto;
 }
 
-.system-monitor::-webkit-scrollbar {
-    width: 3px;
-}
-
-.system-monitor::-webkit-scrollbar-track {
-    background: transparent;
-}
-
-.system-monitor::-webkit-scrollbar-thumb {
-    background: rgba(108, 255, 154, 0.12);
-    border-radius: 2px;
-}
-
 .monitor-header {
     display: flex;
     justify-content: space-between;
@@ -2321,19 +2310,6 @@ em {
     max-height: 210px;
     overflow-y: auto;
     margin-top: 4px;
-}
-
-.news-list::-webkit-scrollbar {
-    width: 3px;
-}
-
-.news-list::-webkit-scrollbar-track {
-    background: transparent;
-}
-
-.news-list::-webkit-scrollbar-thumb {
-    background: rgba(108, 255, 154, 0.12);
-    border-radius: 2px;
 }
 
 .news-item {
@@ -2605,19 +2581,6 @@ em {
     margin-top: 2px;
 }
 
-.activity-list::-webkit-scrollbar {
-    width: 3px;
-}
-
-.activity-list::-webkit-scrollbar-track {
-    background: transparent;
-}
-
-.activity-list::-webkit-scrollbar-thumb {
-    background: rgba(108, 255, 154, 0.12);
-    border-radius: 2px;
-}
-
 .activity-empty {
     font-family: var(--font-mono);
     font-size: 11px;
@@ -2873,19 +2836,6 @@ em {
     word-break: break-word;
     width: 100%;
     box-sizing: border-box;
-}
-
-.settings-log::-webkit-scrollbar {
-    width: 6px;
-}
-
-.settings-log::-webkit-scrollbar-track {
-    background: transparent;
-}
-
-.settings-log::-webkit-scrollbar-thumb {
-    background: rgba(108, 255, 154, 0.15);
-    border-radius: 3px;
 }
 
 /* --- LoRA Stack (Image Generation Settings) --- */
@@ -3225,19 +3175,6 @@ em {
     grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
     gap: 16px;
     align-content: start;
-}
-
-.model-library-grid::-webkit-scrollbar {
-    width: 4px;
-}
-
-.model-library-grid::-webkit-scrollbar-track {
-    background: transparent;
-}
-
-.model-library-grid::-webkit-scrollbar-thumb {
-    background: rgba(108, 255, 154, 0.12);
-    border-radius: 2px;
 }
 
 /* --- Toolbar (search / filters / sort) --- */
@@ -4216,19 +4153,6 @@ a.modal-btn {
     min-height: 0;
     display: flex;
     flex-direction: column;
-}
-
-.gallery-modal-body::-webkit-scrollbar {
-    width: 4px;
-}
-
-.gallery-modal-body::-webkit-scrollbar-track {
-    background: transparent;
-}
-
-.gallery-modal-body::-webkit-scrollbar-thumb {
-    background: rgba(108, 255, 154, 0.15);
-    border-radius: 2px;
 }
 
 .gallery-grid {

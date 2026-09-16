@@ -104,6 +104,10 @@ function emptyBrief() {
         sound: '',
         aspectRatio: '',
         shots: '1',
+        // Ordered shot beats the Director wants for the video. A real
+        // production is cut, not one continuous take, so the brief carries an
+        // explicit shot list the H3 stage renders as [Shot 1]..[Shot N].
+        shotList: [],
         explicitConstraints: [],
         // Free-form catch-all for specifics the structured fields don't cover
         // (wardrobe, props, dialogue, named styles, exact event order). Without
@@ -121,11 +125,18 @@ function normalizeBrief(brief) {
             base.explicitConstraints = Array.isArray(brief.explicitConstraints)
                 ? brief.explicitConstraints.map((s) => String(s || '').trim()).filter(Boolean).slice(0, 12)
                 : [];
+        } else if (key === 'shotList') {
+            base.shotList = Array.isArray(brief.shotList)
+                ? brief.shotList.map((s) => String(s || '').trim()).filter(Boolean).slice(0, 8)
+                : [];
         } else {
             base[key] = String(brief[key] === undefined || brief[key] === null ? '' : brief[key]).trim();
         }
     }
     if (!/^\d+$/.test(base.shots) || Number(base.shots) < 1) base.shots = '1';
+    if (base.shotList.length >= 2 && Number(base.shots) !== base.shotList.length) {
+        base.shots = String(base.shotList.length);
+    }
     return base;
 }
 

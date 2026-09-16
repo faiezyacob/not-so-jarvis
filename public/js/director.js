@@ -107,7 +107,9 @@ const DirectorUI = (() => {
 
         const stage = document.createElement('span');
         stage.className = 'director-card-stage';
-        stage.textContent = stageLabel(card.status);
+        const shots = Number(card.shots);
+        stage.textContent = stageLabel(card.status) +
+            (Number.isFinite(shots) && shots > 1 ? ' \u00b7 ' + shots + ' shots' : '');
 
         head.appendChild(icon);
         head.appendChild(title);

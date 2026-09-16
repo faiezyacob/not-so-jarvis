@@ -264,7 +264,29 @@ test('composeImageConcept and composeVideoDirection read from the brief', () => 
     assert.match(prompts.composeImageConcept(brief), /Tokyo street/);
     const video = prompts.composeVideoDirection(brief, 10);
     assert.match(video, /10 seconds/);
-    assert.match(video, /single continuous shot/i);
+    // Director mode cuts a real sequence by default, not one continuous take.
+    assert.match(video, /cut sequence of 3 shots/i);
+    assert.match(video, /\[Shot 2\]/);
+    assert.match(video, /strictly increasing cut time/i);
+});
+
+test('planShots honors a single-take request, an explicit count, and a shot list', () => {
+    const oneTake = productionPlan.normalizeBrief({
+        subject: 'a dancer',
+        originalRequest: 'make a movie of a dancer in one continuous shot'
+    });
+    assert.deepEqual(prompts.planShots(oneTake, 10), []);
+    assert.match(prompts.composeVideoDirection(oneTake, 10), /single continuous shot/i);
+
+    const counted = productionPlan.normalizeBrief({ subject: 'a knight', shots: '4' });
+    assert.equal(prompts.planShots(counted, 10).length, 4);
+
+    const listed = productionPlan.normalizeBrief({
+        subject: 'a knight',
+        shotList: ['Wide shot of a knight', 'Close-up of the knight', 'Wide shot of the charge']
+    });
+    assert.equal(prompts.planShots(listed, 10).length, 3);
+    assert.equal(listed.shots, '3');
 });
 
 // --- Production plan ---------------------------------------------------------
@@ -417,6 +439,10 @@ test('createProduction + video stage: duration is carried and the frame becomes 
     assert.equal(stage.duration, 10);
     assert.match(stage.videoPrompt, /Shot 1/);
     assert.match(stage.structuredRequest.user_prompt, /10 seconds/);
+    // The production is cut, not one continuous take: the H3 stage is handed an
+    // explicit shot plan it renders as [Shot 1]..[Shot N].
+    assert.equal(stage.structuredRequest.multi_shot, true);
+    assert.equal(stage.structuredRequest.shot_plan.length, 3);
     productionPlan.remove(id);
 });
 

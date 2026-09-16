@@ -18,6 +18,7 @@
 const taskState = require('./task-state');
 const imageGenerator = require('./image-generator');
 const videoGenerator = require('./video-generator');
+const intentResolver = require('./intent-resolver');
 const providers = require('../server/providers');
 const conversationService = require('../server/conversation-service');
 
@@ -233,7 +234,11 @@ function activeTaskSummary(task) {
 // context (e.g. when the user asks a question about the active task).
 function renderActiveTaskContext(task) {
     if (!task || !task.type) return '';
-    return 'Active task context:\n' + activeTaskSummary(task);
+    return 'Active task context (what this conversation is currently working on \u2014 '
+        + 'background awareness only: do NOT force it into an unrelated reply, but do use '
+        + 'it to resolve pronouns like "her"/"it"/"that", keep follow-ups consistent, and '
+        + 'know what the last generated asset was):\n'
+        + activeTaskSummary(task);
 }
 
 // Infer the conversation's media type from its message history when no
@@ -331,6 +336,154 @@ function normalizeDecision(parsed) {
         shouldExecuteTool: Boolean(shouldExecuteTool),
         updatedPrompt: String((parsed && parsed.updatedPrompt) || '').trim()
     };
+}
+
+// --- Intent Resolver -> action mapping -----------------------------------------
+//
+// The resolver returns a structured intent; this maps it onto the legacy
+// decision shape the server executes. The resolver itself never runs a tool.
+// Returning null means "not actionable here" and lets the existing gates below
+// act as the fallback router.
+
+function decisionFromResolvedIntent(resolved, { message, activeTask, conversationId, hasAttachedImage, referenceImage }) {
+    const activeType = activeTask && activeTask.type ? activeTask.type : null;
+    const intent = resolved.intent;
+
+    // Chat and prompt meta-requests (writing / ideation) are conversation, never
+    // generation — even when they contain media words like "image"/"video".
+    if (intent === 'chat' || intent === 'prompt_writing' || intent === 'prompt_ideation') {
+        return {
+            intent: 'unrelated',
+            task: null,
+            action: 'respond',
+            shouldExecuteTool: false,
+            updatedPrompt: '',
+            resolvedIntent: resolved
+        };
+    }
+
+    // The user answered a parked clarification: the server resumes the pending
+    // action instead of re-running the full router.
+    if (intent === 'clarification_response') {
+        return {
+            intent: 'clarification_response',
+            task: null,
+            action: 'respond',
+            shouldExecuteTool: false,
+            updatedPrompt: '',
+            requiresClarification: false,
+            pendingResolution: resolved.pendingResolution || null,
+            pendingAction: resolved.pendingAction || null,
+            resolvedIntent: resolved
+        };
+    }
+
+    // Uploads keep their dedicated question-vs-identity-edit handling below.
+    if (hasAttachedImage && (intent === 'image_generation' || intent === 'video_generation' ||
+        intent === 'modify_previous_generation')) {
+        return null;
+    }
+
+    if (intent === 'image_upscale') {
+        return { intent: 'new_task', task: 'image_upscale', action: 'upscale', shouldExecuteTool: true, updatedPrompt: '' };
+    }
+    if (intent === 'video_upscale') {
+        return { intent: 'new_task', task: 'video_upscale', action: 'upscale', shouldExecuteTool: true, updatedPrompt: '' };
+    }
+    if (intent === 'image_edit') {
+        return {
+            intent: 'new_task',
+            task: 'image_edit',
+            action: 'edit',
+            shouldExecuteTool: true,
+            updatedPrompt: resolved.extractedRequest || message
+        };
+    }
+
+    if (intent === 'modify_previous_generation') {
+        if (!activeType) return null;
+        const prompt = resolved.extractedRequest || message;
+        if (activeType === 'video') {
+            return { intent: 'continue_task', task: 'video_generation', action: 'modify', shouldExecuteTool: true, updatedPrompt: prompt };
+        }
+        return { intent: 'continue_task', task: 'image_generation', action: 'modify', shouldExecuteTool: true, updatedPrompt: prompt };
+    }
+
+    if (intent === 'image_generation') {
+        const structuredRequest = {
+            intent: 'image_generation',
+            action: 'generate',
+            user_prompt: resolved.extractedRequest || message,
+            previous_prompt: activeType === 'video'
+                ? ((activeTask.lastImage && activeTask.lastImage.prompt) || '')
+                : (activeTask.prompt || ''),
+            creative_mode: resolved.creative_mode || 'none',
+            explicit_constraints: resolved.explicit_constraints || []
+        };
+        return {
+            intent: activeType && activeType !== 'image' ? 'switch_task' : 'new_task',
+            task: 'image_generation',
+            action: 'generate',
+            shouldExecuteTool: true,
+            updatedPrompt: structuredRequest.user_prompt,
+            structuredRequest,
+            resolvedIntent: resolved
+        };
+    }
+
+    if (intent === 'video_generation') {
+        // Video mode (Direct video vs Director mode) missing and not safely
+        // inferable: park the request and ask instead of guessing.
+        if (resolved.requiresClarification) {
+            return {
+                intent: 'clarification',
+                task: 'video_generation',
+                action: 'clarify',
+                shouldExecuteTool: false,
+                updatedPrompt: '',
+                requiresClarification: true,
+                clarification: {
+                    intent: 'video_generation',
+                    mode: 'unknown',
+                    request: resolved.extractedRequest || message,
+                    reason: resolved.clarificationReason || 'video_mode'
+                },
+                resolvedIntent: resolved
+            };
+        }
+        const structuredRequest = {
+            intent: 'video_generation',
+            action: 'generate',
+            user_prompt: resolved.extractedRequest || message,
+            previous_prompt: activeTask.prompt || '',
+            creative_mode: resolved.creative_mode || 'none',
+            has_reference_image: Boolean(resolved.referencesPreviousContext || referenceImage),
+            requested_duration: typeof videoGenerator.parseRequestedVideoDuration === 'function'
+                ? videoGenerator.parseRequestedVideoDuration(message)
+                : null,
+            explicit_constraints: resolved.explicit_constraints || [],
+            parameters: {}
+        };
+        let modeInfo = { videoMode: 't2va', sourceImage: null };
+        try {
+            modeInfo = videoGenerator.resolveVideoMode(conversationId, message, structuredRequest, referenceImage);
+        } catch (err) {
+            // keep the t2va default — resolveVideoMode is best-effort source lookup
+        }
+        structuredRequest.videoMode = modeInfo.videoMode;
+        structuredRequest.sourceImageRawFilename = modeInfo.sourceImage ? modeInfo.sourceImage.rawFilename : null;
+        return {
+            intent: activeType && activeType !== 'video' ? 'switch_task' : 'new_task',
+            task: 'video_generation',
+            action: 'generate',
+            shouldExecuteTool: true,
+            updatedPrompt: structuredRequest.user_prompt,
+            structuredRequest,
+            resolvedIntent: resolved
+        };
+    }
+
+    return null;
 }
 
 // --- Public: route a message ---------------------------------------------------
@@ -522,6 +675,37 @@ async function routeMessage({ message, provider, model, conversationId, hasAttac
                 };
             }
         }
+    }
+
+    // --- Intent Resolver (semantic authority) --------------------------------
+    // Combines the message, conversation context, parked clarification, previous
+    // generation state, explicit wording, and regex signals into a structured
+    // intent. Regex never executes an action: the resolver decides WHAT the user
+    // wants, the mapping below (the action router) decides what to run. When the
+    // resolver is non-decisive, the deterministic gates below act as fallback.
+    try {
+        const resolved = await intentResolver.resolveIntent({
+            message,
+            provider,
+            model,
+            think,
+            conversationId,
+            activeTask,
+            hasAttachedImage: Boolean(hasAttachedImage),
+            referenceImage
+        });
+        if (resolved && resolved.decisive) {
+            const mapped = decisionFromResolvedIntent(resolved, {
+                message,
+                activeTask,
+                conversationId,
+                hasAttachedImage: Boolean(hasAttachedImage),
+                referenceImage
+            });
+            if (mapped) return mapped;
+        }
+    } catch (err) {
+        console.warn('[task-router] Intent resolver failed, falling through:', err.message);
     }
 
     // Anaphoric new image ("generate me another image", "one more image"):
@@ -948,5 +1132,6 @@ module.exports = {
     renderActiveTaskContext,
     parseRegenerateRequest,
     normalizeDecision,
+    decisionFromResolvedIntent,
     ROUTER_SYSTEM_PROMPT
 };

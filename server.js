@@ -1469,43 +1469,33 @@ async function handleChatStream(req, res) {
         if (activeProduction && director.isOpen(activeProduction)) {
             const classified = director.classifyMessage(message, activeProduction);
             if (classified) {
+                taskState.clearPendingAction(conversationId);
                 await handleDirectorAction(req, res, directorCtx, activeProduction, classified);
                 return;
             }
             // The message did not answer or continue the open production. A
             // stale one (a failed stage after a restart, or a card the user has
-            // moved on from) must not suppress the workflow question: if this is
-            // a new video request, supersede it and ask again.
+            // moved on from) must not suppress a fresh explicit director start.
+            // Everything else flows to the Intent Resolver below, which decides
+            // whether the turn continues, supersedes, or is unrelated chat — so
+            // a parked request is never silently lost.
             if (!director.isActive(activeProduction)) {
                 if (director.wantsDirectorMode(message)) {
                     director.removeProduction(conversationId);
+                    taskState.clearPendingAction(conversationId);
                     await handleDirectorStart(req, res, directorCtx);
                     return;
                 }
                 if (director.wantsDirectMode(message)) {
                     director.removeProduction(conversationId);
+                    taskState.clearPendingAction(conversationId);
                     activeProduction = null;
-                } else if (director.shouldOfferModeChoice(message, {
-                    activeTaskType: taskState.getTask(conversationId).type
-                })) {
-                    director.removeProduction(conversationId);
-                    await handleDirectorModeChoice(req, res, directorCtx);
-                    return;
                 }
             }
         }
         if ((!activeProduction || !director.isOpen(activeProduction)) &&
             director.wantsDirectorMode(message)) {
             await handleDirectorStart(req, res, directorCtx);
-            return;
-        }
-        // Any other video request stops and asks which workflow to use, rather
-        // than guessing between a direct render and Director mode.
-        if ((!activeProduction || !director.isOpen(activeProduction)) &&
-            director.shouldOfferModeChoice(message, {
-                activeTaskType: taskState.getTask(conversationId).type
-            })) {
-            await handleDirectorModeChoice(req, res, directorCtx);
             return;
         }
 
@@ -1523,6 +1513,21 @@ async function handleChatStream(req, res) {
             referenceImage,
             think
         });
+
+        // The Intent Resolver parked a video request because the workflow
+        // (Direct video vs Director mode) is unknown. Park the structured
+        // pending action and ask — never guess and never lose the request.
+        if (decision && decision.requiresClarification) {
+            await handleIntentClarification(req, res, directorCtx, decision);
+            return;
+        }
+
+        // The user answered a parked clarification while no Director card was
+        // present (e.g. after a restart). Resume the original request.
+        if (decision && decision.pendingResolution) {
+            await handlePendingResolution(req, res, directorCtx, decision);
+            return;
+        }
 
         // Upscale the last generated image in this conversation. Only the
         // deterministic "upscale" intent routes here, so the user-facing reply
@@ -1967,9 +1972,11 @@ async function handleChatStream(req, res) {
             message,
             provider,
             model,
-            decision.intent === 'task_question'
-                ? taskRouter.renderActiveTaskContext(taskState.getTask(conversationId))
-                : '',
+            // Always expose the active task to the chat model (not only for
+            // task_question) so it understands what the conversation is working
+            // on and can resolve pronouns/follow-ups. renderActiveTaskContext
+            // returns '' when there is no active task.
+            taskRouter.renderActiveTaskContext(taskState.getTask(conversationId)),
             chatVision,
             await buildEnvironmentContext(message)
         );
@@ -2323,6 +2330,56 @@ async function runDirectVideoFromRequest(req, res, ctx, requestText) {
 }
 
 // Execute an approval-card action (button click or a typed decision).
+// Park a resolver clarification (Direct video vs Director mode) and ask. The
+// structured pending action lives in task state so the next turn can resume it;
+// the Director mode-choice card provides the UI and typed/button resolution.
+async function handleIntentClarification(req, res, ctx, decision) {
+    const { conversationId, message, referenceImage } = ctx;
+    const clarification = (decision && decision.clarification) || {};
+    const request = String(clarification.request || message || '').trim();
+    taskState.setPendingAction(conversationId, {
+        intent: 'video_generation',
+        mode: 'unknown',
+        request,
+        reason: clarification.reason || 'video_mode',
+        createdAt: new Date().toISOString()
+    });
+    director.removeProduction(conversationId);
+    await handleDirectorModeChoice(req, res, Object.assign({}, ctx, { message: request, referenceImage }));
+}
+
+// Resume a parked clarification that has no Director card (e.g. after a
+// restart or when the card was superseded): run the original request through
+// the workflow the user chose.
+async function handlePendingResolution(req, res, ctx, decision) {
+    const { conversationId } = ctx;
+    const pending = decision.pendingAction || taskState.getPendingAction(conversationId);
+    const type = decision.pendingResolution;
+    taskState.clearPendingAction(conversationId);
+    if (type === 'cancel') {
+        director.removeProduction(conversationId);
+        const text = 'Okay \u2014 I won\'t build that video.';
+        sseWrite(res, { chunk: text });
+        sseWrite(res, { done: true, fullReply: text });
+        res.end();
+        return;
+    }
+    const request = String((pending && pending.request) || ctx.message || '').trim();
+    const resumeCtx = Object.assign({}, ctx, { message: request });
+    if (type === 'director') {
+        director.removeProduction(conversationId);
+        await handleDirectorStart(req, res, resumeCtx);
+        return;
+    }
+    if (type === 'direct') {
+        director.removeProduction(conversationId);
+        await runDirectVideoFromRequest(req, res, resumeCtx, request);
+        return;
+    }
+    // Unknown resolution — ask again rather than guessing.
+    await handleDirectorModeChoice(req, res, resumeCtx);
+}
+
 async function handleDirectorAction(req, res, ctx, production, action) {
     const { conversationId, message, provider, model, think } = ctx;
     if (action.productionId && production && action.productionId !== production.id) {
@@ -2349,6 +2406,7 @@ async function handleDirectorAction(req, res, ctx, production, action) {
         }
         director.cancel(production);
         taskState.clearTask(conversationId);
+        taskState.clearPendingAction(conversationId);
         const text = 'Director \u2014 Production cancelled.';
         sseWrite(res, { chunk: text });
         sseWrite(res, { done: true, fullReply: text });
@@ -2359,11 +2417,13 @@ async function handleDirectorAction(req, res, ctx, production, action) {
     if (action.type === director.ACTIONS.CHOOSE_DIRECT) {
         const request = production.pendingRequest || message;
         director.removeProduction(conversationId);
+        taskState.clearPendingAction(conversationId);
         await runDirectVideoFromRequest(req, res, ctx, request);
         return;
     }
 
     if (action.type === director.ACTIONS.CHOOSE_DIRECTOR) {
+        taskState.clearPendingAction(conversationId);
         await prepareDirectorLlm(provider, model);
         await director.buildProductionFromChoice(production, { provider, model, think });
         if (production.sourceImage) {
@@ -2524,6 +2584,7 @@ async function handleImageGenerationStream(req, res, opts) {
                         director.renderImageApprovalContent(production, imageMarkdown)
                     )
                 });
+                await vramManager.freeComfyModels('director image stage');
                 res.end();
                 return;
             }
@@ -2889,6 +2950,7 @@ async function handleVideoGenerationStream(req, res, opts) {
                         director.renderVideoCompleteContent(production, videoMarkdown)
                     )
                 });
+                await vramManager.freeComfyModels('director run');
                 res.end();
                 return;
             }

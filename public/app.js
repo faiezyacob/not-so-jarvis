@@ -1010,6 +1010,12 @@ function initLoraSettings(state) {
     });
 }
 
+// Settings panels that read live ComfyUI state (model lists, LoRA scan) cache
+// what they saw at load time and show a sticky "unreachable" notice when
+// ComfyUI is down. They register their loader here so the ComfyUI widget can
+// re-run them the moment ComfyUI finishes starting.
+const comfyDependentReloaders = [];
+
 function initImageGenSettings() {
     const inputs = IMAGE_GEN_FIELDS
         .map(f => ({ f, input: document.getElementById(f.inputId) }))
@@ -1113,7 +1119,9 @@ function initImageGenSettings() {
     if (seedModeSelect) seedModeSelect.addEventListener('change', () => { syncSeedDisabled(); persistValue('seedMode', seedModeSelect.value, seedModeSelect.value); });
     if (seedInput) seedInput.addEventListener('change', () => persistValue('seed', Math.max(0, Math.floor(Number(seedInput.value) || 0)), seedInput.value));
 
-    (async () => {
+    const loadSettings = async () => {
+        setStatus('');
+        loraStatus(loraState, '');
         try {
             const res = await fetch('/api/settings/image');
             if (!res.ok) throw new Error('API error');
@@ -1181,7 +1189,9 @@ function initImageGenSettings() {
         } catch {
             setStatus('Could not load image settings', true);
         }
-    })();
+    };
+    comfyDependentReloaders.push(loadSettings);
+    loadSettings();
 
     inputs.forEach(({ f, input }) => {
         input.addEventListener('change', () => persist(f, input));
@@ -1631,7 +1641,9 @@ function initVideoSettings() {
         });
     }
 
-    (async () => {
+    const loadSettings = async () => {
+        setStatus('');
+        loraStatus(loraState, '');
         try {
             const res = await fetch('/api/settings/video');
             if (!res.ok) throw new Error('API error');
@@ -1706,7 +1718,9 @@ function initVideoSettings() {
         } catch {
             setStatus('Could not load video settings', true);
         }
-    })();
+    };
+    comfyDependentReloaders.push(loadSettings);
+    loadSettings();
 }
 
 // --- Chat Provider Settings ---
@@ -2788,6 +2802,19 @@ const COMFYUI_REFRESH_MS = 1000;
 let comfyuiProgress = null; // { value, max } from ComfyUI's /ws relayed via SSE
 let comfyuiEvents = null;
 let comfyuiStarting = false;
+let comfyuiAvailable = null; // last reachability, so we can detect offline -> online
+
+// When ComfyUI comes back online, anything that was loaded while it was down
+// is stale: the settings panels show a sticky "unreachable" notice and their
+// model/LoRA lists are empty. Re-run those loaders so the notice clears and
+// the real lists appear without a manual page refresh.
+function refreshComfyDependentSettings() {
+    comfyDependentReloaders.forEach((reload) => {
+        try { reload(); } catch {}
+    });
+    refreshFaceRefineStatus();
+    refreshSetup();
+}
 
 function initComfyUI() {
     fetchComfyUIStatus();
@@ -2914,6 +2941,10 @@ function updateComfyUIDisplay(data) {
     if (!statusEl || !detailEl || !valueEl || !progressWrap) return;
 
     const startBtn = document.getElementById('comfyuiStartBtn');
+
+    const available = !!(data && data.available);
+    if (comfyuiAvailable === false && available) refreshComfyDependentSettings();
+    comfyuiAvailable = available;
 
     if (!data || !data.available) {
         statusEl.textContent = 'Offline';

@@ -97,6 +97,26 @@ async function freeVRAMBeforeImage() {
     }
 }
 
+// Unconditionally unload ComfyUI models. Unlike freeVRAMBeforeChat this does
+// not wait for memory pressure to cross a threshold: multi-stage Director runs
+// pile image and video models into VRAM/RAM, and a single metric often stays
+// under the threshold while the combined footprint keeps growing. Called at the
+// end of each Director stage so the next stage (or chat) starts clean.
+async function freeComfyModels(reason) {
+    try {
+        if (!(await comfyui.isAvailable())) {
+            return { freed: false, reason: 'comfy_offline' };
+        }
+        await comfyui.freeModels();
+        console.log(`[vram-manager] unloaded ComfyUI models after ${reason || 'generation'}`);
+        activityLog.record({ type: 'unload', title: 'ComfyUI models unloaded', detail: reason ? 'after ' + reason : 'to free memory' });
+        return { freed: true, unloaded: 'comfyui-models' };
+    } catch (err) {
+        console.warn('[vram-manager] Failed to free ComfyUI memory:', err.message);
+        return { freed: false, reason: 'unload_failed' };
+    }
+}
+
 // Before using the chat model, free memory by unloading ComfyUI models (the
 // other model) when VRAM or system RAM is too full.
 async function freeVRAMBeforeChat() {
@@ -126,5 +146,6 @@ module.exports = {
     memoryUsage,
     rememberChatModel,
     freeVRAMBeforeChat,
-    freeVRAMBeforeImage
+    freeVRAMBeforeImage,
+    freeComfyModels
 };

@@ -177,6 +177,71 @@ test('parseDirectorJson: returns null for a non-JSON reply', () => {
     assert.equal(videoGenerator.parseDirectorJson('not json at all'), null);
 });
 
+// --- H3 multi-shot direction (Director mode) ---------------------------------
+
+test('resolveShotPlan: reads the shot plan array, ignores the single-shot pipeline', () => {
+    assert.deepEqual(
+        videoGenerator.resolveShotPlan({ shot_plan: ['Wide shot', 'Close-up'] }),
+        ['Wide shot', 'Close-up']
+    );
+    assert.deepEqual(videoGenerator.resolveShotPlan({ shot_plan: [] }), []);
+    assert.deepEqual(videoGenerator.resolveShotPlan({}), []);
+    assert.deepEqual(videoGenerator.resolveShotPlan(null), []);
+});
+
+test('formatCutTime: renders MM:SS.mmm cut times', () => {
+    assert.equal(videoGenerator.formatCutTime(0), '00:00.000');
+    assert.equal(videoGenerator.formatCutTime(3.5), '00:03.500');
+    assert.equal(videoGenerator.formatCutTime(65.25), '01:05.250');
+});
+
+test('buildMultiShotFallbackPrompt: cuts every shot inside the duration, no timestamp on Shot 1', () => {
+    const prompt = videoGenerator.buildMultiShotFallbackPrompt({
+        shotPlan: ['Wide establishing shot', 'Medium shot', 'Close-up'],
+        hasReferenceImage: true,
+        durationSeconds: 10
+    });
+    assert.match(prompt, /<Picture 1> \(from \[Shot 1\]\) is fully referenced/);
+    assert.match(prompt, /\[Shot 1\] Wide establishing shot/);
+    assert.match(prompt, /\[Shot 2\] At 00:03\.333, the camera cuts to Medium shot/);
+    assert.match(prompt, /\[Shot 3\] At 00:06\.667, the camera cuts to Close-up/);
+    assert.doesNotMatch(prompt, /\[Shot 1\] At /);
+    // The override addendum carries the guide's cut syntax.
+    assert.match(videoGenerator.H3_MULTISHOT_ADDENDUM, /STRICTLY INCREASING|strictly increasing/);
+    assert.match(videoGenerator.H3_MULTISHOT_ADDENDUM, /\[Shot 2\] At 00:03\.500/);
+});
+
+test('buildH3VideoPrompt: a shot plan switches to the multi-shot addendum and emits every shot', async () => {
+    const providers = require('../server/providers');
+    const originalChat = providers.chat;
+    let seenSystem = '';
+    providers.chat = async (provider, messages) => {
+        seenSystem = String((messages[0] && messages[0].content) || '');
+        return JSON.stringify({
+            mode: 'i2va',
+            prompt: 'For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\n\n' +
+                '[Shot 1] The woman steps forward. [Shot 2] At 00:04.000, the camera cuts to a close-up of her face.'
+        });
+    };
+    try {
+        const result = await videoGenerator.buildH3VideoPrompt({
+            intent: 'video_generation',
+            action: 'generate',
+            user_prompt: 'Direct this as a cut sequence of 2 shots.',
+            previous_prompt: '',
+            creative_mode: 'none',
+            has_reference_image: true,
+            requested_duration: 8,
+            explicit_constraints: [],
+            shot_plan: ['The woman steps forward', 'Close-up of her face']
+        }, providers, 'ollama', 'test-model', null, null, false);
+        assert.match(seenSystem, /MULTI-SHOT DIRECTION/);
+        assert.match(result.prompt, /\[Shot 2\]/);
+    } finally {
+        providers.chat = originalChat;
+    }
+});
+
 // --- parseEnhancerJson / isImagePromptEcho -----------------------------------
 
 test('parseEnhancerJson: reads a normal JSON envelope with attributes', () => {
