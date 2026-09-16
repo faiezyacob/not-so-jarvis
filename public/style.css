@@ -1572,7 +1572,7 @@ details.settings-card[open] summary.settings-card-title::after {
     font-family: var(--font-mono);
     font-size: 12px;
     line-height: 1.5;
-    color: var(--accent);
+    color: var(--text-primary);
 }
 
 .md-inline-code {

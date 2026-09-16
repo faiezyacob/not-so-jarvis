@@ -73,11 +73,15 @@ function pressureDetail(usage) {
     return parts.join(' & ');
 }
 
-// Before starting an image generation, free memory by unloading the chat model
-// (if one is loaded and VRAM or RAM is too full) so the image models fit.
+// Before starting a ComfyUI image/video generation, unload the chat model so
+// its weights are not resident while the diffusion/video models load. This is
+// deliberately NOT gated on a memory-pressure threshold: the spike happens
+// *after* the ComfyUI models load, so a pre-generation check can see a healthy
+// machine and leave the chat model resident — then both footprints stack and
+// RAM/VRAM blows past the limit. The chat model is idle during generation, so
+// evicting it up front is always safe (it reloads on the next chat turn).
 async function freeVRAMBeforeImage() {
     const usage = memoryUsage();
-    if (!isConstrained(usage)) return { freed: false, reason: 'memory_ok' };
 
     if (!lastChatModel) {
         return { freed: false, reason: 'no_chat_model' };
@@ -87,7 +91,7 @@ async function freeVRAMBeforeImage() {
     try {
         await providers.unloadModel(provider, model);
         const detail = pressureDetail(usage);
-        console.log(`[vram-manager] ${detail}; unloaded chat model "${model}" before image generation`);
+        console.log(`[vram-manager] unloaded chat model "${model}" before image generation${detail ? ' (' + detail + ')' : ''}`);
         activityLog.record({ type: 'unload', title: 'Chat model unloaded', detail: model + ' \u00B7 to free memory' });
         lastChatModel = null;
         return { freed: true, unloaded: model, usage };

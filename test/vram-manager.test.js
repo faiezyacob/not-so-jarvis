@@ -65,9 +65,26 @@ test('freeVRAMBeforeImage unloads the chat model under RAM pressure without VRAM
     }
 });
 
-test('freeVRAMBeforeImage stays put when memory is fine', async () => {
+test('freeVRAMBeforeImage unloads the chat model even when memory is fine', async () => {
+    systemMonitor.getStats = () => stats(10, 10);
+    activityLog.record = () => {};
+    let unloaded = null;
+    const providers = require('../server/providers');
+    const originalUnload = providers.unloadModel;
+    providers.unloadModel = async (provider, model) => { unloaded = model; };
+    try {
+        vramManager.rememberChatModel('ollama', 'test-model');
+        const result = await vramManager.freeVRAMBeforeImage();
+        assert.equal(result.freed, true);
+        assert.equal(unloaded, 'test-model');
+    } finally {
+        providers.unloadModel = originalUnload;
+    }
+});
+
+test('freeVRAMBeforeImage reports no_chat_model when none is remembered', async () => {
     systemMonitor.getStats = () => stats(10, 10);
     const result = await vramManager.freeVRAMBeforeImage();
     assert.equal(result.freed, false);
-    assert.equal(result.reason, 'memory_ok');
+    assert.equal(result.reason, 'no_chat_model');
 });
