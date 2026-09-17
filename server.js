@@ -743,6 +743,7 @@ async function handleAPI(req, res, urlPath) {
                 json(res, 404, { error: 'No generated image found to upscale. Generate an image first, then upscale it.' });
                 return true;
             }
+            await vramManager.freeVRAMBeforeImage();
             const result = await imageGenerator.upscaleImage(source.rawFilename, {
                 engine: body.engine,
                 profile: body.profile,
@@ -775,6 +776,7 @@ async function handleAPI(req, res, urlPath) {
                 json(res, 404, { error: 'No generated video found to upscale. Generate a video first, then upscale it.' });
                 return true;
             }
+            await vramManager.freeVRAMBeforeImage();
             const result = await videoGenerator.upscaleVideo(source.rawFilename, {
                 engine: body.engine,
                 resolution: body.resolution,
@@ -1499,6 +1501,13 @@ async function handleChatStream(req, res) {
             return;
         }
 
+        // One side resident, always. Routing consults the Ollama chat model and
+        // so does prompt building later in the turn, so free ComfyUI up front
+        // before any of it runs. If the turn turns out to be a generation, the
+        // image/video branch below unloads Ollama again before ComfyUI loads.
+        vramManager.rememberChatModel(provider, model);
+        await vramManager.freeVRAMBeforeChat();
+
         // Route the message through the context-aware task router. The router
         // decides (before any tool runs) whether this message should start a new
         // task, continue/modify the active task, answer a question about it, or
@@ -1984,6 +1993,17 @@ async function handleChatStream(req, res) {
         let fullReply = '';
         const sampling = resolveChatSampling(body);
 
+        // Prompt meta-requests (write / brainstorm a prompt) render the suggested
+        // prompt in a fenced code block. Mark the reply so the UI can offer quick
+        // "Generate Image / Generate Video" actions beneath that block. The
+        // marker is UI state and is stripped before the message reaches the
+        // model again.
+        const resolvedIntentName = decision && decision.resolvedIntent
+            ? decision.resolvedIntent.intent
+            : null;
+        const isPromptSuggestion = resolvedIntentName === 'prompt_writing' ||
+            resolvedIntentName === 'prompt_ideation';
+
         try {
             for await (const chunk of providers.chatStream(provider, contextMessages, model, { think, ...sampling })) {
                 if (chunk.type === 'content') {
@@ -2056,6 +2076,9 @@ async function handleChatStream(req, res) {
             }
 
             // Send completion event with full reply for saving
+            if (isPromptSuggestion && fullReply && /```/.test(fullReply)) {
+                fullReply = fullReply.replace(/\s+$/, '') + '\n\n[[prompt-suggestion]]';
+            }
             res.write(`data: ${JSON.stringify({ done: true, fullReply })}\n\n`);
         } catch (streamErr) {
             res.write(`data: ${JSON.stringify({ error: streamErr.message })}\n\n`);
@@ -2087,9 +2110,8 @@ function directorStageLabel(stage) {
 }
 
 // Director stages interleave chat-model planning with ComfyUI generations. The
-// normal workflow tracks the chat model so freeVRAMBeforeImage/BeforeChat can
-// evict the other model under memory pressure; the Director must do the same or
-// both models stay resident (the RAM/VRAM spike).
+// normal workflow frees ComfyUI before any Ollama work and unloads Ollama before
+// any ComfyUI work; the Director must do the same or both models stay resident.
 async function prepareDirectorLlm(provider, model) {
     vramManager.rememberChatModel(provider, model);
     await vramManager.freeVRAMBeforeChat();
@@ -3604,6 +3626,9 @@ server.listen(PORT, () => {
         type: 'system',
         title: 'Server started',
         detail: 'http://localhost:' + PORT
+    });
+    vramManager.reconcileOnStartup().catch((err) => {
+        console.warn('[vram-manager] Startup reconcile failed:', err.message);
     });
 });
 

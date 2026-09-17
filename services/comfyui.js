@@ -12,6 +12,14 @@ const path = require('path');
 const COMFYUI_URL = (process.env.COMFYUI_URL || 'http://127.0.0.1:8188').replace(/\/+$/, '');
 const CLIENT_ID = 'jarvis-' + Math.random().toString(16).slice(2, 10);
 
+// Whether the app has queued a ComfyUI job since the last unload. ComfyUI keeps
+// its diffusion/video weights resident after a generation, so the VRAM manager
+// uses this to know it must unload them before loading the chat model — even
+// when the memory-pressure metrics still look healthy (which is exactly the
+// case right after a generation evicted the chat model). Lost on restart, which
+// reconcileOnStartup() compensates for.
+let modelsResident = false;
+
 // How long to wait for a generation to finish (image jobs on local hardware
 // can take a while, especially the first model load).
 const GENERATION_TIMEOUT_MS = Number(process.env.COMFYUI_TIMEOUT_MS) || 15 * 60 * 1000;
@@ -237,6 +245,18 @@ async function freeModels() {
         timeout: 30000
     });
     await res.text();
+    modelsResident = false;
+}
+
+// True when a ComfyUI job has been queued since the last successful unload.
+function hasResidentModels() {
+    return modelsResident;
+}
+
+// Reset the residency flag without contacting ComfyUI (e.g. it went offline, so
+// any models it held are gone with the process).
+function forgetResidentModels() {
+    modelsResident = false;
 }
 
 // Submit a workflow graph (API format) and return the prompt id.
@@ -285,6 +305,7 @@ async function queuePrompt(graph) {
         error.code = 'comfyui_api_error';
         throw error;
     }
+    modelsResident = true;
     return json.prompt_id;
 }
 
@@ -814,6 +835,8 @@ module.exports = {
     subscribeProgress,
     unsubscribeProgress,
     freeModels,
+    hasResidentModels,
+    forgetResidentModels,
     interrupt,
     clearQueue,
     cancelCurrentJob,

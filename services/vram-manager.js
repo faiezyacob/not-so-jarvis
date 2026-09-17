@@ -1,27 +1,20 @@
 /* ============================================
    JARVIS — VRAM Manager
-   Checks GPU VRAM before loading/using a model
-   and unloads the other model first when VRAM
-   is getting full, so the next action fits.
+   Keeps the Ollama chat model and ComfyUI models
+   from being loaded at the same time. There are
+   no memory-pressure thresholds: before any chat
+   (Ollama) work the ComfyUI models are unloaded,
+   and before any ComfyUI work every loaded chat
+   model is unloaded — one side resident, always.
    ============================================ */
 
-const systemMonitor = require('./system-monitor');
 const providers = require('../server/providers');
+const providerManager = require('../server/provider-manager');
 const comfyui = require('./comfyui');
 const activityLog = require('./activity-log');
 
-// Percentage of VRAM memory used above which we unload the other model before
-// starting the next action. Configurable via VRAM_UNLOAD_THRESHOLD.
-const UNLOAD_THRESHOLD = Number(process.env.VRAM_UNLOAD_THRESHOLD) || 80;
-
-// System RAM is the other pressure signal: a diffusion/video model can hold
-// most of its weights in RAM while the chat model is still resident, which
-// shows up as a near-full system and heavy swapping (not always as high VRAM).
-// Configurable via RAM_UNLOAD_THRESHOLD.
-const RAM_UNLOAD_THRESHOLD = Number(process.env.RAM_UNLOAD_THRESHOLD) || 90;
-
-// Track the most recently used chat model so we can unload it before an image
-// generation. Set whenever a chat request uses a model.
+// Most recently used chat provider/model, used as a fallback when Ollama's
+// /api/ps cannot be reached. Refreshed on every chat turn.
 let lastChatModel = null; // { provider, model }
 
 // Remember the chat model currently being used by the app.
@@ -31,84 +24,82 @@ function rememberChatModel(provider, model) {
     }
 }
 
-function getThreshold() {
-    return UNLOAD_THRESHOLD;
-}
-
-function getRamThreshold() {
-    return RAM_UNLOAD_THRESHOLD;
-}
-
-// Returns true when a VRAM value exceeds the configured threshold.
-function isVRAMConstrained(usagePercent) {
-    return Number.isFinite(usagePercent) && usagePercent > UNLOAD_THRESHOLD;
-}
-
-// Returns true when a RAM value exceeds the configured threshold.
-function isRAMConstrained(usagePercent) {
-    return Number.isFinite(usagePercent) && usagePercent > RAM_UNLOAD_THRESHOLD;
-}
-
-// Snapshot the two memory-pressure signals, tolerating errors/absence.
-function memoryUsage() {
+// Every model Ollama is currently holding in memory (authoritative), with the
+// last remembered chat model as a fallback if /api/ps is unavailable.
+async function loadedChatModels() {
+    const names = new Set();
     try {
-        const stats = systemMonitor.getStats();
-        const vram = stats && stats.vram && stats.vram.available ? stats.vram.usage : null;
-        const ram = stats && stats.ram ? stats.ram.usage : null;
-        return { vram, ram };
-    } catch {
-        return { vram: null, ram: null };
-    }
-}
-
-// True when either VRAM or system RAM is over its threshold.
-function isConstrained(usage) {
-    return isVRAMConstrained(usage.vram) || isRAMConstrained(usage.ram);
-}
-
-function pressureDetail(usage) {
-    const parts = [];
-    if (isVRAMConstrained(usage.vram)) parts.push('VRAM ' + usage.vram + '%');
-    if (isRAMConstrained(usage.ram)) parts.push('RAM ' + usage.ram + '%');
-    return parts.join(' & ');
-}
-
-// Before starting a ComfyUI image/video generation, unload the chat model so
-// its weights are not resident while the diffusion/video models load. This is
-// deliberately NOT gated on a memory-pressure threshold: the spike happens
-// *after* the ComfyUI models load, so a pre-generation check can see a healthy
-// machine and leave the chat model resident — then both footprints stack and
-// RAM/VRAM blows past the limit. The chat model is idle during generation, so
-// evicting it up front is always safe (it reloads on the next chat turn).
-async function freeVRAMBeforeImage() {
-    const usage = memoryUsage();
-
-    if (!lastChatModel) {
-        return { freed: false, reason: 'no_chat_model' };
-    }
-
-    const { provider, model } = lastChatModel;
-    try {
-        await providers.unloadModel(provider, model);
-        const detail = pressureDetail(usage);
-        console.log(`[vram-manager] unloaded chat model "${model}" before image generation${detail ? ' (' + detail + ')' : ''}`);
-        activityLog.record({ type: 'unload', title: 'Chat model unloaded', detail: model + ' \u00B7 to free memory' });
-        lastChatModel = null;
-        return { freed: true, unloaded: model, usage };
+        const status = await providerManager.getOllamaStatus();
+        for (const model of (status && status.running) || []) {
+            if (model && model.name) names.add(model.name);
+        }
     } catch (err) {
-        console.warn('[vram-manager] Failed to unload chat model before image generation:', err.message);
+        console.warn('[vram-manager] Could not read Ollama status:', err.message);
+    }
+    if (lastChatModel && lastChatModel.model) names.add(lastChatModel.model);
+    return Array.from(names);
+}
+
+// Unload every loaded chat model before starting a ComfyUI image/video action.
+// The chat model is idle during generation, so evicting it is always safe (it
+// reloads on the next chat turn) and guarantees the diffusion/video weights
+// never load on top of it.
+async function freeVRAMBeforeImage() {
+    const models = await loadedChatModels();
+    if (!models.length) return { freed: false, reason: 'no_chat_model' };
+
+    const unloaded = [];
+    for (const model of models) {
+        try {
+            await providers.unloadModel('ollama', model);
+            unloaded.push(model);
+        } catch (err) {
+            console.warn(`[vram-manager] Failed to unload chat model "${model}":`, err.message);
+        }
+    }
+    if (!unloaded.length) return { freed: false, reason: 'unload_failed' };
+
+    console.log(`[vram-manager] unloaded chat model(s) ${unloaded.join(', ')} before ComfyUI`);
+    activityLog.record({
+        type: 'unload',
+        title: 'Chat model unloaded',
+        detail: unloaded.join(', ') + ' \u00B7 before ComfyUI'
+    });
+    lastChatModel = null;
+    return { freed: true, unloaded: unloaded.length === 1 ? unloaded[0] : unloaded };
+}
+
+// Unload ComfyUI models before any chat (Ollama) work. ComfyUI keeps its
+// weights resident after a generation, so the next Ollama call would otherwise
+// load the chat model alongside them. `comfyui.queuePrompt` tracks whether a
+// job has been queued since the last unload; when it has not, there is nothing
+// of ours to free and we skip the round-trip.
+async function freeVRAMBeforeChat() {
+    const resident = typeof comfyui.hasResidentModels === 'function' && comfyui.hasResidentModels();
+    if (!resident) return { freed: false, reason: 'no_comfy_models' };
+
+    try {
+        if (!(await comfyui.isAvailable())) {
+            // ComfyUI is down; nothing of its remains resident.
+            if (typeof comfyui.forgetResidentModels === 'function') comfyui.forgetResidentModels();
+            return { freed: false, reason: 'comfy_offline' };
+        }
+        await comfyui.freeModels();
+        console.log('[vram-manager] unloaded ComfyUI models before chat');
+        activityLog.record({ type: 'unload', title: 'ComfyUI models unloaded', detail: 'before chat' });
+        return { freed: true, unloaded: 'comfyui-models' };
+    } catch (err) {
+        console.warn('[vram-manager] Failed to free ComfyUI memory before chat:', err.message);
         return { freed: false, reason: 'unload_failed' };
     }
 }
 
-// Unconditionally unload ComfyUI models. Unlike freeVRAMBeforeChat this does
-// not wait for memory pressure to cross a threshold: multi-stage Director runs
-// pile image and video models into VRAM/RAM, and a single metric often stays
-// under the threshold while the combined footprint keeps growing. Called at the
-// end of each Director stage so the next stage (or chat) starts clean.
+// Unconditionally unload ComfyUI models. Used at the end of a Director stage so
+// the next stage (or chat) starts clean, regardless of the residency flag.
 async function freeComfyModels(reason) {
     try {
         if (!(await comfyui.isAvailable())) {
+            if (typeof comfyui.forgetResidentModels === 'function') comfyui.forgetResidentModels();
             return { freed: false, reason: 'comfy_offline' };
         }
         await comfyui.freeModels();
@@ -121,35 +112,29 @@ async function freeComfyModels(reason) {
     }
 }
 
-// Before using the chat model, free memory by unloading ComfyUI models (the
-// other model) when VRAM or system RAM is too full.
-async function freeVRAMBeforeChat() {
-    const usage = memoryUsage();
-    if (!isConstrained(usage)) return { freed: false, reason: 'memory_ok' };
-
+// Called once at server startup. A previous process can exit while ComfyUI is
+// still holding models, and the in-memory residency/chat tracking is gone with
+// it, so free ComfyUI now. Loaded Ollama models are discovered on demand by
+// freeVRAMBeforeImage, so no seeding is needed.
+async function reconcileOnStartup() {
+    if (typeof comfyui.forgetResidentModels === 'function') comfyui.forgetResidentModels();
     try {
         if (!(await comfyui.isAvailable())) {
-            return { freed: false, reason: 'comfy_offline' };
+            return { reconciled: false, reason: 'comfy_offline' };
         }
         await comfyui.freeModels();
-        console.log(`[vram-manager] ${pressureDetail(usage)}; unloaded ComfyUI models before chat`);
-        activityLog.record({ type: 'unload', title: 'ComfyUI models unloaded', detail: 'to free memory before chat' });
-        return { freed: true, unloaded: 'comfyui-models', usage };
+        console.log('[vram-manager] freed ComfyUI models left over from a previous session');
+        return { reconciled: true, freed: 'comfyui-models' };
     } catch (err) {
-        console.warn('[vram-manager] Failed to free ComfyUI memory before chat:', err.message);
-        return { freed: false, reason: 'unload_failed' };
+        console.warn('[vram-manager] Startup ComfyUI reconcile failed:', err.message);
+        return { reconciled: false, reason: 'unload_failed' };
     }
 }
 
 module.exports = {
-    UNLOAD_THRESHOLD,
-    RAM_UNLOAD_THRESHOLD,
-    getThreshold,
-    getRamThreshold,
-    isConstrained,
-    memoryUsage,
     rememberChatModel,
     freeVRAMBeforeChat,
     freeVRAMBeforeImage,
-    freeComfyModels
+    freeComfyModels,
+    reconcileOnStartup
 };

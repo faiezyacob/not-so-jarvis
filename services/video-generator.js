@@ -921,6 +921,10 @@ function hasFuzzyVideoUpscaleSignal(norm) {
         const token = String(raw || '').replace(/[^a-z]/g, '');
         if (token.length < 5 || token.length > 10) continue;
         for (const target of targets) {
+            // Keep the head of the verb: misspelled upscales start with "u",
+            // while "scale"/"scaled"/"scaling"/"scaler" (distance 2) are plain
+            // prompt words and must not hijack a generation request.
+            if (token[0] !== target[0]) continue;
             if (levenshteinDistance(token, target) <= 2) return true;
         }
     }

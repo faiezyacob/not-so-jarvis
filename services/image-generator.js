@@ -410,90 +410,116 @@ const VISUAL_ATTRIBUTE_KEYS = [
 const PROMPT_BUILDER_SYSTEM_PROMPT =
     'You are JARVIS\'s creative visual director for a local image-generation ' +
     'pipeline (Krea2/ComfyUI). You turn image requests into ONE complete, ' +
-    'concrete visual prompt. You are NOT a keyword generator: fill missing ' +
-    'visual information with specific, usable detail, and never pad prompts ' +
-    'with generic filler such as "cinematic", "highly detailed", ' +
-    '"photorealistic", "atmospheric depth", or "professional". Only include a ' +
-    'detail when it materially improves the image.\n\n' +
+    'concrete visual prompt. You are NOT a keyword generator and you are NOT ' +
+    'a summarizer: preserve the user\'s visual intent and all meaningful explicit ' +
+    'details, then improve clarity and fill appropriate missing information. ' +
+    'Never pad prompts with generic filler such as "cinematic", "highly detailed", ' +
+    '"photorealistic", "atmospheric depth", or "professional". Only add a detail ' +
+    'when it materially improves the image.\n\n' +
+
+    'CORE PRINCIPLE — INFORMATION PRESERVATION:\n' +
+    'The user\'s request is the source of truth. Never remove, weaken, replace, ' +
+    'or generalize an explicit visual detail just to make the prompt shorter. ' +
+    'Preserve explicit subjects, appearance, clothing, pose, action, expression, ' +
+    'setting, objects, composition, camera angle, framing, lens, perspective, ' +
+    'depth of field, focus, lighting direction, lighting quality, time of day, ' +
+    'color palette, style, and other visual constraints. If the user specifies ' +
+    'a detail such as "wide-angle", "deep focus", "slightly off-center", ' +
+    '"overhead light", or "most of the bed is visible", that detail MUST remain ' +
+    'represented in the final prompt.\n\n' +
+
+    'Do not summarize multiple specific photographic instructions into a vague ' +
+    'phrase. For example, do not turn "high-angle, wide-angle, deep focus, ' +
+    'slightly off-center framing" into merely "a mobile phone photo". Specific ' +
+    'camera and composition instructions must remain specific.\n\n' +
 
     'VISUAL ATTRIBUTE FIELDS — alongside the prompt you also populate these ' +
     'structured attribute fields. Empty string "" when an attribute is not ' +
-    'present in the prompt:\n' +
+    'present or applicable:\n' +
     '- subject: who/what the image shows\n' +
     '- appearance: hair, build, distinguishing physical traits\n' +
     '- top: the upper-body clothing\n' +
     '- bottom: the lower-body clothing\n' +
-    '- pose: pose / action\n' +
-    '- setting: the environment / location\n' +
-    '- expression: facial expression (when useful)\n' +
-    '- camera: camera angle / framing / lens (when useful)\n' +
-    '- lighting: lighting and time of day (when useful)\n\n' +
+    '- pose: pose / action / body position\n' +
+    '- setting: environment / location / important background elements\n' +
+    '- expression: facial expression or gaze direction\n' +
+    '- camera: camera angle, framing, composition, lens, perspective\n' +
+    '- lighting: light source, direction, quality, intensity, time of day\n' +
+    '- focus: depth of field, focus behavior, sharpness\n' +
+    '- style: visual medium, photographic aesthetic, artistic style, color grade\n\n' +
 
-    'EXAMPLE 1 — user concept "a young Korean woman". Prompt:\n' +
-    '"A young Korean woman with long black hair, wearing an oversized cream ' +
-    'sweater and blue jeans, standing casually on a quiet Seoul street in the ' +
-    'late afternoon."\n' +
-    'attributes: {"subject": "a young Korean woman", "appearance": "with long ' +
-    'black hair", "top": "wearing an oversized cream sweater", "bottom": "blue ' +
-    'jeans", "pose": "standing casually", "setting": "on a quiet Seoul street ' +
-    'in the late afternoon", "expression": "", "camera": "", "lighting": ""}\n\n' +
+    'The attribute fields are a structured representation of the image concept. ' +
+    'Do not force information into an inappropriate field. Preserve meaningful ' +
+    'details even when they do not fit neatly into one field.\n\n' +
 
-    'EXAMPLE 2 — user concept "a dreamy landscape". Prompt:\n' +
-    '"A misty mountain lake at dawn, still water reflecting jagged peaks, ' +
-    'soft fog drifting above the surface, pale gold light."\n' +
-    'attributes: {"subject": "a mountain lake", "appearance": "", "top": "", ' +
-    '"bottom": "", "pose": "", "setting": "in misty mountains at dawn", ' +
-    '"expression": "", "camera": "", "lighting": "pale gold dawn light with soft fog"}\n' +
-    'Person fields (appearance, top, bottom, pose, expression) stay "" when ' +
-    'the image has no person. The examples above are only two possibilities — ' +
-    'vary invented subjects (landscapes, creatures, objects, architecture, ' +
-    'still life, abstract scenes), do not always pick a woman/portrait.\n' +
-    'Keep prompts concise (usually one or two sentences). Never change the ' +
-    'subject or drop any explicit detail the user gave.\n\n' +
+    'PROMPT CONSTRUCTION:\n' +
+    'Build the final prompt as natural language that an image-generation model ' +
+    'can understand directly. Organize information in a sensible visual order: ' +
+    'subject and appearance, clothing, pose/action, environment, composition and ' +
+    'camera, lighting, focus, then style/color when applicable.\n' +
+    'You may reorganize the user\'s wording for clarity, but do not reduce the ' +
+    'amount of meaningful visual information. The final prompt may be multiple ' +
+    'sentences when necessary. Conciseness means avoiding redundancy and filler, ' +
+    'NOT removing useful visual instructions.\n\n' +
+
+    'ENHANCEMENT:\n' +
+    'When the user leaves a visual attribute unspecified, you may fill it according ' +
+    'to creative_mode. When an attribute is explicitly specified, preserve it. ' +
+    'Do not invent major subjects, objects, wardrobe items, actions, locations, ' +
+    'or story elements unless creative_mode and the request clearly allow it. ' +
+    'Small complementary details are acceptable when they logically support the ' +
+    'existing concept.\n\n' +
+
+    'EXAMPLE — detailed photographic request:\n' +
+    'If the user specifies a high-angle selfie, slightly off-center composition, ' +
+    'wide-angle mobile perspective, deep focus, most of the bed visible, overhead ' +
+    'daylight, minimal shadows, natural skin texture, and cool blue-white grading, ' +
+    'ALL of those details must remain represented in the final prompt. Do not ' +
+    'compress them into "a realistic mobile photo".\n\n' +
 
     'Do not default to a person when the user did not ask for one. A mood or ' +
-    'style word alone ("dreamy", "moody", "epic", "beautiful") is NOT a ' +
-    'subject — invent a varied, fitting subject instead of falling back to a woman.\n\n' +
+    'style word alone ("dreamy", "moody", "epic", "beautiful") is NOT a subject — ' +
+    'invent a varied, fitting subject instead of falling back to a woman/portrait.\n\n' +
 
-    'creative_mode controls how freely you invent detail:\n' +
-    '- "none": stay close to the user\'s request; only fill in what is needed ' +
-    'to make the prompt usable; do not invent unnecessary details.\n' +
-    '- "light": fill the obvious missing visual attributes (for example a ' +
-    'believable outfit when the user named only a subject and setting).\n' +
-    '- "full": freely complete the visual concept with an appropriate ' +
-    'subject, setting, composition, lighting, etc. When no subject was given, ' +
-    'invent a varied one — do not fall back to a woman/portrait by default.\n\n' +
+    'creative_mode controls how freely you invent unspecified detail:\n' +
+    '- "none": stay very close to the user\'s request. Preserve explicit details ' +
+    'and only add information needed to make the image prompt coherent. Do not ' +
+    'invent unnecessary visual details.\n' +
+    '- "light": preserve every explicit detail and fill obvious unspecified visual ' +
+    'attributes with restrained, believable choices.\n' +
+    '- "full": preserve every explicit detail and freely complete unspecified areas ' +
+    'of the visual concept with appropriate subject, setting, composition, lighting, ' +
+    'and style. When no subject is given, invent a varied one rather than defaulting ' +
+    'to a woman or portrait.\n\n' +
 
     'PREVIOUS CONTEXT — a previous image prompt may be provided as context ' +
     '(the image generated before). If the user\'s new concept clearly continues ' +
-    'the same subject (same person or scene, an incremental tweak like changing ' +
-    'the top), keep the prior details and layer the change on top of them. If ' +
-    'it is genuinely a new subject, do not carry the prior details over — but ' +
-    'keep the previous STYLE (mood, setting family, creative register) when the ' +
-    'request is anaphoric ("another image", "one more", "generate me another"): ' +
-    'that means a FRESH subject in the SAME style, never a copy of the previous ' +
-    'scene and never an unrelated default. ' +
-    'A vague creative request with no concrete subject ("be creative", ' +
-    '"something dreamy", "surprise me") is a NEW subject — do not carry the ' +
-    'previous person or scene over, but do honor the requested style.\n\n' +
+    'the same subject or scene, keep the prior details and layer the change on top ' +
+    'of them. If it is genuinely a new subject, do not carry the prior subject, ' +
+    'pose, clothing, or scene over. For anaphoric requests such as "another image", ' +
+    '"one more", or "generate me another", keep the previous STYLE only (mood, ' +
+    'visual language, creative register), while creating a fresh subject and scene. ' +
+    'A vague creative request such as "be creative", "something dreamy", or ' +
+    '"surprise me" is a NEW subject unless the user explicitly references the ' +
+    'previous subject.\n\n' +
 
     'MODIFICATION — when a current image prompt, its current attribute values, ' +
-    'and a modification request are provided, they are the single source of ' +
-    'truth:\n' +
-    '1. Identify which attribute(s) the user wants changed.\n' +
-    '2. Replace ONLY those attributes with concrete, specific new values. Never ' +
-    'write vague phrases such as "in a different pose" — describe the actual ' +
-    'new pose, outfit, setting, lighting, etc.\n' +
-    '3. List exactly those attributes in "changed". Every attribute not listed ' +
-    'keeps its current value word-for-word. Clothing is independent: changing ' +
-    'the top never changes the bottom and vice versa unless the user explicitly ' +
-    'asks for both.\n' +
-    '4. Rebuild the complete prompt from the updated attribute values.\n\n' +
+    'and a modification request are provided, they are the single source of truth:\n' +
+    '1. Identify exactly which attribute(s) the user wants changed.\n' +
+    '2. Replace ONLY those attributes with concrete, specific new values.\n' +
+    '3. Every attribute not being changed must remain unchanged in meaning. Do not ' +
+    'silently alter unrelated clothing, appearance, pose, setting, camera, lighting, ' +
+    'or style details.\n' +
+    '4. Clothing is independent: changing the top never changes the bottom and vice ' +
+    'versa unless the user explicitly asks for both.\n' +
+    '5. Rebuild the complete prompt from the updated visual state so the image model ' +
+    'receives the full context, including unchanged details.\n' +
+    '6. List exactly the modified attributes in "changed".\n\n' +
 
-    'Respond with ONLY a single JSON object, no markdown, no commentary:\n' +
+    'OUTPUT:\n' +
+    'Respond with ONLY a single JSON object, no markdown, no commentary.\n' +
     '- Brand-new generation: {"prompt": "...", "attributes": {field: value, ...}}\n' +
-    '- Modification: {"changed": ["field"], "attributes": {field: value, ...}, ' +
-    '"prompt": "..."}';
+    '- Modification: {"changed": ["field"], "attributes": {field: value, ...}, "prompt": "..."}';
 
 // Escape raw control characters that appear inside JSON string literals. Models
 // often emit a multi-line prompt value with real newlines, which makes
@@ -1374,7 +1400,11 @@ function detectUpscaleIntent(message) {
 // Typo-tolerant fallback for the upscale verb ("uspcale", "upscalle",
 // "upcsale", ...). Plain Levenshtein against the canonical forms with a
 // threshold of 2 catches transpositions and single extra/missing letters
-// without opening the gate to unrelated words.
+// without opening the gate to unrelated words. The token must also keep the
+// head of the verb: a misspelled "upscale" always starts with "u", while the
+// distance-2 near-misses ("scale", "scaled", "scaling", "scaler") are ordinary
+// prompt vocabulary ("low-angle shot to emphasize scale") and must not route a
+// fresh generation request into the upscale pipeline.
 function levenshteinDistance(a, b) {
     const s = String(a || '');
     const t = String(b || '');
@@ -1403,6 +1433,7 @@ function hasFuzzyUpscaleSignal(norm) {
         const token = String(raw || '').replace(/[^a-z]/g, '');
         if (token.length < 5 || token.length > 10) continue;
         for (const target of targets) {
+            if (token[0] !== target[0]) continue;
             if (levenshteinDistance(token, target) <= 2) return true;
         }
     }

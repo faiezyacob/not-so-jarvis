@@ -158,7 +158,6 @@ Copy `.env.example` to `.env` and adjust as needed. Variables already set by the
 | `OLLAMA_URL` | `http://localhost:11434` | Ollama endpoint |
 | `COMFYUI_URL` | `http://127.0.0.1:8188` | ComfyUI instance |
 | `COMFYUI_TIMEOUT_MS` | `900000` | Generation timeout (15 min) |
-| `VRAM_UNLOAD_THRESHOLD` | `80` | VRAM % that triggers model unloading |
 
 ### ComfyUI paths (usually auto-detected)
 

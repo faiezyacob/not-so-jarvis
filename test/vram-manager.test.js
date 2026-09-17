@@ -1,90 +1,120 @@
 /* ============================================
    JARVIS — VRAM manager tests
-   Covers the memory-pressure gate (VRAM and
-   system RAM). system-monitor is stubbed so
-   these run offline and fast. Run with: npm test
+   Covers the deterministic eviction rules:
+   free every loaded chat model before ComfyUI,
+   free ComfyUI before any chat. Ollama/ComfyUI
+   are stubbed so these run offline and fast.
+   Run with: npm test
    ============================================ */
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const systemMonitor = require('../services/system-monitor');
+const providers = require('../server/providers');
+const providerManager = require('../server/provider-manager');
 const activityLog = require('../services/activity-log');
+const comfyui = require('../services/comfyui');
 const vramManager = require('../services/vram-manager');
 
 const originals = {
-    getStats: systemMonitor.getStats,
-    record: activityLog.record
+    unloadModel: providers.unloadModel,
+    getOllamaStatus: providerManager.getOllamaStatus,
+    record: activityLog.record,
+    isAvailable: comfyui.isAvailable,
+    freeModels: comfyui.freeModels,
+    hasResidentModels: comfyui.hasResidentModels,
+    forgetResidentModels: comfyui.forgetResidentModels
 };
 
 test.afterEach(() => {
-    systemMonitor.getStats = originals.getStats;
+    providers.unloadModel = originals.unloadModel;
+    providerManager.getOllamaStatus = originals.getOllamaStatus;
     activityLog.record = originals.record;
+    comfyui.isAvailable = originals.isAvailable;
+    comfyui.freeModels = originals.freeModels;
+    comfyui.hasResidentModels = originals.hasResidentModels;
+    comfyui.forgetResidentModels = originals.forgetResidentModels;
 });
 
-function stats(vram, ram) {
-    return {
-        cpu: {},
-        ram: { usage: ram },
-        gpu: {},
-        vram: { available: vram !== null, usage: vram === null ? 0 : vram }
-    };
+function stubComfy({ available = true, resident = true, freed } = {}) {
+    comfyui.isAvailable = async () => available;
+    comfyui.hasResidentModels = () => resident;
+    comfyui.freeModels = async () => { if (freed) freed.called = true; };
 }
 
-test('isConstrained: true when VRAM or RAM is over its threshold', () => {
-    assert.equal(vramManager.isConstrained({ vram: 95, ram: 10 }), true);
-    assert.equal(vramManager.isConstrained({ vram: 10, ram: 95 }), true);
-    assert.equal(vramManager.isConstrained({ vram: 40, ram: 40 }), false);
-    assert.equal(vramManager.isConstrained({ vram: null, ram: null }), false);
-});
-
-test('memoryUsage reads VRAM and RAM from the system monitor', () => {
-    systemMonitor.getStats = () => stats(72, 88);
-    assert.deepEqual(vramManager.memoryUsage(), { vram: 72, ram: 88 });
-});
-
-test('memoryUsage reports null VRAM when no GPU is available', () => {
-    systemMonitor.getStats = () => stats(null, 88);
-    assert.deepEqual(vramManager.memoryUsage(), { vram: null, ram: 88 });
-});
-
-test('freeVRAMBeforeImage unloads the chat model under RAM pressure without VRAM pressure', async () => {
-    systemMonitor.getStats = () => stats(10, 99);
+test('freeVRAMBeforeImage unloads every model Ollama has loaded', async () => {
     activityLog.record = () => {};
-    let unloaded = null;
-    const providers = require('../server/providers');
-    const originalUnload = providers.unloadModel;
-    providers.unloadModel = async (provider, model) => { unloaded = model; };
-    try {
-        vramManager.rememberChatModel('ollama', 'test-model');
-        const result = await vramManager.freeVRAMBeforeImage();
-        assert.equal(result.freed, true);
-        assert.equal(unloaded, 'test-model');
-    } finally {
-        providers.unloadModel = originalUnload;
-    }
+    providerManager.getOllamaStatus = async () => ({
+        online: true,
+        running: [{ name: 'llama3:8b', vramBytes: 100 }, { name: 'qwen2:7b', vramBytes: 90 }]
+    });
+    const unloaded = [];
+    providers.unloadModel = async (provider, model) => { unloaded.push(model); };
+
+    const result = await vramManager.freeVRAMBeforeImage();
+    assert.equal(result.freed, true);
+    assert.deepEqual(unloaded.sort(), ['llama3:8b', 'qwen2:7b']);
 });
 
-test('freeVRAMBeforeImage unloads the chat model even when memory is fine', async () => {
-    systemMonitor.getStats = () => stats(10, 10);
+test('freeVRAMBeforeImage falls back to the remembered chat model when Ollama is unreachable', async () => {
     activityLog.record = () => {};
-    let unloaded = null;
-    const providers = require('../server/providers');
-    const originalUnload = providers.unloadModel;
-    providers.unloadModel = async (provider, model) => { unloaded = model; };
-    try {
-        vramManager.rememberChatModel('ollama', 'test-model');
-        const result = await vramManager.freeVRAMBeforeImage();
-        assert.equal(result.freed, true);
-        assert.equal(unloaded, 'test-model');
-    } finally {
-        providers.unloadModel = originalUnload;
-    }
+    providerManager.getOllamaStatus = async () => { throw new Error('offline'); };
+    const unloaded = [];
+    providers.unloadModel = async (provider, model) => { unloaded.push(model); };
+
+    vramManager.rememberChatModel('ollama', 'test-model');
+    const result = await vramManager.freeVRAMBeforeImage();
+    assert.equal(result.freed, true);
+    assert.deepEqual(unloaded, ['test-model']);
 });
 
-test('freeVRAMBeforeImage reports no_chat_model when none is remembered', async () => {
-    systemMonitor.getStats = () => stats(10, 10);
+test('freeVRAMBeforeImage reports no_chat_model when nothing is loaded', async () => {
+    providerManager.getOllamaStatus = async () => ({ online: true, running: [] });
     const result = await vramManager.freeVRAMBeforeImage();
     assert.equal(result.freed, false);
     assert.equal(result.reason, 'no_chat_model');
+});
+
+test('freeVRAMBeforeChat unloads ComfyUI models when they are resident', async () => {
+    activityLog.record = () => {};
+    const freed = {};
+    stubComfy({ resident: true, freed });
+    const result = await vramManager.freeVRAMBeforeChat();
+    assert.equal(result.freed, true);
+    assert.equal(freed.called, true);
+});
+
+test('freeVRAMBeforeChat skips ComfyUI when nothing is resident', async () => {
+    const freed = {};
+    stubComfy({ resident: false, freed });
+    const result = await vramManager.freeVRAMBeforeChat();
+    assert.equal(result.freed, false);
+    assert.equal(result.reason, 'no_comfy_models');
+    assert.equal(freed.called, undefined);
+});
+
+test('freeVRAMBeforeChat clears residency when ComfyUI is offline', async () => {
+    let forgotten = false;
+    comfyui.isAvailable = async () => false;
+    comfyui.hasResidentModels = () => true;
+    comfyui.forgetResidentModels = () => { forgotten = true; };
+    const result = await vramManager.freeVRAMBeforeChat();
+    assert.equal(result.freed, false);
+    assert.equal(result.reason, 'comfy_offline');
+    assert.equal(forgotten, true);
+});
+
+test('reconcileOnStartup frees ComfyUI models left over from a previous session', async () => {
+    const freed = {};
+    stubComfy({ available: true, resident: false, freed });
+    const result = await vramManager.reconcileOnStartup();
+    assert.equal(result.reconciled, true);
+    assert.equal(freed.called, true);
+});
+
+test('reconcileOnStartup is a no-op when ComfyUI is offline', async () => {
+    stubComfy({ available: false });
+    const result = await vramManager.reconcileOnStartup();
+    assert.equal(result.reconciled, false);
+    assert.equal(result.reason, 'comfy_offline');
 });

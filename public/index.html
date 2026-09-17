@@ -16,25 +16,6 @@
             <span class="header-subtitle">LOCAL INTELLIGENCE SYSTEM</span>
         </div>
         <div class="header-right">
-            <div class="model-switcher-wrap">
-                <button class="model-pill" id="modelPill" type="button" aria-haspopup="true" aria-expanded="false" title="Switch chat model">
-                    <span class="model-pill-dot" id="modelPillDot"></span>
-                    <span class="model-pill-name" id="modelPillName">No model</span>
-                    <svg class="model-pill-caret" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                        <polyline points="6 9 12 15 18 9"></polyline>
-                    </svg>
-                </button>
-                <div class="model-switcher" id="modelSwitcher" hidden>
-                    <div class="model-switcher-head">
-                        <span class="model-switcher-title">CHAT MODEL</span>
-                        <span class="model-switcher-sub" id="modelSwitcherSub"></span>
-                    </div>
-                    <div class="model-switcher-list" id="modelSwitcherList"></div>
-                    <button class="model-switcher-browse" id="modelSwitcherBrowse" type="button">Browse models…</button>
-                </div>
-            </div>
-            <span class="status-label">SYSTEM ONLINE</span>
-            <span class="status-dot"></span>
             <button class="settings-btn" id="settingsBtn" aria-label="Settings">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <circle cx="12" cy="12" r="3"></circle>
@@ -767,6 +748,23 @@
                     multiple
                     hidden
                 >
+                <div class="model-switcher-wrap">
+                    <button class="model-pill" id="modelPill" type="button" aria-haspopup="true" aria-expanded="false" title="Switch chat model">
+                        <span class="model-pill-dot" id="modelPillDot"></span>
+                        <span class="model-pill-name" id="modelPillName">No model</span>
+                        <svg class="model-pill-caret" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="6 9 12 15 18 9"></polyline>
+                        </svg>
+                    </button>
+                    <div class="model-switcher" id="modelSwitcher" hidden>
+                        <div class="model-switcher-head">
+                            <span class="model-switcher-title">CHAT MODEL</span>
+                            <span class="model-switcher-sub" id="modelSwitcherSub"></span>
+                        </div>
+                        <div class="model-switcher-list" id="modelSwitcherList"></div>
+                        <button class="model-switcher-browse" id="modelSwitcherBrowse" type="button">Browse models…</button>
+                    </div>
+                </div>
                 <input
                     type="text"
                     id="chatInput"
@@ -968,6 +966,7 @@
     <script src="js/model-switcher.js"></script>
     <script src="js/conversations.js"></script>
     <script src="js/director.js"></script>
+    <script src="js/chat-suggestions.js"></script>
     <script src="js/chat.js"></script>
     <script src="js/voice-input.js"></script>
     <script src="js/voice-output.js"></script>

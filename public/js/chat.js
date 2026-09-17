@@ -594,10 +594,19 @@ const Chat = (() => {
         const parsed = (window.DirectorUI && typeof window.DirectorUI.extract === 'function')
             ? window.DirectorUI.extract(markdown)
             : { text: markdown, cards: [] };
-        contentEl.innerHTML = Markdown.parse(parsed.text);
+        // A suggested prompt (prompt-writing / ideation reply) is persisted with
+        // a [[prompt-suggestion]] marker. Strip it, then offer quick generation
+        // cards beneath the code block that holds the prompt.
+        const suggestion = (window.ChatSuggestions && typeof window.ChatSuggestions.extract === 'function')
+            ? window.ChatSuggestions.extract(parsed.text)
+            : { text: parsed.text, suggested: false };
+        contentEl.innerHTML = Markdown.parse(suggestion.text);
         collapseUpscalePairs(contentEl);
         if (window.VideoPlayer && typeof window.VideoPlayer.scan === 'function') {
             window.VideoPlayer.scan(contentEl);
+        }
+        if (suggestion.suggested && window.ChatSuggestions && typeof window.ChatSuggestions.attach === 'function') {
+            window.ChatSuggestions.attach(contentEl);
         }
         if (window.DirectorUI && typeof window.DirectorUI.render === 'function') {
             parsed.cards.forEach((card) => window.DirectorUI.render(contentEl, card));
@@ -948,6 +957,10 @@ const Chat = (() => {
                         }
                         if (data.done) {
                             fullReply = data.fullReply;
+                            // Re-render so a persisted marker (suggested prompt)
+                            // can attach its generation cards.
+                            setAiContent(contentEl, fullReply);
+                            scrollActiveStream(aiMessageEl);
                         }
                     }
                 }
@@ -958,9 +971,12 @@ const Chat = (() => {
                 await Conversations.saveAssistantMessage(conversationId, fullReply);
                 renderConversationList();
                 if (typeof VoiceOutput !== 'undefined' && VoiceOutput && typeof VoiceOutput.speak === 'function') {
-                    const spoken = (window.DirectorUI && typeof window.DirectorUI.strip === 'function')
+                    let spoken = (window.DirectorUI && typeof window.DirectorUI.strip === 'function')
                         ? window.DirectorUI.strip(fullReply)
                         : fullReply;
+                    if (window.ChatSuggestions && typeof window.ChatSuggestions.strip === 'function') {
+                        spoken = window.ChatSuggestions.strip(spoken);
+                    }
                     VoiceOutput.speak(spoken);
                 }
             }

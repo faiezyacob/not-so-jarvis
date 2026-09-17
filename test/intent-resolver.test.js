@@ -292,6 +292,9 @@ test('routeMessage: a prompt-writing request stays chat even though "image" is p
     });
     assert.equal(d.shouldExecuteTool, false);
     assert.equal(d.task, null);
+    // The server reads this back to mark the reply with [[prompt-suggestion]]
+    // so the UI can offer quick Generate Image / Generate Video actions.
+    assert.equal(d.resolvedIntent && d.resolvedIntent.intent, 'prompt_writing');
 });
 
 test('routeMessage: a text-to-video request without a mode returns a clarification decision', async () => {

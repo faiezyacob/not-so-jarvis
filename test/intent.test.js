@@ -107,6 +107,13 @@ test('detectUpscaleIntent: concept questions and passing mentions do not fire', 
     assert.equal(imageGenerator.detectUpscaleIntent('upscaling is slow'), null);
 });
 
+test('detectUpscaleIntent: prompt words near "upscale" do not hijack a generation', () => {
+    assert.equal(imageGenerator.detectUpscaleIntent('Create a cinematic image of a lone astronaut, low-angle shot to emphasize scale'), null);
+    assert.equal(imageGenerator.detectUpscaleIntent('generate an image of a neon city, boost the scale of the towers'), null);
+    assert.equal(imageGenerator.detectUpscaleIntent('scale this image'), null);
+    assert.equal(imageGenerator.detectUpscaleIntent('draw an image with scaling patterns'), null);
+});
+
 // --- videoRequestStrength ----------------------------------------------------
 
 test('videoRequestStrength: explicit video requests are definite', () => {
@@ -134,6 +141,11 @@ test('detectVideoUpscaleIntent: requires an explicit video noun', () => {
 
 test('detectVideoUpscaleIntent: concept questions do not fire', () => {
     assert.equal(videoGenerator.detectVideoUpscaleIntent('what is video upscaling?'), null);
+});
+
+test('detectVideoUpscaleIntent: prompt words near "upscale" do not fire', () => {
+    assert.equal(videoGenerator.detectVideoUpscaleIntent('generate a video that emphasizes scale'), null);
+    assert.equal(videoGenerator.detectVideoUpscaleIntent('create a video clip with scaling towers'), null);
 });
 
 // --- stripVideoRequestMeta / isRawRequestEcho --------------------------------

@@ -199,22 +199,25 @@ body {
     background: var(--accent-faint);
 }
 
-/* --- Model Switcher (header pill) --- */
+/* --- Model Switcher (composer pill) --- */
 
 .model-switcher-wrap {
     position: relative;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
 }
 
 .model-pill {
     display: flex;
     align-items: center;
     gap: 7px;
-    height: 28px;
-    padding: 0 10px;
-    max-width: 220px;
+    height: 40px;
+    padding: 0 12px;
+    max-width: 200px;
     background: transparent;
     border: 1px solid var(--border-color);
-    border-radius: 5px;
+    border-radius: 6px;
     color: var(--text-secondary);
     font-family: var(--font-mono);
     font-size: 11px;
@@ -233,7 +236,7 @@ body {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    max-width: 150px;
+    max-width: 130px;
 }
 
 .model-pill-caret {
@@ -265,8 +268,8 @@ body {
 
 .model-switcher {
     position: absolute;
-    top: calc(100% + 8px);
-    right: 0;
+    bottom: calc(100% + 8px);
+    left: 0;
     width: 300px;
     max-width: 80vw;
     background: var(--bg-card);
@@ -307,7 +310,7 @@ body {
 }
 
 .model-switcher-list {
-    max-height: 320px;
+    max-height: min(320px, calc(100vh - 260px));
     overflow-y: auto;
     padding: 6px;
 }
@@ -1248,6 +1251,54 @@ details.settings-card[open] summary.settings-card-title::after {
     padding: 40px 20px;
 }
 
+/* --- Suggested-prompt actions (beneath a written prompt code block) --- */
+
+.chat-suggestion-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 8px 0 14px;
+}
+
+.chat-suggestion {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 6px 12px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 999px;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+
+.chat-suggestion:hover {
+    border-color: var(--border-focus);
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+}
+
+.chat-suggestion:focus-visible {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: var(--glow-focus);
+}
+
+.chat-suggestion-icon {
+    display: inline-flex;
+    color: var(--accent-dim);
+}
+
+.chat-suggestion:hover .chat-suggestion-icon {
+    color: var(--accent);
+}
+
 /* --- Chat Area --- */
 
 .chat-area {
@@ -1568,7 +1619,9 @@ details.settings-card[open] summary.settings-card-title::after {
     border-radius: 6px;
     padding: 12px 14px;
     margin: 10px 0;
-    overflow-x: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
     font-family: var(--font-mono);
     font-size: 12px;
     line-height: 1.5;
@@ -2738,6 +2791,19 @@ em {
     .metric-card {
         flex: 1;
         min-width: 160px;
+    }
+
+    .model-pill {
+        max-width: 130px;
+    }
+
+    .model-pill-name {
+        max-width: 76px;
+    }
+
+    .model-switcher {
+        width: calc(100vw - 96px);
+        max-width: none;
     }
 }
 
