@@ -1,0 +1,65 @@
+{
+  "name": "h3-longvideos",
+  "version": 1,
+  "requiredNode": "H3LongVideos",
+  "outputNode": "save",
+  "description": "JARVIS workflow configuration for the installed MiniMax H3 LongVideos ComfyUI node (Smite79/MiniMax-H3-LongVideos). This file is the ONLY place the LongVideos ComfyUI graph is described. The Long Video Director fills in $placeholders; it never hardcodes the node graph itself, so the underlying workflow can be swapped without touching the director.",
+  "notes": {
+    "prompt": "Paragraph 1 is the SCENE (prepended to every shot). Every later paragraph is one beat = one shot. The node chains the shots internally: it decodes a beat, pins its final frame as the keyframe conditioning for the next beat, handles the seam, and returns ONE continuous video. JARVIS must never extract frames or concatenate clips itself.",
+    "resolution": "Aspect ratio preset: 16:9, 9:16, 4:3, 3:4, 1:1, 21:9 or 9:21.",
+    "megapixels": "1.0 = H3's native pixel budget; lower is faster and leaner.",
+    "shot_seconds": "Maximum length of a single generated beat (1-15s). Beats are planned by the director at or below this cap.",
+    "outputs": "images + audio are already joined by the node. CreateVideo/SaveVideo only mux the finished result."
+  },
+  "nodes": {
+    "prompt": {
+      "class_type": "PrimitiveStringMultiline",
+      "inputs": {
+        "value": "$prompt"
+      }
+    },
+    "longvideos": {
+      "class_type": "H3LongVideos",
+      "inputs": {
+        "model": "$model",
+        "clip": "$clip",
+        "vae": "$video_vae",
+        "audio_vae": "$audio_vae",
+        "prompt": ["prompt", 0],
+        "resolution": "$resolution",
+        "megapixels": "$megapixels",
+        "shot_seconds": "$shot_seconds",
+        "steps": "$steps",
+        "cfg": 1.0,
+        "sampler_name": "$sampler_name",
+        "scheduler": "$scheduler",
+        "seed": "$seed",
+        "shot_length": "from the beat",
+        "trim_seam": true,
+        "tiled_decode": true,
+        "cleanup_between_shots": true,
+        "hold_levels": 0.8,
+        "hold_camera": true,
+        "plan_only": false,
+        "first_frame": "$optional:first_frame"
+      }
+    },
+    "video": {
+      "class_type": "CreateVideo",
+      "inputs": {
+        "images": ["longvideos", 0],
+        "audio": ["longvideos", 1],
+        "fps": 24
+      }
+    },
+    "save": {
+      "class_type": "SaveVideo",
+      "inputs": {
+        "video": ["video", 0],
+        "filename_prefix": "not-so-jarvis/longvideo",
+        "format": "auto",
+        "codec": "auto"
+      }
+    }
+  }
+}

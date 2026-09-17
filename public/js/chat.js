@@ -594,12 +594,17 @@ const Chat = (() => {
         const parsed = (window.DirectorUI && typeof window.DirectorUI.extract === 'function')
             ? window.DirectorUI.extract(markdown)
             : { text: markdown, cards: [] };
+        // Long Video Director storyboards persist as a [[longvideo:{...}]] marker
+        // and render as their own card with the beat list + stage progress.
+        const longParsed = (window.LongVideoUI && typeof window.LongVideoUI.extract === 'function')
+            ? window.LongVideoUI.extract(parsed.text)
+            : { text: parsed.text, cards: [] };
         // A suggested prompt (prompt-writing / ideation reply) is persisted with
         // a [[prompt-suggestion]] marker. Strip it, then offer quick generation
         // cards beneath the code block that holds the prompt.
         const suggestion = (window.ChatSuggestions && typeof window.ChatSuggestions.extract === 'function')
-            ? window.ChatSuggestions.extract(parsed.text)
-            : { text: parsed.text, suggested: false };
+            ? window.ChatSuggestions.extract(longParsed.text)
+            : { text: longParsed.text, suggested: false };
         contentEl.innerHTML = Markdown.parse(suggestion.text);
         collapseUpscalePairs(contentEl);
         if (window.VideoPlayer && typeof window.VideoPlayer.scan === 'function') {
@@ -610,6 +615,9 @@ const Chat = (() => {
         }
         if (window.DirectorUI && typeof window.DirectorUI.render === 'function') {
             parsed.cards.forEach((card) => window.DirectorUI.render(contentEl, card));
+        }
+        if (window.LongVideoUI && typeof window.LongVideoUI.render === 'function') {
+            longParsed.cards.forEach((card) => window.LongVideoUI.render(contentEl, card));
         }
     }
 
@@ -646,6 +654,9 @@ const Chat = (() => {
 
         if (window.DirectorUI && typeof window.DirectorUI.hydrate === 'function') {
             window.DirectorUI.hydrate(chatMessagesEl, Conversations.currentId());
+        }
+        if (window.LongVideoUI && typeof window.LongVideoUI.hydrate === 'function') {
+            window.LongVideoUI.hydrate(chatMessagesEl, Conversations.currentId());
         }
 
         chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
@@ -801,7 +812,8 @@ const Chat = (() => {
                     message: userText || text,
                     images: visionImages,
                     references: reference ? [reference.filename] : [],
-                    directorAction: override && override.directorAction ? override.directorAction : undefined
+                    directorAction: override && override.directorAction ? override.directorAction : undefined,
+                    longVideoAction: override && override.longVideoAction ? override.longVideoAction : undefined
                 }),
                 signal: activeStreamAbort.signal
             });
@@ -939,6 +951,29 @@ const Chat = (() => {
                                 window.DirectorUI.hydrate(chatMessagesEl, conversationId);
                             }
                         }
+                        if (data.longvideo) {
+                            fullReply = data.longvideo.content;
+                            setProgressTitle('');
+                            setAiContent(contentEl, data.longvideo.content);
+                            // While the sequence renders, keep a status line so the
+                            // live ComfyUI step percentage (data.progress) has
+                            // somewhere to land beneath the stage checklist.
+                            if (data.longvideo.status === 'generating_long_video') {
+                                generatingEl = document.createElement('div');
+                                generatingEl.className = 'generating-status';
+                                generatingEl.textContent = generatingLabel || 'Generating sequence\u2026';
+                                contentEl.appendChild(generatingEl);
+                                activeQueueActive = true;
+                            } else {
+                                generatingEl = null;
+                            }
+                            scrollActiveStream(aiMessageEl);
+                            generatedMetaCache = null;
+                            if (window.Gallery) window.Gallery.refresh();
+                            if (window.LongVideoUI && typeof window.LongVideoUI.hydrate === 'function') {
+                                window.LongVideoUI.hydrate(chatMessagesEl, conversationId);
+                            }
+                        }
                         if (data.chunk) {
                             if (generatingEl) generatingEl.remove();
                             setProgressTitle('');
@@ -974,6 +1009,9 @@ const Chat = (() => {
                     let spoken = (window.DirectorUI && typeof window.DirectorUI.strip === 'function')
                         ? window.DirectorUI.strip(fullReply)
                         : fullReply;
+                    if (window.LongVideoUI && typeof window.LongVideoUI.strip === 'function') {
+                        spoken = window.LongVideoUI.strip(spoken);
+                    }
                     if (window.ChatSuggestions && typeof window.ChatSuggestions.strip === 'function') {
                         spoken = window.ChatSuggestions.strip(spoken);
                     }

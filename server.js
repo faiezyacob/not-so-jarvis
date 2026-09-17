@@ -86,6 +86,7 @@ const taskRouter = require('./services/task-router');
 const taskState = require('./services/task-state');
 const generationQueue = require('./services/generation-queue');
 const director = require('./services/director/director');
+const longVideoDirector = require('./services/long-video/director');
 const GENERATED_DIR = path.join(__dirname, 'data', 'generated');
 const IMAGES_DIR = path.join(__dirname, 'data', 'images');
 const UPLOAD_MIME_TO_EXT = {
@@ -705,6 +706,16 @@ async function handleAPI(req, res, urlPath) {
                 error: production.error || ''
             } : null
         });
+        return true;
+    }
+
+    // GET /api/longvideo/state — the active Long Video Director plan for a
+    // conversation, so the storyboard card keeps working after a reload.
+    if (urlPath === '/api/longvideo/state' && req.method === 'GET') {
+        const query = new URL(req.url, 'http://localhost').searchParams;
+        const conversationId = query.get('conversationId') || '';
+        const plan = longVideoDirector.getPlan(conversationId);
+        json(res, 200, { plan: plan || null });
         return true;
     }
 
@@ -1448,6 +1459,46 @@ async function handleChatStream(req, res) {
         // small chat model can never downgrade it to a chat reply.
         if (comfyuiLauncher.isStartComfyRequest(message)) {
             await handleStartComfyUIChat(req, res, { conversationId, message });
+            return;
+        }
+
+        // Long Video Director (duration router). Requests longer than H3's
+        // 15-second ceiling are planned before any GPU time is spent: the
+        // storyboard is shown once for approval, then the installed H3
+        // LongVideos node renders it and chains the beats internally. Requests
+        // at or below 15 seconds never reach this branch — the existing H3
+        // workflow is untouched.
+        const longVideoCtx = { conversationId, message, provider, model, think, referenceImage };
+        const requestedLongVideoAction = longVideoDirector.normalizeAction(body.longVideoAction);
+        const activeLongPlan = longVideoDirector.getPlan(conversationId);
+        if (requestedLongVideoAction) {
+            if (!activeLongPlan) {
+                const text = 'Long Video Director \u2014 There is no planned long video to act on.';
+                sseWrite(res, { chunk: text });
+                sseWrite(res, { done: true, fullReply: text });
+                res.end();
+                return;
+            }
+            await handleLongVideoAction(req, res, longVideoCtx, activeLongPlan, requestedLongVideoAction);
+            return;
+        }
+        if (activeLongPlan && longVideoDirector.isOpen(activeLongPlan)) {
+            const classified = longVideoDirector.classifyMessage(message, activeLongPlan);
+            if (classified) {
+                taskState.clearPendingAction(conversationId);
+                await handleLongVideoAction(req, res, longVideoCtx, activeLongPlan, classified);
+                return;
+            }
+        }
+        // A new explicit long-video request supersedes a parked storyboard. While
+        // a long video is actively rendering, only cancel is honored above, and
+        // a fresh request is left to the normal router (the shared generation
+        // queue serializes it) so the running plan's state is never clobbered.
+        const longVideoBusy = Boolean(activeLongPlan && longVideoDirector.isActive(activeLongPlan));
+        if (!longVideoBusy && longVideoDirector.isLongVideoRequest(message)) {
+            if (activeLongPlan) longVideoDirector.removePlan(conversationId);
+            taskState.clearPendingAction(conversationId);
+            await handleLongVideoStart(req, res, longVideoCtx);
             return;
         }
 
@@ -2349,6 +2400,270 @@ async function runDirectVideoFromRequest(req, res, ctx, requestText) {
         height: dimensions.height,
         think
     });
+}
+
+// --- Long Video Director -----------------------------------------------------
+//
+// Videos longer than H3's 15-second ceiling. The director plans the story and
+// beats, the user approves the storyboard once, and the installed H3 LongVideos
+// ComfyUI node renders one continuous video — it owns the frame-to-frame
+// temporal chaining. JARVIS never extracts frames or concatenates clips here.
+
+// Plan a fresh long video and stop at the storyboard approval checkpoint.
+async function handleLongVideoStart(req, res, ctx) {
+    const { conversationId, message, provider, model, think, referenceImage } = ctx;
+    sseWrite(res, { generating: 'Long Video Director \u2014 Planning story\u2026' });
+    try {
+        vramManager.rememberChatModel(provider, model);
+        await vramManager.freeVRAMBeforeChat();
+        const plan = await longVideoDirector.createFromRequest({
+            conversationId, message, provider, model, think, referenceImage
+        });
+        activityLog.record({
+            type: 'generation',
+            title: 'Long video planned',
+            detail: plan.duration + 's \u00b7 ' + (plan.beats || []).length + ' beats',
+            conversationId
+        });
+        taskState.setTask(conversationId, {
+            type: 'video',
+            operation: 'generate',
+            prompt: plan.prompt,
+            originalPrompt: message,
+            status: 'running',
+            lastAction: 'long video storyboard'
+        });
+        sseWrite(res, {
+            longvideo: longVideoDirector.buildCard(plan, longVideoDirector.renderStoryboardContent(plan))
+        });
+        res.end();
+    } catch (err) {
+        console.error('[long-video] planning failed:', err.message);
+        sseWrite(res, { error: 'Long Video Director could not plan this video: ' + err.message });
+        res.end();
+    }
+}
+
+// Handle a storyboard card action (button click or a typed decision).
+async function handleLongVideoAction(req, res, ctx, plan, action) {
+    const { conversationId, message, provider, model, think } = ctx;
+    if (action.planId && action.planId !== plan.id) {
+        const text = 'Long Video Director \u2014 That card belongs to an earlier plan. ' +
+            'Use the newest storyboard card.';
+        sseWrite(res, { chunk: text });
+        sseWrite(res, { done: true, fullReply: text });
+        res.end();
+        return;
+    }
+
+    if (action.type === longVideoDirector.ACTIONS.CANCEL) {
+        const status = generationQueue.getStatus();
+        if (status.active && (!conversationId || status.active.conversationId === conversationId)) {
+            imageGenerator.cancelActive(status.active.id);
+            comfyui.interrupt().catch(() => {});
+        }
+        longVideoDirector.patchPlan(conversationId, {
+            status: longVideoDirector.STATUS.CANCELLED,
+            error: ''
+        });
+        taskState.clearTask(conversationId);
+        sseWrite(res, {
+            longvideo: longVideoDirector.buildCard(plan, longVideoDirector.renderCancelledContent(plan))
+        });
+        res.end();
+        return;
+    }
+
+    if (action.type === longVideoDirector.ACTIONS.MODIFY_PLAN) {
+        const feedback = String(action.direction || message || '').trim();
+        if (!feedback) {
+            sseWrite(res, { error: 'Tell me how the plan should change.' });
+            res.end();
+            return;
+        }
+        sseWrite(res, { generating: 'Long Video Director \u2014 Updating storyboard\u2026' });
+        try {
+            vramManager.rememberChatModel(provider, model);
+            await vramManager.freeVRAMBeforeChat();
+            await longVideoDirector.applyStoryboardUpdate(plan, feedback, { provider, model, think });
+            sseWrite(res, {
+                longvideo: longVideoDirector.buildCard(plan, longVideoDirector.renderStoryboardContent(plan))
+            });
+        } catch (err) {
+            console.error('[long-video] storyboard update failed:', err.message);
+            sseWrite(res, { error: 'Could not update the storyboard: ' + err.message });
+        }
+        res.end();
+        return;
+    }
+
+    if (action.type === longVideoDirector.ACTIONS.APPROVE ||
+        action.type === longVideoDirector.ACTIONS.RETRY) {
+        await handleLongVideoStream(req, res, { plan, conversationId, provider, model, message, think });
+        return;
+    }
+
+    sseWrite(res, { error: 'Unknown long video action.' });
+    res.end();
+}
+
+// Submit the approved storyboard to the H3 LongVideos node and stream the
+// stage-based progress. One ComfyUI job — the node chains every beat itself.
+async function handleLongVideoStream(req, res, opts) {
+    const plan = opts.plan;
+    const { conversationId, provider, model, message } = opts;
+
+    let queueId = null;
+    const onClose = () => {
+        if (!queueId) return;
+        if (imageGenerator.cancelQueued(queueId)) return;
+        if (imageGenerator.isActive(queueId)) {
+            imageGenerator.cancelActive(queueId);
+            comfyui.interrupt().catch(() => {});
+        }
+    };
+    req.on('close', onClose);
+    const stopProgress = forwardComfyProgress(res);
+    const onQueued = (position, id) => {
+        queueId = id;
+        sseWrite(res, { queued: { position, queueId: id } });
+    };
+    const onStart = () => {
+        sseWrite(res, { generating: 'Long Video Director \u2014 Generating sequence\u2026' });
+    };
+
+    // Persist a stage transition and re-render the checklist on the card.
+    const stage = (id, label) => {
+        longVideoDirector.advanceStage(plan, id);
+        longVideoDirector.patchPlan(conversationId, {
+            stages: plan.stages,
+            error: ''
+        });
+        sseWrite(res, { generating: 'Long Video Director \u2014 ' + label + '\u2026' });
+        sseWrite(res, {
+            longvideo: longVideoDirector.buildCard(plan, longVideoDirector.renderGeneratingContent(plan))
+        });
+    };
+
+    try {
+        longVideoDirector.patchPlan(conversationId, {
+            status: longVideoDirector.STATUS.GENERATING,
+            error: ''
+        });
+        longVideoDirector.advanceStage(plan, 'preparing');
+        longVideoDirector.patchPlan(conversationId, { stages: plan.stages });
+        sseWrite(res, { generating: 'Long Video Director \u2014 Preparing H3 LongVideos\u2026' });
+
+        taskState.setTask(conversationId, {
+            type: 'video',
+            operation: 'generate',
+            prompt: plan.prompt,
+            videoMode: plan.sourceImage ? 'i2va' : 't2va',
+            sourceImage: plan.sourceImage || null,
+            status: 'running',
+            lastAction: 'long video'
+        });
+
+        vramManager.rememberChatModel(provider, model);
+        await vramManager.freeVRAMBeforeImage();
+
+        const promise = longVideoDirector.generateLongVideo(plan, {
+            conversationId,
+            message,
+            onQueued,
+            onStart,
+            onProgress: (value) => {
+                if (value === 'preparing') stage('preparing', 'Preparing H3 LongVideos');
+                else if (value === 'generating') stage('generating', 'Generating sequence');
+                else if (value === 'finalizing') stage('finalizing', 'Finalizing');
+            }
+        });
+        queueId = promise.queueId || null;
+        const result = await promise;
+
+        longVideoDirector.completeStages(plan);
+        longVideoDirector.patchPlan(conversationId, {
+            status: longVideoDirector.STATUS.COMPLETED,
+            videoUrl: result.url,
+            videoFilename: result.filename,
+            promptId: result.promptId || null,
+            generationMs: result.generationMs || null,
+            actualSeconds: result.duration || plan.duration,
+            error: ''
+        });
+        taskState.setTask(conversationId, {
+            type: 'video',
+            operation: 'generate',
+            prompt: plan.prompt,
+            generatedAsset: result.url,
+            videoMode: plan.sourceImage ? 'i2va' : 't2va',
+            sourceImage: plan.sourceImage || null,
+            status: 'completed',
+            lastAction: 'long video'
+        });
+
+        const videoMarkdown =
+            '<video class="md-video" preload="metadata" playsinline src="' + result.url + '"></video>';
+        sseWrite(res, {
+            longvideo: longVideoDirector.buildCard(plan, longVideoDirector.renderCompleteContent(plan, videoMarkdown))
+        });
+        await vramManager.freeComfyModels('long video run');
+        res.end();
+    } catch (err) {
+        console.error('[long-video] generation failed:', err.message, '\n', err.stack);
+        const friendly = friendlyLongVideoError(err);
+        if (err.code === 'generation_cancelled') {
+            longVideoDirector.patchPlan(conversationId, {
+                status: longVideoDirector.STATUS.CANCELLED,
+                error: ''
+            });
+            sseWrite(res, {
+                longvideo: longVideoDirector.buildCard(plan, longVideoDirector.renderCancelledContent(plan))
+            });
+        } else {
+            longVideoDirector.patchPlan(conversationId, {
+                status: longVideoDirector.STATUS.FAILED,
+                error: friendly
+            });
+            taskState.setTask(conversationId, { status: 'failed' });
+            sseWrite(res, {
+                longvideo: longVideoDirector.buildCard(plan, longVideoDirector.renderFailureContent(plan, friendly))
+            });
+        }
+        res.end();
+    } finally {
+        req.removeListener('close', onClose);
+        stopProgress();
+    }
+}
+
+function friendlyLongVideoError(err) {
+    switch (err.code) {
+        case 'longvideo_node_missing':
+        case 'longvideo_prompt_missing':
+            return err.message;
+        case 'comfyui_unavailable':
+            return 'ComfyUI is not running. Start ComfyUI, then retry the long video.';
+        case 'comfyui_timeout':
+            return 'The long video generation timed out. ComfyUI may still be rendering it \u2014 ' +
+                'retry, or split the story into fewer beats.';
+        case 'comfyui_output_not_found':
+            return 'ComfyUI finished but the LongVideos workflow produced no video. ' +
+                'Check the ComfyUI console, then retry.';
+        case 'generation_cancelled':
+            return 'Long video generation cancelled.';
+        case 'generation_busy':
+            return err.message;
+        case 'comfyui_missing_model':
+        case 'comfyui_missing_node':
+        case 'comfyui_oom':
+        case 'comfyui_validation_error':
+        case 'comfyui_api_error':
+        case 'comfyui_empty_output':
+            return err.message;
+        default:
+            return 'Long video generation failed: ' + (err.message || 'unknown error');
+    }
 }
 
 // Execute an approval-card action (button click or a typed decision).

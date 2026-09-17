@@ -1579,6 +1579,233 @@ details.settings-card[open] summary.settings-card-title::after {
     color: #ff5c5c;
 }
 
+/* --- Long Video Director --- */
+
+.longvideo-card {
+    margin-top: 12px;
+    padding: 12px 14px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: var(--bg-card);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    transition: border-color 0.2s ease, opacity 0.2s ease;
+}
+
+.longvideo-card:hover {
+    border-color: rgba(108, 255, 154, 0.18);
+}
+
+.longvideo-card--static {
+    opacity: 0.66;
+}
+
+.longvideo-card--static:hover {
+    border-color: var(--border-color);
+}
+
+.longvideo-card-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.longvideo-card-icon {
+    display: inline-flex;
+    color: var(--accent);
+    flex: 0 0 auto;
+}
+
+.longvideo-card-title {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--accent);
+}
+
+.longvideo-card-stage {
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    color: var(--text-dim);
+}
+
+.longvideo-card--failed_long_video .longvideo-card-icon,
+.longvideo-card--failed_long_video .longvideo-card-title {
+    color: #ffc832;
+}
+
+.longvideo-card--cancelled .longvideo-card-icon,
+.longvideo-card--cancelled .longvideo-card-title {
+    color: var(--text-dim);
+}
+
+.longvideo-beats {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.longvideo-beat {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding-left: 10px;
+    border-left: 2px solid var(--border-color);
+}
+
+.longvideo-beat-head {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+}
+
+.longvideo-beat-num {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 1px;
+    color: var(--accent);
+}
+
+.longvideo-beat-dur {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-dim);
+}
+
+.longvideo-beat-action {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.45;
+    color: var(--text-secondary);
+}
+
+.longvideo-beat-cont {
+    margin: 0;
+    font-size: 11px;
+    line-height: 1.4;
+    font-style: italic;
+    color: var(--text-dim);
+}
+
+.longvideo-beat-cont--cut {
+    color: #ffc832;
+    font-style: normal;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    font-size: 10px;
+}
+
+.longvideo-stages {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    padding-top: 4px;
+    border-top: 1px solid var(--border-color);
+}
+
+.longvideo-stage {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+    color: var(--text-dim);
+}
+
+.longvideo-stage-mark {
+    font-size: 11px;
+    line-height: 1;
+}
+
+.longvideo-stage--completed {
+    color: var(--text-secondary);
+}
+
+.longvideo-stage--running {
+    color: var(--accent);
+}
+
+.longvideo-card-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.longvideo-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    height: 32px;
+    padding: 0 14px;
+    border-radius: 5px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    background: transparent;
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+}
+
+.longvideo-btn svg {
+    flex: 0 0 auto;
+    opacity: 0.9;
+}
+
+.longvideo-btn:hover:not(:disabled) {
+    background: var(--accent-faint);
+    border-color: var(--border-focus);
+    color: var(--text-primary);
+}
+
+.longvideo-btn:active:not(:disabled) {
+    transform: scale(0.97);
+}
+
+.longvideo-btn:disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+
+.longvideo-btn--primary {
+    background: rgba(108, 255, 154, 0.1);
+    border-color: rgba(108, 255, 154, 0.25);
+    color: var(--accent);
+}
+
+.longvideo-btn--primary:hover:not(:disabled) {
+    background: rgba(108, 255, 154, 0.18);
+    border-color: rgba(108, 255, 154, 0.4);
+    color: var(--accent);
+}
+
+.longvideo-btn--danger {
+    background: transparent;
+    border-color: rgba(255, 92, 92, 0.3);
+    color: #ff5c5c;
+}
+
+.longvideo-btn--danger:hover:not(:disabled) {
+    background: rgba(255, 92, 92, 0.12);
+    border-color: rgba(255, 92, 92, 0.5);
+    color: #ff5c5c;
+}
+
 /* Markdown Formatted Content - Image */
 
 .md-image {
