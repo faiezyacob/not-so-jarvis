@@ -37,30 +37,48 @@ function safeFilename(name) {
 // Minimal PNG/JPEG header reader — only used to pick the closest aspect preset
 // from a referenced first frame. Returns { width, height } or null.
 function readImageDimensions(filePath) {
+    let buffer;
     try {
         const fd = fs.openSync(filePath, 'r');
-        const buf = Buffer.alloc(32);
-        fs.readSync(fd, buf, 0, 32, 0);
-        fs.closeSync(fd);
-        if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47) {
-            const w = buf.readUInt32BE(16);
-            const h = buf.readUInt32BE(20);
-            if (w > 0 && h > 0) return { width: w, height: h };
+        try {
+            buffer = Buffer.alloc(65536);
+            const read = fs.readSync(fd, buffer, 0, buffer.length, 0);
+            buffer = buffer.subarray(0, read);
+        } finally {
+            fs.closeSync(fd);
         }
-        if (buf[0] === 0xFF && buf[1] === 0xD8) {
-            let offset = 2;
-            while (offset < 30) {
-                if (buf[offset] !== 0xFF) break;
-                const marker = buf[offset + 1];
-                if ((marker >= 0xC0 && marker <= 0xCF) && marker !== 0xC4 && marker !== 0xC8 && marker !== 0xCC) {
-                    const h = buf.readUInt16BE(offset + 5);
-                    const w = buf.readUInt16BE(offset + 7);
-                    if (w > 0 && h > 0) return { width: w, height: h };
-                }
-                offset += 2;
-            }
+    } catch (err) {
+        return null;
+    }
+    return readPngSize(buffer) || readJpegSize(buffer);
+}
+
+function readPngSize(buffer) {
+    const signature = [0x89, 0x50, 0x4e, 0x47];
+    if (buffer.length < 24) return null;
+    if (!signature.every((byte, i) => buffer[i] === byte)) return null;
+    const width = buffer.readUInt32BE(16);
+    const height = buffer.readUInt32BE(20);
+    return width > 0 && height > 0 ? { width, height } : null;
+}
+
+function readJpegSize(buffer) {
+    if (buffer.length < 4 || buffer[0] !== 0xff || buffer[1] !== 0xd8) return null;
+    let pos = 2;
+    while (pos + 9 < buffer.length) {
+        if (buffer[pos] !== 0xff) return null;
+        const marker = buffer[pos + 1];
+        const startOfFrame = marker >= 0xc0 && marker <= 0xcf
+            && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc;
+        if (startOfFrame) {
+            const height = buffer.readUInt16BE(pos + 5);
+            const width = buffer.readUInt16BE(pos + 7);
+            return width > 0 && height > 0 ? { width, height } : null;
         }
-    } catch (err) { /* fall through — aspect hint is optional */ }
+        const segmentLength = buffer.readUInt16BE(pos + 2);
+        if (segmentLength < 2) return null;
+        pos += 2 + segmentLength;
+    }
     return null;
 }
 

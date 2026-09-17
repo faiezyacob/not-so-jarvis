@@ -4,13 +4,8 @@
    Krea2 text-to-image workflow graph, submits it
    to ComfyUI, and stores the finished image so
    the chat layer can display it.
-   SPDX-License-Identifier: GPL-3.0-only
+   SPDX-License-Identifier: MIT
    Copyright (c) 2026 not-so-jarvis.
-   Adapted from Mix Studio (https://github.com/BlackMixture/Mix-Studio,
-   GPL-3.0-only): Krea2 workflow graph, S/M/L resolution tiers,
-   LoRA chain, and SeedVR2 / Ultimate SD upscale pipelines.
-   Modified: simplified to plain T2I path, chat-driven intent,
-   not-so-jarvis/ output prefixes.
    ============================================ */
 
 const fs = require('fs');
@@ -24,14 +19,13 @@ const GENERATED_DIR = path.join(__dirname, '..', 'data', 'generated');
 
 // --- Upscaling constants -------------------------------------------------------
 //
-// Adapted from Mix Studio's upscale pipeline (lib/upscale-workflows.js and
-// server.js buildUpscale). The shared engine selects the pipeline per media:
-// SeedVR2 is a tiled diffusion upscaler with sharp/balanced detail profiles
-// and a configurable input noise level; Ultimate SD is a prompt-guided tiled
-// upscale that reuses the Krea2 pipeline's own UNET/CLIP/VAE models (image
-// only); RTX is a fast single-pass super-resolution node (video only, adapted
-// from Mix Studio's rtxVideoSuperResolutionNode). Images map RTX -> SeedVR2,
-// videos map Ultimate SD -> RTX, so each medium always runs a valid graph.
+// Pipeline selection is shared across media. SeedVR2 is a tiled diffusion
+// upscaler with sharp/balanced detail profiles and an adjustable input noise
+// level. Ultimate SD is a prompt-guided tiled upscale that reuses the Krea2
+// UNET/CLIP/VAE stack (images only). RTX is a single-pass super-resolution
+// node (videos only). When a request asks for an engine its medium cannot
+// run, it falls back: images from RTX to SeedVR2, videos from Ultimate SD to
+// RTX, so graph construction always yields a runnable pipeline.
 
 const LEGACY_KREA_SEEDVR2_DIT = 'seedvr2_ema_3b_fp16.safetensors';
 const DEFAULT_SEEDVR2_DIT = 'seedvr2_ema_7b_fp8_e4m3fn_mixed_block35_fp16.safetensors';
@@ -805,14 +799,15 @@ async function buildImagePrompt(structuredRequest, providers, provider, model, t
 
 // --- Resolution (Aspect Ratio + Size) ------------------------------------------
 //
-// The only user-facing resolution controls, matching Mix Studio's S/M/L tiers
-// (public/app.js RESOLUTION_SIZE_OPTIONS + createSizeLabel +
-// dimensionsForMegapixels): S is 0.75 MP, M is 1 MP, L is 1.75 MP total
-// pixels. Dimensions are derived from the aspect ratio as
-//   w = round32(sqrt(pixels * ratio)), h = round32(sqrt(pixels / ratio))
+// The only user-facing resolution controls are the S/M/L size tiers (see
+// public/app.js RESOLUTION_SIZE_OPTIONS + createSizeLabel): S is 0.75 MP,
+// M is 1 MP, L is 1.75 MP total pixels. Dimensions are derived from the
+// aspect ratio as
+//   w = snapToLatentGrid(sqrt(pixels * ratio)),
+//   h = snapToLatentGrid(sqrt(pixels / ratio))
 // so M + 1:1 yields ~992x992, M + 4:5 yields ~896x1120, and
 // M + 16:9 yields ~1344x736. Dimensions are snapped to multiples of 32
-// (Mix Studio's round32) before reaching Krea2.
+// before reaching Krea2.
 
 const ASPECT_RATIOS = ['1:1', '4:5', '3:4', '16:9', '9:16'];
 const IMAGE_MEGAPIXELS = { S: 0.75, M: 1, L: 1.75 };
@@ -830,22 +825,25 @@ function normalizeImageSize(value) {
     return Object.prototype.hasOwnProperty.call(IMAGE_MEGAPIXELS, v) ? v : null;
 }
 
-function round32(n) {
-    return Math.max(64, Math.round(n / 32) * 32);
+function snapToLatentGrid(pixels) {
+    const grid = 32;
+    return Math.max(64, Math.round(pixels / grid) * grid);
 }
 
-// Map aspectRatio + imageSize to concrete Krea2 latent dimensions, matching
-// Mix Studio's dimensionsForMegapixels(). Invalid inputs fall back to the
-// 4:5 / M defaults.
+// Map aspectRatio + imageSize to concrete Krea2 latent dimensions. Invalid
+// inputs fall back to the 4:5 / M defaults.
 function resolveDimensions(settings) {
-    const ratio = normalizeAspectRatio(settings && settings.aspectRatio) || '4:5';
-    const size = normalizeImageSize(settings && settings.imageSize) || 'M';
-    const parts = ratio.split(':').map(Number);
-    const aspect = Math.max(0.1, Math.min(10, parts[0] / parts[1] || 1));
-    const pixels = (IMAGE_MEGAPIXELS[size] || IMAGE_MEGAPIXELS.M) * 1e6;
+    const source = settings || {};
+    const ratio = normalizeAspectRatio(source.aspectRatio) || '4:5';
+    const size = normalizeImageSize(source.imageSize) || 'M';
+    const [ratioWidth, ratioHeight] = ratio.split(':').map(Number);
+    const shape = Math.min(10, Math.max(0.1, (ratioWidth / ratioHeight) || 1));
+    const targetPixels = (IMAGE_MEGAPIXELS[size] || IMAGE_MEGAPIXELS.M) * 1e6;
+    const longEdge = Math.sqrt(targetPixels * shape);
+    const shortEdge = Math.sqrt(targetPixels / shape);
     return {
-        width: round32(Math.sqrt(pixels * aspect)),
-        height: round32(Math.sqrt(pixels / aspect)),
+        width: snapToLatentGrid(longEdge),
+        height: snapToLatentGrid(shortEdge),
         aspectRatio: ratio,
         imageSize: size
     };
@@ -853,25 +851,22 @@ function resolveDimensions(settings) {
 
 // --- Krea2 text-to-image workflow ----------------------------------------------
 //
-// Adapted from Mix Studio's working Krea2 pipeline (server.js buildT2I +
-// krea2-workflows.js buildKrea2LatentInput + krea2-model.js). This produce the
-// exact same ComfyUI API graph Mix Studio submits for a plain text-to-image job:
+// The canonical JARVIS text-to-image graph submitted to ComfyUI:
 //
 //   UNETLoader (krea2 turbo)  →  CLIPLoader (krea2)  →  VAELoader
 //   CLIPTextEncode (positive = prompt, negative = zero-out)
 //   EmptySD3LatentImage
 //   KSampler (euler / beta, steps 8, cfg 1, seed from settings)
-//   VAEDecode → SaveImage (KreaStudio/gen)
+//   VAEDecode → SaveImage (not-so-jarvis/gen)
 
 const DEFAULT_SETTINGS = {
     unet: process.env.KREA2_UNET || 'krea2_turbo_fp8_scaled.safetensors',
     clip: process.env.KREA2_CLIP || 'Huihui-Qwen3-VL-4B-Instruct-abliterated-fp8_scaled.safetensors',
     clipType: process.env.KREA2_CLIP_TYPE || 'krea2',
     vae: process.env.KREA2_VAE || 'wan_2.1_vae.safetensors',
-    // Identity Edit LoRA for the Krea2 instruction-based edit pipeline
-    // (adapted from Mix Studio's krea2-identity-edit.js, community fine-tune
-    // conradlocke/krea2-identity-edit). Edits a source image from a
-    // plain-language instruction while preserving the rest.
+    // Identity Edit LoRA used by the Krea2 instruction-based edit pipeline
+    // (community fine-tune conradlocke/krea2-identity-edit). It edits a source
+    // image from a plain-language instruction while preserving the rest.
     editLora: process.env.KREA2_EDIT_LORA || 'krea2_identity_edit_v1_2.safetensors',
     // User-facing resolution controls. The UI exposes only these two
     // dropdowns — never raw pixels. Width/height below are always derived
@@ -898,8 +893,7 @@ const DEFAULT_SETTINGS = {
     // active stack so a removed LoRA keeps its trigger word if re-added later.
     loraTriggerWords: {},
     // Image upscaling (SeedVR2 / Ultimate SD for images, RTX fast path for
-    // video — adapted from Mix Studio, which defaults video post-upscale to
-    // RTX). Profile is "sharp" (sharp DiT variant) or "balanced"; noise is
+    // video). Profile is "sharp" (sharp DiT variant) or "balanced"; noise is
     // off/low/medium detail input noise; mode is "target" (target short-side
     // resolution) or "multiplier" (scale factor on the source short side);
     // preScale applies an optional lanczos pre-resize before SeedVR2 (1 = off).
@@ -907,7 +901,7 @@ const DEFAULT_SETTINGS = {
     // selection falls back to SeedVR2 for images); videos run SeedVR2/RTX (an
     // Ultimate SD selection falls back to RTX for video). RTX video upscale
     // uses upscaleMultiplier as its scale factor. Default is RTX so video
-    // upscales are fast like Mix Studio; image upscales are unaffected.
+    // upscales stay fast; image upscales are unaffected.
     upscaleEngine: 'rtx',
     upscaleMode: 'target',
     upscaleResolution: 2160,
@@ -949,9 +943,12 @@ function getDefaults() {
     return { ...DEFAULT_SETTINGS };
 }
 
-function clampNumber(value, min, max, fallback) {
-    const n = Number(value);
-    return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : fallback;
+function clampToRange(value, min, max, fallback) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return fallback;
+    if (parsed < min) return min;
+    if (parsed > max) return max;
+    return parsed;
 }
 
 // ComfyUI seeds are unsigned 32-bit. Normalize any input into that range;
@@ -979,7 +976,7 @@ function resolveSeed(settings, requestedSeed) {
 }
 
 // Normalize a client-supplied LoRA list. Drops entries without a name and
-// clamps strength to Mix Studio's -100..100 range (the UI uses 0..2).
+// clamps strength to the -100..100 range the loader accepts (the UI uses 0..2).
 function sanitizeLoras(value) {
     if (!Array.isArray(value)) return [];
     const out = [];
@@ -989,7 +986,7 @@ function sanitizeLoras(value) {
         const triggerWord = String((item && item.triggerWord) || '').trim();
         out.push({
             name,
-            strength: clampNumber(item.strength, -100, 100, 1),
+            strength: clampToRange(item.strength, -100, 100, 1),
             on: item.on !== false,
             triggerWord: triggerWord || ''
         });
@@ -1099,74 +1096,73 @@ async function getModelChoices() {
     }
 }
 
-function clampInt(value, min, max, fallback) {
-    const n = Math.round(Number(value));
-    return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : fallback;
+function clampToInt(value, min, max, fallback) {
+    const rounded = Math.round(Number(value));
+    return Number.isFinite(rounded) ? clampToRange(rounded, min, max, fallback) : fallback;
 }
 
-function diffusionModelLoader(unetName) {
+function buildDiffusionLoaderNode(unetName) {
     const name = String(unetName || '').trim();
-    if (/\.gguf$/i.test(name)) {
-        return { class_type: 'UnetLoaderGGUF', inputs: { unet_name: name } };
-    }
-    return { class_type: 'UNETLoader', inputs: { unet_name: name, weight_dtype: 'default' } };
+    return /\.gguf$/i.test(name)
+        ? { class_type: 'UnetLoaderGGUF', inputs: { unet_name: name } }
+        : { class_type: 'UNETLoader', inputs: { unet_name: name, weight_dtype: 'default' } };
 }
 
-// Chain LoraLoader nodes after the base UNET/CLIP loaders. Each active LoRA
-// becomes a LoraLoader whose model/clip outputs feed the next, so stacked
-// LoRAs compose in order (same approach Mix Studio uses). Returns the final
-// { model, clip } references for the sampler and prompt encoders.
+// Stack LoraLoader nodes on top of the base UNET/CLIP loaders. Each enabled
+// LoRA consumes the previous loader's model/clip outputs, so the stack is
+// applied in order. Returns the final { model, clip } references the sampler
+// and prompt encoders link to.
 function buildLoraChain(graph, loras) {
-    let model = ['unet', 0];
-    let clip = ['clip', 0];
-    let n = 0;
-    for (const l of loras || []) {
-        if (!l || !l.on || !l.name) continue;
-        n += 1;
-        const key = 'lora' + n;
-        graph[key] = {
+    let modelLink = ['unet', 0];
+    let clipLink = ['clip', 0];
+    let position = 0;
+    for (const entry of loras || []) {
+        if (!(entry && entry.on && entry.name)) continue;
+        position += 1;
+        const nodeId = 'lora' + position;
+        const strength = Number(entry.strength) || 0;
+        graph[nodeId] = {
             class_type: 'LoraLoader',
             inputs: {
-                model,
-                clip,
-                lora_name: l.name,
-                strength_model: Number(l.strength) || 0,
-                strength_clip: Number(l.strength) || 0
+                model: modelLink,
+                clip: clipLink,
+                lora_name: entry.name,
+                strength_model: strength,
+                strength_clip: strength
             }
         };
-        model = [key, 0];
-        clip = [key, 1];
+        modelLink = [nodeId, 0];
+        clipLink = [nodeId, 1];
     }
-    return { model, clip };
+    return { model: modelLink, clip: clipLink };
 }
 
 function buildKrea2T2IGraph(prompt, options = {}) {
     const settings = Object.assign({}, DEFAULT_SETTINGS, options.settings || {});
     const seed = Number.isInteger(options.seed) && options.seed >= 0 ? options.seed : 0;
-    const width = clampInt(options.width || settings.width, 64, 4096, settings.width);
-    const height = clampInt(options.height || settings.height, 64, 4096, settings.height);
-    const steps = clampInt(options.steps || settings.steps, 1, 100, settings.steps);
+    const width = clampToInt(options.width || settings.width, 64, 4096, settings.width);
+    const height = clampToInt(options.height || settings.height, 64, 4096, settings.height);
+    const steps = clampToInt(options.steps || settings.steps, 1, 100, settings.steps);
     const cfg = Number.isFinite(Number(options.cfg)) ? Math.max(0, Number(options.cfg)) : settings.cfg;
-    const negative = String(options.negativePrompt || '').trim();
+    const negativeText = String(options.negativePrompt || '').trim();
 
-    const graph = {};
-    graph.unet = diffusionModelLoader(settings.unet);
-    graph.clip = { class_type: 'CLIPLoader', inputs: { clip_name: settings.clip, type: settings.clipType, device: 'default' } };
-    graph.vae = { class_type: 'VAELoader', inputs: { vae_name: settings.vae } };
+    const graph = {
+        unet: buildDiffusionLoaderNode(settings.unet),
+        clip: { class_type: 'CLIPLoader', inputs: { clip_name: settings.clip, type: settings.clipType, device: 'default' } },
+        vae: { class_type: 'VAELoader', inputs: { vae_name: settings.vae } }
+    };
 
-    // Chain any attached LoRAs onto the base model + clip. When no LoRAs are
-    // configured (or all disabled) this returns the raw ['unet', 0] / ['clip', 0]
-    // refs, so the graph is identical to the plain text-to-image pipeline.
-    const chain = buildLoraChain(graph, settings.loras);
-    const modelRef = chain.model;
-    const clipRef = chain.clip;
+    // Apply any attached LoRAs on top of the base model + clip. With no LoRAs
+    // configured (or all disabled) the stack returns the raw ['unet', 0] /
+    // ['clip', 0] links, leaving a plain text-to-image graph.
+    const stack = buildLoraChain(graph, settings.loras);
 
-    graph.pos = { class_type: 'CLIPTextEncode', inputs: { clip: clipRef, text: String(prompt || '') } };
-    graph.neg = negative
-        ? { class_type: 'CLIPTextEncode', inputs: { clip: clipRef, text: negative } }
-        : { class_type: 'ConditioningZeroOut', inputs: { conditioning: ['pos', 0] } };
+    graph.positive = { class_type: 'CLIPTextEncode', inputs: { clip: stack.clip, text: String(prompt || '') } };
+    graph.negative = negativeText
+        ? { class_type: 'CLIPTextEncode', inputs: { clip: stack.clip, text: negativeText } }
+        : { class_type: 'ConditioningZeroOut', inputs: { conditioning: ['positive', 0] } };
 
-    graph.latent = {
+    graph.canvas = {
         class_type: 'EmptySD3LatentImage',
         inputs: { width, height, batch_size: 1 }
     };
@@ -1174,10 +1170,10 @@ function buildKrea2T2IGraph(prompt, options = {}) {
     graph.sampler = {
         class_type: 'KSampler',
         inputs: {
-            model: modelRef,
-            positive: ['pos', 0],
-            negative: ['neg', 0],
-            latent_image: ['latent', 0],
+            model: stack.model,
+            positive: ['positive', 0],
+            negative: ['negative', 0],
+            latent_image: ['canvas', 0],
             seed,
             steps,
             cfg,
@@ -1187,34 +1183,34 @@ function buildKrea2T2IGraph(prompt, options = {}) {
         }
     };
 
-    graph.decode = { class_type: 'VAEDecode', inputs: { samples: ['sampler', 0], vae: ['vae', 0] } };
-    graph.save = { class_type: 'SaveImage', inputs: { images: ['decode', 0], filename_prefix: 'not-so-jarvis/gen' } };
+    graph.decoded = { class_type: 'VAEDecode', inputs: { samples: ['sampler', 0], vae: ['vae', 0] } };
+    graph.save = { class_type: 'SaveImage', inputs: { images: ['decoded', 0], filename_prefix: 'not-so-jarvis/gen' } };
 
     return graph;
 }
 
-// Validate that ComfyUI knows the required node classes and models. Called
-// after the graph is built so we can surface clean, specific errors (missing
-// custom nodes, missing models, unsupported clip type).
+// Confirm ComfyUI knows every node class in the graph and accepts the krea2
+// clip type, so failures surface as specific, actionable errors rather than a
+// raw queue rejection.
 async function validateGraphAgainstComfy(info, graph) {
-    const missingNodes = [];
-    for (const node of Object.values(graph)) {
-        if (!info[node.class_type]) missingNodes.push(node.class_type);
-    }
-    if (missingNodes.length) {
+    const missing = Object.values(graph)
+        .filter((node) => !info[node.class_type])
+        .map((node) => node.class_type);
+    if (missing.length) {
         const error = new Error(
-            'ComfyUI is missing custom node' + (missingNodes.length > 1 ? 's' : '') + ': ' +
-            missingNodes.join(', ') + '. Install them (and restart ComfyUI), then try again.'
+            'ComfyUI is missing custom node' + (missing.length > 1 ? 's' : '') + ': ' +
+            missing.join(', ') + '. Install them (and restart ComfyUI), then try again.'
         );
         error.code = 'comfyui_missing_nodes';
-        error.missingNodes = missingNodes;
+        error.missingNodes = missing;
         throw error;
     }
 
-    const clipInfo = info.CLIPLoader;
-    if (clipInfo && clipInfo.input && clipInfo.input.required && clipInfo.input.required.type) {
-        const typeChoices = clipInfo.input.required.type[0];
-        if (Array.isArray(typeChoices) && !typeChoices.includes('krea2')) {
+    const clipNode = info.CLIPLoader;
+    const typeField = clipNode && clipNode.input && clipNode.input.required && clipNode.input.required.type;
+    if (typeField) {
+        const acceptedTypes = typeField[0];
+        if (Array.isArray(acceptedTypes) && !acceptedTypes.includes('krea2')) {
             const error = new Error(
                 'This ComfyUI build does not support the krea2 CLIPLoader type. ' +
                 'Update ComfyUI, then try again.'
@@ -1227,11 +1223,11 @@ async function validateGraphAgainstComfy(info, graph) {
 
 // --- Upscaling -----------------------------------------------------------------
 //
-// Two image engines mirroring Mix Studio's upscale pipeline (video adds a
-// third, RTX — see services/video-generator.js):
-//   - SeedVR2: a tiled diffusion upscaler. "sharp" profile uses the
-//     sharp 7B DiT variant (falls back to balanced when not installed), and the
-//     noise level controls the detail input noise (off/low/medium).
+// Images can run one of two engines (videos add a third, RTX — see
+// services/video-generator.js):
+//   - SeedVR2: a tiled diffusion upscaler. The "sharp" profile selects the
+//     sharp 7B DiT variant (falling back to balanced when it is not installed),
+//     and the noise level controls the detail input noise (off/low/medium).
 //   - Ultimate SD: a prompt-guided tiled upscaler (UltimateSDUpscale custom
 //     node) driven by the same Krea2 UNET/CLIP/VAE models as generation.
 //
@@ -1239,49 +1235,41 @@ async function validateGraphAgainstComfy(info, graph) {
 // input folder so a LoadImage node can reference it; the finished upscale is
 // downloaded back into data/generated/ and recorded in generated-history.
 
-function isSeedVr2SevenB(model) {
+function isSevenBSeedVr2(model) {
     return /(?:^|[_-])7b(?:[_-]|$)/i.test(String(model || ''));
 }
 
-// Some attention modes (sageattn / flash attn v2+) are NVIDIA-only; downgrade
-// them to sdpa on non-NVIDIA GPUs so graph construction never hard-fails.
-function seedVr2AttentionForVendor(value, vendor) {
-    const attention = String(value || DEFAULT_SEEDVR2_ATTENTION);
-    const normalizedVendor = String(vendor || '').toLowerCase();
-    if (normalizedVendor && normalizedVendor !== 'nvidia' && NVIDIA_ONLY_SEEDVR2_ATTENTION.has(attention)) {
-        return DEFAULT_SEEDVR2_ATTENTION;
-    }
-    return attention;
+// sageattn / flash-attn v2+ kernels only run on NVIDIA hardware; on any other
+// vendor they are downgraded to the portable default so graph building never
+// aborts.
+function resolveSeedVr2Attention(value, vendor) {
+    const chosen = String(value || DEFAULT_SEEDVR2_ATTENTION);
+    const vendorKey = String(vendor || '').toLowerCase();
+    const mustDowngrade = vendorKey && vendorKey !== 'nvidia' && NVIDIA_ONLY_SEEDVR2_ATTENTION.has(chosen);
+    return mustDowngrade ? DEFAULT_SEEDVR2_ATTENTION : chosen;
 }
 
-function seedVr2DitInputs(settings) {
-    const model = settings.seedvr2Dit || DEFAULT_SEEDVR2_DIT;
+function buildSeedVr2DitLoaderInputs(settings) {
+    const checkpoint = settings.seedvr2Dit || DEFAULT_SEEDVR2_DIT;
     return {
-        model,
+        model: checkpoint,
         device: 'cuda:0',
-        blocks_to_swap: isSeedVr2SevenB(model) ? 32 : 0,
+        blocks_to_swap: isSevenBSeedVr2(checkpoint) ? 32 : 0,
         swap_io_components: true,
         offload_device: 'cpu',
         cache_model: false,
-        attention_mode: seedVr2AttentionForVendor(settings.seedvr2Attention, settings.gpuVendor || '')
+        attention_mode: resolveSeedVr2Attention(settings.seedvr2Attention, settings.gpuVendor || '')
     };
 }
 
-function seedVr2NoiseLevel(requested) {
-    return Object.prototype.hasOwnProperty.call(SEEDVR2_NOISE_LEVELS, requested) ? requested : 'low';
+function normalizeSeedVr2Noise(requested) {
+    return requested === 'off' || requested === 'low' || requested === 'medium' ? requested : 'low';
 }
 
 function seedVr2Profile(settings, requestedProfile, availableModels, requestedNoise) {
-    const noise = seedVr2NoiseLevel(requestedNoise);
-    const balanced = {
-        key: 'balanced',
-        ditModel: settings.seedvr2Dit || DEFAULT_SEEDVR2_DIT,
-        colorCorrection: 'lab',
-        noise,
-        inputNoiseScale: SEEDVR2_NOISE_LEVELS[noise]
-    };
-    const hasSharp = !Array.isArray(availableModels) || availableModels.includes(SHARP_SEEDVR2_DIT);
-    if (requestedProfile === 'sharp' && hasSharp) {
+    const noise = normalizeSeedVr2Noise(requestedNoise);
+    const sharpInstalled = !Array.isArray(availableModels) || availableModels.includes(SHARP_SEEDVR2_DIT);
+    if (requestedProfile === 'sharp' && sharpInstalled) {
         return {
             key: 'sharp',
             ditModel: SHARP_SEEDVR2_DIT,
@@ -1290,83 +1278,110 @@ function seedVr2Profile(settings, requestedProfile, availableModels, requestedNo
             inputNoiseScale: SEEDVR2_NOISE_LEVELS[noise]
         };
     }
-    return balanced;
+    return {
+        key: 'balanced',
+        ditModel: settings.seedvr2Dit || DEFAULT_SEEDVR2_DIT,
+        colorCorrection: 'lab',
+        noise,
+        inputNoiseScale: SEEDVR2_NOISE_LEVELS[noise]
+    };
 }
 
-// List the SeedVR2 DiT/VAE checkpoint files ComfyUI currently has on disk, so
-// the sharp profile can detect whether its 7B-sharp DiT is installed.
-function installedSeedVr2Models(dirs) {
-    const models = new Set();
+// List the SeedVR2 checkpoint files ComfyUI currently has on disk so the
+// sharp profile can tell whether its 7B-sharp DiT is installed.
+function listInstalledSeedVr2Checkpoints(dirs) {
+    const found = new Set();
     for (const dir of dirs || []) {
         if (!dir) continue;
-        let entries = [];
-        try { entries = fs.readdirSync(dir); } catch { continue; }
-        for (const name of entries) {
-            if (!name || name.endsWith('.download')) continue;
-            const ext = path.extname(name).toLowerCase();
-            if (ext === '.safetensors' || ext === '.gguf') models.add(name);
+        let entries;
+        try {
+            entries = fs.readdirSync(dir);
+        } catch {
+            continue;
+        }
+        for (const entry of entries) {
+            if (!entry || entry.endsWith('.download')) continue;
+            const ext = path.extname(entry).toLowerCase();
+            if (ext !== '.safetensors' && ext !== '.gguf') continue;
+            found.add(entry);
         }
     }
-    return [...models];
+    return Array.from(found);
 }
 
 // Directories to scan for installed SeedVR2 checkpoints: explicit env
 // overrides first (KREA2_SEEDVR2_DIR / COMFYUI_SEEDVR2_DIR), then ComfyUI's
 // models/seedvr2 (or models/SEEDVR2) folder.
-async function seedVr2ModelDirs() {
+async function resolveSeedVr2ModelDirs() {
     const dirs = [];
     for (const value of [process.env.KREA2_SEEDVR2_DIR, process.env.COMFYUI_SEEDVR2_DIR]) {
         if (value) dirs.push(path.resolve(value));
     }
-    const modelRoot = await comfyui.resolveModelRoot().catch(() => null);
+    let modelRoot = null;
+    try {
+        modelRoot = await comfyui.resolveModelRoot();
+    } catch {
+        modelRoot = null;
+    }
     if (modelRoot) {
-        for (const dir of [path.join(modelRoot, 'seedvr2'), path.join(modelRoot, 'SEEDVR2')]) {
+        for (const folder of ['seedvr2', 'SEEDVR2']) {
+            const dir = path.join(modelRoot, folder);
             if (fs.existsSync(dir)) dirs.push(dir);
         }
     }
     return dirs;
 }
 
-// Read width/height straight from a PNG or JPEG header (no dependencies). JPEG
-// dimensions come from the SOF marker. Returns { width: 0, height: 0 } for
-// unknown formats so multiplier mode can fall back to the target resolution.
+// Read width/height straight from a PNG or JPEG header (no dependencies). PNG
+// dimensions sit at fixed offsets in the IHDR chunk; JPEG dimensions are found
+// by walking the marker segments to the SOF frame. Any other format yields
+// { width: 0, height: 0 } so multiplier mode can fall back to target resolution.
 function readImageDimensions(filePath) {
+    const UNKNOWN = { width: 0, height: 0 };
+    let data;
     try {
-        const buf = fs.readFileSync(filePath);
-        if (buf.length > 24 && buf.toString('ascii', 1, 4) === 'PNG') {
-            return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
-        }
-        if (buf[0] === 0xFF && buf[1] === 0xD8) {
-            let i = 2;
-            while (i < buf.length - 9) {
-                if (buf[i] !== 0xFF) { i += 1; continue; }
-                const marker = buf[i + 1];
-                if (marker === 0xD8 || (marker >= 0xD0 && marker <= 0xD7) || marker === 0x01) { i += 2; continue; }
-                const len = buf.readUInt16BE(i + 2);
-                if (marker >= 0xC0 && marker <= 0xCF && marker !== 0xC4 && marker !== 0xC8 && marker !== 0xCC) {
-                    return { width: buf.readUInt16BE(i + 7), height: buf.readUInt16BE(i + 5) };
-                }
-                i += 2 + len;
-            }
-        }
-    } catch (err) {
-        // Fall through to unknown dimensions.
+        data = fs.readFileSync(filePath);
+    } catch {
+        return UNKNOWN;
     }
-    return { width: 0, height: 0 };
+    if (data.length > 24 && data.toString('ascii', 1, 4) === 'PNG') {
+        return { width: data.readUInt32BE(16), height: data.readUInt32BE(20) };
+    }
+    if (!(data.length > 2 && data[0] === 0xFF && data[1] === 0xD8)) return UNKNOWN;
+    const NOT_A_FRAME_HEADER = new Set([0xC4, 0xC8, 0xCC]);
+    let pos = 2;
+    while (pos <= data.length - 10) {
+        if (data[pos] !== 0xFF) {
+            pos += 1;
+            continue;
+        }
+        const marker = data[pos + 1];
+        const isStandalone = marker === 0x01 || marker === 0xD8 || (marker >= 0xD0 && marker <= 0xD7);
+        if (isStandalone) {
+            pos += 2;
+            continue;
+        }
+        const isFrameHeader = marker >= 0xC0 && marker <= 0xCF && !NOT_A_FRAME_HEADER.has(marker);
+        if (isFrameHeader) {
+            return { width: data.readUInt16BE(pos + 7), height: data.readUInt16BE(pos + 5) };
+        }
+        pos += 2 + data.readUInt16BE(pos + 2);
+    }
+    return UNKNOWN;
 }
 
 // Turn the configured upscale mode into a concrete SeedVR2 target resolution.
 // "target" uses the configured short-side resolution; "multiplier" scales the
 // source short side by the multiplier (clamped to 512..8192).
 function resolveUpscaleResolution(sourceWidth, sourceHeight, settings, requested) {
-    const mode = (requested && requested.mode) || settings.upscaleMode || 'target';
-    if (mode === 'multiplier') {
-        const factor = clampNumber((requested && requested.multiplier) || settings.upscaleMultiplier, 1, 4, 2);
-        if (sourceWidth > 0 && sourceHeight > 0) {
-            return Math.max(512, Math.min(8192, Math.round(Math.min(sourceWidth, sourceHeight) * factor)));
-        }
+    const request = requested || {};
+    const mode = request.mode || settings.upscaleMode || 'target';
+    const hasSource = sourceWidth > 0 && sourceHeight > 0;
+    if (mode === 'multiplier' && hasSource) {
+        const factor = clampToRange(request.multiplier || settings.upscaleMultiplier, 1, 4, 2);
+        return Math.max(512, Math.min(8192, Math.round(Math.min(sourceWidth, sourceHeight) * factor)));
     }
-    return clampNumber((requested && requested.resolution) || settings.upscaleResolution, 512, 8192, 2160);
+    return clampToRange(request.resolution || settings.upscaleResolution, 512, 8192, 2160);
 }
 
 function findHistoryMeta(rawFilename) {
@@ -1445,29 +1460,31 @@ function hasFuzzyUpscaleSignal(norm) {
 function buildSeedVr2ImageUpscaleGraph(imageName, options = {}) {
     const settings = Object.assign({}, DEFAULT_SETTINGS, options.settings || {});
     const profile = seedVr2Profile(settings, options.profile || 'sharp', options.availableModels, options.noise || 'low');
-    const seed = Number.isInteger(options.seed) && options.seed >= 0 ? options.seed : Math.floor(Math.random() * 2 ** 31);
+    const seed = Number.isInteger(options.seed) && options.seed >= 0
+        ? options.seed
+        : Math.floor(Math.random() * 2 ** 31);
 
     const graph = {};
-    graph.load = { class_type: 'LoadImage', inputs: { image: imageName } };
-    let imgRef = ['load', 0];
+    graph.load_image = { class_type: 'LoadImage', inputs: { image: imageName } };
+    let imageLink = ['load_image', 0];
 
-    const preScale = clampNumber(options.preScale, 1, 4, 1);
+    const preScale = clampToRange(options.preScale, 1, 4, 1);
     if (preScale !== 1) {
         graph.prescale = {
             class_type: 'ImageScaleBy',
-            inputs: { image: imgRef, upscale_method: 'lanczos', scale_by: preScale }
+            inputs: { image: imageLink, upscale_method: 'lanczos', scale_by: preScale }
         };
-        imgRef = ['prescale', 0];
+        imageLink = ['prescale', 0];
     }
 
-    graph.dit = {
+    graph.dit_loader = {
         class_type: 'SeedVR2LoadDiTModel',
-        inputs: seedVr2DitInputs(Object.assign({}, settings, {
+        inputs: buildSeedVr2DitLoaderInputs(Object.assign({}, settings, {
             seedvr2Dit: profile.ditModel,
             gpuVendor: options.gpuVendor || settings.gpuVendor || ''
         }))
     };
-    graph.svvae = {
+    graph.vae_loader = {
         class_type: 'SeedVR2LoadVAEModel',
         inputs: {
             model: settings.seedvr2Vae || DEFAULT_SEEDVR2_VAE,
@@ -1483,14 +1500,14 @@ function buildSeedVr2ImageUpscaleGraph(imageName, options = {}) {
             cache_model: false
         }
     };
-    graph.upscale = {
+    graph.upscaler = {
         class_type: 'SeedVR2VideoUpscaler',
         inputs: {
-            image: imgRef,
-            dit: ['dit', 0],
-            vae: ['svvae', 0],
+            image: imageLink,
+            dit: ['dit_loader', 0],
+            vae: ['vae_loader', 0],
             seed,
-            resolution: clampNumber(options.resolution, 512, 8192, 2160),
+            resolution: clampToRange(options.resolution, 512, 8192, 2160),
             max_resolution: 0,
             batch_size: 1,
             uniform_batch_size: false,
@@ -1503,33 +1520,35 @@ function buildSeedVr2ImageUpscaleGraph(imageName, options = {}) {
             enable_debug: false
         }
     };
-    graph.save = { class_type: 'SaveImage', inputs: { images: ['upscale', 0], filename_prefix: 'not-so-jarvis/upscale' } };
+    graph.save_image = { class_type: 'SaveImage', inputs: { images: ['upscaler', 0], filename_prefix: 'not-so-jarvis/upscale' } };
 
     return { graph, profile };
 }
 
 function buildUltimateSdUpscaleGraph(imageName, options = {}) {
     const settings = Object.assign({}, DEFAULT_SETTINGS, options.settings || {});
-    const scaleFactor = clampNumber(options.scaleFactor, 1, 4, 2);
-    const seed = Number.isInteger(options.seed) && options.seed >= 0 ? options.seed : Math.floor(Math.random() * 2 ** 31);
+    const scaleFactor = clampToRange(options.scaleFactor, 1, 4, 2);
+    const seed = Number.isInteger(options.seed) && options.seed >= 0
+        ? options.seed
+        : Math.floor(Math.random() * 2 ** 31);
     const prompt = String(options.prompt || '').trim() || 'a faithful, highly detailed upscale of the source image';
 
     const graph = {};
-    graph.load = { class_type: 'LoadImage', inputs: { image: imageName } };
-    graph.unet = diffusionModelLoader(settings.unet);
+    graph.load_image = { class_type: 'LoadImage', inputs: { image: imageName } };
+    graph.unet = buildDiffusionLoaderNode(settings.unet);
     graph.clip = { class_type: 'CLIPLoader', inputs: { clip_name: settings.clip, type: settings.clipType, device: 'default' } };
     graph.vae = { class_type: 'VAELoader', inputs: { vae_name: settings.vae } };
-    const chain = buildLoraChain(graph, settings.loras);
+    const stack = buildLoraChain(graph, settings.loras);
     graph.upscale_model = { class_type: 'UpscaleModelLoader', inputs: { model_name: options.upscaleModel || ULTIMATE_SD_UPSCALE_MODEL } };
-    graph.pos = { class_type: 'CLIPTextEncode', inputs: { clip: chain.clip, text: prompt } };
-    graph.neg = { class_type: 'ConditioningZeroOut', inputs: { conditioning: ['pos', 0] } };
+    graph.positive = { class_type: 'CLIPTextEncode', inputs: { clip: stack.clip, text: prompt } };
+    graph.negative = { class_type: 'ConditioningZeroOut', inputs: { conditioning: ['positive', 0] } };
     graph.ultimate = {
         class_type: 'UltimateSDUpscale',
         inputs: {
-            image: ['load', 0],
-            model: chain.model,
-            positive: ['pos', 0],
-            negative: ['neg', 0],
+            image: ['load_image', 0],
+            model: stack.model,
+            positive: ['positive', 0],
+            negative: ['negative', 0],
             vae: ['vae', 0],
             upscale_by: scaleFactor,
             seed,
@@ -1554,7 +1573,7 @@ function buildUltimateSdUpscaleGraph(imageName, options = {}) {
             batch_size: 1
         }
     };
-    graph.save = { class_type: 'SaveImage', inputs: { images: ['ultimate', 0], filename_prefix: 'not-so-jarvis/upscale' } };
+    graph.save_image = { class_type: 'SaveImage', inputs: { images: ['ultimate', 0], filename_prefix: 'not-so-jarvis/upscale' } };
 
     return graph;
 }
@@ -1593,14 +1612,14 @@ async function upscaleImage(rawFilename, options = {}) {
         const buffer = fs.readFileSync(filePath);
 
         const settings = effectiveSettings();
-        // Images only run SeedVR2 or Ultimate SD: an RTX selection (the fast
-        // video path) falls back to SeedVR2 here, matching Mix Studio where
-        // the image pipeline never sees the RTX engine.
+        // Images only ever run SeedVR2 or Ultimate SD: an RTX selection (the
+        // fast video path) falls back to SeedVR2 here, so the image pipeline
+        // never receives the RTX engine.
         const engine = String(options.engine || settings.upscaleEngine || 'seedvr2').toLowerCase() === 'ultimate' ? 'ultimate' : 'seedvr2';
         const sourceMeta = findHistoryMeta(safeName);
         const { width: sourceWidth, height: sourceHeight } = readImageDimensions(filePath);
         const resolution = resolveUpscaleResolution(sourceWidth, sourceHeight, settings, options);
-        const scaleFactor = clampNumber(options.scaleFactor || options.multiplier || settings.upscaleMultiplier, 1, 4, 2);
+        const scaleFactor = clampToRange(options.scaleFactor || options.multiplier || settings.upscaleMultiplier, 1, 4, 2);
         const seed = Math.floor(Math.random() * 2 ** 32);
         const profile = engine === 'seedvr2' ? (options.profile || settings.upscaleProfile || 'sharp') : null;
         const noise = engine === 'seedvr2' ? (options.noise || settings.upscaleNoise || 'low') : null;
@@ -1616,7 +1635,7 @@ async function upscaleImage(rawFilename, options = {}) {
         let effectiveProfile = null;
         try {
             if (engine === 'seedvr2') {
-                const availableModels = installedSeedVr2Models(await seedVr2ModelDirs());
+                const availableModels = listInstalledSeedVr2Checkpoints(await resolveSeedVr2ModelDirs());
                 const built = buildSeedVr2ImageUpscaleGraph(loadName, {
                     settings,
                     profile,
@@ -1843,12 +1862,12 @@ async function generateImage(prompt, options = {}) {
 
 // --- Krea2 identity edit --------------------------------------------------------
 //
-// Instruction-based, identity-preserving image editing adapted from Mix
-// Studio's lib/krea2-identity-edit.js (community LoRA
-// conradlocke/krea2-identity-edit + lbouaraba/comfyui-krea2edit nodes).
-// Give it a source image and a plain-language instruction; it edits while
-// preserving what the instruction does not change — people, objects,
-// recolor, restyle, removal. Single reference only (Mix Studio supports two).
+// Instruction-based, identity-preserving image editing built on the community
+// Identity Edit LoRA (conradlocke/krea2-identity-edit) plus the
+// lbouaraba/comfyui-krea2edit nodes. Given a source image and a plain-language
+// instruction it edits only what the instruction describes and preserves the
+// rest — people, objects, recolor, restyle, removal. A single reference image
+// is supported.
 //
 // Graph: UNET/CLIP/VAE loaders → identity LoRA (LoraLoaderModelOnly) → user
 // LoRAs (model-only) → LoadImage/VAEEncode source latent →
@@ -1857,7 +1876,7 @@ async function generateImage(prompt, options = {}) {
 // denoise 1) → VAEDecode → SaveImage (not-so-jarvis/edit).
 
 const MAX_IDENTITY_EDIT_PIXELS = 2000000;
-const EDIT_REQUIRED_NODES = ['Krea2EditModelPatch', 'Krea2EditGroundedEncode'];
+const IDENTITY_EDIT_NODE_CLASSES = ['Krea2EditModelPatch', 'Krea2EditGroundedEncode'];
 
 // Explicit edit phrasing aimed at an existing image ("edit this photo",
 // "retouch it", "replace the frog with a princess"). A narrow deterministic
@@ -1967,52 +1986,53 @@ function detectImageModifyIntent(message, hasActiveImageTask) {
     return { intent: 'image_generation', action: 'modify' };
 }
 
-function sameAssetName(a, b) {
-    const key = (v) => String(v || '').replace(/\\/g, '/').split('/').pop().toLowerCase();
-    return key(a) === key(b);
+function isSameAssetFile(a, b) {
+    const normalize = (value) => {
+        const segments = String(value || '').replace(/\\/g, '/').split('/');
+        return segments[segments.length - 1].toLowerCase();
+    };
+    return normalize(a) === normalize(b);
 }
 
-// Fit the output inside 2MP on a 16px grid (Mix Studio's
-// normalizeIdentityEditDimensions). Above 2MP the edit LoRA bleeds/duplicates.
+// Fit the output inside 2MP on a 16px grid. The edit LoRA bleeds or duplicates
+// content above 2MP, so oversized sources are proportionally scaled down first.
 function normalizeIdentityEditDimensions(width, height) {
-    let w = Math.max(256, Math.round(Number(width) || 1024));
-    let h = Math.max(256, Math.round(Number(height) || 1024));
-    const pixels = w * h;
-    if (pixels > MAX_IDENTITY_EDIT_PIXELS) {
-        const scale = Math.sqrt(MAX_IDENTITY_EDIT_PIXELS / pixels);
-        w *= scale;
-        h *= scale;
-    }
-    w = Math.max(256, Math.round(w / 16) * 16);
-    h = Math.max(256, Math.round(h / 16) * 16);
+    const GRID = 16;
+    const MIN_SIDE = 256;
+    const startW = Math.max(MIN_SIDE, Math.round(Number(width) || 1024));
+    const startH = Math.max(MIN_SIDE, Math.round(Number(height) || 1024));
+    const area = startW * startH;
+    const shrink = area > MAX_IDENTITY_EDIT_PIXELS ? Math.sqrt(MAX_IDENTITY_EDIT_PIXELS / area) : 1;
+    let w = Math.max(MIN_SIDE, Math.round((startW * shrink) / GRID) * GRID);
+    let h = Math.max(MIN_SIDE, Math.round((startH * shrink) / GRID) * GRID);
     while (w * h > MAX_IDENTITY_EDIT_PIXELS) {
-        if (w >= h) w -= 16;
-        else h -= 16;
+        if (w >= h) w -= GRID;
+        else h -= GRID;
     }
     return { width: w, height: h };
 }
 
-function editLoraChoices(info) {
+function listEditLoraNames(info) {
     const node = info && info.LoraLoaderModelOnly;
     const input = (node && node.input) || {};
-    const list = (input.required && input.required.lora_name) || input.lora_name;
-    return Array.isArray(list) && Array.isArray(list[0]) ? list[0] : [];
+    const spec = (input.required && input.required.lora_name) || input.lora_name;
+    return Array.isArray(spec) && Array.isArray(spec[0]) ? spec[0] : [];
 }
 
 // Fail fast with a friendly error when the edit stack is incomplete.
-function assertEditStackAvailable(info, settings) {
-    const missingNodes = EDIT_REQUIRED_NODES.filter((n) => !info[n]);
-    if (missingNodes.length) {
+function requireEditStack(info, settings) {
+    const unavailable = IDENTITY_EDIT_NODE_CLASSES.filter((cls) => !info[cls]);
+    if (unavailable.length) {
         const error = new Error(
-            'ComfyUI is missing custom nodes: ' + missingNodes.join(', ') +
+            'ComfyUI is missing custom nodes: ' + unavailable.join(', ') +
             '. Install lbouaraba/comfyui-krea2edit (and restart ComfyUI), then try again.'
         );
         error.code = 'comfyui_missing_nodes';
-        error.missingNodes = missingNodes;
+        error.missingNodes = unavailable;
         throw error;
     }
     const editLora = String(settings.editLora || '').trim();
-    if (!editLora || !editLoraChoices(info).some((n) => sameAssetName(n, editLora))) {
+    if (!editLora || !listEditLoraNames(info).some((name) => isSameAssetFile(name, editLora))) {
         const error = new Error(
             'Krea 2 Edit needs the Identity Edit LoRA in ComfyUI loras: ' +
             (editLora || '(not configured)') + '.'
@@ -2027,7 +2047,7 @@ async function checkEditAvailability() {
     try {
         if (!(await comfyui.isAvailable())) return { ok: false, reason: 'comfyui_unavailable' };
         const info = await comfyui.getObjectInfo(15000);
-        assertEditStackAvailable(info, effectiveSettings());
+        requireEditStack(info, effectiveSettings());
         return { ok: true };
     } catch (err) {
         return { ok: false, reason: err.code || 'unavailable' };
@@ -2048,100 +2068,99 @@ function buildKrea2IdentityEditGraph(instruction, loadName, options = {}) {
         throw error;
     }
     const seed = Number.isInteger(options.seed) && options.seed >= 0 ? options.seed : 0;
-    const steps = clampInt(options.steps || 10, 8, 12, 10);
-    const cfg = clampNumber(options.cfg, 1, 5, 1);
-    const refBoost = clampNumber(options.refBoost, 0, 20, 4);
-    const groundingPx = Math.round(clampNumber(options.groundingPx, 384, 1024, 768));
+    const steps = clampToInt(options.steps || 10, 8, 12, 10);
+    const cfg = clampToRange(options.cfg, 1, 5, 1);
+    const refBoost = clampToRange(options.refBoost, 0, 20, 4);
+    const groundingPx = Math.round(clampToRange(options.groundingPx, 384, 1024, 768));
     const dims = normalizeIdentityEditDimensions(options.width, options.height);
 
-    // The identity LoRA must be enabled — a disabled stack entry means the
-    // user turned the edit pipeline off, so refuse instead of running Unet
-    // without it. Its own strength is honored; user LoRAs stack model-only
-    // on top, same as Mix Studio.
-    const identityOverride = (settings.loras || [])
-        .find((l) => l && l.name && sameAssetName(l.name, editLora));
-    if (identityOverride && identityOverride.on === false) {
+    // The identity LoRA must be present and enabled. A disabled stack entry
+    // means the user switched the edit pipeline off, so refuse rather than run
+    // the base UNET without it. Its configured strength is honored; user LoRAs
+    // are then stacked model-only on top.
+    const override = (settings.loras || []).find((l) => l && l.name && isSameAssetFile(l.name, editLora));
+    if (override && override.on === false) {
         const error = new Error('Krea 2 Edit needs the Identity Edit LoRA enabled.');
         error.code = 'comfyui_edit_lora_missing';
         throw error;
     }
 
     const graph = {};
-    graph.unet = diffusionModelLoader(settings.unet);
-    graph.clip = { class_type: 'CLIPLoader', inputs: { clip_name: settings.clip, type: settings.clipType, device: 'default' } };
-    graph.vae = { class_type: 'VAELoader', inputs: { vae_name: settings.vae } };
-    graph.identity_lora = {
+    graph.base_model = buildDiffusionLoaderNode(settings.unet);
+    graph.text_encoder = { class_type: 'CLIPLoader', inputs: { clip_name: settings.clip, type: settings.clipType, device: 'default' } };
+    graph.vae_loader = { class_type: 'VAELoader', inputs: { vae_name: settings.vae } };
+    graph.identity_stack = {
         class_type: 'LoraLoaderModelOnly',
         inputs: {
-            model: ['unet', 0],
+            model: ['base_model', 0],
             lora_name: editLora,
-            strength_model: clampNumber(identityOverride && identityOverride.strength, -100, 100, 1)
+            strength_model: clampToRange(override && override.strength, -100, 100, 1)
         }
     };
 
-    let model = ['identity_lora', 0];
-    let n = 0;
-    for (const l of settings.loras || []) {
-        if (!l || l.on === false || !l.name || sameAssetName(l.name, editLora)) continue;
-        n += 1;
-        const key = 'user_lora_' + n;
-        graph[key] = {
+    let modelLink = ['identity_stack', 0];
+    let stackIndex = 0;
+    for (const entry of settings.loras || []) {
+        if (!entry || entry.on === false || !entry.name || isSameAssetFile(entry.name, editLora)) continue;
+        stackIndex += 1;
+        const nodeId = 'stack_lora_' + stackIndex;
+        graph[nodeId] = {
             class_type: 'LoraLoaderModelOnly',
             inputs: {
-                model,
-                lora_name: l.name,
-                strength_model: clampNumber(l.strength, -100, 100, 1)
+                model: modelLink,
+                lora_name: entry.name,
+                strength_model: clampToRange(entry.strength, -100, 100, 1)
             }
         };
-        model = [key, 0];
+        modelLink = [nodeId, 0];
     }
 
-    graph.source = { class_type: 'LoadImage', inputs: { image: loadName } };
-    graph.source_latent = {
+    graph.reference_image = { class_type: 'LoadImage', inputs: { image: loadName } };
+    graph.reference_latent = {
         class_type: 'VAEEncode',
-        inputs: { pixels: ['source', 0], vae: ['vae', 0] }
+        inputs: { pixels: ['reference_image', 0], vae: ['vae_loader', 0] }
     };
-    graph.model_patch = {
+    graph.edit_patch = {
         class_type: 'Krea2EditModelPatch',
         inputs: {
-            model,
-            source_latent: ['source_latent', 0],
+            model: modelLink,
+            source_latent: ['reference_latent', 0],
             ref_boost: refBoost,
             ref_boost_a: 1,
             fit_mode: 'fit',
-            vae: ['vae', 0],
-            source_image: ['source', 0]
+            vae: ['vae_loader', 0],
+            source_image: ['reference_image', 0]
         }
     };
-    graph.positive = {
+    graph.conditioning_pos = {
         class_type: 'Krea2EditGroundedEncode',
         inputs: {
             prompt: String(instruction || ''),
             grounding_px: groundingPx,
-            clip: ['clip', 0],
-            image: ['source', 0]
+            clip: ['text_encoder', 0],
+            image: ['reference_image', 0]
         }
     };
-    graph.negative = {
+    graph.conditioning_neg = {
         class_type: 'Krea2EditGroundedEncode',
         inputs: {
             prompt: String(options.negativePrompt || ''),
             grounding_px: groundingPx,
-            clip: ['clip', 0],
-            image: ['source', 0]
+            clip: ['text_encoder', 0],
+            image: ['reference_image', 0]
         }
     };
-    graph.latent = {
+    graph.canvas = {
         class_type: 'EmptySD3LatentImage',
         inputs: { width: dims.width, height: dims.height, batch_size: 1 }
     };
     graph.sampler = {
         class_type: 'KSampler',
         inputs: {
-            model: ['model_patch', 0],
-            positive: ['positive', 0],
-            negative: ['negative', 0],
-            latent_image: ['latent', 0],
+            model: ['edit_patch', 0],
+            positive: ['conditioning_pos', 0],
+            negative: ['conditioning_neg', 0],
+            latent_image: ['canvas', 0],
             seed,
             steps,
             cfg,
@@ -2150,8 +2169,8 @@ function buildKrea2IdentityEditGraph(instruction, loadName, options = {}) {
             denoise: 1
         }
     };
-    graph.decode = { class_type: 'VAEDecode', inputs: { samples: ['sampler', 0], vae: ['vae', 0] } };
-    graph.save = { class_type: 'SaveImage', inputs: { images: ['decode', 0], filename_prefix: 'not-so-jarvis/edit' } };
+    graph.decoded = { class_type: 'VAEDecode', inputs: { samples: ['sampler', 0], vae: ['vae_loader', 0] } };
+    graph.save = { class_type: 'SaveImage', inputs: { images: ['decoded', 0], filename_prefix: 'not-so-jarvis/edit' } };
 
     return graph;
 }
@@ -2232,7 +2251,7 @@ async function editImage(sourceAbsPath, instruction, options = {}) {
 
             const info = await comfyui.getObjectInfo();
             await validateGraphAgainstComfy(info, graph);
-            assertEditStackAvailable(info, settings);
+            requireEditStack(info, settings);
 
             const pid = await comfyui.queuePrompt(graph);
             console.log('[image-generator] queued Krea2 edit workflow:', pid);

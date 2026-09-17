@@ -309,21 +309,24 @@ async function queuePrompt(graph) {
     return json.prompt_id;
 }
 
+// Collect the files a completed history entry wrote, keeping only output
+// entries whose filename matches the given extension pattern.
 function findOutputFiles(outputs, extRe) {
-    const files = [];
-    for (const out of Object.values(outputs || {})) {
-        if (!out || typeof out !== 'object') continue;
-        for (const arr of Object.values(out)) {
-            if (!Array.isArray(arr)) continue;
-            for (const entry of arr) {
-                if (entry && typeof entry === 'object' && typeof entry.filename === 'string'
-                    && entry.type === 'output' && extRe.test(entry.filename)) {
-                    files.push(entry);
-                }
-            }
+    const matches = [];
+    const visit = (value) => {
+        if (!value || typeof value !== 'object') return;
+        if (Array.isArray(value)) {
+            value.forEach(visit);
+            return;
         }
-    }
-    return files;
+        if (typeof value.filename === 'string' && value.type === 'output' && extRe.test(value.filename)) {
+            matches.push(value);
+            return;
+        }
+        Object.values(value).forEach(visit);
+    };
+    visit(outputs);
+    return matches;
 }
 
 function extractTextOutputs(outputs) {

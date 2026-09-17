@@ -154,28 +154,11 @@ function buildLongVideoGraph(opts = {}) {
     }
 
     // Attention backend patch, matching the normal H3 pipeline.
-    const attention = videoGenerator.normalizeH3AttentionBackend(settings.attentionBackend);
-    if (attention === 'sageattention') {
-        graph.sage_attention = {
-            class_type: 'PathchSageAttentionKJ',
-            inputs: { model: [modelNode, 0], sage_attention: 'auto', allow_compile: false }
-        };
-        modelNode = 'sage_attention';
-    } else if (attention === 'sla') {
-        graph.sla_attention = {
-            class_type: 'H3SLAAttention',
-            inputs: {
-                model: [modelNode, 0],
-                sparsity_ratio: 0.85,
-                block_size: '64',
-                min_seq_len: 8192,
-                dense_last_steps: 0,
-                protect_audio: true,
-                enabled: true
-            }
-        };
-        modelNode = 'sla_attention';
-    }
+    modelNode = videoGenerator.applyAttentionPatch(
+        graph,
+        modelNode,
+        videoGenerator.normalizeH3AttentionBackend(settings.attentionBackend)
+    );
 
     // Optional first frame (an existing generated image the user referenced).
     const firstFrameWire = firstImageName

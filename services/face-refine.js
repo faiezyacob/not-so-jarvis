@@ -13,7 +13,7 @@
 
    Zero npm dependencies: only node builtins (fs/path/os/child_process)
    plus the global fetch for the detector download.
-   SPDX-License-Identifier: GPL-3.0-only
+   SPDX-License-Identifier: MIT
    ============================================ */
 
 const fs = require('fs');

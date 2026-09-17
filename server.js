@@ -3379,7 +3379,7 @@ async function handleVideoGenerationStream(req, res, opts) {
 // Handle a manual video-upscale chat request over SSE. Mirrors
 // handleImageUpscaleStream: the conversation's previously generated video is
 // always the source; runs only when the user asks for it. Engine comes from
-// the shared upscale settings (RTX fast path by default, like Mix Studio).
+// the shared upscale settings (RTX fast path by default for video).
 async function handleVideoUpscaleStream(req, res, opts) {
     const { provider, model, conversationId, message } = opts;
 

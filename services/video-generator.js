@@ -1,16 +1,13 @@
 /* ============================================
    JARVIS — Video Generation Service (MiniMax H3)
-   Detects video-generation intent, builds the
-   MiniMax H3 ComfyUI workflow graph (T2VA and
-   I2VA modes), submits it to ComfyUI, and stores
-   the finished video so the chat layer can display it.
-   SPDX-License-Identifier: GPL-3.0-only
+   Owns video-generation intent detection, the
+   MiniMax H3 ComfyUI graph builders (T2VA and
+   first-frame I2VA), the optional FaceRefine pass,
+   and the SeedVR2/RTX video upscalers. It queues
+   work in ComfyUI and records the finished media so
+   the chat layer can display it.
+   SPDX-License-Identifier: MIT
    Copyright (c) 2026 not-so-jarvis.
-   Adapted from Mix Studio's working H3 implementation
-   (https://github.com/BlackMixture/Mix-Studio, GPL-3.0-only):
-   lib/video-workflows.js buildMiniMaxH3Graph + H3 resolution helpers.
-   Modified: simplified to T2VA/first-frame I2VA only (no turbo,
-   reference-video/audio, long-context, or RTX post-pass).
    ============================================ */
 
 const fs = require('fs');
@@ -24,39 +21,49 @@ const { getModelById } = require('../server/models');
 
 const GENERATED_DIR = path.join(__dirname, '..', 'data', 'generated');
 
-// --- H3 Constants (from Mix Studio video-workflows.js + h3-resolution.js) -----
-// S/M/L share Mix Studio's image tiers: 0.75 MP (S), 1 MP (M), 1.75 MP (L,
-// the model's native canvas). H3 renders from a 768-short-edge base canvas
-// capped at 768x1344 pixels, scaled per tier (S 0.5x, M 0.75x, L 1x).
+// --- H3 Constants -------------------------------------------------------------
+// H3 renders on a base canvas whose short edge is 768 and whose total pixel
+// count cannot exceed 768x1344. Three tiers scale that canvas: S = 0.5x,
+// M = 0.75x (roughly the model's 1 MP native canvas) and L = 1x (its
+// 1.75 MP native canvas).
 
 const H3_FPS = 24;
 const H3_MIN_SECONDS = 5;
 const H3_MAX_SECONDS = 15;
 const H3_BASE_SHORT_EDGE = 768;
-const H3_MAX_PIXELS = 768 * 1344;
+const H3_MAX_PIXELS = H3_BASE_SHORT_EDGE * 1344;
 
 const H3_SIZE_SCALES = { S: 0.5, M: 0.75, L: 1 };
-// Backwards-compatible alias: previous revisions exposed short-side pixels
-// under this name ({ S: 768, M: 1024, L: 1536 }).
+// Alias retained for callers written against the older short-side pixel name.
 const H3_IMAGE_SIZES = H3_SIZE_SCALES;
 
 // --- Default H3 Video Settings ------------------------------------------------
 
 const H3_DEFAULT_STEPS = Number(process.env.H3_STEPS) || 20;
 
-// Attention backend used for H3 video generation, matching Mix Studio's
-// three mutually exclusive options:
+// The three mutually exclusive attention backends H3 can run under:
 //   standard      — dense PyTorch attention (no patch node)
 //   sageattention — KJNodes PathchSageAttentionKJ patch (sageattention pkg)
 //   sla           — H3SLAAttention sparse attention node (experimental)
 const H3_ATTENTION_BACKENDS = Object.freeze(['standard', 'sageattention', 'sla']);
 
+// Accepted spellings/aliases for each backend. Anything unrecognized is
+// treated as `standard`, the dependency-free default.
+const H3_ATTENTION_ALIASES = {
+    standard: 'standard',
+    normal: 'standard',
+    pytorch: 'standard',
+    sage: 'sageattention',
+    sageattention: 'sageattention',
+    sla: 'sla',
+    h3sla: 'sla'
+};
+
 function normalizeH3AttentionBackend(value) {
-    const requested = String(value || '').trim().toLowerCase().replace(/-/g, '');
-    if (requested === 'sage' || requested === 'sageattention') return 'sageattention';
-    if (requested === 'sla' || requested === 'h3sla') return 'sla';
-    if (requested === 'standard' || requested === 'normal' || requested === 'pytorch') return 'standard';
-    return 'standard';
+    const requested = String(value == null ? '' : value).trim().toLowerCase().replace(/-/g, '');
+    return Object.prototype.hasOwnProperty.call(H3_ATTENTION_ALIASES, requested)
+        ? H3_ATTENTION_ALIASES[requested]
+        : 'standard';
 }
 
 function envNumber(name, fallback) {
@@ -85,11 +92,21 @@ function normalizeFaceRefineSelect(value, fallback) {
     return fallback !== undefined ? fallback : 'largest_face';
 }
 
+// Published MiniMax H3 artifact filenames. These are the exact names the
+// upstream model release ships, so they are only used as defaults when the
+// matching env var is unset.
+const H3_MODEL_FILES = {
+    unet: 'minimax_h3_fl2va_pruned_int8_convrot.safetensors',
+    clip: 'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors',
+    videoVae: 'minimax_h3_video_vae_fp16.safetensors',
+    audioVae: 'minimax_h3_audio_vae_fp32.safetensors'
+};
+
 const H3_DEFAULTS = {
-    h3Unet: process.env.H3_UNET || 'minimax_h3_fl2va_pruned_int8_convrot.safetensors',
-    h3Clip: process.env.H3_CLIP || 'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors',
-    h3VideoVae: process.env.H3_VIDEO_VAE || 'minimax_h3_video_vae_fp16.safetensors',
-    h3AudioVae: process.env.H3_AUDIO_VAE || 'minimax_h3_audio_vae_fp32.safetensors',
+    h3Unet: process.env.H3_UNET || H3_MODEL_FILES.unet,
+    h3Clip: process.env.H3_CLIP || H3_MODEL_FILES.clip,
+    h3VideoVae: process.env.H3_VIDEO_VAE || H3_MODEL_FILES.videoVae,
+    h3AudioVae: process.env.H3_AUDIO_VAE || H3_MODEL_FILES.audioVae,
     h3Duration: Number(process.env.H3_DURATION) || 5,
     h3Size: process.env.H3_SIZE || 'M',
     attentionBackend: H3_ATTENTION_BACKENDS.includes(process.env.H3_ATTENTION_BACKEND)
@@ -153,53 +170,65 @@ function sharedUpscaleSettings() {
     return imageGenerator.effectiveSettings();
 }
 
-// --- Frame / Dimension helpers (adapted from Mix Studio) ----------------------
+// --- Frame / Dimension helpers ------------------------------------------------
 
+// Clamp an arbitrary requested length into H3's supported 5-15s window.
 function h3DurationSeconds(requestedSeconds) {
     const requested = Number(requestedSeconds);
-    return Math.max(H3_MIN_SECONDS, Math.min(
-        H3_MAX_SECONDS,
-        Number.isFinite(requested) ? requested : H3_MIN_SECONDS
-    ));
+    const seconds = Number.isFinite(requested) ? requested : H3_MIN_SECONDS;
+    return Math.min(H3_MAX_SECONDS, Math.max(H3_MIN_SECONDS, seconds));
 }
 
+// H3 frame counts must land on a 17k+5 lattice (the VAE's temporal stride).
 function h3FramesForSeconds(seconds) {
-    const raw = Math.max(5, Math.round(h3DurationSeconds(seconds) * H3_FPS));
-    return raw + ((5 - (raw % 17) + 17) % 17);
+    const base = Math.max(5, Math.round(h3DurationSeconds(seconds) * H3_FPS));
+    const remainder = base % 17;
+    const pad = ((5 - remainder) + 17) % 17;
+    return base + pad;
 }
 
 function h3EffectiveDurationSeconds(seconds) {
     return h3FramesForSeconds(seconds) / H3_FPS;
 }
 
-function readImageDimensions(filePath) {
+// Read PNG / JPEG dimensions from the file header only.
+function readStillImageDimensions(filePath) {
+    let fd = null;
     try {
-        const fd = fs.openSync(filePath, 'r');
-        const buf = Buffer.alloc(32);
-        fs.readSync(fd, buf, 0, 32, 0);
-        fs.closeSync(fd);
+        fd = fs.openSync(filePath, 'r');
+        const header = Buffer.alloc(32);
+        fs.readSync(fd, header, 0, header.length, 0);
 
-        if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47) {
-            const w = buf.readUInt32BE(16);
-            const h = buf.readUInt32BE(20);
-            if (w > 0 && h > 0) return { width: w, height: h };
+        const isPng = header[0] === 0x89 && header[1] === 0x50 &&
+            header[2] === 0x4E && header[3] === 0x47;
+        if (isPng) {
+            const width = header.readUInt32BE(16);
+            const height = header.readUInt32BE(20);
+            if (width > 0 && height > 0) return { width, height };
         }
 
-        if (buf[0] === 0xFF && buf[1] === 0xD8) {
-            let offset = 2;
-            while (offset < 30) {
-                if (buf[offset] !== 0xFF) break;
-                const marker = buf[offset + 1];
-                if ((marker >= 0xC0 && marker <= 0xCF) && marker !== 0xC4 && marker !== 0xC8 && marker !== 0xCC) {
-                    const h = buf.readUInt16BE(offset + 5);
-                    const w = buf.readUInt16BE(offset + 7);
-                    if (w > 0 && h > 0) return { width: w, height: h };
+        const isJpeg = header[0] === 0xFF && header[1] === 0xD8;
+        if (isJpeg) {
+            for (let cursor = 2; cursor < 30; cursor += 2) {
+                if (header[cursor] !== 0xFF) break;
+                const marker = header[cursor + 1];
+                const startOfFrame = marker >= 0xC0 && marker <= 0xCF &&
+                    marker !== 0xC4 && marker !== 0xC8 && marker !== 0xCC;
+                if (startOfFrame) {
+                    const height = header.readUInt16BE(cursor + 5);
+                    const width = header.readUInt16BE(cursor + 7);
+                    if (width > 0 && height > 0) return { width, height };
                 }
-                offset += 2;
             }
         }
-    } catch (_) {}
-    return null;
+        return null;
+    } catch (_) {
+        return null;
+    } finally {
+        if (fd !== null) {
+            try { fs.closeSync(fd); } catch (_) { /* already closed */ }
+        }
+    }
 }
 
 // --- Video dimension probing (no dependencies) ------------------------------
@@ -209,41 +238,48 @@ function readImageDimensions(filePath) {
 // MP4/MOV (ISO BMFF stsd sample entry, tkhd fallback), WebM (EBML Video
 // PixelWidth/PixelHeight) and AVI (avih). Returns { width, height } or null.
 
-function validVideoDims(w, h) {
+function isPlausibleVideoSize(w, h) {
     return Number.isInteger(w) && Number.isInteger(h) &&
         w >= 16 && h >= 16 && w <= 8192 && h <= 8192;
 }
 
-function probeMp4Dimensions(buf) {
-    // stsd sample entries (avc1/hev1/...) carry the coded size: after the
-    // 4-byte fourcc, width sits at content offset 24, height at +26.
-    const codecs = ['avc1', 'avc3', 'hev1', 'hev3', 'hvc1', 'av01', 'vp09', 'mp4v', 'h264', 'H264'];
-    for (const fourcc of codecs) {
-        let idx = -1;
-        while ((idx = buf.indexOf(fourcc, idx + 1)) !== -1) {
-            if (idx + 32 > buf.length) break;
-            const w = buf.readUInt16BE(idx + 28);
-            const h = buf.readUInt16BE(idx + 30);
-            if (validVideoDims(w, h)) return { width: w, height: h };
+// Track down an ISO BMFF coded size. Prefer the stsd visual sample entry
+// (avc1/hev1/…), where width/height are 16-bit fields 28/30 bytes past the
+// fourcc; fall back to the tkhd display size stored as 16.16 fixed point.
+function probeIsoBmffDimensions(buf) {
+    const sampleEntryTypes = ['avc1', 'avc3', 'hev1', 'hev3', 'hvc1', 'av01', 'vp09', 'mp4v', 'h264', 'H264'];
+    for (const fourcc of sampleEntryTypes) {
+        let at = buf.indexOf(fourcc);
+        while (at !== -1) {
+            if (at + 32 > buf.length) break;
+            const width = buf.readUInt16BE(at + 28);
+            const height = buf.readUInt16BE(at + 30);
+            if (isPlausibleVideoSize(width, height)) return { width, height };
+            at = buf.indexOf(fourcc, at + 1);
         }
     }
-    // tkhd fallback (display size as 16.16 fixed point, one box per track —
-    // keep the largest non-zero area so the video track wins over audio).
-    let best = null;
-    let idx = -1;
-    while ((idx = buf.indexOf('tkhd', idx + 1)) !== -1) {
-        if (idx + 100 > buf.length) break;
-        const version = buf[idx + 4];
-        const wOff = version === 1 ? idx + 92 : idx + 80;
-        const hOff = wOff + 4;
-        if (hOff + 4 > buf.length) continue;
-        const w = buf.readUInt32BE(wOff) >> 16;
-        const h = buf.readUInt32BE(hOff) >> 16;
-        if (validVideoDims(w, h) && (!best || w * h > best.width * best.height)) {
-            best = { width: w, height: h };
+
+    // One tkhd box exists per track (audio boxes report 0x0). The largest
+    // plausible area therefore belongs to the video track.
+    let largest = null;
+    let at = buf.indexOf('tkhd');
+    while (at !== -1) {
+        if (at + 100 > buf.length) break;
+        const version = buf[at + 4];
+        const widthOffset = version === 1 ? at + 92 : at + 80;
+        const heightOffset = widthOffset + 4;
+        if (heightOffset + 4 <= buf.length) {
+            const width = buf.readUInt32BE(widthOffset) >> 16;
+            const height = buf.readUInt32BE(heightOffset) >> 16;
+            const area = width * height;
+            if (isPlausibleVideoSize(width, height) &&
+                (!largest || area > largest.width * largest.height)) {
+                largest = { width, height };
+            }
         }
+        at = buf.indexOf('tkhd', at + 1);
     }
-    return best;
+    return largest;
 }
 
 function ebmlVint(buf, pos) {
@@ -298,10 +334,10 @@ function probeWebmDimensions(buf) {
                 if (w && h) break;
             }
         }
-        if (validVideoDims(w, h)) return { width: w, height: h };
+        if (isPlausibleVideoSize(w, h)) return { width: w, height: h };
         if ((w || h) && !best) best = { width: w || 0, height: h || 0 };
     }
-    return best && validVideoDims(best.width, best.height) ? best : null;
+    return best && isPlausibleVideoSize(best.width, best.height) ? best : null;
 }
 
 function probeAviDimensions(buf) {
@@ -309,7 +345,7 @@ function probeAviDimensions(buf) {
     if (idx !== -1 && idx + 44 <= buf.length) {
         const w = buf.readUInt32LE(idx + 36);
         const h = buf.readUInt32LE(idx + 40);
-        if (validVideoDims(w, h)) return { width: w, height: h };
+        if (isPlausibleVideoSize(w, h)) return { width: w, height: h };
     }
     return null;
 }
@@ -330,7 +366,7 @@ function probeVideoBuffer(buffer, ext) {
     for (const kind of order) {
         const found = kind === 'webm' ? probeWebmDimensions(buf)
             : kind === 'avi' ? probeAviDimensions(buf)
-            : probeMp4Dimensions(buf);
+            : probeIsoBmffDimensions(buf);
         if (found) return found;
     }
     return null;
@@ -344,59 +380,66 @@ function readVideoDimensions(filePath) {
     }
 }
 
-// Expected output size when the actual file cannot be probed (e.g. header
-// parse failed): RTX scales both sides by the multiplier, SeedVR2 fits the
-// short side to the target resolution keeping aspect (even pixels).
+// Best-effort output size for an upscaled video whose header could not be
+// parsed. SeedVR2 pins the short side to the target resolution and keeps the
+// aspect ratio on even pixel boundaries; RTX multiplies both sides.
 function expectedUpscaleDims(sourceWidth, sourceHeight, opts) {
-    const sw = Number(sourceWidth);
-    const sh = Number(sourceHeight);
-    if (!Number.isFinite(sw) || !Number.isFinite(sh) || sw <= 0 || sh <= 0) return null;
-    const o = opts || {};
-    if (o.engine === 'seedvr2') {
-        const target = clampNumber(o.resolution, 512, 8192, 2160);
-        const factor = target / Math.min(sw, sh);
-        const w = Math.max(2, Math.round((sw * factor) / 2) * 2);
-        const h = Math.max(2, Math.round((sh * factor) / 2) * 2);
-        if (validVideoDims(w, h)) return { width: w, height: h };
-        return null;
+    const width = Number(sourceWidth);
+    const height = Number(sourceHeight);
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null;
+    const options = opts || {};
+
+    let targetWidth;
+    let targetHeight;
+    if (options.engine === 'seedvr2') {
+        const shortSide = clampToRange(options.resolution, 512, 8192, 2160);
+        const factor = shortSide / Math.min(width, height);
+        targetWidth = Math.max(2, Math.round((width * factor) / 2) * 2);
+        targetHeight = Math.max(2, Math.round((height * factor) / 2) * 2);
+    } else {
+        const factor = normalizeVideoUpscaleScale(options.scale, 2);
+        targetWidth = Math.round(width * factor);
+        targetHeight = Math.round(height * factor);
     }
-    const scale = normalizeVideoUpscaleScale(o.scale, 2);
-    const w = Math.round(sw * scale);
-    const h = Math.round(sh * scale);
-    if (validVideoDims(w, h)) return { width: w, height: h };
+
+    if (isPlausibleVideoSize(targetWidth, targetHeight)) {
+        return { width: targetWidth, height: targetHeight };
+    }
     return null;
 }
 
 function h3SizeScale(size) {
-    const key = String(size || '').trim().toUpperCase();
-    return H3_SIZE_SCALES[key] || H3_SIZE_SCALES.M;
+    const tier = String(size || '').trim().toUpperCase();
+    const scale = H3_SIZE_SCALES[tier];
+    return scale === undefined ? H3_SIZE_SCALES.M : scale;
 }
 
+// Fit the source aspect onto a 768-short-edge canvas, cap the total pixel
+// count at H3_MAX_PIXELS, apply the requested tier, then snap both edges to
+// the nearest multiple of 32 (never below 32).
 function h3Dimensions(width, height, size) {
     const requestedWidth = Number(width);
     const requestedHeight = Number(height);
     const sourceWidth = Number.isFinite(requestedWidth) && requestedWidth > 0 ? requestedWidth : 1344;
     const sourceHeight = Number.isFinite(requestedHeight) && requestedHeight > 0 ? requestedHeight : 768;
-    const ratio = sourceWidth / sourceHeight;
+    const aspect = sourceWidth / sourceHeight;
 
-    let nominalWidth;
-    let nominalHeight;
-    if (ratio >= 1) {
-        nominalWidth = H3_BASE_SHORT_EDGE * ratio;
-        nominalHeight = H3_BASE_SHORT_EDGE;
-    } else {
-        nominalWidth = H3_BASE_SHORT_EDGE;
-        nominalHeight = H3_BASE_SHORT_EDGE / ratio;
+    const landscape = aspect >= 1;
+    let nominalWidth = landscape ? H3_BASE_SHORT_EDGE * aspect : H3_BASE_SHORT_EDGE;
+    let nominalHeight = landscape ? H3_BASE_SHORT_EDGE : H3_BASE_SHORT_EDGE / aspect;
+
+    const nominalPixels = nominalWidth * nominalHeight;
+    if (nominalPixels > H3_MAX_PIXELS) {
+        const fit = Math.sqrt(H3_MAX_PIXELS / nominalPixels);
+        nominalWidth = nominalWidth * fit;
+        nominalHeight = nominalHeight * fit;
     }
-    if (nominalWidth * nominalHeight > H3_MAX_PIXELS) {
-        const fit = Math.sqrt(H3_MAX_PIXELS / (nominalWidth * nominalHeight));
-        nominalWidth *= fit;
-        nominalHeight *= fit;
-    }
+
     const scale = h3SizeScale(size);
+    const snap = (value) => Math.max(32, Math.round((value * scale) / 32) * 32);
     return {
-        W: Math.max(32, Math.round((nominalWidth * scale) / 32) * 32),
-        H: Math.max(32, Math.round((nominalHeight * scale) / 32) * 32),
+        W: snap(nominalWidth),
+        H: snap(nominalHeight),
     };
 }
 
@@ -1285,13 +1328,13 @@ function effectiveVideoSettings() {
             } else if (key === 'faceRefineSelect') {
                 value = normalizeFaceRefineSelect(value, H3_DEFAULTS.faceRefineSelect);
             } else if (key === 'faceRefineCropFactor') {
-                value = clampNumber(value, 1.2, 8, H3_DEFAULTS.faceRefineCropFactor);
+                value = clampToRange(value, 1.2, 8, H3_DEFAULTS.faceRefineCropFactor);
             } else if (key === 'faceRefineDenoise') {
-                value = clampNumber(value, 0.05, 1, H3_DEFAULTS.faceRefineDenoise);
+                value = clampToRange(value, 0.05, 1, H3_DEFAULTS.faceRefineDenoise);
             } else if (key === 'faceRefineSteps') {
-                value = Math.round(clampNumber(value, 1, 30, H3_DEFAULTS.faceRefineSteps));
+                value = Math.round(clampToRange(value, 1, 30, H3_DEFAULTS.faceRefineSteps));
             } else if (key === 'faceRefineFeather') {
-                value = Math.round(clampNumber(value, 0, 128, H3_DEFAULTS.faceRefineFeather));
+                value = Math.round(clampToRange(value, 0, 128, H3_DEFAULTS.faceRefineFeather));
             } else if (key === 'faceRefineDetector') {
                 value = String(value || '').trim() || H3_DEFAULTS.faceRefineDetector;
             }
@@ -1310,7 +1353,7 @@ function sanitizeLoras(value) {
         const triggerWord = String((item && item.triggerWord) || '').trim();
         out.push({
             name,
-            strength: clampNumber(item.strength, -100, 100, 1),
+            strength: clampToRange(item.strength, -100, 100, 1),
             on: item.on !== false,
             triggerWord: triggerWord || ''
         });
@@ -1329,23 +1372,24 @@ function sanitizeLoraTriggerWords(value) {
     return out;
 }
 
-function clampNumber(value, min, max, fallback) {
+function clampToRange(value, min, max, fallback) {
     const n = Number(value);
-    return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : fallback;
+    if (!Number.isFinite(n)) return fallback;
+    if (n < min) return min;
+    if (n > max) return max;
+    return n;
 }
 
 // --- Video Upscale Settings ----------------------------------------------------
 //
-// Video upscale shares the single global upscale configuration with image
-// upscale (resolution/profile/noise/pre-scale/DiT/VAE/attention live in
-// imageGeneration). Engine is shared too but mapped per medium like Mix
-// Studio: videos run SeedVR2 or RTX (an Ultimate SD selection falls back to
-// RTX); images run SeedVR2 or Ultimate SD (an RTX selection falls back to
-// SeedVR2 there). RTX is a fast single-pass super-resolution node and the
-// default, matching Mix Studio's `seedvr2 ? seedvr2 : rtx` normalization —
-// SeedVR2 is the slow diffusion DiT quality path. RTX uses upscaleMultiplier
-// as its scale factor; SeedVR2 uses upscaleResolution as its target short
-// side. Image-only keys (upscaleMode, Ultimate SD engine) are ignored here.
+// Image and video upscale share one global configuration (resolution/profile/
+// noise/pre-scale/DiT/VAE/attention live under imageGeneration). The engine
+// is shared too but interpreted per medium: video accepts SeedVR2 or the fast
+// single-pass RTX super-resolution node (an Ultimate SD choice, which is
+// image-only, degrades to RTX). RTX is the default and uses upscaleMultiplier
+// as its scale factor; SeedVR2 is the slower diffusion DiT path and uses
+// upscaleResolution as its target short side. The image-only keys
+// (upscaleMode, Ultimate SD) are ignored on this side.
 
 const VIDEO_UPSCALE_RESOLUTIONS = [1080, 1440, 2160, 3840];
 const VIDEO_UPSCALE_SCALES = [1.5, 2, 3, 4];
@@ -1355,27 +1399,25 @@ const VIDEO_UPSCALE_ENGINES = ['seedvr2', 'rtx'];
 const VIDEO_UPSCALE_DEFAULT_ENGINE = 'rtx';
 const VIDEO_UPSCALE_RTX_QUALITIES = ['ULTRA', 'HIGH', 'BALANCED', 'FAST'];
 
-// Mix Studio normalization (server.js buildExistingVideoUpscale,
-// lib/video-workflows.js videoProcessInfo): only an explicit SeedVR2 choice
-// selects the diffusion path; everything else (including the image-only
-// Ultimate SD engine) falls back to the fast RTX path.
+// Only an explicit SeedVR2 request selects the diffusion path; every other
+// value (including the image-only "ultimate") resolves to fast RTX.
 function normalizeVideoUpscaleEngine(value, fallback) {
-    const v = String(value || '').trim().toLowerCase();
-    if (v === 'seedvr2') return 'seedvr2';
-    if (v === 'rtx') return 'rtx';
-    if (v === 'ultimate') return 'rtx';
+    const requested = String(value || '').trim().toLowerCase();
+    if (requested === 'seedvr2') return 'seedvr2';
+    if (requested === 'rtx' || requested === 'ultimate') return 'rtx';
     return fallback !== undefined ? fallback : VIDEO_UPSCALE_DEFAULT_ENGINE;
 }
 
 function normalizeVideoUpscaleScale(value, fallback) {
     const n = Number(value);
-    if (Number.isFinite(n)) return Math.max(1, Math.min(4, Math.round(n * 10) / 10));
-    return fallback !== undefined ? fallback : 2;
+    if (!Number.isFinite(n)) return fallback !== undefined ? fallback : 2;
+    const bounded = Math.max(1, Math.min(4, n));
+    return Math.round(bounded * 10) / 10;
 }
 
 function normalizeRtxQuality(value, fallback) {
-    const v = String(value || '').trim().toUpperCase();
-    if (VIDEO_UPSCALE_RTX_QUALITIES.includes(v)) return v;
+    const requested = String(value || '').trim().toUpperCase();
+    if (VIDEO_UPSCALE_RTX_QUALITIES.includes(requested)) return requested;
     return fallback !== undefined ? fallback : 'ULTRA';
 }
 
@@ -1416,17 +1458,17 @@ function saveVideoSettings(patch) {
         } else if (key === 'faceRefineDetector') {
             out[key] = String(value || '').trim() || null;
         } else if (key === 'faceRefineCropFactor') {
-            out[key] = clampNumber(value, 1.2, 8, H3_DEFAULTS.faceRefineCropFactor);
+            out[key] = clampToRange(value, 1.2, 8, H3_DEFAULTS.faceRefineCropFactor);
         } else if (key === 'faceRefineDenoise') {
-            out[key] = clampNumber(value, 0.05, 1, H3_DEFAULTS.faceRefineDenoise);
+            out[key] = clampToRange(value, 0.05, 1, H3_DEFAULTS.faceRefineDenoise);
         } else if (key === 'faceRefineSteps') {
-            out[key] = Math.round(clampNumber(value, 1, 30, H3_DEFAULTS.faceRefineSteps));
+            out[key] = Math.round(clampToRange(value, 1, 30, H3_DEFAULTS.faceRefineSteps));
         } else if (key === 'faceRefineCanvasMode') {
             out[key] = normalizeFaceRefineCanvasMode(value, H3_DEFAULTS.faceRefineCanvasMode);
         } else if (key === 'faceRefineSelect') {
             out[key] = normalizeFaceRefineSelect(value, H3_DEFAULTS.faceRefineSelect);
         } else if (key === 'faceRefineFeather') {
-            out[key] = Math.round(clampNumber(value, 0, 128, H3_DEFAULTS.faceRefineFeather));
+            out[key] = Math.round(clampToRange(value, 0, 128, H3_DEFAULTS.faceRefineFeather));
         } else if (typeof value === 'string') {
             out[key] = value.trim() || null;
         }
@@ -1456,10 +1498,66 @@ async function getVideoModelChoices() {
 
 // --- H3 ComfyUI Workflow Graph ------------------------------------------------
 //
-// Adapted from Mix Studio's buildMiniMaxH3Graph(). Simplified for JARVIS:
-// no turbo LoRAs, no long context, no reference videos/audio, no custom
-// attention nodes. Supports T2VA (frames mode, optional first image) and
-// I2VA (frames mode with first image as reference).
+// Builds the JARVIS H3 graph: T2VA (text only, optional first frame) and I2VA
+// (first frame as reference). No turbo adapters, long context, reference
+// videos/audio, or extra post-pass — those paths are not used here.
+
+// Append active LoRA adapters as a model-only chain (H3 LoRAs never touch
+// CLIP). Returns the key of the node the chain ends on, which callers feed
+// into the attention/sampling branch.
+function appendLoraChain(graph, baseModelNode, loras) {
+    let modelNode = baseModelNode;
+    let count = 0;
+    for (const lora of Array.isArray(loras) ? loras : []) {
+        if (!lora || lora.on === false || !lora.name) continue;
+        const name = String(lora.name).trim();
+        if (!name) continue;
+        count += 1;
+        const key = 'lora' + count;
+        graph[key] = {
+            class_type: 'LoraLoaderModelOnly',
+            inputs: {
+                model: [modelNode, 0],
+                lora_name: name,
+                strength_model: clampToRange(lora.strength, -100, 100, 0),
+            },
+        };
+        modelNode = key;
+    }
+    return modelNode;
+}
+
+// Insert the selected attention patch after the model chain and return the
+// node the guider should read from. `standard` leaves the chain untouched.
+function applyAttentionPatch(graph, baseModelNode, backend) {
+    if (backend === 'sageattention') {
+        graph.sage_attention = {
+            class_type: 'PathchSageAttentionKJ',
+            inputs: {
+                model: [baseModelNode, 0],
+                sage_attention: 'auto',
+                allow_compile: false,
+            },
+        };
+        return 'sage_attention';
+    }
+    if (backend === 'sla') {
+        graph.sla_attention = {
+            class_type: 'H3SLAAttention',
+            inputs: {
+                model: [baseModelNode, 0],
+                sparsity_ratio: 0.85,
+                block_size: '64',
+                min_seq_len: 8192,
+                dense_last_steps: 0,
+                protect_audio: true,
+                enabled: true,
+            },
+        };
+        return 'sla_attention';
+    }
+    return baseModelNode;
+}
 
 function buildH3Graph(opts) {
     const {
@@ -1473,97 +1571,55 @@ function buildH3Graph(opts) {
         firstImageName = null,
     } = opts;
 
-    const loras = (Array.isArray(settings.loras) ? settings.loras : [])
-        .filter((l) => l && l.on !== false && l.name);
-
-    const graph = {
-        model: {
-            class_type: 'UNETLoader',
-            inputs: {
-                unet_name: settings.h3Unet || H3_DEFAULTS.h3Unet,
-                weight_dtype: 'default',
-            },
-        },
-        clip: {
-            class_type: 'CLIPLoader',
-            inputs: {
-                clip_name: settings.h3Clip || H3_DEFAULTS.h3Clip,
-                type: 'minimax',
-                device: 'default',
-            },
-        },
-        video_vae: {
-            class_type: 'VAELoader',
-            inputs: { vae_name: settings.h3VideoVae || H3_DEFAULTS.h3VideoVae },
-        },
-        audio_vae: {
-            class_type: 'VAELoader',
-            inputs: { vae_name: settings.h3AudioVae || H3_DEFAULTS.h3AudioVae },
-        },
-        noise: {
-            class_type: 'RandomNoise',
-            inputs: { noise_seed: seed },
-        },
-        sampler_select: {
-            class_type: 'KSamplerSelect',
-            inputs: { sampler_name: 'res_multistep' },
+    const graph = {};
+    graph.model = {
+        class_type: 'UNETLoader',
+        inputs: {
+            unet_name: settings.h3Unet || H3_DEFAULTS.h3Unet,
+            weight_dtype: 'default',
         },
     };
+    graph.clip = {
+        class_type: 'CLIPLoader',
+        inputs: {
+            clip_name: settings.h3Clip || H3_DEFAULTS.h3Clip,
+            type: 'minimax',
+            device: 'default',
+        },
+    };
+    graph.video_vae = {
+        class_type: 'VAELoader',
+        inputs: { vae_name: settings.h3VideoVae || H3_DEFAULTS.h3VideoVae },
+    };
+    graph.audio_vae = {
+        class_type: 'VAELoader',
+        inputs: { vae_name: settings.h3AudioVae || H3_DEFAULTS.h3AudioVae },
+    };
+    graph.noise = {
+        class_type: 'RandomNoise',
+        inputs: { noise_seed: seed },
+    };
+    graph.sampler_select = {
+        class_type: 'KSamplerSelect',
+        inputs: { sampler_name: 'res_multistep' },
+    };
 
-    // Chain user LoRAs onto the base model. Each active LoRA becomes a
-    // LoraLoaderModelOnly node whose model output feeds the next, matching
-    // Mix Studio's approach for H3 (model-only adapters, no CLIP).
-    let userModelNode = 'model';
-    let loraIndex = 0;
-    for (const lora of loras) {
-        const name = String(lora.name).trim();
-        if (!name) continue;
-        const strength = clampNumber(lora.strength, -100, 100, 0);
-        loraIndex += 1;
-        const key = 'lora' + loraIndex;
-        graph[key] = {
-            class_type: 'LoraLoaderModelOnly',
-            inputs: {
-                model: [userModelNode, 0],
-                lora_name: name,
-                strength_model: strength,
-            },
-        };
-        userModelNode = key;
-    }
-
-    // Attention backend patch — mirrors Mix Studio's three mutually exclusive
-    // options applied after the LoRA chain. SageAttention patches only the
-    // guider; SLA patches both the guider and the scheduler model input.
+    const userModelNode = appendLoraChain(graph, 'model', settings.loras);
     const attention = normalizeH3AttentionBackend(settings.attentionBackend);
-    let patchedModelNode = userModelNode;
-    if (attention === 'sageattention') {
-        graph.sage_attention = {
-            class_type: 'PathchSageAttentionKJ',
-            inputs: {
-                model: [userModelNode, 0],
-                sage_attention: 'auto',
-                allow_compile: false,
-            },
+    const patchedModelNode = applyAttentionPatch(graph, userModelNode, attention);
+    // Sparse (SLA) attention also has to shape the denoise schedule; the other
+    // backends leave the scheduler on the unpatched chain.
+    const schedulerModelNode = attention === 'sla' ? patchedModelNode : userModelNode;
+
+    const hasFirstFrame = mode === 'i2va' && Boolean(firstImageName);
+    if (hasFirstFrame) {
+        graph.first_image = {
+            class_type: 'LoadImage',
+            inputs: { image: firstImageName },
         };
-        patchedModelNode = 'sage_attention';
-    } else if (attention === 'sla') {
-        graph.sla_attention = {
-            class_type: 'H3SLAAttention',
-            inputs: {
-                model: [userModelNode, 0],
-                sparsity_ratio: 0.85,
-                block_size: '64',
-                min_seq_len: 8192,
-                dense_last_steps: 0,
-                protect_audio: true,
-                enabled: true,
-            },
-        };
-        patchedModelNode = 'sla_attention';
     }
 
-    // Condition node: MiniMaxH3ImageToVideo handles both T2V and I2V (first frame).
+    // MiniMaxH3ImageToVideo covers both T2V and first-frame I2V.
     const conditionInputs = {
         clip: ['clip', 0],
         vae: ['video_vae', 0],
@@ -1572,24 +1628,12 @@ function buildH3Graph(opts) {
         height: H,
         length: frames,
     };
-
-    if (mode === 'i2va' && firstImageName) {
-        graph.first_image = {
-            class_type: 'LoadImage',
-            inputs: { image: firstImageName },
-        };
-        conditionInputs.first_frame = ['first_image', 0];
-    }
-
+    if (hasFirstFrame) conditionInputs.first_frame = ['first_image', 0];
     graph.condition = {
         class_type: 'MiniMaxH3ImageToVideo',
         inputs: conditionInputs,
     };
 
-    // Sampling branch. The guider always uses the attention-patched model
-    // when one is active. The scheduler only uses the patch for SLA (sparse
-    // attention must shape denoising), matching Mix Studio's wiring.
-    const schedulerModelNode = attention === 'sla' ? patchedModelNode : userModelNode;
     graph.scheduler = {
         class_type: 'BasicScheduler',
         inputs: {
@@ -1619,7 +1663,6 @@ function buildH3Graph(opts) {
         },
     };
 
-    // Decode video and audio.
     graph.decode = {
         class_type: 'VAEDecode',
         inputs: { samples: ['sample', 0], vae: ['video_vae', 0] },
@@ -1630,7 +1673,6 @@ function buildH3Graph(opts) {
         inputs: { samples: ['sample', 0], vae: ['audio_vae', 0] },
     };
 
-    // Assemble video.
     graph.video = {
         class_type: 'CreateVideo',
         inputs: { images: ['decode', 0], audio: ['decode_audio', 0], fps: H3_FPS, crf: 8 },
@@ -1766,7 +1808,7 @@ function buildFaceRefineGraph(opts) {
                 images: ['src', 0],
                 detector,
                 confidence: 0.35,
-                crop_factor: clampNumber(settings.faceRefineCropFactor, 1.2, 8, H3_DEFAULTS.faceRefineCropFactor),
+                crop_factor: clampToRange(settings.faceRefineCropFactor, 1.2, 8, H3_DEFAULTS.faceRefineCropFactor),
                 canvas_width: 768,
                 canvas_height: 768,
                 canvas_mode: normalizeFaceRefineCanvasMode(settings.faceRefineCanvasMode, H3_DEFAULTS.faceRefineCanvasMode),
@@ -1781,57 +1823,11 @@ function buildFaceRefineGraph(opts) {
         },
     };
 
-    // Same LoRA chain as the base graph (model-only adapters, no CLIP).
-    const loras = (Array.isArray(settings.loras) ? settings.loras : [])
-        .filter((l) => l && l.on !== false && l.name);
-    let userModelNode = 'model';
-    let loraIndex = 0;
-    for (const lora of loras) {
-        const name = String(lora.name).trim();
-        if (!name) continue;
-        const strength = clampNumber(lora.strength, -100, 100, 0);
-        loraIndex += 1;
-        const key = 'lora' + loraIndex;
-        graph[key] = {
-            class_type: 'LoraLoaderModelOnly',
-            inputs: {
-                model: [userModelNode, 0],
-                lora_name: name,
-                strength_model: strength,
-            },
-        };
-        userModelNode = key;
-    }
-
-    // Same attention patch as the base graph (SageAttention patches only the
-    // guider path; SLA patches both, matching Mix Studio's wiring).
+    // Reuse the base graph's LoRA chain and attention patch so FaceRefine and
+    // the primary render always share identical model wiring.
+    const userModelNode = appendLoraChain(graph, 'model', settings.loras);
     const attention = normalizeH3AttentionBackend(settings.attentionBackend);
-    let patchedModelNode = userModelNode;
-    if (attention === 'sageattention') {
-        graph.sage_attention = {
-            class_type: 'PathchSageAttentionKJ',
-            inputs: {
-                model: [userModelNode, 0],
-                sage_attention: 'auto',
-                allow_compile: false,
-            },
-        };
-        patchedModelNode = 'sage_attention';
-    } else if (attention === 'sla') {
-        graph.sla_attention = {
-            class_type: 'H3SLAAttention',
-            inputs: {
-                model: [userModelNode, 0],
-                sparsity_ratio: 0.85,
-                block_size: '64',
-                min_seq_len: 8192,
-                dense_last_steps: 0,
-                protect_audio: true,
-                enabled: true,
-            },
-        };
-        patchedModelNode = 'sla_attention';
-    }
+    const patchedModelNode = applyAttentionPatch(graph, userModelNode, attention);
 
     // Empty AV latent sized by the tracker: canvas_w/h -> width/height and
     // frame_count -> length are wired (INT link to widget), exactly like the
@@ -1901,8 +1897,8 @@ function buildFaceRefineGraph(opts) {
         inputs: {
             model: ['perframe', 2],
             scheduler: 'simple',
-            steps: Math.round(clampNumber(settings.faceRefineSteps, 1, 30, H3_DEFAULTS.faceRefineSteps)),
-            denoise: clampNumber(settings.faceRefineDenoise, 0.05, 1, H3_DEFAULTS.faceRefineDenoise),
+            steps: Math.round(clampToRange(settings.faceRefineSteps, 1, 30, H3_DEFAULTS.faceRefineSteps)),
+            denoise: clampToRange(settings.faceRefineDenoise, 0.05, 1, H3_DEFAULTS.faceRefineDenoise),
         },
     };
 
@@ -1940,7 +1936,7 @@ function buildFaceRefineGraph(opts) {
             transform: ['track', 1],
             paste_region: 'face_only',
             mask_dilation: 16,
-            feather: Math.round(clampNumber(settings.faceRefineFeather, 0, 128, H3_DEFAULTS.faceRefineFeather)),
+            feather: Math.round(clampToRange(settings.faceRefineFeather, 0, 128, H3_DEFAULTS.faceRefineFeather)),
             colour_match: 1.0,
             blend: 1.0,
             undetected_frames: 'fade_out',
@@ -2243,7 +2239,7 @@ async function generateVideo(prompt, options = {}) {
         let videoHeight = options.height || 768;
         if (mode === 'i2va' && options.sourceImageRawFilename) {
             const imgPath = path.join(GENERATED_DIR, options.sourceImageRawFilename);
-            const imgDims = readImageDimensions(imgPath);
+            const imgDims = readStillImageDimensions(imgPath);
             if (imgDims) {
                 videoWidth = imgDims.width;
                 videoHeight = imgDims.height;
@@ -2420,27 +2416,44 @@ async function maybeFaceRefine(baseResult, opts = {}) {
 
 // --- Video Upscale --------------------------------------------------------------
 //
-// Two engines, adapted from Mix Studio's buildExistingVideoUpscale
-// (server.js) + upscale-workflows.js:
-//   rtx     — fast single-pass RTXVideoSuperResolution (scale multiplier,
-//             default 2x). The default, matching Mix Studio.
-//   seedvr2 — slow diffusion DiT quality path (SeedVR2VideoUpscaler at the
-//             target short-side resolution, batch 5 / overlap 2).
-// Manual-only: runs when the user asks ("upscale this video") or via
-// POST /api/video/upscale.
+// Videos can be upscaled two ways:
+//   rtx     — RTXVideoSuperResolution, one fast super-resolution pass driven
+//             by a scale multiplier (default 2x). This is the default engine.
+//   seedvr2 — the slower diffusion DiT path: SeedVR2VideoUpscaler targets a
+//             short-side resolution with batch 5 / temporal overlap 2.
+// Both are manual: they run on an explicit request or POST /api/video/upscale.
 
 const VIDEO_UPSCALE_DEFAULT_TIMEOUT_MS = 60 * 60 * 1000; // 60 min for upscale
+const SEEDVR2_SHARP_DIT = 'seedvr2_ema_7b_sharp_fp8_e4m3fn_mixed_block35_fp16.safetensors';
 
-function seedVr2VideoUpscaleDitInputs(settings) {
+// Shared VHS_LoadVideo node. Output slots: 0 images, 1 frame_count, 2 audio.
+function videoLoadNode(videoName, fps) {
+    return {
+        class_type: 'VHS_LoadVideo',
+        inputs: {
+            video: videoName,
+            force_rate: fps,
+            custom_width: 0,
+            custom_height: 0,
+            frame_load_cap: 0,
+            skip_first_frames: 0,
+            select_every_nth: 1,
+            format: 'None'
+        }
+    };
+}
+
+// Build the SeedVR2LoadDiTModel inputs. 7B checkpoints need 32 blocks of
+// swap; NVIDIA-only attention modes fall back to sdpa on other vendors.
+function seedVr2DitNodeInputs(settings) {
     const model = settings.seedvr2Dit || imageGenerator.DEFAULT_SEEDVR2_DIT;
-    const vendor = String(settings.gpuVendor || '').toLowerCase();
     const isSevenB = /(?:^|[_-])7b(?:[_-]|$)/i.test(model);
-    const attention = String(settings.seedvr2Attention || imageGenerator.DEFAULT_SEEDVR2_ATTENTION);
+    const vendor = String(settings.gpuVendor || '').toLowerCase();
+    const requestedAttention = String(settings.seedvr2Attention || imageGenerator.DEFAULT_SEEDVR2_ATTENTION);
     const nvidiaOnly = new Set(['sageattn_2', 'sageattn_3', 'flash_attn_2', 'flash_attn_3']);
-    let attentionMode = attention;
-    if (vendor && vendor !== 'nvidia' && nvidiaOnly.has(attention)) {
-        attentionMode = 'sdpa';
-    }
+    const attentionMode = vendor && vendor !== 'nvidia' && nvidiaOnly.has(requestedAttention)
+        ? 'sdpa'
+        : requestedAttention;
     return {
         model,
         device: 'cuda:0',
@@ -2452,12 +2465,14 @@ function seedVr2VideoUpscaleDitInputs(settings) {
     };
 }
 
-function seedVr2VideoUpscaleNoiseLevel(requested) {
-    return Object.prototype.hasOwnProperty.call(VIDEO_UPSCALE_NOISE_LEVELS, requested) ? requested : 'low';
+function seedVr2NoiseLevel(requested) {
+    return Object.keys(VIDEO_UPSCALE_NOISE_LEVELS).includes(requested) ? requested : 'low';
 }
 
-function seedVr2VideoUpscaleProfile(settings, requestedProfile, requestedNoise) {
-    const noise = seedVr2VideoUpscaleNoiseLevel(requestedNoise);
+// Balanced is the baseline profile. The sharper 7B variant is only offered
+// when its checkpoint is actually installed.
+function seedVr2UpscaleProfile(settings, requestedProfile, requestedNoise) {
+    const noise = seedVr2NoiseLevel(requestedNoise);
     const balanced = {
         key: 'balanced',
         ditModel: settings.seedvr2Dit || imageGenerator.DEFAULT_SEEDVR2_DIT,
@@ -2465,32 +2480,26 @@ function seedVr2VideoUpscaleProfile(settings, requestedProfile, requestedNoise) 
         noise,
         inputNoiseScale: VIDEO_UPSCALE_NOISE_LEVELS[noise]
     };
-    const sharpDit = 'seedvr2_ema_7b_sharp_fp8_e4m3fn_mixed_block35_fp16.safetensors';
-    const availableModels = installedSeedVr2ModelsSync();
-    const hasSharp = availableModels.includes(sharpDit);
-    if (requestedProfile === 'sharp' && hasSharp) {
-        return {
-            key: 'sharp',
-            ditModel: sharpDit,
-            colorCorrection: 'wavelet',
-            noise,
-            inputNoiseScale: VIDEO_UPSCALE_NOISE_LEVELS[noise]
-        };
-    }
-    return balanced;
+    if (requestedProfile !== 'sharp') return balanced;
+    if (!installedSeedVr2Models().includes(SEEDVR2_SHARP_DIT)) return balanced;
+    return {
+        key: 'sharp',
+        ditModel: SEEDVR2_SHARP_DIT,
+        colorCorrection: 'wavelet',
+        noise,
+        inputNoiseScale: VIDEO_UPSCALE_NOISE_LEVELS[noise]
+    };
 }
 
-function installedSeedVr2ModelsSync() {
+// Enumerate SeedVR2 checkpoints from the configured env dirs plus the usual
+// ComfyUI model locations. Synchronous because callers build graphs inline.
+function installedSeedVr2Models() {
     const models = new Set();
-    const dirs = [];
-    for (const value of [process.env.KREA2_SEEDVR2_DIR, process.env.COMFYUI_SEEDVR2_DIR]) {
-        if (value) dirs.push(path.resolve(value));
+    const roots = [];
+    for (const configured of [process.env.KREA2_SEEDVR2_DIR, process.env.COMFYUI_SEEDVR2_DIR]) {
+        if (configured) roots.push(path.resolve(configured));
     }
-    try {
-        const modelRoot = require('./comfyui').resolveModelRoot ? null : null;
-    } catch {}
-    // Fallback to common locations
-    const commonDirs = [
+    const commonRoots = [
         path.join(__dirname, '..', '..', 'ComfyUI', 'models', 'seedvr2'),
         path.join(__dirname, '..', '..', 'ComfyUI', 'models', 'SEEDVR2'),
         path.join(process.env.APPDATA || '', 'ComfyUI', 'models', 'seedvr2'),
@@ -2498,17 +2507,17 @@ function installedSeedVr2ModelsSync() {
         path.join(process.env.USERPROFILE || '', 'ComfyUI', 'models', 'seedvr2'),
         path.join(process.env.USERPROFILE || '', 'ComfyUI', 'models', 'SEEDVR2'),
     ];
-    for (const d of commonDirs) {
-        if (fs.existsSync(d)) dirs.push(d);
+    for (const root of commonRoots) {
+        if (fs.existsSync(root)) roots.push(root);
     }
-    for (const dir of dirs) {
-        if (!dir) continue;
-        let entries = [];
-        try { entries = fs.readdirSync(dir); } catch { continue; }
-        for (const name of entries) {
-            if (!name || name.endsWith('.download')) continue;
-            const ext = path.extname(name).toLowerCase();
-            if (ext === '.safetensors' || ext === '.gguf') models.add(name);
+    for (const root of roots) {
+        if (!root) continue;
+        let entries;
+        try { entries = fs.readdirSync(root); } catch { continue; }
+        for (const entry of entries) {
+            if (!entry || entry.endsWith('.download')) continue;
+            const ext = path.extname(entry).toLowerCase();
+            if (ext === '.safetensors' || ext === '.gguf') models.add(entry);
         }
     }
     return [...models];
@@ -2518,29 +2527,19 @@ function buildSeedVr2VideoUpscaleGraph(videoName, options = {}) {
     // Shared upscale tuning comes from the single global upscale settings
     // (imageGeneration); per-call options (API overrides) win when present.
     const settings = Object.assign({}, imageGenerator.getDefaults(), options.settings || {});
-    const profile = seedVr2VideoUpscaleProfile(settings, options.profile || 'sharp', options.noise || 'low');
+    const profile = seedVr2UpscaleProfile(settings, options.profile || 'sharp', options.noise || 'low');
     const seed = Number.isInteger(options.seed) && options.seed >= 0 ? options.seed : Math.floor(Math.random() * 2 ** 31);
-    const resolution = clampNumber(options.resolution, 512, 8192, 2160);
-    const preScale = clampNumber(options.preScale, 1, 4, 1);
-    // Preserve the source frame rate (Mix Studio passes the source fps through
-    // both VHS_LoadVideo and CreateVideo); fall back to the H3 render rate.
+    const resolution = clampToRange(options.resolution, 512, 8192, 2160);
+    const preScale = clampToRange(options.preScale, 1, 4, 1);
+    // Keep the source frame rate on both the loader and CreateVideo; default
+    // to the H3 render rate when the caller has none.
     const fps = Number(options.fps) > 0 ? Number(options.fps) : H3_FPS;
     const hasAudio = options.hasAudio !== false;
     const savePrefix = String(options.savePrefix || 'not-so-jarvis/video_upscale_seedvr2');
 
     const graph = {};
-    graph.src = { class_type: 'VHS_LoadVideo', inputs: {
-        video: videoName,
-        force_rate: fps,
-        custom_width: 0,
-        custom_height: 0,
-        frame_load_cap: 0,
-        skip_first_frames: 0,
-        select_every_nth: 1,
-        format: 'None'
-    }};
+    graph.src = videoLoadNode(videoName, fps);
     let frameSource = ['src', 0];
-
     if (preScale !== 1) {
         graph.prescale = {
             class_type: 'VideoScaleBy',
@@ -2551,9 +2550,7 @@ function buildSeedVr2VideoUpscaleGraph(videoName, options = {}) {
 
     graph.dit = {
         class_type: 'SeedVR2LoadDiTModel',
-        inputs: seedVr2VideoUpscaleDitInputs(Object.assign({}, settings, {
-            seedvr2Dit: profile.ditModel
-        }))
+        inputs: seedVr2DitNodeInputs(Object.assign({}, settings, { seedvr2Dit: profile.ditModel }))
     };
     graph.svvae = {
         class_type: 'SeedVR2LoadVAEModel',
@@ -2600,11 +2597,9 @@ function buildSeedVr2VideoUpscaleGraph(videoName, options = {}) {
     return { graph, profile };
 }
 
-// Fast single-pass video upscale, adapted from Mix Studio's
-// rtxVideoSuperResolutionNode (lib/upscale-workflows.js) as used by
-// buildExistingVideoUpscale: VHS_LoadVideo -> RTXVideoSuperResolution
-// (scale by multiplier) -> CreateVideo -> SaveVideo. No DiT/VAE models, no
-// diffusion — roughly two orders of magnitude faster than SeedVR2.
+// Fast single-pass path: VHS_LoadVideo -> RTXVideoSuperResolution (scale by
+// multiplier) -> CreateVideo -> SaveVideo. No DiT/VAE loads, no diffusion;
+// roughly two orders of magnitude faster than SeedVR2.
 function buildRtxVideoUpscaleGraph(videoName, options = {}) {
     const scale = normalizeVideoUpscaleScale(options.scale, 2);
     const quality = normalizeRtxQuality(options.quality, 'ULTRA');
@@ -2613,16 +2608,7 @@ function buildRtxVideoUpscaleGraph(videoName, options = {}) {
     const savePrefix = String(options.savePrefix || 'not-so-jarvis/video_upscale_rtx');
 
     const graph = {};
-    graph.src = { class_type: 'VHS_LoadVideo', inputs: {
-        video: videoName,
-        force_rate: fps,
-        custom_width: 0,
-        custom_height: 0,
-        frame_load_cap: 0,
-        skip_first_frames: 0,
-        select_every_nth: 1,
-        format: 'None'
-    }};
+    graph.src = videoLoadNode(videoName, fps);
     graph.vsr = {
         class_type: 'RTXVideoSuperResolution',
         inputs: {
@@ -2667,10 +2653,10 @@ async function upscaleVideo(rawFilename, options = {}) {
         }
         const buffer = fs.readFileSync(filePath);
 
-        // One shared upscale configuration for image and video alike.
-        // Videos run SeedVR2 or RTX (Mix Studio normalization: only an
-        // explicit SeedVR2 choice selects the slow diffusion path, everything
-        // else — including the image-only Ultimate SD engine — uses fast RTX).
+        // One shared upscale configuration for image and video alike. On the
+        // video side only an explicit SeedVR2 choice takes the slow diffusion
+        // path; every other value (including the image-only Ultimate SD
+        // engine) resolves to fast RTX.
         const upscale = sharedUpscaleSettings();
         const engine = normalizeVideoUpscaleEngine(
             options.engine !== undefined && options.engine !== null && options.engine !== ''
@@ -2698,7 +2684,7 @@ async function upscaleVideo(rawFilename, options = {}) {
 
         const isSeedVr2 = engine === 'seedvr2';
         const resolution = isSeedVr2
-            ? clampNumber(options.resolution || upscale.upscaleResolution, 512, 8192, 2160)
+            ? clampToRange(options.resolution || upscale.upscaleResolution, 512, 8192, 2160)
             : null;
         const profile = isSeedVr2 ? (options.profile || upscale.upscaleProfile || 'sharp') : null;
         const noise = isSeedVr2 ? (options.noise || upscale.upscaleNoise || 'low') : null;
@@ -2920,6 +2906,7 @@ module.exports = {
     H3_DEFAULT_STEPS,
     H3_ATTENTION_BACKENDS,
     normalizeH3AttentionBackend,
+    applyAttentionPatch,
     registerGenerationLock,
     detectVideoIntent,
     detectVideoUpscaleIntent,

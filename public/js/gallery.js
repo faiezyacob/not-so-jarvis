@@ -375,7 +375,7 @@
         closeBtn.addEventListener('click', close);
     }
 
-    // --- Inline preview zoom (Mix Studio lightbox style) ---
+    // --- Inline preview zoom (lightbox style) ---
     //
     // The preview image supports wheel zoom immediately on open — no button
     // required. Zoom is anchored at the cursor (scale 1 = fit), and once
@@ -598,7 +598,7 @@
 
     // --- Before/after compare lightbox ---
     //
-    // Mirrors Mix Studio's detail-comparison viewer: the original fills the
+    // Before/after detail viewer: the original fills the
     // stage and the upscaled version is clipped inside a mask revealed by the
     // divider. "Reveal" mode drags the divider, "Move" mode pans when zoomed.
     // Wheel / pinch / keyboard zoom is cursor-anchored and works immediately

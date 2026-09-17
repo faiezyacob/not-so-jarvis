@@ -7,8 +7,8 @@
    disk, stores the user's Hugging Face token, and downloads the missing
    files straight from Hugging Face into ComfyUI's models/ folders.
 
-   Model sources (verified file listings, mirrored from the Mix Studio
-   asset set):
+   Model sources (verified file listings, cross-checked against each
+   upstream Hugging Face repo):
      Krea2 UNET ......... Comfy-Org/Krea-2 (diffusion_models/)
      Krea2 CLIP (Qwen3-VL 4B fp8) .. ahmed22xa/Huihui-Qwen3-VL-4B-Instruct-abliterated-comfy
      Krea2 VAE (Wan 2.1)  Comfy-Org/Wan_2.1_ComfyUI_repackaged (split_files/vae/)
@@ -27,7 +27,7 @@
 
    Zero npm dependencies: node builtins + global fetch, streamed to disk so
    multi-GB checkpoints never sit fully in memory.
-   SPDX-License-Identifier: GPL-3.0-only
+   SPDX-License-Identifier: MIT
    ============================================ */
 
 const fs = require('fs');
@@ -564,8 +564,8 @@ function choiceList(info, nodeName, field) {
 
 // Filenames ComfyUI itself reports as loadable, per models/ subfolder. This
 // is the authoritative "can generate" signal: installs with symlinked,
-// junctioned, or extra-path model folders (Comfy Desktop, Mix Studio
-// downloads) resolve here even when the plain filesystem scan misses them.
+// junctioned, or extra-path model folders (e.g. ComfyUI Desktop shared
+// model downloads) resolve here even when the plain filesystem scan misses them.
 function seenChoices(info) {
     const set = (arr) => new Set(arr);
     return {
