@@ -14,6 +14,7 @@ const ACTIONS = Object.freeze({
     APPROVE: 'approve',
     REGENERATE_IMAGE: 'regenerate_image',
     MODIFY_DIRECTION: 'modify_direction',
+    UPSCALE_IMAGE: 'upscale_image',
     GENERATE_VIDEO: 'generate_video',
     CANCEL: 'cancel'
 });
@@ -22,6 +23,7 @@ const BUTTON_ACTIONS = new Set([
     ACTIONS.APPROVE,
     ACTIONS.REGENERATE_IMAGE,
     ACTIONS.MODIFY_DIRECTION,
+    ACTIONS.UPSCALE_IMAGE,
     ACTIONS.GENERATE_VIDEO,
     ACTIONS.CANCEL
 ]);
@@ -38,6 +40,9 @@ const VIDEO_GO_RE =
 const VIDEO_MAKE_RE =
     /\b(?:turn|convert|transform|animate)\b[\s\S]{0,30}\b(?:video|movie|film|clip|animation)\b|\b(?:seconds?|secs?|minutes?)\b[\s\S]{0,20}\b(?:video|movie|film|clip)\b|\b(?:video|movie|film|clip)\b[\s\S]{0,20}\b(?:seconds?|secs?|minutes?)\b/i;
 const CANCEL_RE = /\b(?:cancel|abort|stop|discard|drop|forget)\b[\s\S]{0,20}\b(?:production|movie|video|film|clip|it|this|that)\b|\b(?:cancel|abort|scrap|stop)\s+(?:the\s+)?(?:production|project|movie|video|film|shot)\b/i;
+// "upscale the frame" while the opening frame awaits approval is an action on
+// the frame, not a direction change or a fresh image request.
+const UPSCALE_RE = /\b(?:up\s*scale|upscale|up\s*res(?:olution)?|higher\s*res(?:olution)?|increase\s+(?:the\s+)?res(?:olution)?|enlarge|sharpen)\b/i;
 
 function normalizeAction(value) {
     if (!value) return null;
@@ -69,6 +74,17 @@ function isApprove(message) {
 function isRegenerate(message) {
     const text = String(message || '');
     return REGENERATE_RE.test(text) && !isApprove(text);
+}
+
+// "upscale the frame/image" targets the already-generated opening frame. A
+// question about upscaling is not an action.
+function isUpscale(message) {
+    const text = String(message || '').trim();
+    if (!text) return false;
+    if (/^(?:what|which|why|who|when|where|how|is|are|do|does|did|can|could|would|should)\b/i.test(text)) {
+        return false;
+    }
+    return UPSCALE_RE.test(text);
 }
 
 function isModify(message, hasImageContext = true) {
@@ -110,6 +126,7 @@ function classifyMessage(message, production) {
             return { action: ACTIONS.APPROVE, direction: '' };
         }
         if (isRegenerate(text)) return { action: ACTIONS.REGENERATE_IMAGE, direction: '' };
+        if (isUpscale(text)) return { action: ACTIONS.UPSCALE_IMAGE, direction: '' };
         if (isModify(text)) return { action: ACTIONS.MODIFY_DIRECTION, direction: text };
     }
 
@@ -161,6 +178,15 @@ function validate(production, action) {
         }
         return { ok: true };
     }
+    if (action.type === ACTIONS.UPSCALE_IMAGE) {
+        if (!productionPlan.isAwaitingApproval(production)) {
+            return { ok: false, reason: 'There is no opening frame to upscale right now.' };
+        }
+        if (!production.image && !production.sourceImage) {
+            return { ok: false, reason: 'There is no opening frame to upscale.' };
+        }
+        return { ok: true };
+    }
     if (action.type === ACTIONS.GENERATE_VIDEO) {
         if (!production.image && !production.sourceImage) {
             return { ok: false, reason: 'There is no approved frame to animate yet.' };
@@ -177,6 +203,7 @@ module.exports = {
     validate,
     isApprove,
     isRegenerate,
+    isUpscale,
     isCancel,
     isModify
 };

@@ -12,6 +12,7 @@ const assert = require('node:assert/strict');
 
 const providers = require('../server/providers');
 const imageGenerator = require('../services/image-generator');
+const videoGenerator = require('../services/video-generator');
 const productionPlan = require('../services/director/production-plan');
 const prompts = require('../services/director/director-prompts');
 const approval = require('../services/director/approval-manager');
@@ -19,12 +20,14 @@ const director = require('../services/director/director');
 
 const originals = {
     chat: providers.chat,
-    buildImagePrompt: imageGenerator.buildImagePrompt
+    buildImagePrompt: imageGenerator.buildImagePrompt,
+    resolveVideoSourceImage: videoGenerator.resolveVideoSourceImage
 };
 
 test.afterEach(() => {
     providers.chat = originals.chat;
     imageGenerator.buildImagePrompt = originals.buildImagePrompt;
+    videoGenerator.resolveVideoSourceImage = originals.resolveVideoSourceImage;
 });
 
 function conversationId(name) {
@@ -72,6 +75,70 @@ test('detectProductionRequest: turning an existing frame into a timed video is a
 
 test('detectProductionRequest: a concept question is not a production', () => {
     assert.equal(director.detectProductionRequest('What is a movie?'), false);
+});
+
+// --- Source image resolution (from-scratch vs existing image) -----------------
+
+test('resolveExistingSource: a possessive pronoun in a from-scratch brief is not an image reference', () => {
+    videoGenerator.resolveVideoSourceImage = () => ({ rawFilename: 'previous.png' });
+    const source = director.resolveExistingSource(
+        'director-test-pronoun',
+        'generate 10 seconds video of a young korean woman lying on bed wearing a beige bra ' +
+        'and black shorts, she is removing her bra and then rubbing it in front of the camera. ' +
+        'she looks seductive. continuous single shot.'
+    );
+    assert.equal(source, null);
+});
+
+test('resolveExistingSource: an explicit image reference reuses the last generated image', () => {
+    videoGenerator.resolveVideoSourceImage = () => ({ rawFilename: 'previous.png' });
+    assert.equal(
+        director.resolveExistingSource('director-test-ref', 'turn this image into a 10-second video'),
+        'previous.png'
+    );
+    assert.equal(
+        director.resolveExistingSource('director-test-ref', 'animate this image'),
+        'previous.png'
+    );
+    assert.equal(
+        director.resolveExistingSource('director-test-ref', 'make her walk toward the camera'),
+        'previous.png'
+    );
+});
+
+test('resolveExistingSource: no reference wording means no source, even when an image exists', () => {
+    videoGenerator.resolveVideoSourceImage = () => ({ rawFilename: 'previous.png' });
+    assert.equal(
+        director.resolveExistingSource('director-test-plain', 'make a cinematic movie of a lighthouse at dawn'),
+        null
+    );
+});
+
+test('resolveExistingSource: an attached reference always wins', () => {
+    videoGenerator.resolveVideoSourceImage = () => ({ rawFilename: 'previous.png' });
+    assert.equal(
+        director.resolveExistingSource('director-test-attached', 'make a video about a cat', '/generated/ref_9.png'),
+        'ref_9.png'
+    );
+});
+
+test('createProduction: a described subject with pronouns still generates a fresh opening frame', async () => {
+    providers.chat = async () => '{}';
+    videoGenerator.resolveVideoSourceImage = () => ({ rawFilename: 'previous.png' });
+    const id = conversationId('pronoun-frame');
+    const production = await director.createProduction({
+        conversationId: id,
+        message: 'generate 10 seconds video of a young korean woman lying on bed wearing a beige bra ' +
+            'and black shorts, she is removing her bra and then rubbing it in front of the camera. ' +
+            'she looks seductive. continuous single shot.',
+        provider: 'ollama',
+        model: 'test-model',
+        think: false
+    });
+    assert.equal(production.video.duration, 10);
+    assert.equal(production.sourceImage, null);
+    assert.equal(production.status, productionPlan.STATUS.GENERATING_IMAGE);
+    productionPlan.remove(id);
 });
 
 // --- Workflow selection (direct by default, Director on request) --------------
@@ -308,6 +375,109 @@ test('approval: normalizeAction rejects unknown payloads', () => {
         approval.normalizeAction({ type: 'modify_direction', productionId: 'p9', direction: 'x' }),
         { type: 'modify_direction', productionId: 'p9', direction: 'x' }
     );
+    assert.equal(approval.normalizeAction({ type: 'upscale_image' }).type, 'upscale_image');
+});
+
+test('approval: "upscale the frame" is an upscale action, not a modify', () => {
+    const production = { id: 'pu', status: productionPlan.STATUS.AWAITING_IMAGE_APPROVAL, stages: [] };
+    assert.equal(approval.classifyMessage('upscale this frame', production).action, approval.ACTIONS.UPSCALE_IMAGE);
+    assert.equal(approval.classifyMessage('make it higher resolution', production).action, approval.ACTIONS.UPSCALE_IMAGE);
+    // A concept question is not an action.
+    assert.equal(approval.classifyMessage('what is upscaling?', production), null);
+});
+
+test('approval: upscale is only legal while the frame awaits approval', () => {
+    const awaiting = {
+        id: 'pu2',
+        status: productionPlan.STATUS.AWAITING_IMAGE_APPROVAL,
+        image: { rawFilename: 'f.png' },
+        stages: []
+    };
+    assert.equal(approval.validate(awaiting, { type: approval.ACTIONS.UPSCALE_IMAGE }).ok, true);
+    const generating = {
+        id: 'pu3',
+        status: productionPlan.STATUS.GENERATING_IMAGE,
+        image: { rawFilename: 'f.png' },
+        stages: []
+    };
+    assert.equal(approval.validate(generating, { type: approval.ACTIONS.UPSCALE_IMAGE }).ok, false);
+    const completed = { id: 'pu4', status: productionPlan.STATUS.COMPLETED, stages: [] };
+    assert.equal(approval.validate(completed, { type: approval.ACTIONS.UPSCALE_IMAGE }).ok, false);
+});
+
+test('director: markImageUpscaled points the video stage at the upscaled frame', async () => {
+    providers.chat = async (provider, messages) => {
+        const sys = String((messages[0] && messages[0].content) || '');
+        if (/H3 Video Director/i.test(sys)) {
+            return JSON.stringify({
+                mode: 'i2va',
+                prompt: 'For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\n\n[Shot 1] The woman walks forward.'
+            });
+        }
+        return '{}';
+    };
+    const id = conversationId('upscale-frame');
+    const production = productionPlan.create({
+        conversationId: id,
+        brief: { subject: 'a woman' },
+        video: { duration: 5 },
+        originalRequest: 'make a movie of a woman in one continuous shot'
+    });
+    productionPlan.set(id, production);
+    director.markImageReady(production, { url: '/generated/frame.png', rawFilename: 'frame.png', prompt: 'F', seed: 1 });
+    director.markImageUpscaled(production, {
+        url: '/generated/frame_up.png',
+        rawFilename: 'frame_up.png',
+        width: 2048,
+        height: 1152,
+        source: 'frame.png'
+    });
+    assert.equal(production.status, productionPlan.STATUS.AWAITING_IMAGE_APPROVAL);
+    assert.equal(production.image.rawFilename, 'frame_up.png');
+    assert.equal(production.image.upscaled, true);
+    assert.equal(production.image.upscaledFrom, 'frame.png');
+
+    const stage = await director.buildVideoStageRequest(production, {
+        provider: 'ollama', model: 'test-model', think: false
+    });
+    assert.equal(stage.sourceImageRawFilename, 'frame_up.png');
+    productionPlan.remove(id);
+});
+
+test('director: a failed upscale keeps the original frame and stays awaiting approval', () => {
+    const id = conversationId('upscale-fail');
+    const production = productionPlan.create({
+        conversationId: id,
+        brief: { subject: 'a woman' },
+        video: { duration: 5 },
+        originalRequest: 'a movie'
+    });
+    productionPlan.set(id, production);
+    director.markImageReady(production, { url: '/generated/frame.png', rawFilename: 'frame.png', prompt: 'F', seed: 1 });
+    director.markUpscaleFailed(production, 'CUDA out of memory');
+    assert.equal(production.status, productionPlan.STATUS.AWAITING_IMAGE_APPROVAL);
+    assert.equal(production.image.rawFilename, 'frame.png');
+    assert.match(production.error, /out of memory/);
+    productionPlan.remove(id);
+});
+
+test('renderUpscaledContent embeds the approval marker with the upscaled frame', () => {
+    const production = {
+        id: 'pru',
+        status: productionPlan.STATUS.AWAITING_IMAGE_APPROVAL,
+        video: { duration: 10 },
+        image: { upscaled: true }
+    };
+    const content = director.renderUpscaledContent(
+        production,
+        '![opening frame](/generated/x_up.png)',
+        'Now 2048\u00d71152.'
+    );
+    assert.match(director.stripMarkers(content), /upscaled/i);
+    assert.doesNotMatch(director.stripMarkers(content), /\[\[director:/);
+    const match = content.match(/\[\[director:(\{[^\n]*?\})\]\]/);
+    assert.ok(match, 'marker present');
+    assert.equal(JSON.parse(match[1]).status, 'awaiting_image_approval');
 });
 
 // --- Stage prompt building ---------------------------------------------------

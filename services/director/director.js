@@ -26,7 +26,13 @@ const MEDIUM_RE = /\b(?:video|movie|film|clip|animation|footage|reel)\b/i;
 const DIRECTOR_MODE_RE =
     /\b(?:director\s+mode|as\s+(?:a|the)\s+director|direct\s+(?:this|a|the)\s+(?:movie|film|video|scene|shot)|production\s+mode|multi[-\s]?stage\s+(?:production|video))\b/i;
 const GENERATION_VERB_RE = /\b(?:generat|creat|mak|render|produc|shoot|direct|turn|animat)\w*/i;
-const IMAGE_SOURCE_RE = /\b(?:this|that|the|my|same)\s+(?:image|photo|picture|character|frame)\b|\b(?:her|him|them|this character|the character)\b/i;
+// A reference to an existing image must name an image/character explicitly.
+// Bare subject pronouns are NOT references: a from-scratch brief like "…she is
+// removing her bra…" describes the new subject, so reading "her" as "the
+// existing image" wrongly skipped the opening-frame stage. Explicit image-to-
+// video phrasings ("make her walk", "turn this into a video") are still honored
+// through videoGenerator.I2V_REF_RE in resolveExistingSource.
+const IMAGE_SOURCE_RE = /\b(?:this|that|the|my|same)\s+(?:image|photo|picture|character|frame)\b/i;
 const DURATION_RE =
     /\b(?:\d+(?:\.\d+)?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty)\s*(?:-|to)?\s*(?:seconds?|secs?|minutes?)\b/i;
 
@@ -321,6 +327,34 @@ function markImageFailed(production, message) {
     return production;
 }
 
+// Record the upscaled opening frame. The production stays at the approval
+// checkpoint and its image now points at the upscaled file, so the video stage
+// animates the higher-resolution frame.
+function markImageUpscaled(production, { url, rawFilename, width, height, source }) {
+    const prev = production.image || {};
+    production.image = Object.assign({}, prev, {
+        url,
+        rawFilename: rawFilename || path.basename(String(url || '').split('?')[0]),
+        width: Number(width) > 0 ? Number(width) : (prev.width || null),
+        height: Number(height) > 0 ? Number(height) : (prev.height || null),
+        upscaled: true,
+        upscaledFrom: source || prev.upscaledFrom || prev.rawFilename || null
+    });
+    production.status = productionPlan.STATUS.AWAITING_IMAGE_APPROVAL;
+    production.error = '';
+    productionPlan.set(production.conversationId, production);
+    return production;
+}
+
+// A failed upscale is non-terminal: the original frame is untouched and the
+// approval checkpoint stays open so the user can retry or approve as-is.
+function markUpscaleFailed(production, message) {
+    production.error = String(message || 'Upscaling the opening frame failed.');
+    production.status = productionPlan.STATUS.AWAITING_IMAGE_APPROVAL;
+    productionPlan.set(production.conversationId, production);
+    return production;
+}
+
 function markVideoReady(production, { url, prompt }) {
     production.videoUrl = url || null;
     if (prompt) production.videoPrompt = prompt;
@@ -471,10 +505,25 @@ function renderVideoCompleteContent(production, videoMarkdown) {
     return intro + '\n\n' + videoMarkdown + markerLine(production);
 }
 
-function renderFailureContent(production, stage, message) {
+// The persisted approval message after the opening frame is upscaled: same
+// card/actions, but the frame is now the higher-resolution file the video will
+// animate. `detail` is an optional sentence (e.g. the before -> after size).
+function renderUpscaledContent(production, imageMarkdown, detail) {
     const intro =
-        '**Director** \u2014 ' +
-        (stage === 'video' ? 'Video' : 'Opening frame') + ' generation failed.\n\n' +
+        '**Director** \u2014 Opening frame upscaled.' +
+        (detail ? ' ' + detail : '') +
+        ' Approve when you are ready and I will animate this frame.';
+    return intro + '\n\n' + imageMarkdown + markerLine(production);
+}
+
+function renderFailureContent(production, stage, message) {
+    const stageLabel = stage === 'video'
+        ? 'Video'
+        : stage === 'upscale'
+            ? 'Upscaling the opening frame'
+            : 'Opening frame';
+    const intro =
+        '**Director** \u2014 ' + stageLabel + ' failed.\n\n' +
         String(message || 'Generation failed.');
     return intro + markerLine(production);
 }
@@ -512,11 +561,14 @@ module.exports = {
     markVideoRunning,
     markImageReady,
     markImageFailed,
+    markImageUpscaled,
+    markUpscaleFailed,
     markVideoReady,
     markVideoFailed,
     cancel,
     buildCard,
     renderImageApprovalContent,
+    renderUpscaledContent,
     renderVideoCompleteContent,
     renderFailureContent,
     renderCancelledContent,

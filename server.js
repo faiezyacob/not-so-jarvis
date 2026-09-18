@@ -2183,6 +2183,7 @@ async function handleChatStream(req, res) {
 // Stage names accepted by the activity feed / card renderer.
 function directorStageLabel(stage) {
     if (stage === 'video') return 'Creating video';
+    if (stage === 'upscale') return 'Upscaling opening frame';
     if (stage === 'image') return 'Creating opening frame';
     return 'Directing';
 }
@@ -2277,6 +2278,62 @@ async function runDirectorImageStage(req, res, ctx, production, options) {
         const friendly = friendlyImageError(err);
         director.markImageFailed(production, friendly);
         sseWrite(res, { director: director.buildCard(production, director.renderFailureContent(production, 'image', friendly)) });
+        res.end();
+    }
+}
+
+// Upscale the opening frame awaiting approval with the shared UPSCALE settings
+// (SeedVR2 or Ultimate SD). The production stays at the approval checkpoint but
+// its image now points at the upscaled file, so the video stage animates the
+// higher-resolution frame. Non-terminal: a failure keeps the original frame and
+// leaves the card actionable.
+async function runDirectorUpscaleStage(req, res, ctx, production) {
+    const { provider, model, conversationId } = ctx;
+    const frame = (production.image && production.image.rawFilename)
+        || production.sourceImage
+        || null;
+    if (!frame) {
+        const friendly = 'There is no opening frame to upscale.';
+        sseWrite(res, { director: director.buildCard(production, director.renderFailureContent(production, 'upscale', friendly)) });
+        res.end();
+        return;
+    }
+    try {
+        sseWrite(res, { generating: 'Director \u2014 ' + directorStageLabel('upscale') + '\u2026' });
+        // Upscaling is a pure ComfyUI job (no LLM step), so ensure Ollama is not
+        // resident before ComfyUI loads its models.
+        vramManager.rememberChatModel(provider, model);
+        await vramManager.freeVRAMBeforeImage();
+        const result = await imageGenerator.upscaleImage(frame, {
+            provider,
+            model,
+            conversationId,
+            label: 'director frame upscale',
+            kind: 'image_upscale'
+        });
+        director.markImageUpscaled(production, {
+            url: result.url,
+            rawFilename: result.filename,
+            width: result.width,
+            height: result.height,
+            source: result.source
+        });
+        const before = (result.sourceWidth || '?') + '\u00d7' + (result.sourceHeight || '?');
+        const after = result.width + '\u00d7' + result.height;
+        const engineLabel = result.engine === 'ultimate' ? 'Ultimate SD' : 'SeedVR2';
+        const detail = 'Now ' + after + ' (from ' + before + ', ' + engineLabel + ').';
+        const content = director.renderUpscaledContent(
+            production,
+            '![opening frame](' + result.url + ')',
+            detail
+        );
+        sseWrite(res, { director: director.buildCard(production, content) });
+        res.end();
+    } catch (err) {
+        console.error('[director] upscale stage failed:', err.message);
+        const friendly = friendlyImageError(err);
+        director.markUpscaleFailed(production, friendly);
+        sseWrite(res, { director: director.buildCard(production, director.renderFailureContent(production, 'upscale', friendly)) });
         res.end();
     }
 }
@@ -2630,6 +2687,11 @@ async function handleDirectorAction(req, res, ctx, production, action) {
 
     if (action.type === director.ACTIONS.APPROVE || action.type === director.ACTIONS.GENERATE_VIDEO) {
         await runDirectorVideoStage(req, res, ctx, production);
+        return;
+    }
+
+    if (action.type === director.ACTIONS.UPSCALE_IMAGE) {
+        await runDirectorUpscaleStage(req, res, ctx, production);
         return;
     }
 

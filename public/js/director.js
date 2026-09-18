@@ -20,6 +20,7 @@ const DirectorUI = (() => {
         refresh: '<polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>',
         pencil: '<path d="M12 20h9"></path><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path>',
         zap: '<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>',
+        upscale: '<polyline points="15 3 21 3 21 9"></polyline><polyline points="9 21 3 21 3 15"></polyline><line x1="21" y1="3" x2="14" y2="10"></line><line x1="3" y1="21" x2="10" y2="14"></line>',
         x: '<line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line>'
     };
 
@@ -33,6 +34,7 @@ const DirectorUI = (() => {
     const BUTTONS = {
         awaiting_image_approval: [
             { type: 'approve', label: 'Approve & Generate', icon: 'check', variant: 'primary' },
+            { type: 'upscale_image', label: 'Upscale Frame', icon: 'upscale', variant: '' },
             { type: 'regenerate_image', label: 'Regenerate', icon: 'refresh', variant: '' },
             { type: 'modify_direction', label: 'Modify Direction', icon: 'pencil', variant: '' },
             { type: 'cancel', label: 'Cancel', icon: 'x', variant: 'danger' }
@@ -149,6 +151,7 @@ const DirectorUI = (() => {
         lock(card);
         const labels = {
             approve: 'Approve & generate video',
+            upscale_image: 'Upscale the opening frame',
             regenerate_image: 'Regenerate the opening frame',
             cancel: 'Cancel the production'
         };
