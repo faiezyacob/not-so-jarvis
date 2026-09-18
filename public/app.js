@@ -1465,6 +1465,9 @@ function renderFaceRefineStatus(data) {
     if (missing.length) parts.push('nodes: ' + missing.join(', '));
     if (!data.vhsPresent) parts.push('VHS_LoadVideo');
     if (!data.detectorFound) parts.push('detector ' + (data.detectorName || 'face_yolov8m.pt'));
+    if (Array.isArray(data.packagesMissing) && data.packagesMissing.length) {
+        parts.push('python: ' + data.packagesMissing.join(', '));
+    }
     setFaceRefineStatus(
         parts.length ? 'Missing: ' + parts.join('; ') + '. Press Install.' : 'FaceRefine not installed. Press Install.',
         true

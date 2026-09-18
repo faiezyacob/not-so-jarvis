@@ -29,7 +29,13 @@ const NATIVE_AUDIO_SUBDIR = path.join('custom_nodes', 'ComfyUI-H3-NativeAudioLoc
 const NATIVE_AUDIO_DIR = 'ComfyUI-H3-NativeAudioLock';
 const DETECTOR_FILE = process.env.H3_FACEREFINE_DETECTOR || 'face_yolov8m.pt';
 const DETECTOR_URL = 'https://huggingface.co/Bingsu/adetailer/resolve/main/face_yolov8m.pt';
-const PIP_PACKAGES = ['ultralytics', 'scipy', 'insightface'];
+// Mirrors the pack's declared runtime dependencies (requirements.txt /
+// pyproject.toml). scenedetect backs cut_detection="auto"; dghs-imgutils
+// (identity_model="ccip") is optional and deliberately not installed.
+const PIP_PACKAGES = ['ultralytics', 'scipy', 'insightface', 'scenedetect>=0.7'];
+// Bare import names for the readiness probe (PIP_PACKAGES may carry version
+// specifiers, which importlib.util.find_spec rejects).
+const PIP_MODULES = PIP_PACKAGES.map((p) => String(p).split(/[<>=!~\[]/)[0].trim()).filter(Boolean);
 
 // Nodes the refine graph needs. MiniMaxH3NativeAudioLock is optional (the
 // graph falls back to the source clip audio when it is absent); VHS_LoadVideo
@@ -97,23 +103,39 @@ function runCommand(exe, args, opts = {}) {
     };
 }
 
-async function detectPythonExe(comfyRoot) {
+// Ordered python candidates for the ComfyUI environment. The runtime venv
+// ComfyUI actually executes from comes first (<comfyRoot>/.venv, used by
+// ComfyUI Desktop and most manual installs). The Desktop launcher's base env
+// (<install>/standalone-env) is only a fallback: installing there leaves
+// ComfyUI's own python without the packages, so the nodes fail at run time
+// with "No module named 'ultralytics'".
+function pythonCandidates(comfyRoot) {
     const candidates = [];
-    // Comfy Desktop venv first: <install>/standalone-env/python.exe, so pip
-    // lands in ComfyUI's environment instead of a system Python.
-    if (comfyRoot) {
-        const installDir = path.dirname(String(comfyRoot));
-        candidates.push(
-            path.join(installDir, 'standalone-env', 'python.exe'),
-            path.join(installDir, 'standalone-env', 'Scripts', 'python.exe'),
-            path.join(installDir, 'standalone-env', 'bin', 'python')
-        );
+    const add = (p) => { if (p && !candidates.includes(p)) candidates.push(p); };
+    const win = process.platform === 'win32';
+    const root = comfyRoot ? path.resolve(String(comfyRoot)) : null;
+    const parent = root ? path.dirname(root) : null;
+    if (root) {
+        add(win ? path.join(root, '.venv', 'Scripts', 'python.exe') : path.join(root, '.venv', 'bin', 'python3'));
+        if (!win) add(path.join(root, '.venv', 'bin', 'python'));
+        add(win ? path.join(root, 'python_embeded', 'python.exe') : path.join(root, 'python_embeded', 'bin', 'python3'));
     }
+    if (parent) {
+        add(win ? path.join(parent, 'standalone-env', 'python.exe') : path.join(parent, 'standalone-env', 'bin', 'python'));
+        add(win ? path.join(parent, 'standalone-env', 'Scripts', 'python.exe') : path.join(parent, 'standalone-env', 'bin', 'python3'));
+        add(win ? path.join(parent, 'python_embeded', 'python.exe') : path.join(parent, 'python_embeded', 'bin', 'python3'));
+    }
+    return candidates;
+}
+
+async function detectPythonExe(comfyRoot, opts = {}) {
+    const candidates = pythonCandidates(comfyRoot);
     let argv = [];
     try {
         const stats = await comfyui.getSystemStats();
         argv = (stats && stats.system && stats.system.argv) || [];
     } catch { argv = []; }
+    // Some builds report the interpreter as argv[0].
     if (argv.length && /python/i.test(String(argv[0] || ''))) {
         candidates.push(String(argv[0]));
     }
@@ -125,7 +147,9 @@ async function detectPythonExe(comfyRoot) {
         try {
             const res = runCommand(exe, args, { timeoutMs: 30000 });
             if (res.ok) {
-                logLine('python: using ' + exe + ' (' + (res.stdout || res.stderr || '').trim().split('\n')[0] + ')');
+                if (!opts.quiet) {
+                    logLine('python: using ' + exe + ' (' + (res.stdout || res.stderr || '').trim().split('\n')[0] + ')');
+                }
                 return path.basename(String(exe)).toLowerCase() === 'py'
                     ? { exe, prefix: ['-3'] }
                     : { exe, prefix: [] };
@@ -133,6 +157,43 @@ async function detectPythonExe(comfyRoot) {
         } catch { /* try next */ }
     }
     return null;
+}
+
+// Cached runtime-python lookup for the status endpoint (getStatus polls).
+let pythonCache = { root: null, at: 0, exe: null };
+
+async function detectPythonExeCached(comfyRoot) {
+    const now = Date.now();
+    if (pythonCache.root === comfyRoot && (now - pythonCache.at) < 60000) return pythonCache.exe;
+    const exe = await detectPythonExe(comfyRoot, { quiet: true });
+    pythonCache = { root: comfyRoot, at: now, exe };
+    return exe;
+}
+
+// Which required packages are missing from the given python. importlib does
+// not import the modules, so this is cheap; results are cached briefly.
+let packagesCache = { key: null, at: 0, missing: null };
+
+function checkPythonPackages(py, comfyRoot) {
+    if (!py) return null;
+    const key = py.exe + ' ' + (py.prefix || []).join(' ');
+    const now = Date.now();
+    if (packagesCache.key === key && (now - packagesCache.at) < 30000) return packagesCache.missing;
+    const code = 'import importlib.util as u, json; print(json.dumps([m for m in ' +
+        JSON.stringify(PIP_MODULES) + ' if u.find_spec(m) is None]))';
+    let missing = [];
+    try {
+        const res = runCommand(py.exe, (py.prefix || []).concat(['-c', code]), {
+            timeoutMs: 120000,
+            cwd: comfyRoot || undefined
+        });
+        if (res.ok) {
+            const parsed = JSON.parse(String(res.stdout || '').trim().split('\n').pop());
+            if (Array.isArray(parsed)) missing = parsed.map(String);
+        }
+    } catch { missing = []; }
+    packagesCache = { key, at: now, missing };
+    return missing;
 }
 
 function detectorSearchDirs(modelRoot) {
@@ -167,6 +228,9 @@ async function getStatus() {
         detectorFound: false,
         detectorPath: null,
         detectorName: DETECTOR_FILE,
+        pythonExe: null,
+        packagesMissing: [],
+        depsReady: true,
         ready: false,
         restartRequired: false,
         job: jobState()
@@ -203,8 +267,32 @@ async function getStatus() {
         }
     } catch { /* unknown */ }
 
+    // The nodes import ultralytics/scipy/insightface lazily at run time, so a
+    // missing package only surfaces when generating. Check ComfyUI's actual
+    // python explicitly so status does not claim ready when it is not. Only
+    // treat a result as authoritative when the interpreter lives inside the
+    // ComfyUI tree (its .venv); fallback interpreters may be an unrelated
+    // system python, so never let those block readiness.
+    if (status.comfyRoot) {
+        try {
+            const py = await detectPythonExeCached(status.comfyRoot);
+            status.pythonExe = py ? py.exe : null;
+            const runtimeRoot = path.resolve(String(status.comfyRoot)) + path.sep;
+            const authoritative = Boolean(py && path.resolve(py.exe).startsWith(runtimeRoot));
+            if (authoritative) {
+                const missing = checkPythonPackages(py, status.comfyRoot);
+                status.packagesMissing = Array.isArray(missing) ? missing : [];
+                status.depsReady = status.packagesMissing.length === 0;
+            }
+        } catch {
+            status.pythonExe = null;
+            status.packagesMissing = [];
+        }
+    }
+
     const nodesOk = status.nodesMissing.length === 0;
-    status.ready = Boolean(status.comfyAvailable && nodesOk && status.vhsPresent && status.detectorFound);
+    status.ready = Boolean(status.comfyAvailable && nodesOk && status.vhsPresent &&
+        status.detectorFound && status.depsReady);
     // Pack on disk but nodes not loaded yet: ComfyUI needs a restart.
     status.restartRequired = Boolean(status.packInstalled && !nodesOk);
     return status;
@@ -342,6 +430,9 @@ async function runInstallJob() {
         job.running = false;
         job.done = true;
         job.finishedAt = new Date().toISOString();
+        // Re-probe the environment on the next status call.
+        pythonCache.at = 0;
+        packagesCache.at = 0;
     }
 }
 
@@ -355,7 +446,9 @@ function startInstall() {
 // is running or a previous run already succeeded. Never throws.
 function ensureAutoInstall() {
     try {
-        if (job.running || (job.done && job.ok)) return jobState();
+        // Re-run when the last attempt only warned (e.g. pip landed in the
+        // wrong env); a clean success is left alone.
+        if (job.running || (job.done && job.ok && !job.warn)) return jobState();
         job.autoStarted = true;
         startInstall();
     } catch { /* install is best-effort */ }
