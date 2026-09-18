@@ -2142,6 +2142,34 @@ em {
     display: none;
 }
 
+/* --- Director Mode toggle --- */
+
+.chat-director {
+    width: 40px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: all 0.2s ease;
+    flex-shrink: 0;
+}
+
+.chat-director:hover {
+    border-color: var(--border-focus);
+    color: var(--accent);
+}
+
+.chat-director.active {
+    background: rgba(108, 255, 154, 0.12);
+    border-color: var(--border-focus);
+    color: var(--accent);
+}
+
 .chat-lora-popup {
     position: absolute;
     right: 24px;

@@ -15,8 +15,6 @@ const ACTIONS = Object.freeze({
     REGENERATE_IMAGE: 'regenerate_image',
     MODIFY_DIRECTION: 'modify_direction',
     GENERATE_VIDEO: 'generate_video',
-    CHOOSE_DIRECT: 'choose_direct',
-    CHOOSE_DIRECTOR: 'choose_director',
     CANCEL: 'cancel'
 });
 
@@ -25,8 +23,6 @@ const BUTTON_ACTIONS = new Set([
     ACTIONS.REGENERATE_IMAGE,
     ACTIONS.MODIFY_DIRECTION,
     ACTIONS.GENERATE_VIDEO,
-    ACTIONS.CHOOSE_DIRECT,
-    ACTIONS.CHOOSE_DIRECTOR,
     ACTIONS.CANCEL
 ]);
 
@@ -42,12 +38,6 @@ const VIDEO_GO_RE =
 const VIDEO_MAKE_RE =
     /\b(?:turn|convert|transform|animate)\b[\s\S]{0,30}\b(?:video|movie|film|clip|animation)\b|\b(?:seconds?|secs?|minutes?)\b[\s\S]{0,20}\b(?:video|movie|film|clip)\b|\b(?:video|movie|film|clip)\b[\s\S]{0,20}\b(?:seconds?|secs?|minutes?)\b/i;
 const CANCEL_RE = /\b(?:cancel|abort|stop|discard|drop|forget)\b[\s\S]{0,20}\b(?:production|movie|video|film|clip|it|this|that)\b|\b(?:cancel|abort|scrap|stop)\s+(?:the\s+)?(?:production|project|movie|video|film|shot)\b/i;
-
-// Answers to the "Direct video or Director mode?" question.
-const MODE_DIRECTOR_RE =
-    /\b(?:director(?:\s+mode)?|with (?:an?\s+)?approval|approval (?:flow|step)|image\s+first|opening\s+frame|cinematic|movie|film|commercial|full\s+production|production\s+mode)\b/i;
-const MODE_DIRECT_RE =
-    /\b(?:direct(?:ly)?|normal|plain|simple|straight(?:\s+to)?\s+video|just\s+(?:the\s+)?video|just\s+(?:generate|render|make)|no\s+director|skip(?:\s+the)?\s+director|without\s+(?:the\s+)?director|generate\s+(?:the\s+)?video\s+directly)\b/i;
 
 function normalizeAction(value) {
     if (!value) return null;
@@ -113,16 +103,6 @@ function classifyMessage(message, production) {
     // Cancel is honored in every open stage.
     if (isCancel(text)) return { action: ACTIONS.CANCEL, direction: '' };
 
-    // The user is choosing how the video gets built.
-    if (productionPlan.isAwaitingModeChoice(production)) {
-        if (/^\s*(?:cancel|stop|never\s*mind|forget\s+it)\s*[.!]*$/i.test(text)) {
-            return { action: ACTIONS.CANCEL, direction: '' };
-        }
-        if (MODE_DIRECTOR_RE.test(text)) return { action: ACTIONS.CHOOSE_DIRECTOR, direction: '' };
-        if (MODE_DIRECT_RE.test(text)) return { action: ACTIONS.CHOOSE_DIRECT, direction: '' };
-        return null;
-    }
-
     // While the opening frame is pending approval the user can approve,
     // regenerate, or change direction.
     if (productionPlan.isAwaitingApproval(production)) {
@@ -160,13 +140,6 @@ function validate(production, action) {
         return { ok: false, reason: 'This production is already complete.' };
     }
     if (action.type === ACTIONS.CANCEL) return { ok: true };
-
-    if (status === productionPlan.STATUS.AWAITING_MODE_CHOICE) {
-        if (action.type === ACTIONS.CHOOSE_DIRECT || action.type === ACTIONS.CHOOSE_DIRECTOR) {
-            return { ok: true };
-        }
-        return { ok: false, reason: 'Choose Direct video or Director mode first.' };
-    }
 
     const generating = status === productionPlan.STATUS.GENERATING_IMAGE ||
         status === productionPlan.STATUS.GENERATING_VIDEO;

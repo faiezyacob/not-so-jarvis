@@ -532,23 +532,53 @@ const VIDEO_DURATION_WORDS = {
 const VIDEO_DURATION_WORD_RE =
     /\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)\s*(?:-|–|—)?\s*(?:seconds?|secs?)\b/gi;
 
-function parseRequestedVideoDuration(message) {
-    const text = String(message || '');
-    if (!text.trim()) return null;
-    let found = null;
-    VIDEO_DURATION_NUM_RE.lastIndex = 0;
+// A duration mention that is a cadence/timestamp ("every 3 seconds", "at
+// 10 seconds", "after 5 seconds") is not the video's total length. When the
+// user gives both ("10 seconds video ... every 3 seconds ..."), the cadence
+// must never override the requested total.
+const DURATION_CADENCE_RE = /\b(?:every|each|per|at|after|within)\s*$/i;
+// A duration next to a medium/length word is the total. Proximity (not order)
+// decides which mention is the length when several appear.
+const DURATION_ANCHOR_RE = /\b(?:videos?|clips?|films?|movies?|animations?|footage|reels?|shorts?|long|length|duration|runtime)\b/i;
+
+function collectDurationMatches(text) {
+    const out = [];
     let match;
+    VIDEO_DURATION_NUM_RE.lastIndex = 0;
     while ((match = VIDEO_DURATION_NUM_RE.exec(text))) {
         const n = Number(match[1]);
-        if (Number.isFinite(n) && n > 0 && n <= 120) found = n;
+        if (Number.isFinite(n) && n > 0 && n <= 120) {
+            out.push({ value: n, index: match.index, end: match.index + match[0].length });
+        }
     }
     VIDEO_DURATION_WORD_RE.lastIndex = 0;
     while ((match = VIDEO_DURATION_WORD_RE.exec(text))) {
         const n = VIDEO_DURATION_WORDS[String(match[1]).toLowerCase()];
-        if (Number.isFinite(n)) found = n;
+        if (Number.isFinite(n)) {
+            out.push({ value: n, index: match.index, end: match.index + match[0].length });
+        }
     }
-    if (found === null) return null;
-    return h3DurationSeconds(Math.round(found));
+    return out;
+}
+
+function parseRequestedVideoDuration(message) {
+    const text = String(message || '');
+    if (!text.trim()) return null;
+    const candidates = collectDurationMatches(text).map((c) => {
+        const before = text.slice(Math.max(0, c.index - 24), c.index);
+        const around = text.slice(Math.max(0, c.index - 28), Math.min(text.length, c.end + 18));
+        return {
+            value: c.value,
+            cadence: DURATION_CADENCE_RE.test(before),
+            anchored: DURATION_ANCHOR_RE.test(around)
+        };
+    }).filter((c) => !c.cadence);
+    if (!candidates.length) return null;
+    // Prefer the duration tied to the medium/length; otherwise keep the last
+    // explicit duration so "make it 5 seconds ... actually 10 seconds" works.
+    const anchored = candidates.find((c) => c.anchored);
+    const chosen = anchored || candidates[candidates.length - 1];
+    return h3DurationSeconds(Math.round(chosen.value));
 }
 
 // --- H3 Video Director System Prompt (Ollama) --------------------------------

@@ -16,7 +16,6 @@ const DATA_FILE = path.join(DATA_DIR, 'director-state.json');
 // Production status values. "open" productions keep the Director gate active
 // between turns; terminal ones let normal chat resume.
 const STATUS = Object.freeze({
-    AWAITING_MODE_CHOICE: 'awaiting_mode_choice',
     GENERATING_IMAGE: 'generating_image',
     AWAITING_IMAGE_APPROVAL: 'awaiting_image_approval',
     GENERATING_VIDEO: 'generating_video',
@@ -27,12 +26,10 @@ const STATUS = Object.freeze({
 });
 
 const TYPES = Object.freeze({
-    VIDEO_PRODUCTION: 'video_production',
-    MODE_CHOICE: 'mode_choice'
+    VIDEO_PRODUCTION: 'video_production'
 });
 
 const OPEN_STATUSES = new Set([
-    STATUS.AWAITING_MODE_CHOICE,
     STATUS.GENERATING_IMAGE,
     STATUS.AWAITING_IMAGE_APPROVAL,
     STATUS.GENERATING_VIDEO,
@@ -179,42 +176,6 @@ function create({ conversationId, brief, video, sourceImage, originalRequest }) 
     return production;
 }
 
-// Build a pending "which workflow" plan. No generation runs until the user
-// picks Direct video or Director mode; the original request is parked here.
-function createModeChoice({ conversationId, message, duration, referenceImage }) {
-    const now = Date.now();
-    const seconds = Number(duration);
-    return {
-        id: makeId(),
-        conversationId,
-        type: TYPES.MODE_CHOICE,
-        status: STATUS.AWAITING_MODE_CHOICE,
-        brief: normalizeBrief({ originalRequest: message }),
-        video: {
-            duration: Number.isFinite(seconds) && seconds > 0 ? seconds : null,
-            width: null,
-            height: null
-        },
-        image: null,
-        sourceImage: null,
-        referenceImage: referenceImage || null,
-        pendingRequest: String(message || ''),
-        briefModified: false,
-        videoPrompt: '',
-        videoUrl: null,
-        error: '',
-        createdAt: now,
-        updatedAt: now,
-        stages: [
-            { id: 'mode_choice', type: 'choice', status: 'pending' },
-            { id: 'image', type: 'image_generation', status: 'pending' },
-            { id: 'image_approval', type: 'approval', status: 'pending' },
-            { id: 'video', type: 'video_generation', status: 'pending' }
-        ],
-        currentStage: 'mode_choice'
-    };
-}
-
 function get(conversationId) {
     if (!conversationId) return null;
     return productions.get(conversationId) || null;
@@ -258,10 +219,6 @@ function isAwaitingApproval(production) {
     return Boolean(production && production.status === STATUS.AWAITING_IMAGE_APPROVAL);
 }
 
-function isAwaitingModeChoice(production) {
-    return Boolean(production && production.status === STATUS.AWAITING_MODE_CHOICE);
-}
-
 function isActive(production) {
     return Boolean(production && (
         production.status === STATUS.GENERATING_IMAGE ||
@@ -277,7 +234,6 @@ module.exports = {
     STATUS,
     TYPES,
     create,
-    createModeChoice,
     get,
     set,
     remove,
@@ -285,7 +241,6 @@ module.exports = {
     setStage,
     isOpen,
     isAwaitingApproval,
-    isAwaitingModeChoice,
     isActive,
     normalizeBrief,
     createEmptyBrief,

@@ -1,10 +1,9 @@
 /* ============================================
    JARVIS — Intent Resolver tests
    Covers the structured intent schema, signal
-   evidence, action-vs-subject resolution,
-   pending clarification, and the resolver ->
-   action-router mapping. LLM/storage seams are
-   stubbed so these run offline and fast.
+   evidence, action-vs-subject resolution, and the
+   resolver -> action-router mapping. LLM/storage
+   seams are stubbed so these run offline and fast.
    Run with: npm test
    ============================================ */
 
@@ -46,7 +45,6 @@ function contextFor(extra = {}) {
         lastGeneratedVideo: null,
         activePrompt: activeTask.prompt || '',
         activeGeneration: activeTask.type ? { type: activeTask.type, status: 'idle' } : null,
-        pendingAction: extra.pendingAction || null,
         selectedMode: extra.selectedMode || null,
         referenceImage: extra.referenceImage || null,
         hasAttachedImage: Boolean(extra.hasAttachedImage)
@@ -98,7 +96,6 @@ test('resolveIntent: "write me a prompt for an image ..." is prompt_writing', as
     assert.equal(r.intent, 'prompt_writing');
     assert.equal(r.subject, 'image');
     assert.equal(r.referencesPreviousContext, false);
-    assert.equal(r.requiresClarification, false);
     assert.equal(r.decisive, true);
 });
 
@@ -110,28 +107,25 @@ test('resolveIntent: "give me some ideas for video prompts" is prompt_ideation',
     assert.equal(r.decisive, true);
 });
 
-test('resolveIntent: a text-to-video request with no mode asks for clarification', async () => {
+test('resolveIntent: a text-to-video request with no mode defaults to direct (no question)', async () => {
     stubInvalidChat();
     const r = await resolve('Generate a video of a young Asian woman walking through Tokyo.');
     assert.equal(r.intent, 'video_generation');
-    assert.equal(r.mode, 'unknown');
-    assert.equal(r.requiresClarification, true);
-    assert.equal(r.clarificationReason, 'video_mode');
+    assert.equal(r.mode, 'direct');
 });
 
-test('resolveIntent: an explicit director request skips the question', async () => {
+test('resolveIntent: an explicit director request selects director mode', async () => {
     stubInvalidChat();
     const r = await resolve('director mode: a cinematic film of a lighthouse');
     assert.equal(r.intent, 'video_generation');
     assert.equal(r.mode, 'director');
-    assert.equal(r.requiresClarification, false);
 });
 
-test('resolveIntent: a production noun without a medium word still asks (commercial)', async () => {
+test('resolveIntent: a production noun without a medium word defaults to direct (commercial)', async () => {
     stubInvalidChat();
     const r = await resolve('create a commercial for a coffee brand');
     assert.equal(r.intent, 'video_generation');
-    assert.equal(r.requiresClarification, true);
+    assert.equal(r.mode, 'direct');
 });
 
 test('resolveIntent: "make a movie poster" is not a video request', async () => {
@@ -140,21 +134,20 @@ test('resolveIntent: "make a movie poster" is not a video request', async () => 
     assert.notEqual(r.intent, 'video_generation');
 });
 
-test('resolveIntent: an explicit direct request skips the question', async () => {
+test('resolveIntent: an explicit direct request selects direct mode', async () => {
     stubInvalidChat();
     const r = await resolve('just generate the video of a cat');
     assert.equal(r.intent, 'video_generation');
-    assert.equal(r.requiresClarification, false);
+    assert.equal(r.mode, 'direct');
 });
 
-test('resolveIntent: "now turn this into a video" references the previous image (no question)', async () => {
+test('resolveIntent: "now turn this into a video" references the previous image', async () => {
     stubInvalidChat();
     const r = await resolve('Now turn this into a video.', {
         activeTask: { type: 'image', prompt: 'a woman in Tokyo', parameters: {}, lastImage: { prompt: 'a woman in Tokyo' } }
     });
     assert.equal(r.intent, 'video_generation');
     assert.equal(r.referencesPreviousContext, true);
-    assert.equal(r.requiresClarification, false);
     assert.equal(r.mode, 'direct');
 });
 
@@ -208,45 +201,6 @@ test('resolveIntent: a definite image request survives an LLM "chat" verdict', a
     assert.equal(r.intent, 'image_generation');
 });
 
-// --- Pending clarification ----------------------------------------------------
-
-test('resolveClarificationAnswer: reads director / direct / cancel / new request', () => {
-    const pending = { intent: 'video_generation', mode: 'unknown', request: 'Make a video of a cat' };
-    assert.deepEqual(intentResolver.resolveClarificationAnswer('Director', pending), { type: 'director', mode: 'director' });
-    assert.equal(intentResolver.resolveClarificationAnswer('use director mode', pending).type, 'director');
-    assert.equal(intentResolver.resolveClarificationAnswer('direct video please', pending).type, 'direct');
-    assert.equal(intentResolver.resolveClarificationAnswer('cancel', pending).type, 'cancel');
-    assert.equal(intentResolver.resolveClarificationAnswer('generate a video of a dog', pending).type, 'new_request');
-    assert.equal(intentResolver.resolveClarificationAnswer('what do you recommend?', pending), null);
-});
-
-test('resolveIntent: a pending video question resolves as clarification_response', async () => {
-    const pending = {
-        intent: 'video_generation',
-        mode: 'unknown',
-        request: 'Generate a video of a young Asian woman walking through Tokyo.',
-        reason: 'video_mode',
-        createdAt: new Date().toISOString()
-    };
-    const r = await resolve('director', { pendingAction: pending });
-    assert.equal(r.intent, 'clarification_response');
-    assert.equal(r.pendingResolution, 'director');
-    assert.equal(r.mode, 'director');
-    assert.equal(r.extractedRequest, pending.request);
-});
-
-test('resolveIntent: an ambiguous turn keeps the pending action parked', async () => {
-    stubInvalidChat();
-    const pending = { intent: 'video_generation', mode: 'unknown', request: 'Make a video of a cat' };
-    const context = contextFor({ pendingAction: pending });
-    const r = await intentResolver.resolveIntent({
-        message: 'what do you recommend?',
-        provider: 'ollama', model: 'm', think: false, conversationId: 'intent-test', context
-    });
-    assert.equal(r.intent, 'chat');
-    assert.equal(context.pendingAction, pending);
-});
-
 // --- Resolver -> action-router mapping ---------------------------------------
 
 test('decisionFromResolvedIntent: prompt_writing never executes a tool', () => {
@@ -258,15 +212,14 @@ test('decisionFromResolvedIntent: prompt_writing never executes a tool', () => {
     assert.equal(d.task, null);
 });
 
-test('decisionFromResolvedIntent: video with unknown mode parks for clarification', () => {
+test('decisionFromResolvedIntent: video_generation builds a direct structured request', () => {
     const d = taskRouter.decisionFromResolvedIntent(
-        { intent: 'video_generation', requiresClarification: true, clarificationReason: 'video_mode', extractedRequest: 'a video of a cat' },
+        { intent: 'video_generation', mode: 'direct', extractedRequest: 'a video of a cat', referencesPreviousContext: false },
         { message: 'make a video', activeTask: { type: null }, conversationId: 'c', hasAttachedImage: false, referenceImage: null }
     );
-    assert.equal(d.requiresClarification, true);
     assert.equal(d.task, 'video_generation');
-    assert.equal(d.clarification.mode, 'unknown');
-    assert.equal(d.shouldExecuteTool, false);
+    assert.equal(d.shouldExecuteTool, true);
+    assert.equal(d.structuredRequest.user_prompt, 'a video of a cat');
 });
 
 test('decisionFromResolvedIntent: image_generation builds a structured request', () => {
@@ -297,7 +250,7 @@ test('routeMessage: a prompt-writing request stays chat even though "image" is p
     assert.equal(d.resolvedIntent && d.resolvedIntent.intent, 'prompt_writing');
 });
 
-test('routeMessage: a text-to-video request without a mode returns a clarification decision', async () => {
+test('routeMessage: a text-to-video request without a mode executes the direct pipeline', async () => {
     conversationService.getMessages = () => [];
     taskState.getTask = () => ({ type: null });
     stubChatJson({ intent: 'video_generation', confidence: 0.96, mode: 'unknown', referencesPreviousContext: false, extractedRequest: 'a young Asian woman walking through Tokyo' });
@@ -305,9 +258,8 @@ test('routeMessage: a text-to-video request without a mode returns a clarificati
         message: 'Generate a video of a young Asian woman walking through Tokyo.',
         provider: 'ollama', model: 'm', conversationId: 'conv-vid', think: false
     });
-    assert.equal(d.requiresClarification, true);
     assert.equal(d.task, 'video_generation');
-    assert.equal(d.shouldExecuteTool, false);
+    assert.equal(d.shouldExecuteTool, true);
 });
 
 // --- Debug trace --------------------------------------------------------------
@@ -316,7 +268,7 @@ test('formatDebugTrace: renders the resolver decision and regex evidence', () =>
     const trace = intentResolver.formatDebugTrace({
         message: 'write me a prompt for an image of a woman in Tokyo',
         signals: { hasImageWord: true, hasPromptWord: true, hasVideoWord: false, subject: 'image' },
-        resolved: { intent: 'prompt_writing', confidence: 0.98, subject: 'image', referencesPreviousContext: false, requiresClarification: false },
+        resolved: { intent: 'prompt_writing', confidence: 0.98, subject: 'image', referencesPreviousContext: false },
         finalAction: 'prompt_writing'
     });
     assert.match(trace, /intent: prompt_writing/);

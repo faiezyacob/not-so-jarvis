@@ -813,7 +813,8 @@ const Chat = (() => {
                     images: visionImages,
                     references: reference ? [reference.filename] : [],
                     directorAction: override && override.directorAction ? override.directorAction : undefined,
-                    longVideoAction: override && override.longVideoAction ? override.longVideoAction : undefined
+                    longVideoAction: override && override.longVideoAction ? override.longVideoAction : undefined,
+                    forceDirector: (typeof ChatDirector !== 'undefined' && ChatDirector && ChatDirector.isOn()) ? true : undefined
                 }),
                 signal: activeStreamAbort.signal
             });

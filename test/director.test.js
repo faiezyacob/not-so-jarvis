@@ -74,94 +74,38 @@ test('detectProductionRequest: a concept question is not a production', () => {
     assert.equal(director.detectProductionRequest('What is a movie?'), false);
 });
 
-// --- Mode choice (Direct video vs Director mode) -----------------------------
+// --- Workflow selection (direct by default, Director on request) --------------
 
-test('mode choice: any new video request asks, explicit director/direct skip it', () => {
-    assert.equal(director.shouldOfferModeChoice('make a video of a cat', {}), true);
-    assert.equal(director.shouldOfferModeChoice('create a commercial for coffee', {}), true);
-    assert.equal(director.shouldOfferModeChoice('make a cinematic movie of a woman', {}), true);
-    assert.equal(director.shouldOfferModeChoice('turn this image into a video', {}), true);
-    assert.equal(director.shouldOfferModeChoice('director mode: a movie about a dog', {}), false);
-    assert.equal(director.shouldOfferModeChoice('just generate the video of a cat', {}), false);
-    assert.equal(director.shouldOfferModeChoice('generate a portrait of a woman', {}), false);
-    assert.equal(director.shouldOfferModeChoice('upscale this video', {}), false);
-    assert.equal(director.shouldOfferModeChoice('make her wear a red dress', {}), false);
-    assert.equal(director.shouldOfferModeChoice('make a movie poster', {}), false);
-});
-
-test('mode choice: tweaks of an active video task never ask', () => {
-    assert.equal(director.shouldOfferModeChoice('make her walk faster', { activeTaskType: 'video' }), false);
-    assert.equal(director.shouldOfferModeChoice('generate a video of her walking', { activeTaskType: 'video' }), true);
-});
-
-test('mode choice: a failed production stays open but does not claim a new video request', () => {
+test('workflow: a failed production stays open but does not claim a new video request', () => {
     // A restart reconciles a running stage to failed_* (still "open"), so the
     // server relies on classifyMessage returning null to know it must supersede
-    // the stale production and ask the workflow question again.
+    // the stale production and start a fresh one.
     const production = { id: 'f1', status: productionPlan.STATUS.FAILED_IMAGE, stages: [] };
     assert.equal(productionPlan.isOpen(production), true);
     assert.equal(approval.classifyMessage('make a video of a cat', production), null);
-    assert.equal(director.shouldOfferModeChoice('make a video of a cat', {}), true);
 });
 
-test('mode choice: wantsDirectorMode only matches explicit director phrasing', () => {
+test('workflow: wantsDirectorMode only matches explicit director phrasing', () => {
     assert.equal(director.wantsDirectorMode('director mode'), true);
     assert.equal(director.wantsDirectorMode('as a director, make a film'), true);
     assert.equal(director.wantsDirectorMode('make a cinematic movie'), false);
 });
 
-test('mode choice: classifyMessage reads the answer', () => {
-    const production = { id: 'mc1', status: productionPlan.STATUS.AWAITING_MODE_CHOICE, stages: [] };
-    assert.equal(approval.classifyMessage('director mode', production).action, approval.ACTIONS.CHOOSE_DIRECTOR);
-    assert.equal(approval.classifyMessage('movie please', production).action, approval.ACTIONS.CHOOSE_DIRECTOR);
-    assert.equal(approval.classifyMessage('direct video', production).action, approval.ACTIONS.CHOOSE_DIRECT);
-    assert.equal(approval.classifyMessage('just generate it', production).action, approval.ACTIONS.CHOOSE_DIRECT);
-    assert.equal(approval.classifyMessage('cancel', production).action, approval.ACTIONS.CANCEL);
-    assert.equal(approval.classifyMessage('what do you recommend?', production), null);
-});
-
-test('mode choice: validate gates stage actions until a workflow is picked', () => {
-    const production = { id: 'mc2', status: productionPlan.STATUS.AWAITING_MODE_CHOICE, stages: [] };
-    assert.equal(approval.validate(production, { type: approval.ACTIONS.CHOOSE_DIRECT }).ok, true);
-    assert.equal(approval.validate(production, { type: approval.ACTIONS.CHOOSE_DIRECTOR }).ok, true);
-    assert.equal(approval.validate(production, { type: approval.ACTIONS.APPROVE }).ok, false);
-});
-
-test('mode choice: createModeChoice parks the request with its duration', () => {
-    const id = conversationId('choice');
-    const production = director.createModeChoice({
-        conversationId: id,
-        message: 'Make a 12-second movie of a robot dancing'
-    });
-    assert.equal(production.status, productionPlan.STATUS.AWAITING_MODE_CHOICE);
-    assert.equal(production.video.duration, 12);
-    assert.equal(production.pendingRequest, 'Make a 12-second movie of a robot dancing');
-    assert.equal(productionPlan.isOpen(production), true);
-    assert.match(director.renderModeChoiceContent(production), /Director Mode/i);
-    productionPlan.remove(id);
-});
-
-test('mode choice: choosing Director builds the brief and resumes the production', async () => {
-    providers.chat = async (provider, messages) => {
-        const sys = String((messages[0] && messages[0].content) || '');
-        if (/creative brief/i.test(sys)) {
-            return JSON.stringify({ subject: 'a robot', setting: 'a stage', action: 'dancing', shots: '1' });
-        }
-        return '{}';
-    };
-    const id = conversationId('choice-build');
-    const production = director.createModeChoice({
-        conversationId: id,
-        message: 'Make a 10-second movie of a robot dancing on a stage'
-    });
-    await director.buildProductionFromChoice(production, {
-        provider: 'ollama', model: 'test-model', think: false
-    });
-    assert.equal(production.type, 'video_production');
-    assert.equal(production.status, productionPlan.STATUS.GENERATING_IMAGE);
-    assert.equal(production.brief.subject, 'a robot');
-    assert.equal(production.video.duration, 10);
-    productionPlan.remove(id);
+test('workflow: shouldForceDirector routes fresh video turns but not tweaks', () => {
+    assert.equal(director.shouldForceDirector('make a movie of a cat',
+        { task: 'video_generation', intent: 'new_task' }), true);
+    assert.equal(director.shouldForceDirector('animate this image',
+        { task: 'video_generation', intent: 'switch_task' }), true);
+    // Explicit "just generate the video" wins over the toggle.
+    assert.equal(director.shouldForceDirector('just generate the video of a cat',
+        { task: 'video_generation', intent: 'new_task' }), false);
+    // Tweaks of an active video task keep their direct pipeline.
+    assert.equal(director.shouldForceDirector('make her walk faster',
+        { task: 'video_generation', intent: 'continue_task' }), false);
+    // Non-video turns are untouched.
+    assert.equal(director.shouldForceDirector('generate a portrait of a woman',
+        { task: 'image_generation', intent: 'new_task' }), false);
+    assert.equal(director.shouldForceDirector('hello there', null), false);
 });
 
 // --- Brief -------------------------------------------------------------------

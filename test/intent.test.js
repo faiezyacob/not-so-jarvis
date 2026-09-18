@@ -131,6 +131,48 @@ test('videoRequestStrength: concept questions are null', () => {
     assert.equal(videoGenerator.videoRequestStrength('what is a video?'), null);
 });
 
+// --- parseRequestedVideoDuration ----------------------------------------------
+
+test('parseRequestedVideoDuration: reads an explicit total', () => {
+    assert.equal(videoGenerator.parseRequestedVideoDuration('generate a 10-second video'), 10);
+    assert.equal(videoGenerator.parseRequestedVideoDuration('make a 12 second video of a dog'), 12);
+    assert.equal(videoGenerator.parseRequestedVideoDuration('animate this image in 15 seconds'), 15);
+    assert.equal(videoGenerator.parseRequestedVideoDuration('a 10s clip'), 10);
+    assert.equal(videoGenerator.parseRequestedVideoDuration('make it ten seconds'), 10);
+});
+
+test('parseRequestedVideoDuration: a cadence never overrides the requested total', () => {
+    assert.equal(
+        videoGenerator.parseRequestedVideoDuration(
+            'generate 10 seconds video. she is walking in a city. every 3 seconds the background changes to a different big city'
+        ),
+        10
+    );
+    assert.equal(
+        videoGenerator.parseRequestedVideoDuration('make a 10-second video that cuts to a new city every 3 seconds'),
+        10
+    );
+    assert.equal(
+        videoGenerator.parseRequestedVideoDuration('every 3 seconds change the background, make it 12 seconds long'),
+        12
+    );
+});
+
+test('parseRequestedVideoDuration: a cadence with no total falls back to the default', () => {
+    assert.equal(videoGenerator.parseRequestedVideoDuration('change the background every 3 seconds'), null);
+    assert.equal(videoGenerator.parseRequestedVideoDuration('at 4 seconds cut to a new city'), null);
+});
+
+test('parseRequestedVideoDuration: the last explicit duration wins when none is anchored', () => {
+    assert.equal(videoGenerator.parseRequestedVideoDuration('make it 5 seconds, actually make it 10 seconds'), 10);
+});
+
+test('parseRequestedVideoDuration: clamps to the H3 5-15s range and ignores junk', () => {
+    assert.equal(videoGenerator.parseRequestedVideoDuration('make a 2 second video'), 5);
+    assert.equal(videoGenerator.parseRequestedVideoDuration('make a 30 second video'), 15);
+    assert.equal(videoGenerator.parseRequestedVideoDuration('no duration here'), null);
+});
+
 // --- detectVideoUpscaleIntent ------------------------------------------------
 
 test('detectVideoUpscaleIntent: requires an explicit video noun', () => {

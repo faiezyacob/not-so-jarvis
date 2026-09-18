@@ -17,9 +17,9 @@ const productionPlan = require('./production-plan');
 const approval = require('./approval-manager');
 const prompts = require('./director-prompts');
 
-// "Production" language: a plain video request stays on the normal pipeline;
-// only a multi-stage production (movie/film/commercial/cinematic, or a timed
-// video built from an existing image) activates the Director.
+// "Production" language: distinguishes a multi-stage production request
+// (movie/film/commercial/cinematic, or a timed video built from an existing
+// image) from a plain single video request. Exposed for routing/tests.
 const PRODUCTION_NOUN_RE =
     /\b(?:movie|short[\s-]*film|feature[\s-]*film|documentary|commercial|trailer|teaser|cinematic\s+(?:video|film|movie|clip|sequence|short|scene)|multi[\s-]?shot(?:\s+sequence)?|storyboard|video\s+production|film\s+production)\b/i;
 const MEDIUM_RE = /\b(?:video|movie|film|clip|animation|footage|reel)\b/i;
@@ -118,8 +118,8 @@ async function updateBrief(currentBrief, feedback, { provider, model, think }) {
 }
 
 // True when the message asks for a multi-stage production rather than a single
-// generation. Deliberately narrow so ordinary image/video requests keep using
-// the existing pipelines unchanged.
+// generation. Exposed as a detection helper; it no longer gates the Director
+// (video requests run directly unless the user explicitly asks for Director).
 function detectProductionRequest(message, opts = {}) {
     const text = String(message || '').trim();
     if (!text) return false;
@@ -156,39 +156,14 @@ function wantsDirectorMode(message) {
     return DIRECTOR_MODE_RE.test(String(message || ''));
 }
 
-// Decide whether to stop and ask "Direct video or Director mode?" before
-// generating. Any new video request asks; only explicit "director mode" (via
-// wantsDirectorMode) or explicit "just generate the video" skip the question.
-// Modifications of an already active video task never ask.
-// "make a movie poster" is a still image that happens to name a video medium.
-const NON_VIDEO_PRODUCTION_RE =
-    /\b(?:movie|film|video|clip)\s+(?:poster|cover|thumbnail|art|artwork|image|picture|photo|logo|title)\b/i;
-
-function shouldOfferModeChoice(message, opts = {}) {
-    const text = String(message || '').trim();
-    if (!text) return false;
-    if (/\?\s*$/.test(text)) return false;
-    if (videoGenerator.isVideoConceptQuestion && videoGenerator.isVideoConceptQuestion(text)) return false;
-    if (videoGenerator.isStillImageOnlyChange && videoGenerator.isStillImageOnlyChange(text)) return false;
-    if (NON_VIDEO_PRODUCTION_RE.test(text)) return false;
-    if (wantsDirectorMode(text)) return false;
-    if (wantsDirectMode(text)) return false;
-
-    // Production language ("create a commercial") may not name a video medium,
-    // so it still counts as a video request that should ask.
-    const looksVideo = detectProductionRequest(text) ||
-        videoGenerator.VIDEO_REQUEST_RE.test(text) ||
-        videoGenerator.I2V_REF_RE.test(text) ||
-        (videoGenerator.VIDEO_WORD_RE.test(text) && videoGenerator.VIDEO_SIGNAL_RE.test(text));
-    if (!looksVideo) return false;
-
-    const activeType = opts.activeTaskType || null;
-    // An explicit "make/generate a video" always asks, even while a video task
-    // is active (it is a fresh generation, not a tweak).
-    if (videoGenerator.VIDEO_REQUEST_RE.test(text)) return true;
-    // Tweaks of an active video task stay on the task, never a new question.
-    if (activeType === 'video') return false;
-    return true;
+// The composer "Director Mode" toggle pre-selects the Director workflow: a
+// fresh video request goes straight to the Director instead of the normal H3
+// pipeline. It never overrides an explicit "just generate the video" and never
+// re-routes a continue/modify turn of an active video task.
+function shouldForceDirector(message, decision) {
+    if (!decision || decision.task !== 'video_generation') return false;
+    if (wantsDirectMode(message)) return false;
+    return decision.intent === 'new_task' || decision.intent === 'switch_task';
 }
 
 function defaultVideoDuration() {
@@ -249,65 +224,6 @@ async function createProduction({ conversationId, message, provider, model, thin
         production.status = productionPlan.STATUS.AWAITING_IMAGE_APPROVAL;
     }
     productionPlan.set(conversationId, production);
-    return production;
-}
-
-// Park a video request until the user picks Direct video or Director mode.
-function createModeChoice({ conversationId, message, referenceImage }) {
-    const parsedDuration = typeof videoGenerator.parseRequestedVideoDuration === 'function'
-        ? videoGenerator.parseRequestedVideoDuration(message)
-        : null;
-    const duration = (parsedDuration !== null && parsedDuration !== undefined)
-        ? parsedDuration
-        : defaultVideoDuration();
-    const production = productionPlan.createModeChoice({
-        conversationId,
-        message,
-        duration,
-        referenceImage
-    });
-    productionPlan.set(conversationId, production);
-    return production;
-}
-
-// Turn a pending mode choice into a real Director production (called when the
-// user picks Director mode): build the canonical brief and resolve the frame.
-async function buildProductionFromChoice(production, { provider, model, think }) {
-    const message = production.pendingRequest || (production.brief && production.brief.originalRequest) || '';
-    const parsedDuration = typeof videoGenerator.parseRequestedVideoDuration === 'function'
-        ? videoGenerator.parseRequestedVideoDuration(message)
-        : null;
-    const duration = (parsedDuration !== null && parsedDuration !== undefined)
-        ? parsedDuration
-        : (production.video && production.video.duration) || defaultVideoDuration();
-    const brief = await buildBrief({ message, provider, model, think });
-    const sourceImage = resolveExistingSource(production.conversationId, message, production.referenceImage);
-
-    production.type = productionPlan.TYPES.VIDEO_PRODUCTION;
-    production.brief = brief;
-    production.briefModified = false;
-    production.video = { duration: Number(duration) > 0 ? Number(duration) : defaultVideoDuration(), width: null, height: null };
-    production.sourceImage = sourceImage || null;
-    production.image = sourceImage
-        ? {
-            url: '/generated/' + encodeURIComponent(sourceImage),
-            rawFilename: sourceImage,
-            prompt: brief.subject || '',
-            seed: null,
-            attributes: null,
-            fromSource: true
-        }
-        : null;
-    production.stages = [
-        { id: 'image', type: 'image_generation', status: sourceImage ? 'completed' : 'pending', assetId: sourceImage || null },
-        { id: 'image_approval', type: 'approval', status: sourceImage ? 'approved' : 'pending' },
-        { id: 'video', type: 'video_generation', status: 'pending' }
-    ];
-    production.status = sourceImage
-        ? productionPlan.STATUS.AWAITING_IMAGE_APPROVAL
-        : productionPlan.STATUS.GENERATING_IMAGE;
-    production.currentStage = sourceImage ? 'video' : 'image';
-    productionPlan.set(production.conversationId, production);
     return production;
 }
 
@@ -517,12 +433,6 @@ function imageUrlOf(production) {
 // How many shots the production is cut into (2+ means a real cut sequence).
 function shotCountOf(production) {
     if (!production) return 0;
-    // A parked mode choice has no cut plan yet — the user may still pick Direct
-    // video, which stays a single continuous shot.
-    if (production.type === productionPlan.TYPES.MODE_CHOICE ||
-        production.status === productionPlan.STATUS.AWAITING_MODE_CHOICE) {
-        return 0;
-    }
     const stored = Number(production && production.video && production.video.shots);
     if (Number.isFinite(stored) && stored > 0) return stored;
     try {
@@ -551,17 +461,6 @@ function renderImageApprovalContent(production, imageMarkdown) {
         ' video. This image will be used as the starting frame.' +
         (plan ? ' I\'ll direct it as a ' + plan + ' sequence.' : '');
     return intro + '\n\n' + imageMarkdown + markerLine(production);
-}
-
-// The persisted assistant message for the "Direct video or Director mode?"
-// question. The marker turns it into a two-button choice card.
-function renderModeChoiceContent(production) {
-    return '**Director** \u2014 How should I build this?\n\n' +
-        '**Direct video** generates the ' + durationLabel(production) +
-        ' video straight away.\n\n' +
-        '**Director mode** creates an opening frame first, waits for your approval, ' +
-        'then directs the video from that frame as a multi-shot sequence.' +
-        markerLine(production);
 }
 
 function renderVideoCompleteContent(production, videoMarkdown) {
@@ -604,10 +503,8 @@ module.exports = {
     detectProductionRequest,
     wantsDirectMode,
     wantsDirectorMode,
-    shouldOfferModeChoice,
+    shouldForceDirector,
     createProduction,
-    createModeChoice,
-    buildProductionFromChoice,
     buildImageStagePrompt,
     applyDirectionUpdate,
     buildVideoStageRequest,
@@ -619,7 +516,6 @@ module.exports = {
     markVideoFailed,
     cancel,
     buildCard,
-    renderModeChoiceContent,
     renderImageApprovalContent,
     renderVideoCompleteContent,
     renderFailureContent,
@@ -630,7 +526,6 @@ module.exports = {
     getProduction: productionPlan.get,
     isOpen: productionPlan.isOpen,
     isAwaitingApproval: productionPlan.isAwaitingApproval,
-    isAwaitingModeChoice: productionPlan.isAwaitingModeChoice,
     isActive: productionPlan.isActive,
     removeProduction: productionPlan.remove,
     normalizeAction: approval.normalizeAction,

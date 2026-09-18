@@ -31,11 +31,6 @@ const DirectorUI = (() => {
     }
 
     const BUTTONS = {
-        awaiting_mode_choice: [
-            { type: 'choose_director', label: 'Director Mode', icon: 'film', variant: 'primary' },
-            { type: 'choose_direct', label: 'Generate Directly', icon: 'zap', variant: '' },
-            { type: 'cancel', label: 'Cancel', icon: 'x', variant: 'danger' }
-        ],
         awaiting_image_approval: [
             { type: 'approve', label: 'Approve & Generate', icon: 'check', variant: 'primary' },
             { type: 'regenerate_image', label: 'Regenerate', icon: 'refresh', variant: '' },
@@ -55,7 +50,6 @@ const DirectorUI = (() => {
 
     function stageLabel(status) {
         switch (status) {
-            case 'awaiting_mode_choice': return 'Choose a workflow';
             case 'generating_image': return 'Creating opening frame\u2026';
             case 'awaiting_image_approval': return 'Awaiting your approval';
             case 'generating_video': return 'Creating video\u2026';
@@ -156,8 +150,6 @@ const DirectorUI = (() => {
         const labels = {
             approve: 'Approve & generate video',
             regenerate_image: 'Regenerate the opening frame',
-            choose_direct: 'Generate the video directly',
-            choose_director: 'Use Director mode',
             cancel: 'Cancel the production'
         };
         send(labels[type] || type, { type, productionId });
@@ -182,7 +174,6 @@ const DirectorUI = (() => {
     function applyState(container, production) {
         if (!container) return;
         const actionable = Boolean(production && (
-            production.status === 'awaiting_mode_choice' ||
             production.status === 'awaiting_image_approval' ||
             production.status === 'failed_image' ||
             production.status === 'failed_video'

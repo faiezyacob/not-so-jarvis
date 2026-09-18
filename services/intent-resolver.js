@@ -22,11 +22,10 @@
    Priority hierarchy:
      A. Explicit user action ("director mode",
         "write a prompt for ...")
-     B. Pending clarification / parked action
-     C. Conversation references ("this", "her", ...)
-     D. Semantic intent (LLM)
-     E. Regex/keyword signals (fallback evidence)
-     F. Normal chat fallback
+     B. Semantic intent (LLM) — final authority
+        when ambiguous
+     C. Regex/keyword signals (fallback evidence)
+     D. Normal chat fallback
    ============================================ */
 
 const providers = require('../server/providers');
@@ -44,7 +43,6 @@ const INTENTS = Object.freeze({
     PROMPT_WRITING: 'prompt_writing',
     PROMPT_IDEATION: 'prompt_ideation',
     MODIFY_PREVIOUS_GENERATION: 'modify_previous_generation',
-    CLARIFICATION_RESPONSE: 'clarification_response',
     IMAGE_EDIT: 'image_edit',
     IMAGE_UPSCALE: 'image_upscale',
     VIDEO_UPSCALE: 'video_upscale'
@@ -55,12 +53,6 @@ const MODES = Object.freeze({
     DIRECT: 'direct',
     UNKNOWN: 'unknown'
 });
-
-const GENERATION_INTENTS = new Set([
-    INTENTS.IMAGE_GENERATION,
-    INTENTS.VIDEO_GENERATION,
-    INTENTS.MODIFY_PREVIOUS_GENERATION
-]);
 
 // --- Signal regexes (EVIDENCE ONLY, never execution) --------------------------
 
@@ -126,7 +118,6 @@ function formatDebugTrace({ message, signals, resolved, finalAction }) {
         'confidence: ' + (typeof r.confidence === 'number' ? r.confidence : 0),
         'subject: ' + (r.subject || s.subject || 'other'),
         'referencesPreviousContext: ' + truth(r.referencesPreviousContext),
-        'requiresClarification: ' + truth(r.requiresClarification),
         '',
         'REGEX SIGNALS:',
         'image: ' + truth(s.hasImageWord || s.imageStrength),
@@ -241,9 +232,6 @@ function scanGeneratedAssets(messages) {
 function buildIntentContext(input = {}) {
     const conversationId = input.conversationId || null;
     const activeTask = input.activeTask || taskState.getTask(conversationId) || {};
-    const pendingAction = input.pendingAction !== undefined
-        ? input.pendingAction
-        : taskState.getPendingAction(conversationId);
 
     let messages = [];
     try { messages = conversationService.getMessages(conversationId) || []; } catch (err) { messages = []; }
@@ -281,44 +269,10 @@ function buildIntentContext(input = {}) {
         activeGeneration: activeTask.type
             ? { type: activeTask.type, status: activeTask.status || 'idle' }
             : null,
-        pendingAction: pendingAction || null,
         selectedMode,
         referenceImage: input.referenceImage || null,
         hasAttachedImage: Boolean(input.hasAttachedImage)
     };
-}
-
-// --- Pending-clarification resolution -----------------------------------------
-
-const CLARIFY_CANCEL_RE = /\b(?:cancel|never\s*mind|nevermind|forget\s+it|stop|abort|discard|skip\s+it)\b/i;
-const CLARIFY_DIRECTOR_RE =
-    /\b(?:director(?:\s+mode)?|with\s+(?:an?\s+)?approval|approval\s+(?:flow|step)|image\s+first|opening\s+frame|full\s+production|production\s+mode|multi[-\s]?shot)\b/i;
-const CLARIFY_DIRECT_RE =
-    /\b(?:direct(?:\s+video)?|normal|plain|simple|straight(?:\s+to)?\s+video|just\s+(?:the\s+)?video|no\s+director|skip\s+(?:the\s+)?director|without\s+(?:the\s+)?director|generate\s+(?:the\s+)?video\s+directly)\b/i;
-
-// Read a user turn against a parked pending action. Returns:
-//   { type: 'director' | 'direct' | 'cancel', mode }
-//   { type: 'new_request' }  when the turn clearly starts something else
-//   null                     when it neither answers nor supersedes (keep parked)
-function resolveClarificationAnswer(message, pendingAction) {
-    const text = String(message || '').trim();
-    if (!pendingAction || !text) return null;
-
-    if (CLARIFY_CANCEL_RE.test(text)) return { type: 'cancel', mode: null };
-    // "director" must win over the broader "direct" match.
-    if (CLARIFY_DIRECTOR_RE.test(text) && !CLARIFY_DIRECT_RE.test(text)) {
-        return { type: 'director', mode: MODES.DIRECTOR };
-    }
-    if (CLARIFY_DIRECT_RE.test(text)) return { type: 'direct', mode: MODES.DIRECT };
-
-    // A clear new request supersedes the parked one instead of being swallowed.
-    const signals = collectSignals(text, {});
-    if (signals.videoStrength || signals.imageStrength || signals.promptWriting ||
-        signals.promptIdeation || signals.imageUpscale || signals.videoUpscale ||
-        (signals.generationVerb && signals.any)) {
-        return { type: 'new_request' };
-    }
-    return null;
 }
 
 // --- LLM resolver -------------------------------------------------------------
@@ -332,7 +286,7 @@ const RESOLVER_SYSTEM_PROMPT =
     'themselves decide the action.\n\n' +
 
     'Respond with ONLY a single JSON object, no markdown, no commentary:\n' +
-    '{"intent": "...", "confidence": 0.0, "mode": "director|direct|unknown", ' +
+    '{"intent": "...", "confidence": 0.0, "mode": "director|direct", ' +
     '"subject": "image|video|prompt|other", "referencesPreviousContext": false, ' +
     '"extractedRequest": "...", "creative_mode": "none|light|full", "explicit_constraints": []}\n\n' +
 
@@ -342,8 +296,7 @@ const RESOLVER_SYSTEM_PROMPT =
     '- "video_generation": create a NEW video (any medium word: video, film, clip, movie, animation).\n' +
     '- "prompt_writing": write / compose / draft a prompt FOR an image or video. This is NOT generation.\n' +
     '- "prompt_ideation": brainstorm / suggest prompt ideas or concepts. This is NOT generation.\n' +
-    '- "modify_previous_generation": change or continue the previously generated image or video.\n' +
-    '- "clarification_response": the user is answering a pending question (see PENDING ACTION).\n\n' +
+    '- "modify_previous_generation": change or continue the previously generated image or video.\n\n' +
 
     'ACTION vs SUBJECT — examples:\n' +
     '- "write me a prompt for an image of a woman in Tokyo" -> prompt_writing (subject: image). The word "image" is the subject, not the action.\n' +
@@ -358,9 +311,8 @@ const RESOLVER_SYSTEM_PROMPT =
     '- false when the message is a new, self-contained request. Never assume a new message belongs to the previous generation.\n\n' +
 
     'mode rules (video_generation):\n' +
-    '- "director": explicit Director mode / "as a director" / approval flow phrasing.\n' +
-    '- "direct": explicit direct/plain/just-generate phrasing.\n' +
-    '- "unknown": the user did not specify. Do not guess.\n\n' +
+    '- "director": explicit Director mode / "as a director" / approval-flow phrasing ONLY.\n' +
+    '- "direct": the default for every other video request. Never ask the user to choose; a production noun ("movie", "commercial", "cinematic") is NOT director mode.\n\n' +
 
     'extractedRequest: the actual thing to act on (image concept, video scene, edit instruction, or prompt subject). ' +
     'Strip verb preambles and meta-instructions. Do not include the word "prompt" when the action is generation.\n' +
@@ -393,7 +345,6 @@ function normalizeIntent(value) {
     if (v === INTENTS.MODIFY_PREVIOUS_GENERATION || v === 'modify_previous' || v === 'modify') {
         return INTENTS.MODIFY_PREVIOUS_GENERATION;
     }
-    if (v === INTENTS.CLARIFICATION_RESPONSE || v === 'clarification') return INTENTS.CLARIFICATION_RESPONSE;
     if (v === INTENTS.IMAGE_EDIT) return INTENTS.IMAGE_EDIT;
     if (v === INTENTS.IMAGE_UPSCALE) return INTENTS.IMAGE_UPSCALE;
     if (v === INTENTS.VIDEO_UPSCALE) return INTENTS.VIDEO_UPSCALE;
@@ -406,48 +357,30 @@ function clampConfidence(value) {
     return Math.max(0, Math.min(1, n));
 }
 
-// Decide Direct-video vs Director-mode. Only a text-to-video request with no
-// existing source image and no established mode needs the question. An
-// image-to-video request is effectively direct (there is already a frame).
-function applyClarification(resolved, text, context, signals) {
-    if (!GENERATION_INTENTS.has(resolved.intent)) {
-        resolved.mode = resolved.intent === INTENTS.IMAGE_GENERATION ? MODES.DIRECT : resolved.mode;
-        resolved.requiresClarification = false;
+// Resolve the video workflow without asking. A video request runs directly by
+// default; Director mode is only selected when the user said so explicitly
+// (typed "director mode" phrasing, or the composer toggle the server handles
+// before resolution).
+function applyModeDefault(resolved, text, context, signals) {
+    if (resolved.intent === INTENTS.IMAGE_GENERATION) {
+        resolved.mode = MODES.DIRECT;
         return resolved;
     }
     if (resolved.intent !== INTENTS.VIDEO_GENERATION) {
-        resolved.mode = resolved.intent === INTENTS.IMAGE_GENERATION ? MODES.DIRECT : resolved.mode;
-        resolved.requiresClarification = false;
+        return resolved;
+    }
+    if (resolved.mode === MODES.DIRECTOR || resolved.mode === MODES.DIRECT) {
         return resolved;
     }
 
-    const explicit = resolved.mode === MODES.DIRECTOR || resolved.mode === MODES.DIRECT;
     const active = context.activeTask || {};
     const establishedMode = active.type === 'video'
         ? (active.videoMode || context.selectedMode || null)
         : null;
     const continuing = Boolean(establishedMode) &&
         (resolved.referencesPreviousContext || signals.referencesPrevious || signals.i2v);
-    const hasSource = Boolean(context.referenceImage) || Boolean(context.hasAttachedImage) ||
-        signals.i2v || resolved.referencesPreviousContext;
 
-    if (explicit) {
-        resolved.requiresClarification = false;
-        return resolved;
-    }
-    if (continuing) {
-        resolved.mode = establishedMode === MODES.DIRECTOR ? MODES.DIRECTOR : MODES.DIRECT;
-        resolved.requiresClarification = false;
-        return resolved;
-    }
-    if (hasSource) {
-        resolved.mode = MODES.DIRECT;
-        resolved.requiresClarification = false;
-        return resolved;
-    }
-    resolved.mode = MODES.UNKNOWN;
-    resolved.requiresClarification = true;
-    resolved.clarificationReason = 'video_mode';
+    resolved.mode = (continuing && establishedMode === MODES.DIRECTOR) ? MODES.DIRECTOR : MODES.DIRECT;
     return resolved;
 }
 
@@ -463,8 +396,6 @@ function finalizeFromParsed(parsed, input, signals, context) {
         intent,
         confidence: clampConfidence(parsed.confidence),
         mode,
-        requiresClarification: false,
-        clarificationReason: '',
         referencesPreviousContext: Boolean(parsed.referencesPreviousContext) && signals.referencesPrevious,
         referencedGenerationId: null,
         extractedRequest: String(parsed.extractedRequest || '').trim() || text,
@@ -479,7 +410,7 @@ function finalizeFromParsed(parsed, input, signals, context) {
         signals
     };
     resolved.referencedGenerationId = pickReferencedAsset(resolved, context);
-    return applyClarification(resolved, text, context, signals);
+    return applyModeDefault(resolved, text, context, signals);
 }
 
 function pickReferencedAsset(resolved, context) {
@@ -559,8 +490,6 @@ function buildSignalResolved(intent, signals, text, extra = {}, context = {}) {
         intent,
         confidence: extra.action === 'modify' ? 0.7 : 0.75,
         mode: extra.mode || MODES.UNKNOWN,
-        requiresClarification: false,
-        clarificationReason: '',
         referencesPreviousContext: Boolean(extra.referencesPreviousContext),
         referencedGenerationId: null,
         extractedRequest: extra.extractedRequest || text,
@@ -572,7 +501,7 @@ function buildSignalResolved(intent, signals, text, extra = {}, context = {}) {
         signals
     };
     resolved.referencedGenerationId = pickReferencedAsset(resolved, context);
-    return applyClarification(resolved, text, context, signals);
+    return applyModeDefault(resolved, text, context, signals);
 }
 
 function detectCreativeFull(text) {
@@ -590,8 +519,6 @@ function buildChatResolved(signals, text, source) {
         intent: INTENTS.CHAT,
         confidence: source === 'semantic' ? 0.85 : 0.5,
         mode: MODES.UNKNOWN,
-        requiresClarification: false,
-        clarificationReason: '',
         referencesPreviousContext: false,
         referencedGenerationId: null,
         extractedRequest: text,
@@ -612,7 +539,6 @@ async function askResolver(message, input, context, signals) {
         'LAST GENERATED IMAGE: ' + JSON.stringify(context.lastGeneratedImage || null),
         'LAST GENERATED VIDEO: ' + JSON.stringify(context.lastGeneratedVideo || null),
         'SELECTED VIDEO MODE: ' + JSON.stringify(context.selectedMode || null),
-        'PENDING ACTION: ' + JSON.stringify(context.pendingAction || null),
         'HAS ATTACHED IMAGE: ' + (context.hasAttachedImage ? 'yes' : 'no'),
         'HAS REFERENCE IMAGE: ' + (context.referenceImage ? 'yes' : 'no'),
         'REGEX SIGNALS: ' + JSON.stringify({
@@ -650,7 +576,6 @@ async function askResolver(message, input, context, signals) {
 
 function shouldConsultLlm(signals, context, text) {
     if (!text) return false;
-    if (context.pendingAction) return true;
     if (context.referenceImage || context.hasAttachedImage) return true;
     if (signals.any) return true;
     const active = context.activeTask || {};
@@ -680,40 +605,7 @@ async function resolveIntent(input = {}) {
         }, context);
     }
 
-    // B. Pending clarification / parked action.
-    if (!resolved && context.pendingAction) {
-        const answer = resolveClarificationAnswer(text, context.pendingAction);
-        if (answer) {
-            if (answer.type === 'new_request') {
-                // Supersede: the turn starts something new. Fall through to normal resolution.
-                taskState.clearPendingAction(context.conversationId);
-                context.pendingAction = null;
-            } else {
-                resolved = {
-                    intent: INTENTS.CLARIFICATION_RESPONSE,
-                    confidence: 0.95,
-                    mode: answer.mode || MODES.UNKNOWN,
-                    requiresClarification: false,
-                    clarificationReason: '',
-                    referencesPreviousContext: false,
-                    referencedGenerationId: null,
-                    extractedRequest: context.pendingAction.request || text,
-                    subject: 'video',
-                    creative_mode: 'none',
-                    explicit_constraints: [],
-                    action: 'respond',
-                    source: 'pending',
-                    pendingResolution: answer.type,
-                    pendingAction: context.pendingAction,
-                    signals
-                };
-            }
-        }
-        // Otherwise the turn neither answers nor supersedes the parked action:
-        // keep it parked (it is never lost) and let normal resolution run.
-    }
-
-    // D. Semantic resolution (LLM) — the final authority when ambiguous.
+    // B. Semantic resolution (LLM) — the final authority when ambiguous.
     if (!resolved && shouldConsultLlm(signals, context, text)) {
         const parsed = await askResolver(text, input, context, signals);
         if (parsed) {
@@ -762,12 +654,12 @@ async function resolveIntent(input = {}) {
         if (strong) resolved = strong;
     }
 
-    // E. Regex/keyword signals (fallback evidence).
+    // C. Regex/keyword signals (fallback evidence).
     if (!resolved) {
         resolved = resolveFromSignals(signals, context);
     }
 
-    // F. Normal chat fallback.
+    // D. Normal chat fallback.
     let decisive = Boolean(resolved);
     if (!resolved) {
         resolved = buildChatResolved(signals, text, signals.any ? 'fallback' : 'plain');
@@ -792,11 +684,9 @@ async function resolveIntent(input = {}) {
 module.exports = {
     INTENTS,
     MODES,
-    GENERATION_INTENTS,
     RESOLVER_SYSTEM_PROMPT,
     collectSignals,
     buildIntentContext,
-    resolveClarificationAnswer,
     resolveIntent,
     resolveFromSignals,
     normalizeIntent,

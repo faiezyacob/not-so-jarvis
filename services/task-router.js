@@ -362,22 +362,6 @@ function decisionFromResolvedIntent(resolved, { message, activeTask, conversatio
         };
     }
 
-    // The user answered a parked clarification: the server resumes the pending
-    // action instead of re-running the full router.
-    if (intent === 'clarification_response') {
-        return {
-            intent: 'clarification_response',
-            task: null,
-            action: 'respond',
-            shouldExecuteTool: false,
-            updatedPrompt: '',
-            requiresClarification: false,
-            pendingResolution: resolved.pendingResolution || null,
-            pendingAction: resolved.pendingAction || null,
-            resolvedIntent: resolved
-        };
-    }
-
     // Uploads keep their dedicated question-vs-identity-edit handling below.
     if (hasAttachedImage && (intent === 'image_generation' || intent === 'video_generation' ||
         intent === 'modify_previous_generation')) {
@@ -432,25 +416,6 @@ function decisionFromResolvedIntent(resolved, { message, activeTask, conversatio
     }
 
     if (intent === 'video_generation') {
-        // Video mode (Direct video vs Director mode) missing and not safely
-        // inferable: park the request and ask instead of guessing.
-        if (resolved.requiresClarification) {
-            return {
-                intent: 'clarification',
-                task: 'video_generation',
-                action: 'clarify',
-                shouldExecuteTool: false,
-                updatedPrompt: '',
-                requiresClarification: true,
-                clarification: {
-                    intent: 'video_generation',
-                    mode: 'unknown',
-                    request: resolved.extractedRequest || message,
-                    reason: resolved.clarificationReason || 'video_mode'
-                },
-                resolvedIntent: resolved
-            };
-        }
         const structuredRequest = {
             intent: 'video_generation',
             action: 'generate',
@@ -678,7 +643,7 @@ async function routeMessage({ message, provider, model, conversationId, hasAttac
     }
 
     // --- Intent Resolver (semantic authority) --------------------------------
-    // Combines the message, conversation context, parked clarification, previous
+    // Combines the message, conversation context, previous
     // generation state, explicit wording, and regex signals into a structured
     // intent. Regex never executes an action: the resolver decides WHAT the user
     // wants, the mapping below (the action router) decides what to run. When the

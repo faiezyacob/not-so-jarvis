@@ -1432,6 +1432,9 @@ async function handleChatStream(req, res) {
         // Optional generated-image reference selected from the @ picker. It
         // becomes the source for an identity edit or an I2VA first frame.
         const referenceImage = sanitizeReferenceImage(body.reference || body.referenceImage || (Array.isArray(body.references) ? body.references[0] : null));
+        // Composer "Director Mode" toggle: pre-selects the Director workflow so
+        // a fresh video request skips the Direct-vs-Director question.
+        const forceDirector = body.forceDirector === true;
         if ((!message || typeof message !== 'string' || !message.trim()) && chatImages.length === 0 && !referenceImage) {
             json(res, 400, { error: 'message is required' });
             return;
@@ -1485,7 +1488,6 @@ async function handleChatStream(req, res) {
         if (activeLongPlan && longVideoDirector.isOpen(activeLongPlan)) {
             const classified = longVideoDirector.classifyMessage(message, activeLongPlan);
             if (classified) {
-                taskState.clearPendingAction(conversationId);
                 await handleLongVideoAction(req, res, longVideoCtx, activeLongPlan, classified);
                 return;
             }
@@ -1497,7 +1499,6 @@ async function handleChatStream(req, res) {
         const longVideoBusy = Boolean(activeLongPlan && longVideoDirector.isActive(activeLongPlan));
         if (!longVideoBusy && longVideoDirector.isLongVideoRequest(message)) {
             if (activeLongPlan) longVideoDirector.removePlan(conversationId);
-            taskState.clearPendingAction(conversationId);
             await handleLongVideoStart(req, res, longVideoCtx);
             return;
         }
@@ -1522,7 +1523,6 @@ async function handleChatStream(req, res) {
         if (activeProduction && director.isOpen(activeProduction)) {
             const classified = director.classifyMessage(message, activeProduction);
             if (classified) {
-                taskState.clearPendingAction(conversationId);
                 await handleDirectorAction(req, res, directorCtx, activeProduction, classified);
                 return;
             }
@@ -1535,13 +1535,11 @@ async function handleChatStream(req, res) {
             if (!director.isActive(activeProduction)) {
                 if (director.wantsDirectorMode(message)) {
                     director.removeProduction(conversationId);
-                    taskState.clearPendingAction(conversationId);
                     await handleDirectorStart(req, res, directorCtx);
                     return;
                 }
                 if (director.wantsDirectMode(message)) {
                     director.removeProduction(conversationId);
-                    taskState.clearPendingAction(conversationId);
                     activeProduction = null;
                 }
             }
@@ -1574,18 +1572,15 @@ async function handleChatStream(req, res) {
             think
         });
 
-        // The Intent Resolver parked a video request because the workflow
-        // (Direct video vs Director mode) is unknown. Park the structured
-        // pending action and ask — never guess and never lose the request.
-        if (decision && decision.requiresClarification) {
-            await handleIntentClarification(req, res, directorCtx, decision);
-            return;
-        }
-
-        // The user answered a parked clarification while no Director card was
-        // present (e.g. after a restart). Resume the original request.
-        if (decision && decision.pendingResolution) {
-            await handlePendingResolution(req, res, directorCtx, decision);
+        // Composer "Director Mode" toggle. A fresh video request runs through
+        // the Director instead of the normal H3 pipeline. Explicit "just
+        // generate the video" still wins, and tweaks of an active video task
+        // keep their normal pipeline. A stage that is actively rendering is
+        // never clobbered.
+        if (forceDirector && director.shouldForceDirector(message, decision) &&
+            !(activeProduction && director.isActive(activeProduction))) {
+            if (activeProduction) director.removeProduction(conversationId);
+            await handleDirectorStart(req, res, directorCtx);
             return;
         }
 
@@ -2207,22 +2202,6 @@ async function handleDirectorStart(req, res, ctx) {
     }
 }
 
-// Stop and ask whether to build the video directly or through Director mode.
-async function handleDirectorModeChoice(req, res, ctx) {
-    const { conversationId, message, referenceImage } = ctx;
-    try {
-        const production = director.createModeChoice({ conversationId, message, referenceImage });
-        sseWrite(res, {
-            director: director.buildCard(production, director.renderModeChoiceContent(production))
-        });
-        res.end();
-    } catch (err) {
-        console.error('[director] mode choice failed:', err.message);
-        sseWrite(res, { error: 'Could not ask about the workflow: ' + err.message });
-        res.end();
-    }
-}
-
 // Generate (or regenerate) the opening frame from the canonical brief.
 async function runDirectorImageStage(req, res, ctx, production, options) {
     const { provider, model, conversationId, message, think } = ctx;
@@ -2317,89 +2296,6 @@ async function runDirectorVideoStage(req, res, ctx, production) {
         sseWrite(res, { director: director.buildCard(production, director.renderFailureContent(production, 'video', friendly)) });
         res.end();
     }
-}
-
-// Build and run an ordinary (non-Director) MiniMax H3 video from a request the
-// user chose to render directly. Mirrors the video branch of handleChatStream's
-// fresh-generation path, but driven by the parked request text.
-async function runDirectVideoFromRequest(req, res, ctx, requestText) {
-    const { provider, model, conversationId, think } = ctx;
-    const message = String(requestText || '').trim();
-    if (!message) {
-        sseWrite(res, { error: 'Tell me what the video should show.' });
-        res.end();
-        return;
-    }
-    await prepareDirectorLlm(provider, model);
-    let structuredRequest;
-    try {
-        structuredRequest = await videoGenerator.detectVideoIntent(message, providers, provider, model, think);
-    } catch (err) {
-        structuredRequest = { intent: 'chat' };
-    }
-    if (!structuredRequest || structuredRequest.intent !== 'video_generation') {
-        const text = "I couldn't turn that into a video request. Tell me what the video should show.";
-        sseWrite(res, { chunk: text });
-        sseWrite(res, { done: true, fullReply: text });
-        res.end();
-        return;
-    }
-
-    const defaults = videoGenerator.getVideoDefaults();
-    const parameters = Object.assign({}, defaults, structuredRequest.parameters || {});
-    const modeInfo = videoGenerator.resolveVideoMode(conversationId, message, structuredRequest);
-    const videoMode = modeInfo.videoMode;
-    const sourceImageRawFilename = modeInfo.sourceImage ? modeInfo.sourceImage.rawFilename : null;
-    const messageDuration = typeof videoGenerator.parseRequestedVideoDuration === 'function'
-        ? videoGenerator.parseRequestedVideoDuration(message)
-        : null;
-    if (messageDuration !== null && messageDuration !== undefined) {
-        structuredRequest.requested_duration = messageDuration;
-    }
-
-    sseWrite(res, { generating: 'Generating video...' });
-    const direction = await videoGenerator.buildH3VideoPrompt(
-        Object.assign({}, structuredRequest, { has_reference_image: videoMode === 'i2va' }),
-        providers, provider, model, sourceImageRawFilename, conversationId, think
-    );
-    const videoPrompt = direction.prompt;
-    const dimensions = { duration: direction.duration, width: direction.width, height: direction.height };
-
-    taskState.setTask(conversationId, {
-        type: 'video',
-        operation: 'generate',
-        prompt: videoPrompt,
-        videoMode,
-        sourceImage: sourceImageRawFilename,
-        lastAction: message,
-        status: 'running'
-    });
-    taskState.setTask(conversationId, {
-        originalPrompt: videoPrompt,
-        parameters: Object.assign({}, parameters, {
-            videoMode,
-            sourceImage: sourceImageRawFilename,
-            duration: dimensions.duration,
-            width: dimensions.width,
-            height: dimensions.height
-        })
-    });
-
-    vramManager.rememberChatModel(provider, model);
-    await vramManager.freeVRAMBeforeImage();
-    await handleVideoGenerationStream(req, res, {
-        provider, model, conversationId, message,
-        videoPrompt,
-        structuredRequest,
-        action: 'generate',
-        previousPrompt: null,
-        videoMode,
-        sourceImageRawFilename,
-        duration: dimensions.duration,
-        width: dimensions.width,
-        height: dimensions.height,
-        think
-    });
 }
 
 // --- Long Video Director -----------------------------------------------------
@@ -2667,56 +2563,6 @@ function friendlyLongVideoError(err) {
 }
 
 // Execute an approval-card action (button click or a typed decision).
-// Park a resolver clarification (Direct video vs Director mode) and ask. The
-// structured pending action lives in task state so the next turn can resume it;
-// the Director mode-choice card provides the UI and typed/button resolution.
-async function handleIntentClarification(req, res, ctx, decision) {
-    const { conversationId, message, referenceImage } = ctx;
-    const clarification = (decision && decision.clarification) || {};
-    const request = String(clarification.request || message || '').trim();
-    taskState.setPendingAction(conversationId, {
-        intent: 'video_generation',
-        mode: 'unknown',
-        request,
-        reason: clarification.reason || 'video_mode',
-        createdAt: new Date().toISOString()
-    });
-    director.removeProduction(conversationId);
-    await handleDirectorModeChoice(req, res, Object.assign({}, ctx, { message: request, referenceImage }));
-}
-
-// Resume a parked clarification that has no Director card (e.g. after a
-// restart or when the card was superseded): run the original request through
-// the workflow the user chose.
-async function handlePendingResolution(req, res, ctx, decision) {
-    const { conversationId } = ctx;
-    const pending = decision.pendingAction || taskState.getPendingAction(conversationId);
-    const type = decision.pendingResolution;
-    taskState.clearPendingAction(conversationId);
-    if (type === 'cancel') {
-        director.removeProduction(conversationId);
-        const text = 'Okay \u2014 I won\'t build that video.';
-        sseWrite(res, { chunk: text });
-        sseWrite(res, { done: true, fullReply: text });
-        res.end();
-        return;
-    }
-    const request = String((pending && pending.request) || ctx.message || '').trim();
-    const resumeCtx = Object.assign({}, ctx, { message: request });
-    if (type === 'director') {
-        director.removeProduction(conversationId);
-        await handleDirectorStart(req, res, resumeCtx);
-        return;
-    }
-    if (type === 'direct') {
-        director.removeProduction(conversationId);
-        await runDirectVideoFromRequest(req, res, resumeCtx, request);
-        return;
-    }
-    // Unknown resolution — ask again rather than guessing.
-    await handleDirectorModeChoice(req, res, resumeCtx);
-}
-
 async function handleDirectorAction(req, res, ctx, production, action) {
     const { conversationId, message, provider, model, think } = ctx;
     if (action.productionId && production && action.productionId !== production.id) {
@@ -2743,31 +2589,10 @@ async function handleDirectorAction(req, res, ctx, production, action) {
         }
         director.cancel(production);
         taskState.clearTask(conversationId);
-        taskState.clearPendingAction(conversationId);
         const text = 'Director \u2014 Production cancelled.';
         sseWrite(res, { chunk: text });
         sseWrite(res, { done: true, fullReply: text });
         res.end();
-        return;
-    }
-
-    if (action.type === director.ACTIONS.CHOOSE_DIRECT) {
-        const request = production.pendingRequest || message;
-        director.removeProduction(conversationId);
-        taskState.clearPendingAction(conversationId);
-        await runDirectVideoFromRequest(req, res, ctx, request);
-        return;
-    }
-
-    if (action.type === director.ACTIONS.CHOOSE_DIRECTOR) {
-        taskState.clearPendingAction(conversationId);
-        await prepareDirectorLlm(provider, model);
-        await director.buildProductionFromChoice(production, { provider, model, think });
-        if (production.sourceImage) {
-            await runDirectorVideoStage(req, res, ctx, production);
-        } else {
-            await runDirectorImageStage(req, res, ctx, production, {});
-        }
         return;
     }
 
