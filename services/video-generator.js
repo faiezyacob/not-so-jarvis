@@ -41,29 +41,78 @@ const H3_IMAGE_SIZES = H3_SIZE_SCALES;
 
 const H3_DEFAULT_STEPS = Number(process.env.H3_STEPS) || 20;
 
-// The three mutually exclusive attention backends H3 can run under:
-//   standard      — dense PyTorch attention (no patch node)
+// The mutually exclusive attention backends H3 can run under:
+//   auto          — JARVIS picks the best backend ComfyUI actually offers
+//   comfykitchen  — ComfyUI's built-in ModelAttentionBackend (comfy-kitchen)
 //   sageattention — KJNodes PathchSageAttentionKJ patch (sageattention pkg)
 //   sla           — H3SLAAttention sparse attention node (experimental)
-const H3_ATTENTION_BACKENDS = Object.freeze(['standard', 'sageattention', 'sla']);
+const H3_ATTENTION_BACKENDS = Object.freeze(['auto', 'comfykitchen', 'sageattention', 'sla']);
 
 // Accepted spellings/aliases for each backend. Anything unrecognized is
-// treated as `standard`, the dependency-free default.
+// treated as `auto`, which resolves against ComfyUI's available nodes.
 const H3_ATTENTION_ALIASES = {
-    standard: 'standard',
-    normal: 'standard',
-    pytorch: 'standard',
+    auto: 'auto',
+    standard: 'auto',
+    normal: 'auto',
+    pytorch: 'auto',
+    kitchen: 'comfykitchen',
+    comfykitchen: 'comfykitchen',
+    ck: 'comfykitchen',
     sage: 'sageattention',
     sageattention: 'sageattention',
     sla: 'sla',
     h3sla: 'sla'
 };
 
+// The concrete backends `auto` prefers, in order. Comfy kitchen attention ships
+// with ComfyUI (v0.32+) and matches SageAttention's speed with no extra
+// install, so it wins when present; SageAttention is the fallback. SLA is never
+// auto-selected (experimental and lossy by design) and dense PyTorch attention
+// is the dependency-free last resort.
+const H3_AUTO_ATTENTION_PRIORITY = Object.freeze(['comfykitchen', 'sageattention']);
+
+// The value ModelAttentionBackend expects for ComfyUI's built-in kitchen
+// backend. Its combo only lists this entry when the comfy-kitchen kernels are
+// importable, so availability and the wired value both key off it.
+const H3_CK_ATTENTION_VALUE = 'comfy kitchen attention';
+
 function normalizeH3AttentionBackend(value) {
     const requested = String(value == null ? '' : value).trim().toLowerCase().replace(/-/g, '');
     return Object.prototype.hasOwnProperty.call(H3_ATTENTION_ALIASES, requested)
         ? H3_ATTENTION_ALIASES[requested]
-        : 'standard';
+        : 'auto';
+}
+
+// Read the choices list for a required input from ComfyUI's /object_info.
+function objectInfoChoices(info, classType, field) {
+    const node = info && info[classType];
+    const list = node && node.input && node.input.required && node.input.required[field];
+    return Array.isArray(list) && Array.isArray(list[0]) ? list[0] : null;
+}
+
+// True when ComfyUI can run the given concrete backend. `standard` is always
+// available (dense PyTorch attention needs no node).
+function attentionBackendAvailable(info, backend) {
+    if (backend === 'comfykitchen') {
+        const choices = objectInfoChoices(info, 'ModelAttentionBackend', 'attention');
+        return Array.isArray(choices) && choices.includes(H3_CK_ATTENTION_VALUE);
+    }
+    if (backend === 'sageattention') return Boolean(info && info.PathchSageAttentionKJ);
+    if (backend === 'sla') return Boolean(info && info.H3SLAAttention);
+    return true;
+}
+
+// Turn the configured backend into a concrete one. `auto` walks the priority
+// list and picks the fastest backend ComfyUI actually offers, falling back to
+// dense PyTorch attention. Explicit choices pass through untouched so a missing
+// node still surfaces the existing "missing node" validation error.
+function resolveH3AttentionBackend(info, requested) {
+    const backend = normalizeH3AttentionBackend(requested);
+    if (backend !== 'auto') return backend;
+    for (const candidate of H3_AUTO_ATTENTION_PRIORITY) {
+        if (attentionBackendAvailable(info, candidate)) return candidate;
+    }
+    return 'standard';
 }
 
 function envNumber(name, fallback) {
@@ -111,7 +160,7 @@ const H3_DEFAULTS = {
     h3Size: process.env.H3_SIZE || 'M',
     attentionBackend: H3_ATTENTION_BACKENDS.includes(process.env.H3_ATTENTION_BACKEND)
         ? process.env.H3_ATTENTION_BACKEND
-        : 'standard',
+        : 'auto',
     loras: [],
     loraTriggerWords: {},
     // H3 FaceRefine post-process (ComfyUI-H3-FaceRefine): optional second H3
@@ -1587,8 +1636,19 @@ function appendLoraChain(graph, baseModelNode, loras) {
 }
 
 // Insert the selected attention patch after the model chain and return the
-// node the guider should read from. `standard` leaves the chain untouched.
+// node the guider should read from. `standard` (and any unresolved `auto`)
+// leaves the chain untouched.
 function applyAttentionPatch(graph, baseModelNode, backend) {
+    if (backend === 'comfykitchen') {
+        graph.ck_attention = {
+            class_type: 'ModelAttentionBackend',
+            inputs: {
+                model: [baseModelNode, 0],
+                attention: H3_CK_ATTENTION_VALUE,
+            },
+        };
+        return 'ck_attention';
+    }
     if (backend === 'sageattention') {
         graph.sage_attention = {
             class_type: 'PathchSageAttentionKJ',
@@ -2107,6 +2167,10 @@ async function refineVideo(baseRawFilename, opts = {}) {
 
     const settings = effectiveVideoSettings();
     const info = await comfyui.getObjectInfo();
+    // FaceRefine shares the primary render's attention wiring, so resolve
+    // `auto` against ComfyUI here too (buildFaceRefineGraph forces standard
+    // when FastH3 is on, matching the base graph).
+    settings.attentionBackend = resolveH3AttentionBackend(info, settings.attentionBackend);
     const availability = faceRefineAvailability(info);
     if (!availability.ready) {
         const error = new Error(
@@ -2390,6 +2454,16 @@ async function generateVideo(prompt, options = {}) {
         }
 
         try {
+            const info = await comfyui.getObjectInfo();
+            // Resolve `auto` against what ComfyUI actually offers before the
+            // graph is built, so the attention node is chosen once per render.
+            const resolvedSettings = Object.assign({}, settings, {
+                attentionBackend: resolveH3AttentionBackend(info, settings.attentionBackend)
+            });
+            if (normalizeH3AttentionBackend(settings.attentionBackend) === 'auto') {
+                console.log('[video-generator] auto attention ->',
+                    useFastH3 ? 'standard (FastH3 VSA)' : resolvedSettings.attentionBackend);
+            }
             const graph = buildH3Graph({
                 prompt: finalPrompt,
                 mode,
@@ -2397,11 +2471,10 @@ async function generateVideo(prompt, options = {}) {
                 H,
                 frames,
                 seed,
-                settings,
+                settings: resolvedSettings,
                 firstImageName,
             });
 
-            const info = await comfyui.getObjectInfo();
             await validateH3Graph(info, graph);
 
             const pid = await comfyui.queuePrompt(graph);
@@ -3011,7 +3084,11 @@ module.exports = {
     H3_CONFIGURABLE_KEYS,
     H3_DEFAULT_STEPS,
     H3_ATTENTION_BACKENDS,
+    H3_AUTO_ATTENTION_PRIORITY,
+    H3_CK_ATTENTION_VALUE,
     normalizeH3AttentionBackend,
+    attentionBackendAvailable,
+    resolveH3AttentionBackend,
     applyAttentionPatch,
     registerGenerationLock,
     detectVideoIntent,

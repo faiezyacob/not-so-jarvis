@@ -145,6 +145,12 @@ async function generateLongVideo(plan, options = {}) {
         }
 
         try {
+            const info = await comfyui.getObjectInfo();
+            // Resolve `auto` against ComfyUI before building, matching the
+            // normal H3 pipeline's attention selection.
+            settings.attentionBackend = videoGenerator.resolveH3AttentionBackend(
+                info, settings.attentionBackend
+            );
             const graph = workflow.buildLongVideoGraph({
                 prompt,
                 seed,
@@ -156,7 +162,6 @@ async function generateLongVideo(plan, options = {}) {
                 firstImageName
             });
 
-            const info = await comfyui.getObjectInfo();
             await workflow.validateLongVideoGraph(info, graph);
 
             const pid = await comfyui.queuePrompt(graph);

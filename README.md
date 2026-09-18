@@ -207,7 +207,7 @@ Copy `.env.example` to `.env` and adjust as needed. Variables already set by the
 | `H3_CLIP` | `qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors` | CLIP (must match the UNET precision) |
 | `H3_SIZE` | `M` | Video size (S / M / L) |
 | `H3_DURATION` | `5` | Duration in seconds (5–15) |
-| `H3_ATTENTION_BACKEND` | `standard` | `standard`, `sageattention`, or `sla` |
+| `H3_ATTENTION_BACKEND` | `auto` | `auto`, `comfykitchen`, `sageattention`, or `sla` |
 
 ### H3 FaceRefine
 

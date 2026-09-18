@@ -539,7 +539,7 @@
                             <span class="settings-hint">Default: minimax_h3_audio_vae_fp32.safetensors</span>
                         </div>
                         </div>
-                        <div class="settings-card" data-search="video duration size attention sage sparse output length">
+                        <div class="settings-card" data-search="video duration size attention auto comfy kitchen sage sparse output length">
                             <div class="settings-card-title">OUTPUT</div>
                             <div class="settings-field-row">
                         <div class="settings-field">
@@ -569,11 +569,12 @@
                         <div class="settings-field">
                             <label class="settings-field-label" for="videoAttentionBackend">Attention</label>
                             <select class="settings-select" id="videoAttentionBackend">
-                                <option value="standard">Standard PyTorch</option>
+                                <option value="auto">Auto (recommended)</option>
+                                <option value="comfykitchen">Comfy Kitchen</option>
                                 <option value="sageattention">SageAttention</option>
                                 <option value="sla">SLA Sparse (experimental)</option>
                             </select>
-                            <span class="settings-hint">SageAttention patches the guider for speed (needs the KJNodes sageattention package). SLA uses sparse attention (experimental).</span>
+                            <span class="settings-hint">Auto picks the best backend ComfyUI offers: Comfy Kitchen attention (built into ComfyUI v0.32+) first, then SageAttention, else dense PyTorch attention. Choose one explicitly to force it.</span>
                         </div>
                             </div>
                         </div>
