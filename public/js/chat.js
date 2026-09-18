@@ -101,6 +101,8 @@ const Chat = (() => {
         Conversations.onChange(() => {
             renderConversationList();
         });
+
+        autoGrowInput();
     }
 
     // --- Conversation list rendering ---
@@ -351,7 +353,22 @@ const Chat = (() => {
     // with the next message so the pipelines can use it as an edit source or
     // an I2VA first frame instead of the conversation's latest image.
 
+    function autoGrowInput() {
+        if (!chatInput) return;
+        chatInput.style.height = 'auto';
+        const max = 200;
+        const next = Math.min(chatInput.scrollHeight, max);
+        chatInput.style.height = next + 'px';
+        chatInput.style.overflowY = chatInput.scrollHeight > max ? 'auto' : 'hidden';
+        if (chatMentionPopup) {
+            const bar = chatInput.closest('.chat-input-bar');
+            const barH = bar ? bar.offsetHeight : chatInput.offsetHeight + 28;
+            chatMentionPopup.style.bottom = (barH + 2) + 'px';
+        }
+    }
+
     function onChatInput() {
+        autoGrowInput();
         const caret = chatInput.selectionStart;
         if (caret === null || caret === undefined) return;
         const before = chatInput.value.slice(0, caret);
@@ -495,6 +512,7 @@ const Chat = (() => {
         const before = chatInput.value.slice(0, caret).replace(/(?:^|\s)@[^\s@]*$/, ' ');
         const after = chatInput.value.slice(caret);
         chatInput.value = (before + after).replace(/^\s+/, '').replace(/\s{2,}/g, ' ');
+        autoGrowInput();
         addReference(item);
         closeMentionPopup();
         chatInput.focus();
@@ -773,6 +791,7 @@ const Chat = (() => {
         addMessageDom('user', userText);
         if (!override) {
             chatInput.value = '';
+            autoGrowInput();
             clearAttachments();
             clearReference();
         }

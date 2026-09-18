@@ -106,17 +106,42 @@ function ensureLoaded() {
     const loaded = loadHistory();
     history = entriesSorted(loaded || seedFromDisk());
     if (history.length) saveHistory(history);
+    pruneMissing();
 }
 
-// Returns all generated image metadata, newest first.
+// Drop records whose media file no longer exists (e.g. a source video removed
+// by an upscale/refine replacement) so the gallery never shows a tile for a
+// deleted file. Guarded on the media directory existing so an unreadable/
+// unmounted data dir can never wipe the metadata.
+function pruneMissing() {
+    if (!fs.existsSync(GENERATED_DIR)) return;
+    let changed = false;
+    history = history.filter((entry) => {
+        const raw = entry.rawFilename || lastPathSegment(entry.file);
+        if (!raw) return true;
+        const abs = path.join(GENERATED_DIR, path.basename(raw));
+        if (abs.startsWith(GENERATED_DIR) && !fs.existsSync(abs)) {
+            thumbnail.remove(raw);
+            changed = true;
+            return false;
+        }
+        return true;
+    });
+    if (changed) saveHistory(history);
+}
+
+// Internal lookups (upscale/refine source pairing, deletes, conversation
+// cleanup) need the raw records — especially rawFilename and conversationId,
+// which the public shape strips. Callers that hand data to the client must use
+// listPublic() instead.
 function list() {
     ensureLoaded();
-    return history.map(publicMeta);
+    return history.map((entry) => Object.assign({}, entry));
 }
 
-// Public gallery view: same as list() but excludes media produced in private
-// (locked) conversations. Internal lookups (upscale source pairing, deletes)
-// keep using list() so private media can still be managed.
+// Public gallery view: public-shaped metadata, excluding media produced in
+// private (locked) conversations. Internal lookups (upscale source pairing,
+// deletes) keep using list() so private media can still be managed.
 function listPublic() {
     ensureLoaded();
     const privateIds = new Set(conversationService.getPrivateConversationIds());
@@ -126,10 +151,11 @@ function listPublic() {
         .map(publicMeta);
 }
 
-// Limit to the most recent N entries.
+// Limit to the most recent N entries (public shape).
 function listRecent(limit) {
-    const all = list();
-    return typeof limit === 'number' ? all.slice(0, limit) : all;
+    ensureLoaded();
+    const count = typeof limit === 'number' ? limit : history.length;
+    return history.slice(0, count).map(publicMeta);
 }
 
 function publicMeta(entry) {
