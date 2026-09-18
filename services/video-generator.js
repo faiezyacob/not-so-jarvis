@@ -126,6 +126,18 @@ const H3_DEFAULTS = {
     faceRefineCanvasMode: process.env.H3_FACEREFINE_CANVAS || 'auto_capped_768',
     faceRefineSelect: process.env.H3_FACEREFINE_SELECT || 'largest_face',
     faceRefineFeather: Math.round(envNumber('H3_FACEREFINE_FEATHER', 24)),
+    // FastH3 8-Step V2 (FastVideo/FastVideo-FastH3-Comfy): a distilled
+    // MiniMax H3 checkpoint that renders synchronized video+audio in eight
+    // forwards with VSA sparse attention. T2VA only (FL2VA/Ref2VA were not
+    // distilled), so the toggle applies to text-to-video turns and I2VA keeps
+    // the base UNET. Off by default; the VIDEO settings panel toggles it and
+    // auto-downloads the checkpoint on first enable.
+    fastH3Enabled: String(process.env.H3_FASTH3_ENABLED || '').toLowerCase() === 'true' ||
+        process.env.H3_FASTH3_ENABLED === '1',
+    fastH3Unet: process.env.H3_FASTH3_UNET || 'fastvideo_fasth3_8step_v2_pruned_int8_convrot.safetensors',
+    fastH3Steps: Math.round(envNumber('H3_FASTH3_STEPS', 8)),
+    fastH3SigmaVideo: envNumber('H3_FASTH3_SIGMA_VIDEO', 10),
+    fastH3SigmaAudio: envNumber('H3_FASTH3_SIGMA_AUDIO', 3),
     // Video upscaling (SeedVR2 quality or fast RTX) shares the single global
     // upscale settings in imageGeneration (upscaleResolution/Profile/Noise/
     // PreScale, seedvr2 DiT/VAE/attention, upscaleEngine, upscaleMultiplier) —
@@ -138,7 +150,8 @@ const H3_CONFIGURABLE_KEYS = [
     'h3Duration', 'h3Size', 'attentionBackend', 'loras', 'loraTriggerWords',
     'faceRefineEnabled', 'faceRefineDetector', 'faceRefineCropFactor',
     'faceRefineDenoise', 'faceRefineSteps', 'faceRefineCanvasMode',
-    'faceRefineSelect', 'faceRefineFeather'
+    'faceRefineSelect', 'faceRefineFeather',
+    'fastH3Enabled', 'fastH3Unet', 'fastH3Steps', 'fastH3SigmaVideo', 'fastH3SigmaAudio'
 ];
 
 // Shared upscale keys (canonical names in imageGeneration). Posted to
@@ -1367,6 +1380,14 @@ function effectiveVideoSettings() {
                 value = Math.round(clampToRange(value, 0, 128, H3_DEFAULTS.faceRefineFeather));
             } else if (key === 'faceRefineDetector') {
                 value = String(value || '').trim() || H3_DEFAULTS.faceRefineDetector;
+            } else if (key === 'fastH3Enabled') {
+                value = value === true || value === 1 || String(value).toLowerCase() === 'true' || String(value) === '1';
+            } else if (key === 'fastH3Unet') {
+                value = String(value || '').trim() || H3_DEFAULTS.fastH3Unet;
+            } else if (key === 'fastH3Steps') {
+                value = Math.round(clampToRange(value, 1, 50, H3_DEFAULTS.fastH3Steps));
+            } else if (key === 'fastH3SigmaVideo' || key === 'fastH3SigmaAudio') {
+                value = clampToRange(value, 0.01, 100, H3_DEFAULTS[key]);
             }
             settings[key] = value;
         }
@@ -1487,6 +1508,14 @@ function saveVideoSettings(patch) {
             out[key] = value === true || value === 1 || String(value).toLowerCase() === 'true' || String(value) === '1';
         } else if (key === 'faceRefineDetector') {
             out[key] = String(value || '').trim() || null;
+        } else if (key === 'fastH3Enabled') {
+            out[key] = value === true || value === 1 || String(value).toLowerCase() === 'true' || String(value) === '1';
+        } else if (key === 'fastH3Unet') {
+            out[key] = String(value || '').trim() || null;
+        } else if (key === 'fastH3Steps') {
+            out[key] = Math.round(clampToRange(value, 1, 50, H3_DEFAULTS.fastH3Steps));
+        } else if (key === 'fastH3SigmaVideo' || key === 'fastH3SigmaAudio') {
+            out[key] = clampToRange(value, 0.01, 100, H3_DEFAULTS[key]);
         } else if (key === 'faceRefineCropFactor') {
             out[key] = clampToRange(value, 1.2, 8, H3_DEFAULTS.faceRefineCropFactor);
         } else if (key === 'faceRefineDenoise') {
@@ -1589,6 +1618,36 @@ function applyAttentionPatch(graph, baseModelNode, backend) {
     return baseModelNode;
 }
 
+// FastH3 8-Step V2 is a text-to-video-audio distillation of MiniMax H3
+// (FastVideo/FastVideo-FastH3-Comfy). FL2VA and Ref2VA were not distilled, so
+// the checkpoint only replaces the UNET on plain T2VA turns; I2VA keeps the
+// base model. The distilled route renders eight forwards with VSA sparse
+// attention and a trained flow shift of 10 (the base model is 12).
+function selectH3Model(settings, mode) {
+    const useFastH3 = Boolean(settings && settings.fastH3Enabled) && mode !== 'i2va';
+    return {
+        useFastH3,
+        unetName: useFastH3
+            ? String((settings && settings.fastH3Unet) || H3_DEFAULTS.fastH3Unet)
+            : String((settings && settings.h3Unet) || H3_DEFAULTS.h3Unet)
+    };
+}
+
+// Wrap the model chain in MiniMaxH3SigmaShift so the FastH3 checkpoint gets its
+// trained flow shift (video 10, audio 3 vs the base model's 12). Returns the
+// node key the guider and scheduler should read from.
+function appendFastH3SigmaShift(graph, fromNode, settings) {
+    graph.sigma_shift = {
+        class_type: 'MiniMaxH3SigmaShift',
+        inputs: {
+            model: [fromNode, 0],
+            shift_video: clampToRange(settings.fastH3SigmaVideo, 0.01, 100, H3_DEFAULTS.fastH3SigmaVideo),
+            shift_audio: clampToRange(settings.fastH3SigmaAudio, 0.01, 100, H3_DEFAULTS.fastH3SigmaAudio),
+        },
+    };
+    return 'sigma_shift';
+}
+
 function buildH3Graph(opts) {
     const {
         prompt,
@@ -1601,11 +1660,13 @@ function buildH3Graph(opts) {
         firstImageName = null,
     } = opts;
 
+    const { useFastH3, unetName } = selectH3Model(settings, mode);
+
     const graph = {};
     graph.model = {
         class_type: 'UNETLoader',
         inputs: {
-            unet_name: settings.h3Unet || H3_DEFAULTS.h3Unet,
+            unet_name: unetName,
             weight_dtype: 'default',
         },
     };
@@ -1635,11 +1696,19 @@ function buildH3Graph(opts) {
     };
 
     const userModelNode = appendLoraChain(graph, 'model', settings.loras);
-    const attention = normalizeH3AttentionBackend(settings.attentionBackend);
+    // FastH3 is trained with its own VSA sparse-attention path; stacking a
+    // SageAttention/SLA patch on top is unsupported, so the distilled route
+    // always keeps the dense chain (the checkpoint's gates drive VSA).
+    const attention = useFastH3 ? 'standard' : normalizeH3AttentionBackend(settings.attentionBackend);
     const patchedModelNode = applyAttentionPatch(graph, userModelNode, attention);
     // Sparse (SLA) attention also has to shape the denoise schedule; the other
     // backends leave the scheduler on the unpatched chain.
-    const schedulerModelNode = attention === 'sla' ? patchedModelNode : userModelNode;
+    let schedulerModelNode = attention === 'sla' ? patchedModelNode : userModelNode;
+    // FastH3 needs its trained flow shift (video 10 / audio 3) applied through
+    // MiniMaxH3SigmaShift. The base H3 graph leaves the default shift in place.
+    if (useFastH3) {
+        schedulerModelNode = appendFastH3SigmaShift(graph, patchedModelNode, settings);
+    }
 
     const hasFirstFrame = mode === 'i2va' && Boolean(firstImageName);
     if (hasFirstFrame) {
@@ -1669,7 +1738,7 @@ function buildH3Graph(opts) {
         inputs: {
             model: [schedulerModelNode, 0],
             scheduler: 'simple',
-            steps: H3_DEFAULT_STEPS,
+            steps: useFastH3 ? Math.round(clampToRange(settings.fastH3Steps, 1, 50, H3_DEFAULTS.fastH3Steps)) : H3_DEFAULT_STEPS,
             denoise: 1,
         },
     };
@@ -1677,7 +1746,7 @@ function buildH3Graph(opts) {
     graph.guider = {
         class_type: 'BasicGuider',
         inputs: {
-            model: [patchedModelNode, 0],
+            model: [useFastH3 ? schedulerModelNode : patchedModelNode, 0],
             conditioning: ['condition', 0],
         },
     };
@@ -1789,7 +1858,9 @@ function buildFaceRefineGraph(opts) {
         model: {
             class_type: 'UNETLoader',
             inputs: {
-                unet_name: settings.h3Unet || H3_DEFAULTS.h3Unet,
+                unet_name: settings.fastH3Enabled
+                    ? String(settings.fastH3Unet || H3_DEFAULTS.fastH3Unet)
+                    : String(settings.h3Unet || H3_DEFAULTS.h3Unet),
                 weight_dtype: 'default',
             },
         },
@@ -1856,8 +1927,12 @@ function buildFaceRefineGraph(opts) {
     // Reuse the base graph's LoRA chain and attention patch so FaceRefine and
     // the primary render always share identical model wiring.
     const userModelNode = appendLoraChain(graph, 'model', settings.loras);
-    const attention = normalizeH3AttentionBackend(settings.attentionBackend);
+    const faceRefineFastH3 = Boolean(settings.fastH3Enabled);
+    const attention = faceRefineFastH3 ? 'standard' : normalizeH3AttentionBackend(settings.attentionBackend);
     const patchedModelNode = applyAttentionPatch(graph, userModelNode, attention);
+    const shiftedModelNode = faceRefineFastH3
+        ? appendFastH3SigmaShift(graph, patchedModelNode, settings)
+        : patchedModelNode;
 
     // Empty AV latent sized by the tracker: canvas_w/h -> width/height and
     // frame_count -> length are wired (INT link to widget), exactly like the
@@ -1887,7 +1962,7 @@ function buildFaceRefineGraph(opts) {
     // Model path: [attention patch] -> NativeAudioLock? -> PerFrameDenoise ->
     // guider + scheduler. The per-frame node must sit in the model path and
     // its model output must reach the guider (upstream 1.1.0 requirement).
-    let modelNode = patchedModelNode;
+    let modelNode = shiftedModelNode;
     let latentNode = ['inject', 0];
     if (hasNativeAudio) {
         graph.audio_lock = {
@@ -2278,6 +2353,7 @@ async function generateVideo(prompt, options = {}) {
             }
         }
         const { W, H } = h3Dimensions(videoWidth, videoHeight, settings.h3Size);
+        const { useFastH3 } = selectH3Model(settings, mode);
 
         // Prepend trigger words from active LoRAs to the prompt. For I2VA keep
         // the <Picture 1> first-frame alignment line as the literal first line of
@@ -2366,7 +2442,7 @@ async function generateVideo(prompt, options = {}) {
                 rawFilename: basename,
                 conversationId: options.conversationId || null,
                 prompt: finalPrompt,
-                model: 'MiniMax H3',
+                model: useFastH3 ? 'MiniMax H3 (FastH3 8-Step)' : 'MiniMax H3',
                 width: W,
                 height: H,
                 loras: activeLoras,
@@ -2953,6 +3029,8 @@ module.exports = {
     isRawRequestEcho,
     modifyH3VideoPrompt,
     buildH3Graph,
+    selectH3Model,
+    appendFastH3SigmaShift,
     validateH3Graph,
     buildFaceRefineGraph,
     faceRefineAvailability,

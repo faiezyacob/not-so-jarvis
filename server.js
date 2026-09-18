@@ -73,6 +73,7 @@ const providerManager = require('./server/provider-manager');
 const imageGenerator = require('./services/image-generator');
 const videoGenerator = require('./services/video-generator');
 const faceRefine = require('./services/face-refine');
+const fastH3 = require('./services/fast-h3');
 const modelSetup = require('./services/model-setup');
 const generatedHistory = require('./services/generated-history');
 const thumbnail = require('./services/thumbnail');
@@ -542,7 +543,14 @@ async function handleAPI(req, res, urlPath) {
                     String(body.faceRefineEnabled).toLowerCase() === 'true' || String(body.faceRefineEnabled) === '1')) {
                 faceRefineInstall = faceRefine.ensureAutoInstall();
             }
-            json(res, 200, { ok: true, settings, faceRefineInstall });
+            // First-enable auto-install for the FastH3 8-Step V2 checkpoint.
+            // Non-blocking; the VIDEO panel polls its own status endpoint.
+            let fastH3Install = null;
+            if (body && (body.fastH3Enabled === true || body.fastH3Enabled === 1 ||
+                    String(body.fastH3Enabled).toLowerCase() === 'true' || String(body.fastH3Enabled) === '1')) {
+                fastH3Install = fastH3.ensureAutoInstall();
+            }
+            json(res, 200, { ok: true, settings, faceRefineInstall, fastH3Install });
         } catch (err) {
             json(res, 400, { error: err.message });
         }
@@ -566,6 +574,30 @@ async function handleAPI(req, res, urlPath) {
     if (urlPath === '/api/video/face-refine/install' && req.method === 'POST') {
         try {
             const started = faceRefine.startInstall();
+            json(res, 200, { ok: true, install: started });
+        } catch (err) {
+            json(res, 500, { error: err.message });
+        }
+        return true;
+    }
+
+    // GET /api/video/fast-h3/status — ComfyUI readiness for the optional
+    // FastH3 8-Step V2 checkpoint (file on disk, UNETLoader visibility,
+    // MiniMaxH3SigmaShift node) + install job state.
+    if (urlPath === '/api/video/fast-h3/status' && req.method === 'GET') {
+        try {
+            json(res, 200, await fastH3.getStatus());
+        } catch (err) {
+            json(res, 500, { error: err.message });
+        }
+        return true;
+    }
+
+    // POST /api/video/fast-h3/install — (re)run the FastH3 checkpoint download
+    // in the background. Returns immediately; poll the status endpoint.
+    if (urlPath === '/api/video/fast-h3/install' && req.method === 'POST') {
+        try {
+            const started = fastH3.startInstall();
             json(res, 200, { ok: true, install: started });
         } catch (err) {
             json(res, 500, { error: err.message });

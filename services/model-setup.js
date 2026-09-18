@@ -107,6 +107,16 @@ const KNOWN_FILES = {
         hfPath: 'vae/minimax_h3_audio_vae_fp32.safetensors',
         approxMB: 500
     },
+    'fastvideo_fasth3_8step_v2_pruned_int8_convrot.safetensors': {
+        repo: 'FastVideo/FastVideo-FastH3-Comfy',
+        hfPath: 'diffusion_models/fastvideo_fasth3_8step_v2_pruned_int8_convrot.safetensors',
+        approxMB: 23000
+    },
+    'fastvideo_fasth3_8step_v2_pruned_bf16.safetensors': {
+        repo: 'FastVideo/FastVideo-FastH3-Comfy',
+        hfPath: 'diffusion_models/fastvideo_fasth3_8step_v2_pruned_bf16.safetensors',
+        approxMB: 70000
+    },
     'seedvr2_ema_7b_fp8_e4m3fn_mixed_block35_fp16.safetensors': {
         repo: 'mekrod/seedvr2_ema_7b_fp8_e4m3fn_mixed_block35_fp16',
         hfPath: 'seedvr2_ema_7b_fp8_e4m3fn_mixed_block35_fp16.safetensors',
@@ -154,6 +164,7 @@ const MODEL_CATALOG = [
     { id: 'h3_clip', group: 'video', label: 'H3 CLIP (Qwen3-VL 32B NVFP4)', required: true, dest: 'text_encoders', file: { settings: 'video', key: 'h3Clip' }, minBytes: 5 * 1024 ** 3 },
     { id: 'h3_video_vae', group: 'video', label: 'H3 video VAE', required: true, dest: 'vae', file: { settings: 'video', key: 'h3VideoVae' }, minBytes: 100 * 1024 ** 2 },
     { id: 'h3_audio_vae', group: 'video', label: 'H3 audio VAE', required: true, dest: 'vae', file: { settings: 'video', key: 'h3AudioVae' }, minBytes: 10 * 1024 ** 2 },
+    { id: 'h3_fasth3_unet', group: 'video', label: 'FastH3 8-Step V2 UNET (optional)', required: false, dest: 'diffusion_models', file: { settings: 'video', key: 'fastH3Unet' }, minBytes: 5 * 1024 ** 3, note: 'Optional T2VA accelerator (Settings > Video > FastH3, off by default). Eight-step distilled H3 with VSA sparse attention; needs a ComfyUI build with FastH3 VSA support. Reuses the standard H3 text encoder and VAEs above.' },
     { id: 'seedvr2_dit', group: 'upscale', label: 'SeedVR2 DiT 7B (balanced)', required: true, dest: 'seedvr2', also: ['SEEDVR2'], seen: 'seedvr2dit', file: { settings: 'image', key: 'seedvr2Dit' }, minBytes: 2 * 1024 ** 3 },
     { id: 'seedvr2_dit_sharp', group: 'upscale', label: 'SeedVR2 DiT 7B (sharp profile)', required: false, dest: 'seedvr2', also: ['SEEDVR2'], seen: 'seedvr2dit', file: 'seedvr2_ema_7b_sharp_fp8_e4m3fn_mixed_block35_fp16.safetensors', minBytes: 2 * 1024 ** 3, note: 'Same profile the sharp upscale uses. The SeedVR2 nodes auto-download it on first use; no token needed.' },
     { id: 'seedvr2_vae', group: 'upscale', label: 'SeedVR2 VAE', required: true, dest: 'seedvr2', also: ['SEEDVR2', 'vae'], seen: 'seedvr2vae', file: { settings: 'image', key: 'seedvr2Vae' }, minBytes: 10 * 1024 ** 2 },
@@ -202,6 +213,12 @@ const NODE_CATALOG = [
         nodes: ['MiniMaxH3ImageToVideo'],
         repo: null, dir: null,
         note: 'Ships with current ComfyUI. If missing, update ComfyUI (or install the H3 nodes via ComfyUI Manager search "MiniMax H3").'
+    },
+    {
+        id: 'h3_sigma_shift', label: 'H3 Sigma Shift (FastH3, built into ComfyUI)', required: false,
+        nodes: ['MiniMaxH3SigmaShift'],
+        repo: null, dir: null,
+        note: 'Applies FastH3\'s trained video/audio flow shift (10 / 3). Ships with current ComfyUI and is only needed when FastH3 is enabled.'
     }
 ];
 
@@ -318,9 +335,19 @@ function authHeaders() {
 // an interrupted run never leaves a half file behind under the real name.
 async function downloadFileTo(entry, destPath) {
     const headers = authHeaders();
+    // Bound only the connection/header phase: AbortSignal.timeout would abort
+    // the whole request (including the multi-GB body) on a fixed wall clock,
+    // so clear it once headers arrive. A per-chunk idle watchdog aborts a
+    // stalled transfer without killing a slow but healthy one.
+    const controller = new AbortController();
     let res;
     try {
-        res = await fetch(entry.url, { headers, signal: AbortSignal.timeout(30 * 1000) });
+        const connectTimer = setTimeout(() => controller.abort(), 30 * 1000);
+        try {
+            res = await fetch(entry.url, { headers, signal: controller.signal });
+        } finally {
+            clearTimeout(connectTimer);
+        }
     } catch (err) {
         throw new Error('Could not reach Hugging Face: ' + (err.message || err) + '. Check your network connection.');
     }
@@ -336,8 +363,16 @@ async function downloadFileTo(entry, destPath) {
     const out = fs.createWriteStream(tmpPath);
     let received = 0;
     job.current = { id: entry.id, label: entry.label, filename: entry.filename, received: 0, total };
+    const IDLE_TIMEOUT_MS = 60 * 1000;
+    let idleTimer = null;
+    const resetIdle = () => {
+        clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => controller.abort(), IDLE_TIMEOUT_MS);
+    };
     try {
+        resetIdle();
         for await (const chunk of res.body) {
+            resetIdle();
             const buf = Buffer.from(chunk);
             received += buf.length;
             job.current.received = received;
@@ -348,7 +383,12 @@ async function downloadFileTo(entry, destPath) {
     } catch (err) {
         try { out.destroy(); } catch {}
         try { fs.unlinkSync(tmpPath); } catch {}
-        throw new Error('Download interrupted for ' + entry.filename + ': ' + (err.message || err));
+        const reason = controller.signal.aborted
+            ? 'no data received for ' + Math.round(IDLE_TIMEOUT_MS / 1000) + 's'
+            : (err.message || err);
+        throw new Error('Download interrupted for ' + entry.filename + ': ' + reason);
+    } finally {
+        clearTimeout(idleTimer);
     }
     await new Promise((resolve, reject) => {
         out.on('finish', resolve);
@@ -512,7 +552,7 @@ async function verifyToken(token) {
     const value = String(token || '').trim();
     if (!value) return { valid: false, user: null, error: 'Token is empty.' };
     try {
-        const res = await fetch('https://huggingface.co/api/whoami', {
+        const res = await fetch('https://huggingface.co/api/whoami-v2', {
             headers: { Authorization: 'Bearer ' + value },
             signal: AbortSignal.timeout(15000)
         });
