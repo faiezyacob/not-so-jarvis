@@ -107,16 +107,6 @@ const KNOWN_FILES = {
         hfPath: 'vae/minimax_h3_audio_vae_fp32.safetensors',
         approxMB: 500
     },
-    'fastvideo_fasth3_8step_v2_pruned_int8_convrot.safetensors': {
-        repo: 'FastVideo/FastVideo-FastH3-Comfy',
-        hfPath: 'diffusion_models/fastvideo_fasth3_8step_v2_pruned_int8_convrot.safetensors',
-        approxMB: 23000
-    },
-    'fastvideo_fasth3_8step_v2_pruned_bf16.safetensors': {
-        repo: 'FastVideo/FastVideo-FastH3-Comfy',
-        hfPath: 'diffusion_models/fastvideo_fasth3_8step_v2_pruned_bf16.safetensors',
-        approxMB: 70000
-    },
     'seedvr2_ema_7b_fp8_e4m3fn_mixed_block35_fp16.safetensors': {
         repo: 'mekrod/seedvr2_ema_7b_fp8_e4m3fn_mixed_block35_fp16',
         hfPath: 'seedvr2_ema_7b_fp8_e4m3fn_mixed_block35_fp16.safetensors',
@@ -164,7 +154,6 @@ const MODEL_CATALOG = [
     { id: 'h3_clip', group: 'video', label: 'H3 CLIP (Qwen3-VL 32B NVFP4)', required: true, dest: 'text_encoders', file: { settings: 'video', key: 'h3Clip' }, minBytes: 5 * 1024 ** 3 },
     { id: 'h3_video_vae', group: 'video', label: 'H3 video VAE', required: true, dest: 'vae', file: { settings: 'video', key: 'h3VideoVae' }, minBytes: 100 * 1024 ** 2 },
     { id: 'h3_audio_vae', group: 'video', label: 'H3 audio VAE', required: true, dest: 'vae', file: { settings: 'video', key: 'h3AudioVae' }, minBytes: 10 * 1024 ** 2 },
-    { id: 'h3_fasth3_unet', group: 'video', label: 'FastH3 8-Step V2 UNET (optional)', required: false, dest: 'diffusion_models', file: { settings: 'video', key: 'fastH3Unet' }, minBytes: 5 * 1024 ** 3, note: 'Optional T2VA accelerator (Settings > Video > FastH3, off by default). Eight-step distilled H3 with VSA sparse attention; needs a ComfyUI build with FastH3 VSA support. Reuses the standard H3 text encoder and VAEs above.' },
     { id: 'seedvr2_dit', group: 'upscale', label: 'SeedVR2 DiT 7B (balanced)', required: true, dest: 'seedvr2', also: ['SEEDVR2'], seen: 'seedvr2dit', file: { settings: 'image', key: 'seedvr2Dit' }, minBytes: 2 * 1024 ** 3 },
     { id: 'seedvr2_dit_sharp', group: 'upscale', label: 'SeedVR2 DiT 7B (sharp profile)', required: false, dest: 'seedvr2', also: ['SEEDVR2'], seen: 'seedvr2dit', file: 'seedvr2_ema_7b_sharp_fp8_e4m3fn_mixed_block35_fp16.safetensors', minBytes: 2 * 1024 ** 3, note: 'Same profile the sharp upscale uses. The SeedVR2 nodes auto-download it on first use; no token needed.' },
     { id: 'seedvr2_vae', group: 'upscale', label: 'SeedVR2 VAE', required: true, dest: 'seedvr2', also: ['SEEDVR2', 'vae'], seen: 'seedvr2vae', file: { settings: 'image', key: 'seedvr2Vae' }, minBytes: 10 * 1024 ** 2 },
@@ -213,12 +202,6 @@ const NODE_CATALOG = [
         nodes: ['MiniMaxH3ImageToVideo'],
         repo: null, dir: null,
         note: 'Ships with current ComfyUI. If missing, update ComfyUI (or install the H3 nodes via ComfyUI Manager search "MiniMax H3").'
-    },
-    {
-        id: 'h3_sigma_shift', label: 'H3 Sigma Shift (FastH3, built into ComfyUI)', required: false,
-        nodes: ['MiniMaxH3SigmaShift'],
-        repo: null, dir: null,
-        note: 'Applies FastH3\'s trained video/audio flow shift (10 / 3). Ships with current ComfyUI and is only needed when FastH3 is enabled.'
     }
 ];
 

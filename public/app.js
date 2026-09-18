@@ -1374,8 +1374,7 @@ function initUpscaleSettings() {
 const VIDEO_SELECT_FIELDS = [
     { key: 'h3Size', id: 'videoSizeScale' },
     { key: 'h3Duration', id: 'videoDuration' },
-    { key: 'attentionBackend', id: 'videoAttentionBackend' },
-    { key: 'fastH3Steps', id: 'videoFastH3Steps' }
+    { key: 'attentionBackend', id: 'videoAttentionBackend' }
 ];
 
 const VIDEO_TEXT_FIELDS = [
@@ -1491,104 +1490,6 @@ async function refreshFaceRefineStatus() {
         renderFaceRefineStatus(data);
     } catch {
         setFaceRefineStatus('Could not check FaceRefine status.', true);
-    }
-}
-
-// --- FastH3 8-step ---
-
-let fastH3PollTimer = null;
-
-function fastH3StatusEl() {
-    return document.getElementById('videoFastH3Status');
-}
-
-function fastH3LogEl() {
-    return document.getElementById('videoFastH3Log');
-}
-
-function setFastH3Status(text, isError) {
-    const el = fastH3StatusEl();
-    if (!el) return;
-    el.textContent = text || '';
-    el.classList.toggle('settings-save-status--error', !!isError);
-}
-
-function fastH3DownloadLabel(job) {
-    const received = Number(job && job.received) || 0;
-    const total = Number(job && job.total) || 0;
-    if (total > 0) {
-        const pct = Math.min(99, Math.round((received / total) * 100));
-        return 'Downloading FastH3 checkpoint… ' + pct + '%';
-    }
-    if (received > 0) return 'Downloading FastH3 checkpoint… ' + (received / 1024 / 1024 / 1024).toFixed(1) + ' GB';
-    return 'Downloading FastH3 checkpoint…';
-}
-
-function renderFastH3Status(data) {
-    if (!data) {
-        setFastH3Status('Could not check FastH3 status.', true);
-        return;
-    }
-    const logEl = fastH3LogEl();
-    const job = data.job || {};
-    if (Array.isArray(job.log) && job.log.length && logEl) {
-        logEl.hidden = false;
-        logEl.textContent = job.log.slice(-12).join('\n');
-        logEl.scrollTop = logEl.scrollHeight;
-    } else if (logEl && !job.running) {
-        logEl.hidden = true;
-    }
-    if (job.running) {
-        setFastH3Status(fastH3DownloadLabel(job));
-        scheduleFastH3Poll();
-        return;
-    }
-    if (job.done && !job.ok && job.error) {
-        setFastH3Status('Install failed: ' + job.error, true);
-        return;
-    }
-    if (!data.comfyAvailable) {
-        setFastH3Status('ComfyUI unreachable — FastH3 status unknown.', true);
-        return;
-    }
-    if (data.ready) {
-        setFastH3Status('Ready.');
-        return;
-    }
-    const missing = Array.isArray(data.nodesMissing) ? data.nodesMissing : [];
-    if (missing.length) {
-        setFastH3Status('Missing node: ' + missing.join(', ') + '. Update ComfyUI.', true);
-        return;
-    }
-    if (data.restartRequired) {
-        setFastH3Status('Installed — restart ComfyUI to load the checkpoint.', true);
-        return;
-    }
-    setFastH3Status('Checkpoint not installed. Press Install.', true);
-}
-
-function scheduleFastH3Poll() {
-    if (fastH3PollTimer) return;
-    fastH3PollTimer = setTimeout(async () => {
-        fastH3PollTimer = null;
-        try {
-            const res = await fetch('/api/video/fast-h3/status');
-            const data = await res.json().catch(() => null);
-            renderFastH3Status(data);
-            if (data && data.job && data.job.running) scheduleFastH3Poll();
-        } catch {
-            setFastH3Status('Could not check FastH3 status.', true);
-        }
-    }, 2500);
-}
-
-async function refreshFastH3Status() {
-    try {
-        const res = await fetch('/api/video/fast-h3/status');
-        const data = await res.json().catch(() => null);
-        renderFastH3Status(data);
-    } catch {
-        setFastH3Status('Could not check FastH3 status.', true);
     }
 }
 
@@ -1740,58 +1641,6 @@ function initVideoSettings() {
         });
     }
 
-    // --- FastH3 8-step: enable toggle, installer ---
-    const fastH3Toggle = document.getElementById('videoFastH3Enabled');
-    if (fastH3Toggle) {
-        fastH3Toggle.addEventListener('change', async () => {
-            const enabled = fastH3Toggle.checked;
-            setStatus(enabled ? 'Enabling FastH3...' : 'Saving...');
-            try {
-                const res = await fetch('/api/settings/video', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ fastH3Enabled: enabled })
-                });
-                const data = await res.json().catch(() => ({}));
-                if (!res.ok) {
-                    setStatus('Save failed: ' + (data.error || 'Unknown error'), true);
-                    fastH3Toggle.checked = !enabled;
-                    return;
-                }
-                setStatus(enabled ? 'FastH3 on — checking setup...' : 'FastH3 off.');
-                // First enable kicks off the background checkpoint download.
-                refreshFastH3Status();
-            } catch {
-                setStatus('Save failed: connection error', true);
-                fastH3Toggle.checked = !enabled;
-            }
-            setTimeout(() => setStatus(''), 3000);
-        });
-    }
-
-    const fastH3InstallBtn = document.getElementById('videoFastH3InstallBtn');
-    if (fastH3InstallBtn) {
-        fastH3InstallBtn.addEventListener('click', async () => {
-            setFastH3Status('Starting FastH3 install...');
-            try {
-                const res = await fetch('/api/video/fast-h3/install', { method: 'POST' });
-                const data = await res.json().catch(() => ({}));
-                if (!res.ok) {
-                    setFastH3Status('Install failed: ' + (data.error || 'Unknown error'), true);
-                    return;
-                }
-                if (data.install && data.install.started === false) {
-                    setFastH3Status('Install already running — see log below.');
-                } else {
-                    setFastH3Status('Downloading FastH3 checkpoint…');
-                }
-                refreshFastH3Status();
-            } catch {
-                setFastH3Status('Install failed: connection error', true);
-            }
-        });
-    }
-
     const loadSettings = async () => {
         setStatus('');
         loraStatus(loraState, '');
@@ -1845,16 +1694,7 @@ function initVideoSettings() {
                 faceRefineDetector.placeholder = defaults.faceRefineDetector || 'face_yolov8m.pt';
             }
 
-            const fastH3Toggle = document.getElementById('videoFastH3Enabled');
-            if (fastH3Toggle) {
-                const stored = settings.fastH3Enabled;
-                fastH3Toggle.checked = stored === true || stored === 1 ||
-                    String(stored).toLowerCase() === 'true' || String(stored) === '1' ||
-                    (stored === undefined && defaults.fastH3Enabled === true);
-            }
-
             refreshFaceRefineStatus();
-            refreshFastH3Status();
 
             const choices = data.choices || {};
             loraState.available = Array.isArray(choices.loras) ? choices.loras : [];
@@ -2974,7 +2814,6 @@ function refreshComfyDependentSettings() {
         try { reload(); } catch {}
     });
     refreshFaceRefineStatus();
-    refreshFastH3Status();
     refreshSetup();
 }
 
