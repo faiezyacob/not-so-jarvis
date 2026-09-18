@@ -87,28 +87,120 @@ function sentence(text) {
     return /[.!?]$/.test(t) ? t : t + '.';
 }
 
+// Timing and background-change language belongs to the video direction, but the
+// brief LLM often files it under `setting`/`details` and the authoritative
+// wording carries it verbatim. Left in, a still-image model resolves "the
+// background changes every 2 seconds" as a multi-panel collage. These matchers
+// strip it before the opening-frame concept is built.
+//
+// All matchers are word-boundary anchored and require a real temporal/change
+// token so genuine visual text is never touched: "secondary subject",
+// "shoulder-length hair", "slow push in" and "leaning in" must all survive.
+const IMAGE_MOTION_CHANGE_RE = new RegExp(
+    '\\b(?:the\\s+)?(?:background|backdrop|scene|setting|environment|location|city|' +
+    'cityscape|skyline|view|visuals?|footage|shot|frame|camera)\\s+' +
+    '(?:(?:will|would|is|are|was|were|has|have|had|keeps?|starts?|begins?|then|slowly|' +
+    'rapidly|gradually|suddenly|quickly|now)\\s+)*' +
+    '(?:chang(?:e|es|ed|ing)|shift(?:s|ed|ing)?|switch(?:es|ed|ing)?|transition(?:s|ed|ing)?|' +
+    'morph(?:s|ed|ing)?|becom(?:e|es|ing)|became|fad(?:e|es|ed|ing)|cut(?:s|ting)?|' +
+    'jump(?:s|ed|ing)?|progress(?:es|ed|ing)?|turn(?:s|ed|ing)?\\s+into)\\b[^.!?;]*',
+    'gi'
+);
+const IMAGE_DURATION_NOUN_RE = /\b(?:video|clip|movie|film)\s+(?:duration|length|runtime)\b/gi;
+// Require a connector after the label so "shoulder-length hair" and
+// "50mm focal length" are left alone.
+const IMAGE_DURATION_LABEL_RE =
+    /\b(?:(?:video|clip|movie|film)\s+)?(?:total\s+)?(?:duration|length|runtime)\s*(?:is|of|:|equals|was|will\s+be)\s*/gi;
+// No bare "s" shorthand: it would eat era references ("90s fashion",
+// "2000s aesthetic"). Spelled units and "every 2s" (below) are enough.
+const IMAGE_DURATION_RE =
+    /\b\d+(?:\.\d+)?\s*(?:-|\s)?(?:seconds|second|secs|sec|minutes|minute|mins|min)\b/gi;
+const IMAGE_EVERY_RE = new RegExp(
+    '\\b(?:every|each)\\s+(?:(?:\\d+(?:\\.\\d+)?(?:st|nd|rd|th)?|one|two|three|four|five|six|' +
+    'seven|eight|nine|ten|an?|other|couple(?:\\s+of)?|few|several)\\s*)?(?:-|\\s)?' +
+    '(?:seconds|second|secs|sec|s|minutes|minute|mins|min)\\b',
+    'gi'
+);
+const IMAGE_TEMPORAL_PAREN_RE = /\(([^)]*)\)/g;
+const IMAGE_TEMPORAL_PAREN_HINT_RE = new RegExp(
+    '\\b(?:seconds?|secs?|minutes?|mins?|chang(?:e|es|ed|ing)|shift(?:s|ed|ing)?|' +
+    'switch(?:es|ed|ing)?|transition(?:s|ed|ing)?|morph(?:s|ed|ing)?|becom(?:e|es|ing)|' +
+    'fad(?:e|es|ed|ing)|progress(?:es|ed|ing)?|every|each)\\b',
+    'i'
+);
+// Only linking words are trimmed from the tail. Directional/motion particles
+// ("in", "on", "to", "over", "through", "up", ...) are intentionally excluded
+// because they legitimately end camera/pose phrases ("slow push in").
+const IMAGE_DANGLING_TAIL_RE =
+    /\b(?:is|are|was|were|be|been|of|for|and|or|the|a|an|with)\s*$/i;
+// A subject-less change verb left behind once its timing was removed
+// ("changes every 2 seconds" -> "changes").
+const IMAGE_BARE_CHANGE_RE =
+    /^(?:the\s+)?(?:chang(?:e|es|ed|ing)|shift(?:s|ed|ing)?|switch(?:es|ed|ing)?|transition(?:s|ed|ing)?|morph(?:s|ed|ing)?|progress(?:es|ed|ing)?)(?:\s+(?:to|into|through|over|between|across))?$/i;
+
+// Remove time-varying instructions from a fragment so the opening still frame
+// describes one frozen moment in one place. Genuine subject/setting/detail text
+// is preserved (only the timing and change clauses are dropped).
+function stripTemporalForImage(value) {
+    let text = cleanFragment(value);
+    if (!text) return '';
+    text = text.replace(IMAGE_TEMPORAL_PAREN_RE, (full, inner) =>
+        IMAGE_TEMPORAL_PAREN_HINT_RE.test(inner) ? ' ' : full);
+    text = text.replace(IMAGE_DURATION_NOUN_RE, ' ');
+    text = text.replace(IMAGE_DURATION_LABEL_RE, ' ');
+    text = text.replace(IMAGE_MOTION_CHANGE_RE, ' ');
+    text = text.replace(IMAGE_EVERY_RE, ' ');
+    text = text.replace(IMAGE_DURATION_RE, ' ');
+    text = text
+        .replace(/\s+([,.;:!?])/g, '$1')
+        .replace(/([,;:])\s*(?=[,.;:!?])/g, '')
+        .replace(/\s{2,}/g, ' ')
+        .trim()
+        .replace(/^[\s,.;:]+|[\s,.;:]+$/g, '');
+    text = text.replace(IMAGE_BARE_CHANGE_RE, '').trim();
+    let guard = 0;
+    while (IMAGE_DANGLING_TAIL_RE.test(text) && guard < 8) {
+        text = text.replace(IMAGE_DANGLING_TAIL_RE, '').trim().replace(/[,.;:]+$/, '').trim();
+        guard += 1;
+    }
+    return text;
+}
+
 // Compose the opening-frame image concept from the brief. Used as the image
 // pipeline's user prompt so the frame matches the production, not the raw text.
 // `opts.authoritative` is the user's own wording (only while the brief is still
 // unmodified) and is included so specifics the brief paraphrased away survive.
+// Timing/change language is stripped (see `stripTemporalForImage`) and the
+// concept is explicitly framed as a single still so the image model never tries
+// to render a sequence, storyboard, or collage.
 function composeImageConcept(brief, opts = {}) {
     const b = brief || {};
-    const authoritative = cleanFragment(opts.authoritative);
-    const subject = cleanFragment(b.subject) || 'a cinematic subject';
-    const head = cleanFragment([subject, cleanFragment(b.action)].filter(Boolean).join(' '));
-    const setting = cleanFragment(b.setting);
+    const authoritative = stripTemporalForImage(opts.authoritative);
+    const subject = stripTemporalForImage(b.subject) || 'a cinematic subject';
+    const action = stripTemporalForImage(b.action);
+    const head = cleanFragment([subject, action].filter(Boolean).join(' '));
+    const setting = stripTemporalForImage(b.setting);
+    const details = stripTemporalForImage(b.details);
     const lines = [];
     lines.push(head + (setting ? ' in ' + setting : ''));
-    if (cleanFragment(b.visualStyle)) lines.push(sentence('Visual style: ' + b.visualStyle));
-    if (cleanFragment(b.mood)) lines.push(sentence('Mood: ' + b.mood));
-    const camera = [cleanFragment(b.camera), cleanFragment(b.cameraMovement)]
+    lines.push(sentence(
+        'This is the opening still frame: depict one frozen moment in a single ' +
+        'location, not a sequence, montage, storyboard, or collage of multiple frames'
+    ));
+    const visualStyle = stripTemporalForImage(b.visualStyle);
+    if (visualStyle) lines.push(sentence('Visual style: ' + visualStyle));
+    const mood = stripTemporalForImage(b.mood);
+    if (mood) lines.push(sentence('Mood: ' + mood));
+    const camera = [stripTemporalForImage(b.camera), stripTemporalForImage(b.cameraMovement)]
         .filter(Boolean).join(', ');
     if (camera) lines.push(sentence('Camera: ' + camera));
-    if (cleanFragment(b.aspectRatio)) lines.push(sentence('Aspect ratio: ' + b.aspectRatio));
-    if (cleanFragment(b.details)) lines.push(sentence('Specific details: ' + b.details));
-    if (Array.isArray(b.explicitConstraints) && b.explicitConstraints.length) {
-        lines.push(sentence('Constraints: ' + b.explicitConstraints.join('; ')));
-    }
+    const aspectRatio = stripTemporalForImage(b.aspectRatio);
+    if (aspectRatio) lines.push(sentence('Aspect ratio: ' + aspectRatio));
+    if (details) lines.push(sentence('Specific details: ' + details));
+    const constraints = Array.isArray(b.explicitConstraints)
+        ? b.explicitConstraints.map(stripTemporalForImage).filter(Boolean)
+        : [];
+    if (constraints.length) lines.push(sentence('Constraints: ' + constraints.join('; ')));
     if (authoritative) {
         lines.push(sentence('Honor every specific in the user\'s request: "' + authoritative + '"'));
     }
@@ -306,6 +398,7 @@ function heuristicBrief(message, duration) {
 module.exports = {
     BRIEF_SYSTEM_PROMPT,
     BRIEF_UPDATE_SYSTEM_PROMPT,
+    stripTemporalForImage,
     composeImageConcept,
     composeVideoDirection,
     planShots,

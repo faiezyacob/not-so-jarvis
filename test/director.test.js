@@ -175,6 +175,21 @@ test('workflow: shouldForceDirector routes fresh video turns but not tweaks', ()
     assert.equal(director.shouldForceDirector('hello there', null), false);
 });
 
+test('workflow: the Director toggle supersedes the long-video duration router', () => {
+    // Toggle on: a >15s request still goes to the Director.
+    assert.equal(director.shouldForceDirectorOverLongVideo('generate a 30 second video of a cat',
+        { forceDirector: true, longVideoBusy: false }), true);
+    // Toggle off: the duration router keeps it.
+    assert.equal(director.shouldForceDirectorOverLongVideo('generate a 30 second video of a cat',
+        { forceDirector: false, longVideoBusy: false }), false);
+    // Explicit "just generate the video" wins over the toggle.
+    assert.equal(director.shouldForceDirectorOverLongVideo('just generate the video directly, 30 seconds',
+        { forceDirector: true, longVideoBusy: false }), false);
+    // An actively rendering long video is never clobbered.
+    assert.equal(director.shouldForceDirectorOverLongVideo('generate a 30 second video of a cat',
+        { forceDirector: true, longVideoBusy: true }), false);
+});
+
 // --- Brief -------------------------------------------------------------------
 
 test('parseBriefJson tolerates markdown fences and commentary', () => {
@@ -279,6 +294,98 @@ test('composeImageConcept and composeVideoDirection read from the brief', () => 
     assert.match(video, /cut sequence of 3 shots/i);
     assert.match(video, /\[Shot 2\]/);
     assert.match(video, /strictly increasing cut time/i);
+});
+
+test('composeImageConcept strips video timing and background-change language', () => {
+    const request = 'generate 10 seconds video of young pretty korean woman wearing tanktop ' +
+        'doing a travel vlog video. the background changes every 2 second to another major big city';
+    const brief = productionPlan.normalizeBrief({
+        subject: 'young pretty korean woman',
+        setting: 'major big cities (changing every 2 seconds)',
+        temporal: 'background changes every 2 seconds to a new major big city over 10 seconds',
+        details: 'wearing tanktop, travel vlog style',
+        explicitConstraints: ['video duration is 10 seconds', 'background changes every 2 seconds'],
+        originalRequest: request
+    });
+    const image = prompts.composeImageConcept(brief, { authoritative: request });
+    assert.doesNotMatch(image, /every\s*2/i);
+    assert.doesNotMatch(image, /10[- ]?seconds?/i);
+    assert.doesNotMatch(image, /changes|transition|duration/i);
+    assert.match(image, /korean woman/i);
+    assert.match(image, /tanktop/);
+    assert.match(image, /single location/i);
+    assert.match(image, /not a sequence, montage, storyboard, or collage/i);
+});
+
+test('stripTemporalForImage keeps genuine subject, setting and detail text', () => {
+    assert.equal(
+        prompts.stripTemporalForImage('a rain-soaked Tokyo street at night'),
+        'a rain-soaked Tokyo street at night'
+    );
+    assert.equal(prompts.stripTemporalForImage('a red cape, a golden sword'), 'a red cape, a golden sword');
+    assert.equal(prompts.stripTemporalForImage('no text, landscape orientation'), 'no text, landscape orientation');
+    // Negatives: the words "sec"/"chang"/"length" must not be matched inside
+    // unrelated words, and motion/pose particles at the tail must survive.
+    assert.equal(prompts.stripTemporalForImage('(secondary subject) woman'), '(secondary subject) woman');
+    assert.equal(prompts.stripTemporalForImage('woman with shoulder-length hair'), 'woman with shoulder-length hair');
+    assert.equal(prompts.stripTemporalForImage('50mm focal length'), '50mm focal length');
+    assert.equal(prompts.stripTemporalForImage('slow push in'), 'slow push in');
+    assert.equal(prompts.stripTemporalForImage('leaning in'), 'leaning in');
+    assert.equal(prompts.stripTemporalForImage('walking through the rain'), 'walking through the rain');
+    assert.equal(prompts.stripTemporalForImage('standing with arms crossed'), 'standing with arms crossed');
+    // Era references must survive the duration matcher.
+    assert.equal(prompts.stripTemporalForImage('90s fashion'), '90s fashion');
+    assert.equal(prompts.stripTemporalForImage('the 2000s aesthetic'), 'the 2000s aesthetic');
+    // A wardrobe change is a real visual, not a scene transition.
+    assert.equal(prompts.stripTemporalForImage('she changes into a red dress'), 'she changes into a red dress');
+});
+
+test('stripTemporalForImage removes the temporal variants that leak into stills', () => {
+    assert.equal(prompts.stripTemporalForImage('major big cities (changing every 2 seconds)'), 'major big cities');
+    for (const text of [
+        'the background changes every 2 second to another major big city',
+        'the background is changing to another city',
+        'the background slowly changes to Paris',
+        'the scene will shift to Tokyo',
+        'the camera cuts to a new city',
+        'background transitions through iconic urban landscapes',
+        'background changes every 2 seconds to a new city over 10 seconds',
+        'video duration is 10 seconds',
+        'video length 10 seconds',
+        'total runtime is 90 seconds',
+        'length of 5 seconds',
+        'every 2 seconds',
+        'every other second',
+        'every couple of seconds',
+        'every few seconds',
+        'each second',
+        'every 2nd second',
+        'changes every 2 seconds'
+    ]) {
+        assert.equal(prompts.stripTemporalForImage(text), '', 'should strip: ' + text);
+    }
+    assert.equal(prompts.stripTemporalForImage('10-second clip of a woman'), 'clip of a woman');
+    assert.equal(prompts.stripTemporalForImage('every 2s'), '');
+});
+
+test('composeImageConcept preserves genuine detail while dropping timing', () => {
+    const brief = productionPlan.normalizeBrief({
+        subject: 'a woman with shoulder-length hair',
+        action: 'slowly changing into a red dress',
+        setting: 'a Paris cafe',
+        cameraMovement: 'slow push in',
+        details: '50mm focal length, secondary subject in the window',
+        explicitConstraints: ['video duration is 10 seconds', 'no text']
+    });
+    const image = prompts.composeImageConcept(brief);
+    assert.match(image, /shoulder-length hair/);
+    assert.match(image, /changing into a red dress/);
+    assert.match(image, /Paris cafe/);
+    assert.match(image, /slow push in/);
+    assert.match(image, /50mm focal length/);
+    assert.match(image, /secondary subject/);
+    assert.match(image, /no text/);
+    assert.doesNotMatch(image, /10 seconds|duration/i);
 });
 
 test('planShots honors a single-take request, an explicit count, and a shot list', () => {

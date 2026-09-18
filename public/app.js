@@ -1374,21 +1374,24 @@ function initUpscaleSettings() {
 const VIDEO_SELECT_FIELDS = [
     { key: 'h3Size', id: 'videoSizeScale' },
     { key: 'h3Duration', id: 'videoDuration' },
-    { key: 'attentionBackend', id: 'videoAttentionBackend' }
+    { key: 'attentionBackend', id: 'videoAttentionBackend' },
+    { key: 'h3TurboSteps', id: 'videoTurboSteps' }
 ];
 
 const VIDEO_TEXT_FIELDS = [
     { key: 'h3Unet', id: 'videoUnet' },
     { key: 'h3Clip', id: 'videoClip' },
     { key: 'h3VideoVae', id: 'videoVae' },
-    { key: 'h3AudioVae', id: 'videoAudioVae' }
+    { key: 'h3AudioVae', id: 'videoAudioVae' },
+    { key: 'h3TurboLora', id: 'videoTurboLora' }
 ];
 
 const VIDEO_HINTS = {
     videoUnet: 'minimax_h3_fl2va_pruned_int8_convrot.safetensors',
     videoClip: 'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors',
     videoVae: 'minimax_h3_video_vae_fp16.safetensors',
-    videoAudioVae: 'minimax_h3_audio_vae_fp32.safetensors'
+    videoAudioVae: 'minimax_h3_audio_vae_fp32.safetensors',
+    videoTurboLora: 'minimax_h3_turbo_v4_step600_ema.safetensors'
 };
 
 const VIDEO_FACEREFINE_SELECT_FIELDS = [
@@ -1641,6 +1644,40 @@ function initVideoSettings() {
         });
     }
 
+    // --- MiniMax H3 Turbo: the toggle reveals the step / LoRA options ---
+    const turboToggle = document.getElementById('videoTurboEnabled');
+    const turboOptions = document.getElementById('videoTurboOptions');
+    const syncTurboVisibility = () => {
+        if (turboOptions) turboOptions.hidden = !(turboToggle && turboToggle.checked);
+    };
+    if (turboToggle) {
+        turboToggle.addEventListener('change', async () => {
+            const enabled = turboToggle.checked;
+            syncTurboVisibility();
+            setStatus(enabled ? 'Enabling MiniMax H3 Turbo...' : 'Saving...');
+            try {
+                const res = await fetch('/api/settings/video', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ h3TurboEnabled: enabled })
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    setStatus('Save failed: ' + (data.error || 'Unknown error'), true);
+                    turboToggle.checked = !enabled;
+                    syncTurboVisibility();
+                    return;
+                }
+                setStatus(enabled ? 'MiniMax H3 Turbo on.' : 'MiniMax H3 Turbo off.');
+            } catch {
+                setStatus('Save failed: connection error', true);
+                turboToggle.checked = !enabled;
+                syncTurboVisibility();
+            }
+            setTimeout(() => setStatus(''), 3000);
+        });
+    }
+
     const loadSettings = async () => {
         setStatus('');
         loraStatus(loraState, '');
@@ -1695,6 +1732,14 @@ function initVideoSettings() {
             }
 
             refreshFaceRefineStatus();
+
+            if (turboToggle) {
+                const stored = settings.h3TurboEnabled;
+                turboToggle.checked = stored === true || stored === 1 ||
+                    String(stored).toLowerCase() === 'true' || String(stored) === '1' ||
+                    (stored === undefined && defaults.h3TurboEnabled === true);
+                syncTurboVisibility();
+            }
 
             const choices = data.choices || {};
             loraState.available = Array.isArray(choices.loras) ? choices.loras : [];

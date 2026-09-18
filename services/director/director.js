@@ -172,6 +172,17 @@ function shouldForceDirector(message, decision) {
     return decision.intent === 'new_task' || decision.intent === 'switch_task';
 }
 
+// The composer "Director Mode" toggle supersedes the long-video duration router:
+// with it on, a request that names more than H3's 15-second ceiling still goes to
+// the Director instead of the Long Video Director. Explicit "just generate the
+// video" (wantsDirectMode) and an actively rendering long video still win.
+function shouldForceDirectorOverLongVideo(message, opts = {}) {
+    if (!opts.forceDirector) return false;
+    if (wantsDirectMode(message)) return false;
+    if (opts.longVideoBusy) return false;
+    return true;
+}
+
 function defaultVideoDuration() {
     try {
         const settings = videoGenerator.effectiveVideoSettings();
@@ -553,6 +564,7 @@ module.exports = {
     wantsDirectMode,
     wantsDirectorMode,
     shouldForceDirector,
+    shouldForceDirectorOverLongVideo,
     createProduction,
     buildImageStagePrompt,
     applyDirectionUpdate,

@@ -1497,7 +1497,15 @@ async function handleChatStream(req, res) {
         // a fresh request is left to the normal router (the shared generation
         // queue serializes it) so the running plan's state is never clobbered.
         const longVideoBusy = Boolean(activeLongPlan && longVideoDirector.isActive(activeLongPlan));
-        if (!longVideoBusy && longVideoDirector.isLongVideoRequest(message)) {
+        // The composer Director Mode toggle wins over the duration router: a
+        // >15s request with the toggle on goes to the Director, not the Long
+        // Video Director. Explicit "just generate the video" and an actively
+        // rendering long video are still left alone.
+        const forceDirectorOverLongVideo = director.shouldForceDirectorOverLongVideo(message, {
+            forceDirector,
+            longVideoBusy
+        });
+        if (!forceDirectorOverLongVideo && !longVideoBusy && longVideoDirector.isLongVideoRequest(message)) {
             if (activeLongPlan) longVideoDirector.removePlan(conversationId);
             await handleLongVideoStart(req, res, longVideoCtx);
             return;
@@ -1535,6 +1543,9 @@ async function handleChatStream(req, res) {
             if (!director.isActive(activeProduction)) {
                 if (director.wantsDirectorMode(message)) {
                     director.removeProduction(conversationId);
+                    // A rendering long video owns its plan; only a parked one is
+                    // superseded so its approval can't capture the production.
+                    if (!longVideoBusy) longVideoDirector.removePlan(conversationId);
                     await handleDirectorStart(req, res, directorCtx);
                     return;
                 }
@@ -1546,6 +1557,7 @@ async function handleChatStream(req, res) {
         }
         if ((!activeProduction || !director.isOpen(activeProduction)) &&
             director.wantsDirectorMode(message)) {
+            if (!longVideoBusy) longVideoDirector.removePlan(conversationId);
             await handleDirectorStart(req, res, directorCtx);
             return;
         }
@@ -1580,6 +1592,10 @@ async function handleChatStream(req, res) {
         if (forceDirector && director.shouldForceDirector(message, decision) &&
             !(activeProduction && director.isActive(activeProduction))) {
             if (activeProduction) director.removeProduction(conversationId);
+            // The toggle superseded the duration router above; drop a parked
+            // long-video storyboard so a later "approve" can't capture the
+            // Director production instead. A rendering long video owns its plan.
+            if (!longVideoBusy) longVideoDirector.removePlan(conversationId);
             await handleDirectorStart(req, res, directorCtx);
             return;
         }
@@ -3391,6 +3407,9 @@ function friendlyVideoError(err) {
         case 'rtx_video_upscale_setup_required':
             return err.message;
         case 'facerefine_failed':
+            return err.message;
+        case 'h3_turbo_lora_missing':
+        case 'h3_turbo_nodes_missing':
             return err.message;
         case 'comfyui_generation_error':
         case 'comfyui_oom':

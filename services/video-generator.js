@@ -41,6 +41,49 @@ const H3_IMAGE_SIZES = H3_SIZE_SCALES;
 
 const H3_DEFAULT_STEPS = Number(process.env.H3_STEPS) || 20;
 
+// --- MiniMax H3 Turbo LoRA (Larryvrh/ComfyUI-MiniMax-H3-Turbo) ----------------
+// Optional 4-8 step generation path. When enabled the graph routes the H3
+// diffusion model through MiniMaxH3TurboLoRA and swaps KSamplerSelect for
+// MiniMaxH3TurboSampler, whose sampler steps the video/audio dual schedules
+// correctly at low step counts. Strength (1.0) and scheduler (simple) are fixed
+// so the UI stays simple; only the step count is user-facing.
+
+const H3_TURBO_SAMPLER_NODE = 'MiniMaxH3TurboSampler';
+const H3_TURBO_LORA_NODE = 'MiniMaxH3TurboLoRA';
+// The two custom nodes the Turbo path needs from the ComfyUI node pack.
+const H3_TURBO_REQUIRED_NODES = Object.freeze([H3_TURBO_LORA_NODE, H3_TURBO_SAMPLER_NODE]);
+const H3_TURBO_LORA_INSTALL_URL = 'https://github.com/larryvrh/ComfyUI-MiniMax-H3-Turbo';
+// Recommended checkpoint; only a default, so a renamed/overridden file works.
+const H3_TURBO_DEFAULT_LORA = 'minimax_h3_turbo_v4_step600_ema.safetensors';
+const H3_TURBO_STRENGTH = 1.0;
+const H3_TURBO_SCHEDULER = 'simple';
+// 4 steps is the usable minimum; past 8 it stops helping and over-sharpens.
+const H3_TURBO_STEPS = Object.freeze([4, 5, 6, 7, 8]);
+const H3_TURBO_DEFAULT_STEPS = 6;
+
+function normalizeH3TurboSteps(value, fallback) {
+    const n = Math.round(Number(value));
+    const base = fallback !== undefined ? fallback : H3_TURBO_DEFAULT_STEPS;
+    if (!Number.isFinite(n)) return base;
+    return Math.min(H3_TURBO_STEPS[H3_TURBO_STEPS.length - 1], Math.max(H3_TURBO_STEPS[0], n));
+}
+
+// Read the Turbo toggle/step/filename from a settings object. Enabled is only
+// true for an explicit truthy value so existing users stay on the normal path.
+function normalizeH3Turbo(settings) {
+    const source = settings || {};
+    const raw = source.h3TurboEnabled;
+    const enabled = raw === true || raw === 1 ||
+        String(raw).toLowerCase() === 'true' || String(raw) === '1';
+    const loraName = String(source.h3TurboLora || H3_DEFAULTS.h3TurboLora || H3_TURBO_DEFAULT_LORA).trim() ||
+        H3_TURBO_DEFAULT_LORA;
+    return {
+        enabled,
+        loraName,
+        steps: normalizeH3TurboSteps(source.h3TurboSteps, H3_TURBO_DEFAULT_STEPS)
+    };
+}
+
 // The mutually exclusive attention backends H3 can run under:
 //   auto          — JARVIS picks the best backend ComfyUI actually offers
 //   comfykitchen  — ComfyUI's built-in ModelAttentionBackend (comfy-kitchen)
@@ -158,6 +201,12 @@ const H3_DEFAULTS = {
     h3AudioVae: process.env.H3_AUDIO_VAE || H3_MODEL_FILES.audioVae,
     h3Duration: Number(process.env.H3_DURATION) || 5,
     h3Size: process.env.H3_SIZE || 'M',
+    // MiniMax H3 Turbo LoRA (4-8 step generation). Off by default so the
+    // normal H3 workflow is completely unchanged for existing users.
+    h3TurboEnabled: String(process.env.H3_TURBO_ENABLED || '').toLowerCase() === 'true' ||
+        process.env.H3_TURBO_ENABLED === '1',
+    h3TurboSteps: normalizeH3TurboSteps(process.env.H3_TURBO_STEPS, H3_TURBO_DEFAULT_STEPS),
+    h3TurboLora: process.env.H3_TURBO_LORA || H3_TURBO_DEFAULT_LORA,
     attentionBackend: H3_ATTENTION_BACKENDS.includes(process.env.H3_ATTENTION_BACKEND)
         ? process.env.H3_ATTENTION_BACKEND
         : 'auto',
@@ -185,6 +234,7 @@ const H3_DEFAULTS = {
 const H3_CONFIGURABLE_KEYS = [
     'h3Unet', 'h3Clip', 'h3VideoVae', 'h3AudioVae',
     'h3Duration', 'h3Size', 'attentionBackend', 'loras', 'loraTriggerWords',
+    'h3TurboEnabled', 'h3TurboSteps', 'h3TurboLora',
     'faceRefineEnabled', 'faceRefineDetector', 'faceRefineCropFactor',
     'faceRefineDenoise', 'faceRefineSteps', 'faceRefineCanvasMode',
     'faceRefineSelect', 'faceRefineFeather'
@@ -1400,6 +1450,12 @@ function effectiveVideoSettings() {
                 value = Object.prototype.hasOwnProperty.call(H3_IMAGE_SIZES, s) ? s : H3_DEFAULTS.h3Size;
             } else if (key === 'attentionBackend') {
                 value = normalizeH3AttentionBackend(value);
+            } else if (key === 'h3TurboEnabled') {
+                value = value === true || value === 1 || String(value).toLowerCase() === 'true' || String(value) === '1';
+            } else if (key === 'h3TurboSteps') {
+                value = normalizeH3TurboSteps(value, H3_DEFAULTS.h3TurboSteps);
+            } else if (key === 'h3TurboLora') {
+                value = String(value || '').trim() || H3_DEFAULTS.h3TurboLora;
             } else if (key === 'faceRefineEnabled') {
                 value = value === true || value === 1 || String(value).toLowerCase() === 'true' || String(value) === '1';
             } else if (key === 'faceRefineCanvasMode') {
@@ -1532,6 +1588,12 @@ function saveVideoSettings(patch) {
             if (Object.prototype.hasOwnProperty.call(H3_IMAGE_SIZES, s)) out[key] = s;
         } else if (key === 'attentionBackend') {
             out[key] = normalizeH3AttentionBackend(value);
+        } else if (key === 'h3TurboEnabled') {
+            out[key] = value === true || value === 1 || String(value).toLowerCase() === 'true' || String(value) === '1';
+        } else if (key === 'h3TurboSteps') {
+            out[key] = normalizeH3TurboSteps(value, H3_DEFAULTS.h3TurboSteps);
+        } else if (key === 'h3TurboLora') {
+            out[key] = String(value || '').trim() || null;
         } else if (key === 'faceRefineEnabled') {
             out[key] = value === true || value === 1 || String(value).toLowerCase() === 'true' || String(value) === '1';
         } else if (key === 'faceRefineDetector') {
@@ -1578,8 +1640,77 @@ async function getVideoModelChoices() {
 // --- H3 ComfyUI Workflow Graph ------------------------------------------------
 //
 // Builds the JARVIS H3 graph: T2VA (text only, optional first frame) and I2VA
-// (first frame as reference). No turbo adapters, long context, reference
-// videos/audio, or extra post-pass — those paths are not used here.
+// (first frame as reference). The optional MiniMax H3 Turbo LoRA + Turbo
+// sampler are layered onto the same graph when enabled; no long context,
+// reference videos/audio, or extra post-pass — those paths are not used here.
+
+// Available lora filenames from ComfyUI, preferring the Turbo node's own combo
+// (it lists models/loras) and falling back to the stock LoraLoader list.
+function h3TurboLoraChoices(info) {
+    return objectInfoChoices(info, H3_TURBO_LORA_NODE, 'lora_name') ||
+        objectInfoChoices(info, 'LoraLoader', 'lora_name') ||
+        [];
+}
+
+function h3LoraNameMatches(choice, wanted) {
+    const a = String(choice || '').trim().toLowerCase();
+    const b = String(wanted || '').trim().toLowerCase();
+    if (!a || !b) return false;
+    if (a === b) return true;
+    const base = (name) => name.split(/[\\/]/).pop();
+    return base(a) === base(b);
+}
+
+// Resolve the Turbo setting against what ComfyUI actually has: the two custom
+// nodes and the configured LoRA file. `ready` is true when Turbo is off or when
+// everything required is present. When ComfyUI reports no lora list at all the
+// file check is skipped (an empty list can mean the node pack is missing, which
+// the node check already reports).
+function resolveH3TurboAvailability(info, settings) {
+    const turbo = normalizeH3Turbo(settings);
+    if (!turbo.enabled) {
+        return { enabled: false, ready: true, nodesMissing: [], loraName: turbo.loraName, loraMissing: false, loraChoices: [] };
+    }
+    const available = info || {};
+    const nodesMissing = H3_TURBO_REQUIRED_NODES.filter((name) => !available[name]);
+    const loraChoices = h3TurboLoraChoices(available);
+    const loraMissing = loraChoices.length > 0 &&
+        !loraChoices.some((choice) => h3LoraNameMatches(choice, turbo.loraName));
+    return {
+        enabled: true,
+        ready: nodesMissing.length === 0 && !loraMissing,
+        nodesMissing,
+        loraName: turbo.loraName,
+        loraMissing,
+        loraChoices
+    };
+}
+
+// Fail with an actionable error instead of silently dropping back to normal H3:
+// a silent fallback would make the user's selected Turbo setting misleading.
+function assertH3TurboReady(info, settings) {
+    const state = resolveH3TurboAvailability(info, settings);
+    if (!state.enabled || state.ready) return state;
+    if (state.nodesMissing.length) {
+        const error = new Error(
+            'MiniMax H3 Turbo is enabled, but the Turbo ComfyUI node' +
+            (state.nodesMissing.length > 1 ? 's are' : ' is') + ' missing: ' +
+            state.nodesMissing.join(', ') + '. Install the node pack (' + H3_TURBO_LORA_INSTALL_URL +
+            '), restart ComfyUI, then try again.'
+        );
+        error.code = 'h3_turbo_nodes_missing';
+        error.missingNodes = state.nodesMissing;
+        throw error;
+    }
+    const error = new Error(
+        'MiniMax H3 Turbo is enabled, but the Turbo LoRA was not found.\n\n' +
+        'Expected:\n' + state.loraName + '\n\n' +
+        'Place it in your ComfyUI models/loras directory or configure the model path.'
+    );
+    error.code = 'h3_turbo_lora_missing';
+    error.loraName = state.loraName;
+    throw error;
+}
 
 // Append active LoRA adapters as a model-only chain (H3 LoRAs never touch
 // CLIP). Returns the key of the node the chain ends on, which callers feed
@@ -1649,6 +1780,25 @@ function applyAttentionPatch(graph, baseModelNode, backend) {
     return baseModelNode;
 }
 
+// Insert the MiniMax H3 Turbo LoRA between the model loader/LoRA chain and the
+// sampler. Returns the node the attention patch and scheduler should read from.
+// Leaves the graph untouched when Turbo is off, so the normal H3 workflow is
+// byte-for-byte identical for existing users.
+function appendH3TurboLora(graph, baseModelNode, settings) {
+    const turbo = normalizeH3Turbo(settings);
+    if (!turbo.enabled) return baseModelNode;
+    graph.h3_turbo_lora = {
+        class_type: H3_TURBO_LORA_NODE,
+        inputs: {
+            model: [baseModelNode, 0],
+            lora_name: turbo.loraName,
+            strength: H3_TURBO_STRENGTH,
+            low_vram: false,
+        },
+    };
+    return 'h3_turbo_lora';
+}
+
 function buildH3Graph(opts) {
     const {
         prompt,
@@ -1662,6 +1812,7 @@ function buildH3Graph(opts) {
     } = opts;
 
     const graph = {};
+    const turbo = normalizeH3Turbo(settings);
     graph.model = {
         class_type: 'UNETLoader',
         inputs: {
@@ -1689,17 +1840,24 @@ function buildH3Graph(opts) {
         class_type: 'RandomNoise',
         inputs: { noise_seed: seed },
     };
-    graph.sampler_select = {
-        class_type: 'KSamplerSelect',
-        inputs: { sampler_name: 'res_multistep' },
-    };
+    // Turbo replaces the stock sampler with the node pack's sampler, which
+    // steps the H3 video/audio dual schedules correctly at 4-8 steps.
+    graph.sampler_select = turbo.enabled
+        ? { class_type: H3_TURBO_SAMPLER_NODE, inputs: {} }
+        : {
+            class_type: 'KSamplerSelect',
+            inputs: { sampler_name: 'res_multistep' },
+        };
 
     const userModelNode = appendLoraChain(graph, 'model', settings.loras);
+    // Turbo LoRA sits between the user LoRA chain and the attention patch, so
+    // both the guider and the scheduler read the Turbo-adapted model.
+    const turboModelNode = appendH3TurboLora(graph, userModelNode, settings);
     const attention = normalizeH3AttentionBackend(settings.attentionBackend);
-    const patchedModelNode = applyAttentionPatch(graph, userModelNode, attention);
+    const patchedModelNode = applyAttentionPatch(graph, turboModelNode, attention);
     // Sparse (SLA) attention also has to shape the denoise schedule; the other
-    // backends leave the scheduler on the unpatched chain.
-    const schedulerModelNode = attention === 'sla' ? patchedModelNode : userModelNode;
+    // backends leave the scheduler on the unpatched (Turbo) chain.
+    const schedulerModelNode = attention === 'sla' ? patchedModelNode : turboModelNode;
 
     const hasFirstFrame = mode === 'i2va' && Boolean(firstImageName);
     if (hasFirstFrame) {
@@ -1728,8 +1886,8 @@ function buildH3Graph(opts) {
         class_type: 'BasicScheduler',
         inputs: {
             model: [schedulerModelNode, 0],
-            scheduler: 'simple',
-            steps: H3_DEFAULT_STEPS,
+            scheduler: turbo.enabled ? H3_TURBO_SCHEDULER : 'simple',
+            steps: turbo.enabled ? turbo.steps : H3_DEFAULT_STEPS,
             denoise: 1,
         },
     };
@@ -2415,6 +2573,14 @@ async function generateVideo(prompt, options = {}) {
             if (normalizeH3AttentionBackend(settings.attentionBackend) === 'auto') {
                 console.log('[video-generator] auto attention ->', resolvedSettings.attentionBackend);
             }
+            // Turbo is never silently skipped: a missing node pack or LoRA fails
+            // the render with instructions, so the enabled setting is truthful.
+            if (normalizeH3Turbo(resolvedSettings).enabled) {
+                assertH3TurboReady(info, resolvedSettings);
+                console.log('[video-generator] H3 Turbo enabled (' +
+                    normalizeH3Turbo(resolvedSettings).steps + ' steps, ' +
+                    normalizeH3Turbo(resolvedSettings).loraName + ')');
+            }
             const graph = buildH3Graph({
                 prompt: finalPrompt,
                 mode,
@@ -2464,12 +2630,13 @@ async function generateVideo(prompt, options = {}) {
             const activeLoras = (settings.loras || [])
                 .filter((l) => l && l.on !== false && l.name)
                 .map((l) => ({ name: l.name, strength: Number(l.strength) || 0, triggerWord: l.triggerWord || '' }));
+            const turboState = normalizeH3Turbo(settings);
             const meta = generatedHistory.add({
                 file: '/generated/' + encodeURIComponent(basename),
                 rawFilename: basename,
                 conversationId: options.conversationId || null,
                 prompt: finalPrompt,
-                model: 'MiniMax H3',
+                model: turboState.enabled ? 'MiniMax H3 Turbo' : 'MiniMax H3',
                 width: W,
                 height: H,
                 loras: activeLoras,
@@ -2480,6 +2647,9 @@ async function generateVideo(prompt, options = {}) {
                     fps: H3_FPS,
                     mode,
                     source: options.sourceImageRawFilename || null,
+                    ...(turboState.enabled ? {
+                        turbo: { lora: turboState.loraName, strength: H3_TURBO_STRENGTH, steps: turboState.steps, scheduler: H3_TURBO_SCHEDULER }
+                    } : {})
                 }
             });
 
@@ -3037,6 +3207,20 @@ module.exports = {
     H3_DEFAULTS,
     H3_CONFIGURABLE_KEYS,
     H3_DEFAULT_STEPS,
+    H3_TURBO_SAMPLER_NODE,
+    H3_TURBO_LORA_NODE,
+    H3_TURBO_REQUIRED_NODES,
+    H3_TURBO_DEFAULT_LORA,
+    H3_TURBO_STRENGTH,
+    H3_TURBO_SCHEDULER,
+    H3_TURBO_STEPS,
+    H3_TURBO_DEFAULT_STEPS,
+    H3_TURBO_LORA_INSTALL_URL,
+    normalizeH3Turbo,
+    normalizeH3TurboSteps,
+    appendH3TurboLora,
+    resolveH3TurboAvailability,
+    assertH3TurboReady,
     H3_ATTENTION_BACKENDS,
     H3_AUTO_ATTENTION_PRIORITY,
     H3_CK_ATTENTION_VALUE,

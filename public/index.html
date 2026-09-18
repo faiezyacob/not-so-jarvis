@@ -578,6 +578,36 @@
                         </div>
                             </div>
                         </div>
+                        <div class="settings-card" data-search="video minimax h3 turbo lora fast steps acceleration low step">
+                            <div class="settings-card-title">MINIMAX H3 TURBO</div>
+                            <div class="settings-card-sub">Use the MiniMax H3 Turbo LoRA for faster 4–8 step generation.</div>
+                        <div class="settings-field">
+                            <label class="settings-toggle">
+                                <span class="settings-toggle-label">MiniMax H3 Turbo</span>
+                                <input type="checkbox" id="videoTurboEnabled">
+                            </label>
+                            <span class="settings-hint">Off keeps the normal H3 workflow unchanged. On routes the model through the Turbo LoRA and Turbo sampler (strength 1.0, simple scheduler).</span>
+                        </div>
+                            <div id="videoTurboOptions" hidden>
+                        <div class="settings-field">
+                            <label class="settings-field-label" for="videoTurboSteps">Turbo Steps</label>
+                            <select class="settings-select" id="videoTurboSteps">
+                                <option value="4">4</option>
+                                <option value="5">5</option>
+                                <option value="6" selected>6</option>
+                                <option value="7">7</option>
+                                <option value="8">8</option>
+                            </select>
+                            <span class="settings-hint">6–8 steps generally provide better quality. 4 steps is fastest but may show motion smearing during fast motion.</span>
+                        </div>
+                        <div class="settings-field">
+                            <label class="settings-field-label" for="videoTurboLora">Turbo LoRA</label>
+                            <input type="text" class="settings-input" id="videoTurboLora"
+                                placeholder="minimax_h3_turbo_v4_step600_ema.safetensors" autocomplete="off">
+                            <span class="settings-hint">Place the LoRA in ComfyUI models/loras. Default: minimax_h3_turbo_v4_step600_ema.safetensors</span>
+                        </div>
+                            </div>
+                        </div>
                         <div class="settings-card" data-search="video face refine facerefine detailer small distant faces enhance denoise install">
                             <div class="settings-card-title">FACE REFINEMENT</div>
                             <div class="settings-card-sub">Optional second H3 pass after each video: tracks faces per frame, re-generates them at low denoise, stitches them back. Fixes small/distant faces.</div>

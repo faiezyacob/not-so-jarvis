@@ -107,6 +107,11 @@ const KNOWN_FILES = {
         hfPath: 'vae/minimax_h3_audio_vae_fp32.safetensors',
         approxMB: 500
     },
+    'minimax_h3_turbo_v4_step600_ema.safetensors': {
+        repo: 'larryvrh/MiniMax-H3-Turbo-Lora',
+        hfPath: 'minimax_h3_turbo_v4_step600_ema.safetensors',
+        approxMB: 744
+    },
     'seedvr2_ema_7b_fp8_e4m3fn_mixed_block35_fp16.safetensors': {
         repo: 'mekrod/seedvr2_ema_7b_fp8_e4m3fn_mixed_block35_fp16',
         hfPath: 'seedvr2_ema_7b_fp8_e4m3fn_mixed_block35_fp16.safetensors',
@@ -154,6 +159,7 @@ const MODEL_CATALOG = [
     { id: 'h3_clip', group: 'video', label: 'H3 CLIP (Qwen3-VL 32B NVFP4)', required: true, dest: 'text_encoders', file: { settings: 'video', key: 'h3Clip' }, minBytes: 5 * 1024 ** 3 },
     { id: 'h3_video_vae', group: 'video', label: 'H3 video VAE', required: true, dest: 'vae', file: { settings: 'video', key: 'h3VideoVae' }, minBytes: 100 * 1024 ** 2 },
     { id: 'h3_audio_vae', group: 'video', label: 'H3 audio VAE', required: true, dest: 'vae', file: { settings: 'video', key: 'h3AudioVae' }, minBytes: 10 * 1024 ** 2 },
+    { id: 'h3_turbo_lora', group: 'video', label: 'MiniMax H3 Turbo LoRA (v4 step600 EMA)', required: false, dest: 'loras', file: { settings: 'video', key: 'h3TurboLora' }, minBytes: 100 * 1024 ** 2, note: 'Needed only when MiniMax H3 Turbo is enabled in Settings > Video.' },
     { id: 'seedvr2_dit', group: 'upscale', label: 'SeedVR2 DiT 7B (balanced)', required: true, dest: 'seedvr2', also: ['SEEDVR2'], seen: 'seedvr2dit', file: { settings: 'image', key: 'seedvr2Dit' }, minBytes: 2 * 1024 ** 3 },
     { id: 'seedvr2_dit_sharp', group: 'upscale', label: 'SeedVR2 DiT 7B (sharp profile)', required: false, dest: 'seedvr2', also: ['SEEDVR2'], seen: 'seedvr2dit', file: 'seedvr2_ema_7b_sharp_fp8_e4m3fn_mixed_block35_fp16.safetensors', minBytes: 2 * 1024 ** 3, note: 'Same profile the sharp upscale uses. The SeedVR2 nodes auto-download it on first use; no token needed.' },
     { id: 'seedvr2_vae', group: 'upscale', label: 'SeedVR2 VAE', required: true, dest: 'seedvr2', also: ['SEEDVR2', 'vae'], seen: 'seedvr2vae', file: { settings: 'image', key: 'seedvr2Vae' }, minBytes: 10 * 1024 ** 2 },
@@ -202,6 +208,13 @@ const NODE_CATALOG = [
         nodes: ['MiniMaxH3ImageToVideo'],
         repo: null, dir: null,
         note: 'Ships with current ComfyUI. If missing, update ComfyUI (or install the H3 nodes via ComfyUI Manager search "MiniMax H3").'
+    },
+    {
+        id: 'h3_turbo', label: 'MiniMax H3 Turbo', required: false,
+        nodes: ['MiniMaxH3TurboLoRA', 'MiniMaxH3TurboSampler'],
+        repo: 'https://github.com/larryvrh/ComfyUI-MiniMax-H3-Turbo',
+        dir: 'ComfyUI-MiniMax-H3-Turbo', recursive: false,
+        note: 'Needed for the MiniMax H3 Turbo option (4-8 step generation). Install, then restart ComfyUI.'
     }
 ];
 
