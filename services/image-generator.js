@@ -224,7 +224,7 @@ async function detectIntent(message, providers, provider, model, think) {
         const raw = await providers.chat(provider, [
             { role: 'system', content: IMAGE_INTENT_SYSTEM_PROMPT },
             { role: 'user', content: cluesPrompt }
-        ], model, { think, temperature: 0 });
+        ], model, { think: false, temperature: 0 });
 
         const parsed = parseIntentJson(raw);
         if (parsed) {

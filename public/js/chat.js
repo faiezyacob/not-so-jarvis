@@ -605,7 +605,12 @@ const Chat = (() => {
     // original + upscaled image pairs (keeping just the upscaled image).
     // Videos are handed to the custom VideoPlayer synchronously so the
     // conversation message never depends on observer timing.
-    function setAiContent(contentEl, markdown) {
+    // options.streaming: a partial reply being streamed token-by-token. The
+    // markdown is rendered, but the expensive DOM passes (upscale-pair pairing,
+    // video scanning, card/suggestion attachment) are skipped — they only matter
+    // for a complete message and, run on every frame, saturate the main thread.
+    function setAiContent(contentEl, markdown, options) {
+        const streaming = Boolean(options && options.streaming);
         // Director cards are persisted as a [[director:{...}]] marker inside the
         // markdown. Pull them out before parsing, then render the interactive
         // card after the content (image/video) so it behaves across reloads.
@@ -624,6 +629,7 @@ const Chat = (() => {
             ? window.ChatSuggestions.extract(longParsed.text)
             : { text: longParsed.text, suggested: false };
         contentEl.innerHTML = Markdown.parse(suggestion.text);
+        if (streaming) return;
         collapseUpscalePairs(contentEl);
         if (window.VideoPlayer && typeof window.VideoPlayer.scan === 'function') {
             window.VideoPlayer.scan(contentEl);
@@ -641,10 +647,60 @@ const Chat = (() => {
 
     // Scroll the message pane only when the streaming element actually belongs
     // to the conversation on screen, so a background stream can never scroll
-    // (or render into) a different conversation.
+    // (or render into) a different conversation. Respect the user's position:
+    // once they scroll up to read, stop pinning them to the bottom (and skip the
+    // layout-forcing write entirely).
     function scrollActiveStream(el) {
         if (!el || !chatMessagesEl.contains(el)) return;
+        const distance = chatMessagesEl.scrollHeight - chatMessagesEl.scrollTop - chatMessagesEl.clientHeight;
+        if (distance > 120) return;
         chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+    }
+
+    // Coalesce streamed-token renders to at most one every STREAM_RENDER_MIN_MS
+    // (trailing edge). The old path rebuilt the entire message (Markdown.parse +
+    // innerHTML + media rescan + forced reflow) for every token, which is O(n^2)
+    // and froze the tab on long replies. Only the latest pending state is
+    // rendered, and the rate cap keeps the main thread responsive on any reply
+    // length. Works in background tabs too (the final `done` render is exact).
+    const STREAM_RENDER_MIN_MS = 80;
+    let streamRenderHandle = null;
+    let streamRenderState = null;
+    let streamRenderLastAt = 0;
+
+    function applyStreamRender() {
+        const state = streamRenderState;
+        streamRenderState = null;
+        if (!state) return;
+        setAiContent(state.contentEl, state.markdown, { streaming: true });
+        scrollActiveStream(state.el);
+    }
+
+    function scheduleStreamRender(contentEl, markdown, el) {
+        streamRenderState = { contentEl, markdown, el };
+        if (streamRenderHandle !== null) return;
+        const delay = Math.max(0, STREAM_RENDER_MIN_MS - (Date.now() - streamRenderLastAt));
+        streamRenderHandle = setTimeout(() => {
+            streamRenderHandle = null;
+            streamRenderLastAt = Date.now();
+            applyStreamRender();
+        }, delay);
+    }
+
+    function flushStreamRender() {
+        if (streamRenderHandle !== null) {
+            clearTimeout(streamRenderHandle);
+            streamRenderHandle = null;
+        }
+        applyStreamRender();
+    }
+
+    function cancelStreamRender() {
+        if (streamRenderHandle !== null) {
+            clearTimeout(streamRenderHandle);
+            streamRenderHandle = null;
+        }
+        streamRenderState = null;
     }
 
     function renderMessages(messages) {
@@ -942,6 +998,7 @@ const Chat = (() => {
                             }
                         }
                         if (data.image) {
+                            cancelStreamRender();
                             fullReply = data.image.content;
                             if (generatingEl) generatingEl.remove();
                             setProgressTitle('');
@@ -951,6 +1008,7 @@ const Chat = (() => {
                             if (window.Gallery) window.Gallery.refresh();
                         }
                         if (data.video) {
+                            cancelStreamRender();
                             fullReply = data.video.content;
                             if (generatingEl) generatingEl.remove();
                             setProgressTitle('');
@@ -960,6 +1018,7 @@ const Chat = (() => {
                             if (window.Gallery) window.Gallery.refresh();
                         }
                         if (data.director) {
+                            cancelStreamRender();
                             fullReply = data.director.content;
                             if (generatingEl) generatingEl.remove();
                             setProgressTitle('');
@@ -972,6 +1031,7 @@ const Chat = (() => {
                             }
                         }
                         if (data.longvideo) {
+                            cancelStreamRender();
                             fullReply = data.longvideo.content;
                             setProgressTitle('');
                             setAiContent(contentEl, data.longvideo.content);
@@ -998,8 +1058,7 @@ const Chat = (() => {
                             if (generatingEl) generatingEl.remove();
                             setProgressTitle('');
                             fullReply += data.chunk;
-                            setAiContent(contentEl, fullReply);
-                            scrollActiveStream(aiMessageEl);
+                            scheduleStreamRender(contentEl, fullReply, aiMessageEl);
                         }
                         if (data.stats) {
                             let statsEl = aiMessageEl.querySelector('.message-stats');
@@ -1011,6 +1070,7 @@ const Chat = (() => {
                             statsEl.textContent = data.stats.tokensPerSec + ' tok/s · ' + data.stats.totalTokens + ' tokens · ' + data.stats.durationMs + 'ms';
                         }
                         if (data.done) {
+                            cancelStreamRender();
                             fullReply = data.fullReply;
                             // Re-render so a persisted marker (suggested prompt)
                             // can attach its generation cards.
@@ -1020,6 +1080,10 @@ const Chat = (() => {
                     }
                 }
             }
+
+            // Flush any render still queued from the last token (a stream that
+            // ended without a `done` event) so the final text is never lost.
+            flushStreamRender();
 
             // Save the complete message
             if (fullReply && !hadError) {
@@ -1056,6 +1120,7 @@ const Chat = (() => {
                 }
             }
         } finally {
+            cancelStreamRender();
             activeStreamAbort = null;
             activeQueueId = null;
             activeQueueActive = false;

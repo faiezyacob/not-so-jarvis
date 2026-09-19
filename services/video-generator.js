@@ -1152,7 +1152,7 @@ async function detectVideoIntent(message, providers, provider, model, think) {
         const raw = await providers.chat(provider, [
             { role: 'system', content: H3_INTENT_SYSTEM_PROMPT },
             { role: 'user', content: cluesPrompt }
-        ], model, { think, temperature: 0 });
+        ], model, { think: false, temperature: 0 });
 
         const parsed = parseIntentJson(raw);
         if (parsed && parsed.intent === 'video_generation') {

@@ -989,7 +989,9 @@ async function askRouter(routerPrompt, provider, model, think) {
     ];
     for (let attempt = 0; attempt < 2; attempt++) {
         try {
-            const raw = await providers.chat(provider, messages, model, { think, temperature: 0 });
+            // Deterministic JSON classification — never spend a hidden thinking
+            // pass on it (it only adds latency and GPU load before the reply).
+            const raw = await providers.chat(provider, messages, model, { think: false, temperature: 0 });
             const parsed = parseRouterJson(raw);
             if (parsed) return parsed;
             console.warn('[task-router] Unparseable router JSON (attempt ' + (attempt + 1) + '), retrying.');
@@ -1070,17 +1072,23 @@ const SUCCESS_REPLY_SYSTEM_PROMPT =
     'anything that did not happen. Refer to the actual task. Output ONLY the message text.';
 
 // Generate a concise, truthful assistant confirmation based on the actual result.
-async function buildSuccessReply({ action, prompt, previousPrompt, provider, model, taskType, think }) {
+// `deterministic: true` skips the LLM entirely and returns the template. Callers
+// use it immediately after a ComfyUI job: the chat model is unloaded then, and
+// running the summary LLM would reload it (GBs) on top of ComfyUI's still-resident
+// diffusion/video weights — both sides resident is what froze the machine. The
+// template carries the same facts and the prompt is shown alongside it anyway.
+async function buildSuccessReply({ action, prompt, previousPrompt, provider, model, taskType, think, deterministic }) {
     const isVideo = taskType === 'video';
     const mediaType = isVideo ? 'video' : 'image';
     const change = action === 'modify'
         ? ('You updated the ' + mediaType + '.' + (previousPrompt && previousPrompt !== prompt ? ' You changed the prompt from "' + previousPrompt + '" to "' + prompt + '".' : ''))
         : ('Your ' + mediaType + ' was generated.');
+    if (deterministic) return change;
     try {
         const raw = await providers.chat(provider, [
             { role: 'system', content: SUCCESS_REPLY_SYSTEM_PROMPT },
             { role: 'user', content: 'Action: ' + action + '\nType: ' + mediaType + '\nPrompt: "' + prompt + '"\n' + change }
-        ], model, { think });
+        ], model, { think: false });
         const text = String(raw || '').trim();
         if (text) return text;
     } catch (err) {

@@ -561,7 +561,10 @@ async function askResolver(message, input, context, signals) {
     ];
     for (let attempt = 0; attempt < 2; attempt++) {
         try {
-            const raw = await providers.chat(input.provider, messages, input.model, { think: input.think, temperature: 0 });
+            // Intent classification is a deterministic JSON verdict, not a
+            // reasoning task. Never run hidden thinking here: it multiplies the
+            // turn's latency/GPU load for no accuracy gain (temperature 0).
+            const raw = await providers.chat(input.provider, messages, input.model, { think: false, temperature: 0 });
             const parsed = parseResolverJson(raw);
             if (parsed && normalizeIntent(parsed.intent)) return parsed;
             // Malformed / unknown intent: retry once, then let the caller fall back.

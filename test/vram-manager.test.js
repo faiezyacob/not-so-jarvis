@@ -2,10 +2,15 @@
    JARVIS — VRAM manager tests
    Covers the deterministic eviction rules:
    free every loaded chat model before ComfyUI,
-   free ComfyUI before any chat. Ollama/ComfyUI
-   are stubbed so these run offline and fast.
+   free ComfyUI before any chat, and wait for
+   Ollama to actually drop a model before the
+   next side loads. Ollama/ComfyUI are stubbed
+   so these run offline and fast.
    Run with: npm test
    ============================================ */
+
+// Tests pass fast release timings so the polling/settle never slows the suite.
+const FAST = { pollMs: 1, settleMs: 0, timeoutMs: 500 };
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -44,16 +49,44 @@ function stubComfy({ available = true, resident = true, freed } = {}) {
 
 test('freeVRAMBeforeImage unloads every model Ollama has loaded', async () => {
     activityLog.record = () => {};
-    providerManager.getOllamaStatus = async () => ({
-        online: true,
-        running: [{ name: 'llama3:8b', vramBytes: 100 }, { name: 'qwen2:7b', vramBytes: 90 }]
-    });
+    let running = [{ name: 'llama3:8b' }, { name: 'qwen2:7b' }];
+    providerManager.getOllamaStatus = async () => ({ online: true, running });
     const unloaded = [];
-    providers.unloadModel = async (provider, model) => { unloaded.push(model); };
+    providers.unloadModel = async (provider, model) => {
+        unloaded.push(model);
+        running = running.filter(m => m.name !== model);
+    };
 
-    const result = await vramManager.freeVRAMBeforeImage();
+    const result = await vramManager.freeVRAMBeforeImage(FAST);
     assert.equal(result.freed, true);
+    assert.equal(result.released, true);
     assert.deepEqual(unloaded.sort(), ['llama3:8b', 'qwen2:7b']);
+});
+
+test('freeVRAMBeforeImage waits until Ollama actually drops the model', async () => {
+    activityLog.record = () => {};
+    // The model stays in /api/ps for two polls after the unload request.
+    let polls = 0;
+    providerManager.getOllamaStatus = async () => {
+        polls++;
+        return { online: true, running: polls <= 2 ? [{ name: 'llama3:8b' }] : [] };
+    };
+    providers.unloadModel = async () => {};
+
+    const result = await vramManager.freeVRAMBeforeImage({ pollMs: 5, settleMs: 0, timeoutMs: 500 });
+    assert.equal(result.released, true);
+    assert.ok(polls >= 3, 'should have polled until the model was gone');
+});
+
+test('freeVRAMBeforeImage reports released:false when the model never drops', async () => {
+    activityLog.record = () => {};
+    providerManager.getOllamaStatus = async () => ({ online: true, running: [{ name: 'llama3:8b' }] });
+    providers.unloadModel = async () => {};
+
+    const result = await vramManager.freeVRAMBeforeImage({ pollMs: 5, settleMs: 0, timeoutMs: 30 });
+    assert.equal(result.freed, true);
+    assert.equal(result.released, false);
+    assert.deepEqual(result.remaining, ['llama3:8b']);
 });
 
 test('freeVRAMBeforeImage falls back to the remembered chat model when Ollama is unreachable', async () => {
@@ -63,14 +96,14 @@ test('freeVRAMBeforeImage falls back to the remembered chat model when Ollama is
     providers.unloadModel = async (provider, model) => { unloaded.push(model); };
 
     vramManager.rememberChatModel('ollama', 'test-model');
-    const result = await vramManager.freeVRAMBeforeImage();
+    const result = await vramManager.freeVRAMBeforeImage(FAST);
     assert.equal(result.freed, true);
     assert.deepEqual(unloaded, ['test-model']);
 });
 
 test('freeVRAMBeforeImage reports no_chat_model when nothing is loaded', async () => {
     providerManager.getOllamaStatus = async () => ({ online: true, running: [] });
-    const result = await vramManager.freeVRAMBeforeImage();
+    const result = await vramManager.freeVRAMBeforeImage(FAST);
     assert.equal(result.freed, false);
     assert.equal(result.reason, 'no_chat_model');
 });
@@ -79,7 +112,7 @@ test('freeVRAMBeforeChat unloads ComfyUI models when they are resident', async (
     activityLog.record = () => {};
     const freed = {};
     stubComfy({ resident: true, freed });
-    const result = await vramManager.freeVRAMBeforeChat();
+    const result = await vramManager.freeVRAMBeforeChat({ settleMs: 0 });
     assert.equal(result.freed, true);
     assert.equal(freed.called, true);
 });

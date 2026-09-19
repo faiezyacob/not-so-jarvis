@@ -2898,7 +2898,10 @@ async function handleImageGenerationStream(req, res, opts) {
             previousPrompt: previousPrompt || null,
             provider,
             model,
-            think
+            think,
+            // ComfyUI still holds the image weights here; do not reload the chat
+            // model on top of them (see buildSuccessReply).
+            deterministic: true
         });
 
         const content =
@@ -3072,7 +3075,9 @@ async function handleImageEditStream(req, res, opts) {
             previousPrompt: previousPrompt || null,
             provider,
             model,
-            think
+            think,
+            // ComfyUI still holds the edit weights here; keep the chat model out.
+            deterministic: true
         });
 
         const content =
@@ -3258,7 +3263,10 @@ async function handleVideoGenerationStream(req, res, opts) {
             provider,
             model,
             taskType: 'video',
-            think
+            think,
+            // ComfyUI still holds the video weights here; reloading the 6GB chat
+            // model on top of them is what made the machine unresponsive.
+            deterministic: true
         });
 
         // Compact acceleration note, only when First Block Cache is active. The

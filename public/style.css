@@ -1357,6 +1357,7 @@ details.settings-card[open] summary.settings-card-title::after {
 
 .message--user {
     align-self: flex-end;
+    width: fit-content;
     padding-left: 14px;
     border-left: 2px solid rgba(212, 232, 220, 0.15);
     max-width: min(82%, 760px);

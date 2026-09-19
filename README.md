@@ -108,7 +108,7 @@ Every message flows through `task-router.js` before any tool runs. The router de
 
 A fast regex signal decides whether a structured LLM classifier is needed; the classifier's JSON is the authority on execution — the chat model's free-text reply never triggers a tool. Deterministic pre-LLM gates own narrow intents (upscaling, typo-tolerant phrasings, bare *"again"*, anaphoric *"another image"*, explicit new-generation requests) so small chat models cannot downgrade them to chat. Classification runs at temperature 0.
 
-When a tool does run, VRAM is freed first (`vram-manager` unloads the chat model to make room), the workflow is queued, and results stream back into the conversation. Once the chat model is needed again, the image/video models are unloaded in turn.
+When a tool does run, VRAM is freed first (`vram-manager` unloads the chat model to make room), the workflow is queued, and results stream back into the conversation. Once the chat model is needed again, the image/video models are unloaded in turn. Unloads are verified rather than fire-and-forget: JARVIS polls Ollama until the chat model actually leaves memory (and holds a short settle for the OS to reclaim the RAM) before loading ComfyUI, so a still-resident `llama-server` can't be stacked under the video model. The timings are tunable via `JARVIS_MODEL_RELEASE_TIMEOUT_MS`, `JARVIS_MODEL_RELEASE_POLL_MS`, and `JARVIS_MODEL_RELEASE_SETTLE_MS` (see `.env.example`).
 
 ### Environment awareness
 
