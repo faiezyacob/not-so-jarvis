@@ -42,6 +42,7 @@ Chat, generate images, edit photos, produce videos with sound, upscale both — 
 
 - **Video generation** with MiniMax H3 — text-to-video-audio (T2VA) and image-to-video-audio (I2VA), with synchronized audio
 - **FaceRefine** — optional second H3 pass that tracks faces per frame, re-generates them at low denoise, and stitches them back to fix small or distant faces
+- **First Block Cache** — optional H3 acceleration patch (via the `ComfyUI-MiniMaxH3-FirstBlockCache` custom node) that reduces redundant transformer computation; composes with the attention backend and Turbo LoRA
 - **Video upscaling** — fast RTX super-resolution (default) or the SeedVR2 quality path, audio-preserving
 
 ### Dashboard & tooling
@@ -208,6 +209,42 @@ Copy `.env.example` to `.env` and adjust as needed. Variables already set by the
 | `H3_SIZE` | `M` | Video size (S / M / L) |
 | `H3_DURATION` | `5` | Duration in seconds (5–15) |
 | `H3_ATTENTION_BACKEND` | `auto` | `auto`, `comfykitchen`, `sageattention`, or `sla` |
+
+### H3 First Block Cache
+
+First Block Cache is an optional acceleration patch for native MiniMax H3. It runs the first transformer block on every denoising step and reuses the cached residual of the remaining block stack when the residual change is small enough. **It is an approximation, not a lossless optimization — higher cache aggressiveness can change the denoising trajectory.** Review important outputs visually; `H3 Fast` is the recommended practical preset.
+
+It is implemented entirely by an external ComfyUI custom node; JARVIS only detects it, wires it immediately after the H3 diffusion-model loader, validates it and reports diagnostics. It composes with every attention backend (Auto / Comfy Kitchen / SageAttention / SLA) and with the Turbo LoRA, and it only ever applies to the MiniMax H3 pipeline.
+
+**Install (required before enabling):**
+
+```bash
+git clone https://github.com/duckyshell/ComfyUI-MiniMaxH3-FirstBlockCache.git
+```
+
+Clone it into `ComfyUI/custom_nodes`, then restart ComfyUI — or use the **Install / check First Block Cache** button in **Settings > Video → FIRST BLOCK CACHE** (same pattern as FaceRefine). Enabling the option also starts that install automatically when the node is missing. The node has no additional Python dependencies or model downloads, so cloning it is the whole install; ComfyUI must be restarted to load it. If the node is still missing when the setting is on, generation stops with an install message, and you can turn the toggle off to continue normally.
+
+Modes (passed straight to the node; manual values are locked to Custom):
+
+| Mode | Threshold |
+|------|-----------|
+| H3 Safe | 0.08 |
+| H3 Fast (default) | 0.10 |
+| H3 Aggressive | 0.12 |
+| H3 Experimental | deep-reuse cache |
+| Custom | threshold, start/end %, max consecutive hits, temporal guard |
+
+Settings > Video shows the mode and the custom fields (locked to Custom). The chosen mode, attention backend and Turbo state are recorded in the generated-history metadata, and the compact acceleration summary is added to the chat reply when First Block Cache is active.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `H3_FBCACHE_ENABLED` | `false` | Enable the First Block Cache MODEL patch |
+| `H3_FBCACHE_MODE` | `H3 Fast — 0.10 / max 2` | Exact node mode string |
+| `H3_FBCACHE_THRESHOLD` | `0.10` | Custom-mode residual threshold (0–1) |
+| `H3_FBCACHE_START` | `0.10` | Custom-mode start of the denoising window (0–1) |
+| `H3_FBCACHE_END` | `0.95` | Custom-mode end of the denoising window (0–1) |
+| `H3_FBCACHE_MAX_HITS` | `2` | Custom-mode consecutive-hit cap (1–20) |
+| `H3_FBCACHE_TEMPORAL_GUARD` | `false` | Custom-mode per-frame temporal guard |
 
 ### H3 FaceRefine
 

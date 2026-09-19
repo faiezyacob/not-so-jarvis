@@ -379,18 +379,26 @@ function renderSetupNodes(data) {
     if (!list) return;
     let html = '';
     for (const n of (data.nodes || [])) {
+        // The pack was cloned but ComfyUI is still running its old node list, so
+        // the nodes are absent from /object_info. Tell the user to restart
+        // instead of offering another install.
+        const restartNeeded = data.comfyAvailable && n.ready === false && n.packInstalled === true;
         const badge = !data.comfyAvailable
             ? '<span class="setup-badge setup-badge--missing">UNKNOWN</span>'
             : (n.ready === true
                 ? '<span class="setup-badge setup-badge--ok">READY</span>'
-                : '<span class="setup-badge setup-badge--missing">MISSING</span>');
-        const btn = (data.comfyAvailable && n.ready === false && n.installable)
+                : (restartNeeded
+                    ? '<span class="setup-badge setup-badge--missing">RESTART</span>'
+                    : '<span class="setup-badge setup-badge--missing">MISSING</span>'));
+        const btn = (data.comfyAvailable && n.ready === false && n.installable && !restartNeeded)
             ? '<button class="settings-browse-btn setup-row-btn" type="button" data-setup-node="' + escHtml(n.id) + '">Install</button>'
             : '';
+        const detail = restartNeeded
+            ? ' — <span class="setup-warn">installed; restart ComfyUI to load</span>'
+            : (n.missing && n.missing.length && data.comfyAvailable ? ' — <span class="setup-warn">missing: ' + escHtml(n.missing.join(', ')) + '</span>' : '');
         html += '<div class="setup-row">' + badge +
             '<div class="setup-row-main"><div class="setup-row-title">' + escHtml(n.label) + '</div>' +
-            '<div class="setup-row-sub">' + escHtml(n.nodes.join(', ')) +
-            (n.missing && n.missing.length && data.comfyAvailable ? ' — <span class="setup-warn">missing: ' + escHtml(n.missing.join(', ')) + '</span>' : '') +
+            '<div class="setup-row-sub">' + escHtml(n.nodes.join(', ')) + detail +
             (n.required ? '' : ' · optional') + (n.nvidiaOnly ? ' · NVIDIA GPU only' : '') +
             '<br>' + escHtml(n.note || '') + '</div></div>' + btn + '</div>';
     }
@@ -447,10 +455,13 @@ function renderSetupTools(data) {
 
 function renderSetupJob(data) {
     const job = (data && data.job) || {};
+    const isNodeJob = job.kind === 'nodes';
     const field = document.getElementById('setupProgressField');
     const bar = document.getElementById('setupProgressBar');
     const logEl = document.getElementById('setupJobLog');
-    if (field) field.hidden = !(job.running || (job.done && job.log && job.log.length));
+    const nodeLogEl = document.getElementById('setupNodesLog');
+    const showJob = job.running || (job.done && job.log && job.log.length);
+    if (field) field.hidden = !showJob;
     if (bar) {
         const cur = job.current || {};
         const knownTotal = job.running && cur.total > 0;
@@ -463,25 +474,45 @@ function renderSetupJob(data) {
             bar.style.width = '100%';
         }
     }
+
+    // Build one status line and reuse it in the MODELS card and, for node
+    // installs, in the CUSTOM NODES card (where the button actually lives) so
+    // the user gets feedback next to what they clicked.
+    let statusText = '';
+    let statusError = false;
+    const cur = job.current || {};
     if (job.running) {
-        const cur = job.current || {};
         const mb = (n) => (Number(n) > 0 ? (Number(n) / 1024 / 1024).toFixed(0) + ' MB' : '—');
-        setSetupStatus('setupJobStatus', (job.kind === 'nodes' ? 'Installing nodes' : 'Downloading') +
+        statusText = (isNodeJob ? 'Installing nodes' : 'Downloading') +
             (cur.label ? ': ' + cur.label : '') +
             (cur.total > 0 ? ' (' + mb(cur.received) + ' / ' + mb(cur.total) + ')' : '') +
-            ' — job ' + (job.finished || 0) + '/' + (job.total || 0));
+            ' — job ' + (job.finished || 0) + '/' + (job.total || 0);
     } else if (job.done) {
-        setSetupStatus('setupJobStatus', job.ok ? 'Finished. Press Re-check to refresh.' : ('Failed: ' + (job.error || 'unknown error')), !job.ok);
-    } else {
-        setSetupStatus('setupJobStatus', '');
-    }
-    if (logEl) {
-        if (job.log && job.log.length) {
-            logEl.hidden = false;
-            logEl.textContent = job.log.slice(-12).join('\n');
-            logEl.scrollTop = logEl.scrollHeight;
+        if (!job.ok) {
+            statusText = 'Failed: ' + (job.error || 'unknown error');
+            statusError = true;
+        } else if (isNodeJob) {
+            statusText = 'Installed. RESTART ComfyUI to load the new nodes, then press Re-check.';
         } else {
-            logEl.hidden = true;
+            statusText = 'Finished. Press Re-check to refresh.';
+        }
+    }
+    setSetupStatus('setupJobStatus', statusText, statusError);
+    if (isNodeJob) {
+        setSetupStatus('setupNodesStatus', statusText, statusError);
+    } else if (!job.running && !job.done) {
+        setSetupStatus('setupNodesStatus', '');
+    }
+
+    const logText = (job.log && job.log.length) ? job.log.slice(-12).join('\n') : '';
+    for (const el of [logEl, isNodeJob ? nodeLogEl : null]) {
+        if (!el) continue;
+        if (logText) {
+            el.hidden = false;
+            el.textContent = logText;
+            el.scrollTop = el.scrollHeight;
+        } else {
+            el.hidden = true;
         }
     }
 }
@@ -584,7 +615,11 @@ async function setupInstallNodes(ids) {
             setSetupStatus('setupNodesStatus', (data && data.reason === 'already running') ? 'A setup job is already running.' : ('Install failed: ' + ((data && data.error) || res.status)), true);
             return;
         }
-        setSetupStatus('setupNodesStatus', '');
+        // Immediate render so the node card shows the running job + log without
+        // waiting for the first poll tick.
+        try {
+            renderSetupStatus(await fetchSetupStatus());
+        } catch { /* the poll below will recover */ }
         startSetupPoll();
     } catch (err) {
         setSetupStatus('setupNodesStatus', 'Install failed: ' + err.message, true);
@@ -1402,7 +1437,61 @@ const VIDEO_FACEREFINE_SELECT_FIELDS = [
     { key: 'faceRefineSelect', id: 'videoFaceRefineSelect' }
 ];
 
+// --- MiniMax H3 First Block Cache (optional MODEL patch) ---
+const VIDEO_FBC_CUSTOM_MODE = 'Custom — manual values';
+const VIDEO_FBC_DEFAULT_MODE = 'H3 Fast — 0.10 / max 2';
+const VIDEO_FBC_CUSTOM_INPUTS = [
+    'videoFbcThreshold', 'videoFbcStart', 'videoFbcEnd',
+    'videoFbcMaxHits', 'videoFbcTemporalGuard'
+];
+
+function setVideoFbcStatus(text, isError) {
+    const el = document.getElementById('videoFbcStatus');
+    if (!el) return;
+    el.textContent = text || '';
+    el.classList.toggle('settings-save-status--error', !!isError);
+}
+
+function readVideoFbcForm() {
+    const value = (id) => {
+        const el = document.getElementById(id);
+        return el ? el.value : '';
+    };
+    const checked = (id) => {
+        const el = document.getElementById(id);
+        return el ? el.checked === true : false;
+    };
+    const modeSel = document.getElementById('videoFbcMode');
+    return {
+        enabled: checked('videoFbcEnabled'),
+        mode: modeSel ? modeSel.value : VIDEO_FBC_DEFAULT_MODE,
+        threshold: Number(value('videoFbcThreshold')),
+        startPercent: Number(value('videoFbcStart')),
+        endPercent: Number(value('videoFbcEnd')),
+        maxConsecutiveHits: Number(value('videoFbcMaxHits')),
+        temporalGuard: checked('videoFbcTemporalGuard')
+    };
+}
+
+function syncVideoFbcVisibility() {
+    const enabled = document.getElementById('videoFbcEnabled')?.checked === true;
+    const options = document.getElementById('videoFbcOptions');
+    if (options) options.hidden = !enabled;
+    const modeSel = document.getElementById('videoFbcMode');
+    const mode = modeSel ? modeSel.value : VIDEO_FBC_DEFAULT_MODE;
+    const customWrap = document.getElementById('videoFbcCustom');
+    const isCustom = enabled && mode === VIDEO_FBC_CUSTOM_MODE;
+    if (customWrap) customWrap.hidden = !isCustom;
+    VIDEO_FBC_CUSTOM_INPUTS.forEach((id) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        // Named presets keep their calibrated values; manual fields are locked.
+        el.disabled = !isCustom;
+    });
+}
+
 let faceRefinePollTimer = null;
+let fbcInstallPollTimer = null;
 
 function faceRefineStatusEl() {
     return document.getElementById('videoFaceRefineStatus');
@@ -1496,6 +1585,86 @@ async function refreshFaceRefineStatus() {
         renderFaceRefineStatus(data);
     } catch {
         setFaceRefineStatus('Could not check FaceRefine status.', true);
+    }
+}
+
+// --- MiniMax H3 First Block Cache: ComfyUI-side install / check ---
+
+function fbcInstallStatusEl() {
+    return document.getElementById('videoFbcInstallStatus');
+}
+
+function fbcInstallLogEl() {
+    return document.getElementById('videoFbcInstallLog');
+}
+
+function setFbcInstallStatus(text, isError) {
+    const el = fbcInstallStatusEl();
+    if (!el) return;
+    el.textContent = text || '';
+    el.classList.toggle('settings-save-status--error', !!isError);
+}
+
+function renderFbcInstallStatus(data) {
+    if (!data) {
+        setFbcInstallStatus('Could not check First Block Cache status.', true);
+        return;
+    }
+    const logEl = fbcInstallLogEl();
+    const job = data.job || {};
+    if (Array.isArray(job.log) && job.log.length && logEl) {
+        logEl.hidden = false;
+        logEl.textContent = job.log.slice(-12).join('\n');
+        logEl.scrollTop = logEl.scrollHeight;
+    } else if (logEl && !job.running) {
+        logEl.hidden = true;
+    }
+    if (job.running) {
+        setFbcInstallStatus('Installing First Block Cache... (restart ComfyUI when done)');
+        scheduleFbcInstallPoll();
+        return;
+    }
+    if (job.done && !job.ok && job.error) {
+        setFbcInstallStatus('Install failed: ' + job.error, true);
+        return;
+    }
+    if (!data.comfyAvailable) {
+        setFbcInstallStatus('ComfyUI unreachable — First Block Cache status unknown.', true);
+        return;
+    }
+    if (data.ready) {
+        setFbcInstallStatus('Ready in ComfyUI.');
+        return;
+    }
+    if (data.restartRequired) {
+        setFbcInstallStatus('Installed — restart ComfyUI to load the node.', true);
+        return;
+    }
+    setFbcInstallStatus('Not installed. Press Install to clone the node pack.', true);
+}
+
+function scheduleFbcInstallPoll() {
+    if (fbcInstallPollTimer) return;
+    fbcInstallPollTimer = setTimeout(async () => {
+        fbcInstallPollTimer = null;
+        try {
+            const res = await fetch('/api/video/fbcache/status');
+            const data = await res.json().catch(() => null);
+            renderFbcInstallStatus(data);
+            if (data && data.job && data.job.running) scheduleFbcInstallPoll();
+        } catch {
+            setFbcInstallStatus('Could not check First Block Cache status.', true);
+        }
+    }, 2500);
+}
+
+async function refreshFbcInstallStatus() {
+    try {
+        const res = await fetch('/api/video/fbcache/status');
+        const data = await res.json().catch(() => null);
+        renderFbcInstallStatus(data);
+    } catch {
+        setFbcInstallStatus('Could not check First Block Cache status.', true);
     }
 }
 
@@ -1681,6 +1850,85 @@ function initVideoSettings() {
         });
     }
 
+    // --- MiniMax H3 First Block Cache: toggle, preset, custom fields ---
+    const fbcToggle = document.getElementById('videoFbcEnabled');
+    const fbcMode = document.getElementById('videoFbcMode');
+    const persistFirstBlockCache = async () => {
+        const payload = readVideoFbcForm();
+        if (payload.mode !== VIDEO_FBC_CUSTOM_MODE) {
+            // Named presets keep their calibrated values; only send the mode.
+            delete payload.threshold;
+            delete payload.startPercent;
+            delete payload.endPercent;
+            delete payload.maxConsecutiveHits;
+            delete payload.temporalGuard;
+        } else {
+            // Normalize so Custom never sends empty fields as NaN.
+            if (!Number.isFinite(payload.threshold)) payload.threshold = 0.10;
+            if (!Number.isFinite(payload.startPercent)) payload.startPercent = 0.10;
+            if (!Number.isFinite(payload.endPercent)) payload.endPercent = 0.95;
+            if (!Number.isFinite(payload.maxConsecutiveHits)) payload.maxConsecutiveHits = 2;
+        }
+        setStatus('Saving...');
+        try {
+            const res = await fetch('/api/settings/video', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ firstBlockCache: payload })
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                setStatus('Save failed: ' + (data.error || 'Unknown error'), true);
+                return;
+            }
+            setStatus('Saved.');
+            // First enable kicks off the background auto-install server-side.
+            if (payload.enabled) refreshFbcInstallStatus();
+        } catch {
+            setStatus('Save failed: connection error', true);
+        }
+        setTimeout(() => setStatus(''), 3000);
+    };
+    if (fbcToggle) {
+        fbcToggle.addEventListener('change', () => {
+            syncVideoFbcVisibility();
+            persistFirstBlockCache();
+        });
+    }
+    if (fbcMode) {
+        fbcMode.addEventListener('change', () => {
+            syncVideoFbcVisibility();
+            persistFirstBlockCache();
+        });
+    }
+    VIDEO_FBC_CUSTOM_INPUTS.forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('change', persistFirstBlockCache);
+    });
+
+    const fbcInstallBtn = document.getElementById('videoFbcInstallBtn');
+    if (fbcInstallBtn) {
+        fbcInstallBtn.addEventListener('click', async () => {
+            setFbcInstallStatus('Starting First Block Cache install...');
+            try {
+                const res = await fetch('/api/video/fbcache/install', { method: 'POST' });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    setFbcInstallStatus('Install failed: ' + (data.error || 'Unknown error'), true);
+                    return;
+                }
+                if (data.install && data.install.started === false) {
+                    setFbcInstallStatus('Install already running — see log below.');
+                } else {
+                    setFbcInstallStatus('Installing First Block Cache... (restart ComfyUI when done)');
+                }
+                refreshFbcInstallStatus();
+            } catch {
+                setFbcInstallStatus('Install failed: connection error', true);
+            }
+        });
+    }
+
     const loadSettings = async () => {
         setStatus('');
         loraStatus(loraState, '');
@@ -1744,7 +1992,41 @@ function initVideoSettings() {
                 syncTurboVisibility();
             }
 
+            // First Block Cache: toggle, preset and custom fields.
+            const fbc = (settings.firstBlockCache && typeof settings.firstBlockCache === 'object')
+                ? settings.firstBlockCache
+                : (defaults.firstBlockCache || {});
+            if (fbcToggle) {
+                fbcToggle.checked = fbc.enabled === true || fbc.enabled === 1 ||
+                    String(fbc.enabled).toLowerCase() === 'true' || String(fbc.enabled) === '1';
+            }
+            if (fbcMode) {
+                const wanted = fbc.mode || VIDEO_FBC_DEFAULT_MODE;
+                const hasOption = Array.from(fbcMode.options).some((o) => o.value === wanted);
+                fbcMode.value = hasOption ? wanted : VIDEO_FBC_DEFAULT_MODE;
+            }
+            const setFbcVal = (id, value) => {
+                const el = document.getElementById(id);
+                if (el && value !== undefined && value !== null) el.value = value;
+            };
+            const fbcDefaults = defaults.firstBlockCache || {};
+            setFbcVal('videoFbcThreshold', fbc.threshold !== undefined ? fbc.threshold : fbcDefaults.threshold);
+            setFbcVal('videoFbcStart', fbc.startPercent !== undefined ? fbc.startPercent : fbcDefaults.startPercent);
+            setFbcVal('videoFbcEnd', fbc.endPercent !== undefined ? fbc.endPercent : fbcDefaults.endPercent);
+            setFbcVal('videoFbcMaxHits', fbc.maxConsecutiveHits !== undefined ? fbc.maxConsecutiveHits : fbcDefaults.maxConsecutiveHits);
+            const fbcGuard = document.getElementById('videoFbcTemporalGuard');
+            if (fbcGuard) {
+                fbcGuard.checked = fbc.temporalGuard === true || String(fbc.temporalGuard) === 'true';
+            }
+            syncVideoFbcVisibility();
+            refreshFbcInstallStatus();
+
             const choices = data.choices || {};
+            if (choices.firstBlockCache === false) {
+                setVideoFbcStatus('Not installed in ComfyUI — press Install below.', true);
+            } else if (choices.firstBlockCache === true) {
+                setVideoFbcStatus('Detected in ComfyUI.', false);
+            }
             loraState.available = Array.isArray(choices.loras) ? choices.loras : [];
             loraState.triggerMemory = (settings.loraTriggerWords && typeof settings.loraTriggerWords === 'object')
                 ? settings.loraTriggerWords

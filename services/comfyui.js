@@ -92,6 +92,13 @@ const COMFY_ERROR_CLASSIFIERS = [
         hint: 'A required model file (UNET/CLIP/VAE/LoRA) is missing or misnamed. Check the model names in Settings > Setup.'
     },
     {
+        // Checked before missing_node: ComfyUI validation text mentions the
+        // node's class_type, which would otherwise be misread as a missing node.
+        code: 'comfyui_validation_error',
+        re: /required input is missing|missing required input/i,
+        hint: 'ComfyUI rejected the generated workflow: a required node input was missing. Update the affected custom node, restart ComfyUI, and try again.'
+    },
+    {
         code: 'comfyui_missing_node',
         re: /module not found|no module named|cannot import|import failed|unknown node|not registered|is not a valid node|class_type|node type/i,
         hint: 'A ComfyUI custom node is missing or failed to load. Install it (Settings > Setup) and restart ComfyUI.'

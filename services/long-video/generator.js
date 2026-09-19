@@ -151,6 +151,18 @@ async function generateLongVideo(plan, options = {}) {
             settings.attentionBackend = videoGenerator.resolveH3AttentionBackend(
                 info, settings.attentionBackend
             );
+            // First Block Cache composes with the attention backend. It is never
+            // silently skipped: a missing node fails the render with install
+            // instructions. Each job gets a fresh graph, and the node resets its
+            // cache per sampling pass, so no state leaks across segments or runs.
+            const acceleration = videoGenerator.videoAccelerationInfo(settings, settings.attentionBackend);
+            if (acceleration.firstBlockCache) {
+                videoGenerator.assertFirstBlockCacheReady(info, settings);
+                console.log('[long-video] H3 First Block Cache enabled (' +
+                    acceleration.firstBlockCache + ')');
+            }
+            console.log('[long-video] acceleration:',
+                videoGenerator.formatAccelerationDiagnostics(acceleration).replace(/\n/g, ' | '));
             const graph = workflow.buildLongVideoGraph({
                 prompt,
                 seed,
@@ -159,7 +171,10 @@ async function generateLongVideo(plan, options = {}) {
                 megapixels,
                 shotSeconds,
                 steps: options.steps || LONG_VIDEO_STEPS,
-                firstImageName
+                firstImageName,
+                // Match the installed node's exact input names so required-input
+                // validation passes even if the node pack renames a field.
+                firstBlockCacheInputs: videoGenerator.resolveFirstBlockCacheInputNames(info)
             });
 
             await workflow.validateLongVideoGraph(info, graph);
@@ -206,6 +221,7 @@ async function generateLongVideo(plan, options = {}) {
                 width: dims.width || null,
                 height: dims.height || null,
                 loras: activeLoras,
+                seed,
                 generationMs: Date.now() - startedAt,
                 video: {
                     duration: (plan && plan.duration) || null,
@@ -214,7 +230,8 @@ async function generateLongVideo(plan, options = {}) {
                     mode: 'long',
                     long: true,
                     shots: beatCount,
-                    source: sourceRaw || null
+                    source: sourceRaw || null,
+                    acceleration
                 }
             });
 
@@ -229,6 +246,7 @@ async function generateLongVideo(plan, options = {}) {
                 mode: 'long',
                 prompt,
                 generationMs: meta.generationMs,
+                acceleration,
                 promptId: pid,
                 meta
             };

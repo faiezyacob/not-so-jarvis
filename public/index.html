@@ -106,6 +106,9 @@
                                 <button class="settings-browse-btn" id="setupInstallNodes" type="button">Install all missing</button>
                                 <span class="settings-save-status" id="setupNodesStatus"></span>
                             </div>
+                            <div class="settings-field">
+                                <pre class="settings-log" id="setupNodesLog" hidden></pre>
+                            </div>
                         </div>
                         <div class="settings-card" data-search="setup tools optional ffmpeg video thumbnails posters">
                             <div class="settings-card-title">OPTIONAL TOOLS</div>
@@ -180,7 +183,7 @@
                             <div class="settings-field-row">
                                 <div class="settings-field">
                                     <label class="settings-field-label" for="newsLocalArea">Local area</label>
-                                    <input type="text" class="settings-input" id="newsLocalArea" placeholder="e.g. Portland, OR" autocomplete="off">
+                                    <input type="text" class="settings-input" id="newsLocalArea" placeholder="e.g. Malaysia, OR" autocomplete="off">
                                 </div>
                                 <button class="settings-browse-btn" id="newsLocalSave" type="button">Save area</button>
                             </div>
@@ -607,6 +610,67 @@
                             <span class="settings-hint">Place the LoRA in ComfyUI models/loras. Default: minimax_h3_turbo_v4_step600_ema.safetensors</span>
                         </div>
                             </div>
+                        </div>
+                        <div class="settings-card" data-search="video first block cache fbcache minimax h3 acceleration speed transformer cache">
+                            <div class="settings-card-title">FIRST BLOCK CACHE</div>
+                            <div class="settings-card-sub">Optional MiniMax H3 MODEL patch that reduces redundant transformer computation. Higher cache aggressiveness can change the denoising trajectory.</div>
+                        <div class="settings-field">
+                            <label class="settings-toggle">
+                                <span class="settings-toggle-label">MiniMax H3 First Block Cache</span>
+                                <input type="checkbox" id="videoFbcEnabled">
+                            </label>
+                            <span class="settings-hint">Needs the ComfyUI-MiniMaxH3-FirstBlockCache custom node. First enable auto-installs it (restart ComfyUI when it finishes). Composes with the attention backend and Turbo LoRA; applies to MiniMax H3 only.</span>
+                            <span class="settings-save-status" id="videoFbcStatus"></span>
+                        </div>
+                            <div id="videoFbcOptions" hidden>
+                        <div class="settings-field">
+                            <label class="settings-field-label" for="videoFbcMode">Mode</label>
+                            <select class="settings-select" id="videoFbcMode">
+                                <option value="H3 Safe — 0.08 / max 2">H3 Safe (0.08)</option>
+                                <option value="H3 Fast — 0.10 / max 2">H3 Fast (0.10, recommended)</option>
+                                <option value="H3 Aggressive — 0.12 / max 2">H3 Aggressive (0.12)</option>
+                                <option value="H3 Experimental">H3 Experimental</option>
+                                <option value="Custom — manual values">Custom</option>
+                            </select>
+                            <span class="settings-hint">Named presets keep their calibrated values. Manual values only apply in Custom mode.</span>
+                        </div>
+                            <div id="videoFbcCustom" hidden>
+                        <div class="settings-field-row">
+                        <div class="settings-field">
+                            <label class="settings-field-label" for="videoFbcThreshold">Threshold</label>
+                            <input type="number" class="settings-input" id="videoFbcThreshold" min="0" max="1" step="0.005">
+                        </div>
+                        <div class="settings-field">
+                            <label class="settings-field-label" for="videoFbcMaxHits">Max consecutive hits</label>
+                            <input type="number" class="settings-input" id="videoFbcMaxHits" min="1" max="20" step="1">
+                        </div>
+                        </div>
+                        <div class="settings-field-row">
+                        <div class="settings-field">
+                            <label class="settings-field-label" for="videoFbcStart">Start %</label>
+                            <input type="number" class="settings-input" id="videoFbcStart" min="0" max="1" step="0.01">
+                        </div>
+                        <div class="settings-field">
+                            <label class="settings-field-label" for="videoFbcEnd">End %</label>
+                            <input type="number" class="settings-input" id="videoFbcEnd" min="0" max="1" step="0.01">
+                        </div>
+                        </div>
+                        <div class="settings-field">
+                            <label class="settings-toggle">
+                                <span class="settings-toggle-label">Temporal guard</span>
+                                <input type="checkbox" id="videoFbcTemporalGuard">
+                            </label>
+                            <span class="settings-hint">Also checks the most changed target-video latent frame, catching local motion a global average hides.</span>
+                        </div>
+                            </div>
+                            </div>
+                        <div class="settings-field">
+                            <button class="settings-browse-btn" id="videoFbcInstallBtn" type="button">Install / check First Block Cache</button>
+                            <span class="settings-save-status" id="videoFbcInstallStatus"></span>
+                        </div>
+                        <div class="settings-field">
+                            <pre class="settings-log" id="videoFbcInstallLog" hidden></pre>
+                        </div>
                         </div>
                         <div class="settings-card" data-search="video face refine facerefine detailer small distant faces enhance denoise install">
                             <div class="settings-card-title">FACE REFINEMENT</div>

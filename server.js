@@ -73,6 +73,7 @@ const providerManager = require('./server/provider-manager');
 const imageGenerator = require('./services/image-generator');
 const videoGenerator = require('./services/video-generator');
 const faceRefine = require('./services/face-refine');
+const fbcache = require('./services/fbcache');
 const modelSetup = require('./services/model-setup');
 const generatedHistory = require('./services/generated-history');
 const thumbnail = require('./services/thumbnail');
@@ -533,6 +534,9 @@ async function handleAPI(req, res, urlPath) {
     if (urlPath === '/api/settings/video' && req.method === 'POST') {
         try {
             const body = await readBody(req);
+            // Capture the previous state so the FBCache auto-install only fires
+            // on a genuine off→on transition (not on every custom-field save).
+            const previous = videoGenerator.effectiveVideoSettings();
             const settings = videoGenerator.saveVideoSettings(body || {});
             // First-enable auto-install: turning FaceRefine on kicks off the
             // background ComfyUI-side install (custom nodes + pip packages +
@@ -542,7 +546,16 @@ async function handleAPI(req, res, urlPath) {
                     String(body.faceRefineEnabled).toLowerCase() === 'true' || String(body.faceRefineEnabled) === '1')) {
                 faceRefineInstall = faceRefine.ensureAutoInstall();
             }
-            json(res, 200, { ok: true, settings, faceRefineInstall });
+            // Same for First Block Cache: a genuine off→on transition clones the
+            // node pack in the background when it is missing. Non-blocking; the
+            // VIDEO panel polls GET /api/video/fbcache/status.
+            let firstBlockCacheInstall = null;
+            const fbcWasEnabled = Boolean(previous.firstBlockCache && previous.firstBlockCache.enabled);
+            const fbcNowEnabled = Boolean(settings.firstBlockCache && settings.firstBlockCache.enabled);
+            if (!fbcWasEnabled && fbcNowEnabled) {
+                firstBlockCacheInstall = fbcache.ensureAutoInstall();
+            }
+            json(res, 200, { ok: true, settings, faceRefineInstall, firstBlockCacheInstall });
         } catch (err) {
             json(res, 400, { error: err.message });
         }
@@ -566,6 +579,30 @@ async function handleAPI(req, res, urlPath) {
     if (urlPath === '/api/video/face-refine/install' && req.method === 'POST') {
         try {
             const started = faceRefine.startInstall();
+            json(res, 200, { ok: true, install: started });
+        } catch (err) {
+            json(res, 500, { error: err.message });
+        }
+        return true;
+    }
+
+    // GET /api/video/fbcache/status — ComfyUI readiness for the MiniMax H3
+    // First Block Cache node (loaded in /object_info) + install job state.
+    if (urlPath === '/api/video/fbcache/status' && req.method === 'GET') {
+        try {
+            json(res, 200, await fbcache.getStatus());
+        } catch (err) {
+            json(res, 500, { error: err.message });
+        }
+        return true;
+    }
+
+    // POST /api/video/fbcache/install — clone the First Block Cache node pack
+    // into ComfyUI/custom_nodes in the background. Returns immediately; poll
+    // the status endpoint for progress. Restart ComfyUI when it finishes.
+    if (urlPath === '/api/video/fbcache/install' && req.method === 'POST') {
+        try {
+            const started = fbcache.startInstall();
             json(res, 200, { ok: true, install: started });
         } catch (err) {
             json(res, 500, { error: err.message });
@@ -3224,9 +3261,18 @@ async function handleVideoGenerationStream(req, res, opts) {
             think
         });
 
+        // Compact acceleration note, only when First Block Cache is active. The
+        // full breakdown lives in the generated-history metadata + server log.
+        const accel = (finalResult.meta && finalResult.meta.video && finalResult.meta.video.acceleration)
+            || finalResult.acceleration || null;
+        const accelLine = (accel && accel.firstBlockCache)
+            ? '\n\n**Acceleration:** First Block Cache ' + accel.firstBlockCache +
+              ' · Attention ' + accel.attention +
+              ' · Turbo LoRA ' + (accel.turbo ? 'on' : 'off')
+            : '';
         const content =
             summary + '\n\n' +
-            '**Prompt:** ' + videoPrompt + '\n\n' +
+            '**Prompt:** ' + videoPrompt + accelLine + '\n\n' +
             '<video class="md-video" preload="metadata" playsinline src="' + finalResult.url + '"></video>';
 
         sseWrite(res, {
@@ -3410,6 +3456,14 @@ function friendlyVideoError(err) {
             return err.message;
         case 'h3_turbo_lora_missing':
         case 'h3_turbo_nodes_missing':
+            return err.message;
+        case 'h3_fbcache_node_missing':
+        case 'h3_fbcache_invalid':
+        case 'h3_fbcache_duplicate':
+        case 'h3_fbcache_input_missing':
+        case 'h3_fbcache_output_unconnected':
+        case 'h3_fbcache_not_h3':
+        case 'h3_fbcache_cache_conflict':
             return err.message;
         case 'comfyui_generation_error':
         case 'comfyui_oom':

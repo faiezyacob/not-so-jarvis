@@ -84,6 +84,156 @@ function normalizeH3Turbo(settings) {
     };
 }
 
+// --- MiniMax H3 First Block Cache (duckyshell/ComfyUI-MiniMaxH3-FirstBlockCache) ---
+//
+// Optional MODEL patch: the first transformer block runs every denoising step
+// and the cached residual of the remaining block stack is reused when the
+// residual change stays under a threshold. It is an approximation, not a
+// lossless optimization — higher aggressiveness can change the denoising
+// trajectory. JARVIS never reimplements the algorithm; it only detects the
+// external ComfyUI node, wires it right after the diffusion-model loader, and
+// validates the configuration. It composes freely with the attention backend
+// and the Turbo LoRA.
+
+const H3_FBCACHE_NODE = 'ApplyMiniMaxH3FirstBlockCache';
+const H3_FBCACHE_INSTALL_URL = 'https://github.com/duckyshell/ComfyUI-MiniMaxH3-FirstBlockCache';
+// Shown whenever FBCache is enabled but the ComfyUI node is missing. The first
+// three lines match the node pack's own install instructions; the last line
+// points at the VIDEO panel, whose First Block Cache card can clone it.
+const H3_FBCACHE_INSTALL_MESSAGE =
+    'MiniMax H3 First Block Cache is not installed in ComfyUI.\n\n' +
+    'Install:\nComfyUI-MiniMaxH3-FirstBlockCache\n\n' +
+    'Then restart ComfyUI.\n\n' +
+    'You can also install it from Settings > Video (First Block Cache → Install), then restart ComfyUI.';
+
+// Exact mode strings the ComfyUI node's combo expects. Do not translate them.
+const H3_FBCACHE_PRESET_SAFE = 'H3 Safe — 0.08 / max 2';
+const H3_FBCACHE_PRESET_FAST = 'H3 Fast — 0.10 / max 2';
+const H3_FBCACHE_PRESET_AGGRESSIVE = 'H3 Aggressive — 0.12 / max 2';
+const H3_FBCACHE_EXPERIMENTAL = 'H3 Experimental';
+const H3_FBCACHE_CUSTOM = 'Custom — manual values';
+const H3_FBCACHE_PRESETS = Object.freeze([
+    H3_FBCACHE_PRESET_SAFE,
+    H3_FBCACHE_PRESET_FAST,
+    H3_FBCACHE_PRESET_AGGRESSIVE
+]);
+const H3_FBCACHE_MODES = Object.freeze([
+    ...H3_FBCACHE_PRESETS, H3_FBCACHE_EXPERIMENTAL, H3_FBCACHE_CUSTOM
+]);
+// The node's documented recommendation is H3 Fast.
+const H3_FBCACHE_DEFAULT_MODE = H3_FBCACHE_PRESET_FAST;
+
+const H3_FBCACHE_DEFAULTS = Object.freeze({
+    enabled: false,
+    mode: H3_FBCACHE_DEFAULT_MODE,
+    threshold: 0.10,
+    startPercent: 0.10,
+    endPercent: 0.95,
+    maxConsecutiveHits: 2,
+    temporalGuard: false
+});
+
+// Short aliases so a hand-edited config still resolves to the exact node mode.
+const H3_FBCACHE_MODE_ALIASES = {
+    safe: H3_FBCACHE_PRESET_SAFE,
+    'h3 safe': H3_FBCACHE_PRESET_SAFE,
+    fast: H3_FBCACHE_PRESET_FAST,
+    'h3 fast': H3_FBCACHE_PRESET_FAST,
+    aggressive: H3_FBCACHE_PRESET_AGGRESSIVE,
+    'h3 aggressive': H3_FBCACHE_PRESET_AGGRESSIVE,
+    experimental: H3_FBCACHE_EXPERIMENTAL,
+    'h3 experimental': H3_FBCACHE_EXPERIMENTAL,
+    custom: H3_FBCACHE_CUSTOM
+};
+
+function normalizeFirstBlockCacheMode(value) {
+    const raw = String(value == null ? '' : value).trim();
+    if (!raw) return H3_FBCACHE_DEFAULT_MODE;
+    if (H3_FBCACHE_MODES.includes(raw)) return raw;
+    return H3_FBCACHE_MODE_ALIASES[raw.toLowerCase()] || H3_FBCACHE_DEFAULT_MODE;
+}
+
+// Normalize the nested firstBlockCache setting into a complete config. Enabled
+// is only true for an explicit truthy value so existing users stay untouched.
+function normalizeFirstBlockCache(value) {
+    const source = (value && typeof value === 'object' && !Array.isArray(value)) ? value : {};
+    const truthy = (raw) => raw === true || raw === 1 ||
+        String(raw).toLowerCase() === 'true' || String(raw) === '1';
+    return {
+        enabled: truthy(source.enabled),
+        mode: normalizeFirstBlockCacheMode(source.mode),
+        threshold: clampToRange(source.threshold, 0, 1, H3_FBCACHE_DEFAULTS.threshold),
+        startPercent: clampToRange(source.startPercent, 0, 1, H3_FBCACHE_DEFAULTS.startPercent),
+        endPercent: clampToRange(source.endPercent, 0, 1, H3_FBCACHE_DEFAULTS.endPercent),
+        maxConsecutiveHits: Math.round(
+            clampToRange(source.maxConsecutiveHits, 1, 20, H3_FBCACHE_DEFAULTS.maxConsecutiveHits)
+        ),
+        temporalGuard: truthy(source.temporalGuard)
+    };
+}
+
+// The node only honors manual values in Custom mode; named presets keep their
+// calibrated values. Validate the raw custom fields (before clamping) and return
+// human-readable problems; named presets are never validated or sent.
+function validateFirstBlockCache(value) {
+    const config = normalizeFirstBlockCache(value);
+    if (!config.enabled || config.mode !== H3_FBCACHE_CUSTOM) return [];
+    const raw = (value && typeof value === 'object' && !Array.isArray(value)) ? value : {};
+    const errors = [];
+    const inUnitRange = (key, label) => {
+        const n = Number(raw[key]);
+        if (!Number.isFinite(n) || n < 0 || n > 1) errors.push(label + ' must be between 0 and 1.');
+        return n;
+    };
+    inUnitRange('threshold', 'Threshold');
+    const start = inUnitRange('startPercent', 'Start %');
+    const end = inUnitRange('endPercent', 'End %');
+    if (Number.isFinite(start) && Number.isFinite(end) && start >= end) {
+        errors.push('Start % must be smaller than End %.');
+    }
+    const hits = Number(raw.maxConsecutiveHits);
+    if (!Number.isFinite(hits) || !Number.isInteger(hits) || hits < 1 || hits > 20) {
+        errors.push('Max consecutive hits must be a whole number between 1 and 20.');
+    }
+    return errors;
+}
+
+// True when the connected ComfyUI install exposes the First Block Cache node.
+function firstBlockCacheNodeAvailable(info) {
+    return Boolean(info && info[H3_FBCACHE_NODE]);
+}
+
+// Resolve the setting against ComfyUI. `ready` is true when FBCache is off or
+// when the node is present. Nothing is silently dropped: a missing node fails
+// the render with instructions so the user's setting stays truthful.
+function resolveFirstBlockCacheAvailability(info, settings) {
+    const config = normalizeFirstBlockCache(settings && settings.firstBlockCache);
+    if (!config.enabled) {
+        return { enabled: false, ready: true, nodeMissing: false, mode: config.mode };
+    }
+    const nodeMissing = !firstBlockCacheNodeAvailable(info);
+    return { enabled: true, ready: !nodeMissing, nodeMissing, mode: config.mode };
+}
+
+function assertFirstBlockCacheReady(info, settings) {
+    const state = resolveFirstBlockCacheAvailability(info, settings);
+    if (!state.enabled || state.ready) {
+        const problems = validateFirstBlockCache(settings && settings.firstBlockCache);
+        if (state.enabled && problems.length) {
+            const error = new Error('Invalid First Block Cache settings: ' + problems.join(' '));
+            error.code = 'h3_fbcache_invalid';
+            error.problems = problems;
+            throw error;
+        }
+        return state;
+    }
+    const error = new Error(H3_FBCACHE_INSTALL_MESSAGE);
+    error.code = 'h3_fbcache_node_missing';
+    error.missingNodes = [H3_FBCACHE_NODE];
+    error.installUrl = H3_FBCACHE_INSTALL_URL;
+    throw error;
+}
+
 // The mutually exclusive attention backends H3 can run under:
 //   auto          — JARVIS picks the best backend ComfyUI actually offers
 //   comfykitchen  — ComfyUI's built-in ModelAttentionBackend (comfy-kitchen)
@@ -210,6 +360,19 @@ const H3_DEFAULTS = {
     attentionBackend: H3_ATTENTION_BACKENDS.includes(process.env.H3_ATTENTION_BACKEND)
         ? process.env.H3_ATTENTION_BACKEND
         : 'auto',
+    // MiniMax H3 First Block Cache (duckyshell/ComfyUI-MiniMaxH3-FirstBlockCache).
+    // Off by default; the nested object mirrors the ComfyUI node's inputs so the
+    // named presets can be passed straight through. Composes with every
+    // attention backend and with Turbo (the acceleration stack is independent).
+    firstBlockCache: normalizeFirstBlockCache({
+        enabled: process.env.H3_FBCACHE_ENABLED,
+        mode: process.env.H3_FBCACHE_MODE,
+        threshold: process.env.H3_FBCACHE_THRESHOLD,
+        startPercent: process.env.H3_FBCACHE_START,
+        endPercent: process.env.H3_FBCACHE_END,
+        maxConsecutiveHits: process.env.H3_FBCACHE_MAX_HITS,
+        temporalGuard: process.env.H3_FBCACHE_TEMPORAL_GUARD
+    }),
     loras: [],
     loraTriggerWords: {},
     // H3 FaceRefine post-process (ComfyUI-H3-FaceRefine): optional second H3
@@ -233,7 +396,8 @@ const H3_DEFAULTS = {
 
 const H3_CONFIGURABLE_KEYS = [
     'h3Unet', 'h3Clip', 'h3VideoVae', 'h3AudioVae',
-    'h3Duration', 'h3Size', 'attentionBackend', 'loras', 'loraTriggerWords',
+    'h3Duration', 'h3Size', 'attentionBackend', 'firstBlockCache',
+    'loras', 'loraTriggerWords',
     'h3TurboEnabled', 'h3TurboSteps', 'h3TurboLora',
     'faceRefineEnabled', 'faceRefineDetector', 'faceRefineCropFactor',
     'faceRefineDenoise', 'faceRefineSteps', 'faceRefineCanvasMode',
@@ -1456,6 +1620,8 @@ function effectiveVideoSettings() {
                 value = normalizeH3TurboSteps(value, H3_DEFAULTS.h3TurboSteps);
             } else if (key === 'h3TurboLora') {
                 value = String(value || '').trim() || H3_DEFAULTS.h3TurboLora;
+            } else if (key === 'firstBlockCache') {
+                value = normalizeFirstBlockCache(value);
             } else if (key === 'faceRefineEnabled') {
                 value = value === true || value === 1 || String(value).toLowerCase() === 'true' || String(value) === '1';
             } else if (key === 'faceRefineCanvasMode') {
@@ -1594,6 +1760,15 @@ function saveVideoSettings(patch) {
             out[key] = normalizeH3TurboSteps(value, H3_DEFAULTS.h3TurboSteps);
         } else if (key === 'h3TurboLora') {
             out[key] = String(value || '').trim() || null;
+        } else if (key === 'firstBlockCache') {
+            const problems = validateFirstBlockCache(value);
+            if (problems.length) {
+                const error = new Error('Invalid First Block Cache settings: ' + problems.join(' '));
+                error.code = 'h3_fbcache_invalid';
+                error.problems = problems;
+                throw error;
+            }
+            out[key] = normalizeFirstBlockCache(value);
         } else if (key === 'faceRefineEnabled') {
             out[key] = value === true || value === 1 || String(value).toLowerCase() === 'true' || String(value) === '1';
         } else if (key === 'faceRefineDetector') {
@@ -1630,7 +1805,10 @@ async function getVideoModelChoices() {
             unets: required(info.UNETLoader, 'unet_name'),
             clips: required(info.CLIPLoader, 'clip_name'),
             vaes: required(info.VAELoader, 'vae_name'),
-            loras: required(info.LoraLoader, 'lora_name')
+            loras: required(info.LoraLoader, 'lora_name'),
+            // Capability flag: whether the connected ComfyUI offers the H3
+            // First Block Cache node (used to warn in Settings > Video).
+            firstBlockCache: firstBlockCacheNodeAvailable(info)
         };
     } catch {
         return null;
@@ -1799,6 +1977,94 @@ function appendH3TurboLora(graph, baseModelNode, settings) {
     return 'h3_turbo_lora';
 }
 
+// Other cache implementations the First Block Cache node refuses to combine
+// with (EasyCache, LazyCache, CacheDiT, T8 block cache, or another double_block
+// replacement). JARVIS never inserts any of these, so this is a guard against a
+// forwarded/user-authored graph rather than an active feature.
+const H3_CONFLICTING_CACHE_RE = /(?:easy\s*cache|lazy\s*cache|cache.?dit|t8.*block.*cache|block.?cache|double.?block)/i;
+
+function findConflictingCacheNodes(graph) {
+    const found = new Set();
+    for (const node of Object.values(graph || {})) {
+        const classType = node && node.class_type;
+        if (!classType || classType === H3_FBCACHE_NODE) continue;
+        if (H3_CONFLICTING_CACHE_RE.test(classType)) found.add(classType);
+    }
+    return Array.from(found);
+}
+
+// Canonical input names, used when ComfyUI's /object_info is unavailable.
+const H3_FBCACHE_DEFAULT_INPUTS = Object.freeze({
+    threshold: 'threshold',
+    startPercent: 'start_percent',
+    endPercent: 'end_percent',
+    maxConsecutiveHits: 'max_consecutive_hits',
+    temporalGuard: 'temporal_guard'
+});
+
+// ComfyUI requires every required input to be present in the API prompt (it does
+// not fill defaults for arbitrary prompts), and the node's own names are the
+// authoritative source of truth. Map our fields onto whatever keys the installed
+// node declares, tolerating the snake_case and squashed spellings. Returns the
+// canonical names when ComfyUI is unreachable.
+function resolveFirstBlockCacheInputNames(info) {
+    const node = info && info[H3_FBCACHE_NODE];
+    const required = node && node.input && node.input.required;
+    const keys = required && typeof required === 'object' ? Object.keys(required) : [];
+    const find = (candidates, fallback) => {
+        for (const candidate of candidates) {
+            const hit = keys.find((key) => String(key).toLowerCase() === candidate);
+            if (hit) return hit;
+        }
+        return fallback;
+    };
+    return {
+        threshold: find(['threshold'], H3_FBCACHE_DEFAULT_INPUTS.threshold),
+        startPercent: find(['start_percent', 'startpercent'], H3_FBCACHE_DEFAULT_INPUTS.startPercent),
+        endPercent: find(['end_percent', 'endpercent'], H3_FBCACHE_DEFAULT_INPUTS.endPercent),
+        maxConsecutiveHits: find(
+            ['max_consecutive_hits', 'maxconsecutivehits'],
+            H3_FBCACHE_DEFAULT_INPUTS.maxConsecutiveHits
+        ),
+        temporalGuard: find(['temporal_guard', 'temporalguard'], H3_FBCACHE_DEFAULT_INPUTS.temporalGuard)
+    };
+}
+
+// Insert the First Block Cache MODEL patch immediately after the diffusion
+// model loader. Returns the node every downstream consumer must read from.
+// Leaves the graph untouched when disabled so the normal H3 workflow is
+// byte-for-byte identical for existing users.
+function appendFirstBlockCache(graph, baseModelNode, settings, inputNames) {
+    const config = normalizeFirstBlockCache(settings && settings.firstBlockCache);
+    if (!config.enabled) return baseModelNode;
+    const problems = validateFirstBlockCache(settings && settings.firstBlockCache);
+    if (problems.length) {
+        const error = new Error('Invalid First Block Cache settings: ' + problems.join(' '));
+        error.code = 'h3_fbcache_invalid';
+        error.problems = problems;
+        throw error;
+    }
+    const names = Object.assign({}, H3_FBCACHE_DEFAULT_INPUTS, inputNames || {});
+    // ComfyUI validates every required input, so the manual fields must always
+    // be present even for the named presets. The node itself ignores them unless
+    // the mode is Custom, so sending the calibrated values alongside a preset is
+    // safe and keeps the prompt valid.
+    const inputs = {
+        model: [baseModelNode, 0],
+        mode: config.mode,
+        [names.threshold]: config.threshold,
+        [names.startPercent]: config.startPercent,
+        [names.endPercent]: config.endPercent,
+        [names.maxConsecutiveHits]: config.maxConsecutiveHits,
+        [names.temporalGuard]: config.temporalGuard
+    };
+    graph.h3_first_block_cache = {
+        class_type: H3_FBCACHE_NODE,
+        inputs,
+    };
+    return 'h3_first_block_cache';
+}
+
 function buildH3Graph(opts) {
     const {
         prompt,
@@ -1809,6 +2075,7 @@ function buildH3Graph(opts) {
         seed = 0,
         settings = {},
         firstImageName = null,
+        firstBlockCacheInputs = null,
     } = opts;
 
     const graph = {};
@@ -1849,7 +2116,11 @@ function buildH3Graph(opts) {
             inputs: { sampler_name: 'res_multistep' },
         };
 
-    const userModelNode = appendLoraChain(graph, 'model', settings.loras);
+    // First Block Cache patches the diffusion MODEL, so it goes immediately
+    // after the loader and every later stage (LoRA, Turbo, attention, guider,
+    // scheduler) reads the cached model.
+    const cachedModelNode = appendFirstBlockCache(graph, 'model', settings, firstBlockCacheInputs);
+    const userModelNode = appendLoraChain(graph, cachedModelNode, settings.loras);
     // Turbo LoRA sits between the user LoRA chain and the attention patch, so
     // both the guider and the scheduler read the Turbo-adapted model.
     const turboModelNode = appendH3TurboLora(graph, userModelNode, settings);
@@ -1941,6 +2212,58 @@ function buildH3Graph(opts) {
 
 // Validate that ComfyUI knows the required H3 node classes.
 async function validateH3Graph(info, graph) {
+    // First Block Cache structural checks (only meaningful when the patch is in
+    // the graph). Run before the generic node scan so a missing FBCache node
+    // surfaces the actionable install error instead of the generic one.
+    const graphEntries = Object.entries(graph).filter(([, node]) => node && node.class_type);
+    const fbcEntries = graphEntries.filter(([, node]) => node.class_type === H3_FBCACHE_NODE);
+    if (fbcEntries.length > 1) {
+        const error = new Error('The H3 workflow contains more than one First Block Cache node.');
+        error.code = 'h3_fbcache_duplicate';
+        throw error;
+    }
+    if (fbcEntries.length === 1) {
+        if (!firstBlockCacheNodeAvailable(info)) {
+            const error = new Error(H3_FBCACHE_INSTALL_MESSAGE);
+            error.code = 'h3_fbcache_node_missing';
+            error.missingNodes = [H3_FBCACHE_NODE];
+            error.installUrl = H3_FBCACHE_INSTALL_URL;
+            throw error;
+        }
+        const [fbcKey, fbcNode] = fbcEntries[0];
+        const modelInput = fbcNode.inputs && fbcNode.inputs.model;
+        if (!Array.isArray(modelInput) || !modelInput.length || !graph[modelInput[0]]) {
+            const error = new Error('The H3 First Block Cache node has no valid MODEL input.');
+            error.code = 'h3_fbcache_input_missing';
+            throw error;
+        }
+        // The patched MODEL must actually feed a downstream consumer.
+        const consumed = graphEntries.some(([key, candidate]) => key !== fbcKey &&
+            Object.values(candidate.inputs || {}).some((value) =>
+                Array.isArray(value) && value[0] === fbcKey));
+        if (!consumed) {
+            const error = new Error('The H3 First Block Cache MODEL output is not connected to the workflow.');
+            error.code = 'h3_fbcache_output_unconnected';
+            throw error;
+        }
+        // The node only supports native MiniMax H3 (a diffusion model loader).
+        if (!graph.model || graph.model.class_type !== 'UNETLoader') {
+            const error = new Error('First Block Cache is only supported on the MiniMax H3 diffusion model.');
+            error.code = 'h3_fbcache_not_h3';
+            throw error;
+        }
+        const conflicts = findConflictingCacheNodes(graph);
+        if (conflicts.length) {
+            const error = new Error(
+                'MiniMax H3 First Block Cache cannot be combined with another cache node: ' +
+                conflicts.join(', ') + '. Disable the other cache and try again.'
+            );
+            error.code = 'h3_fbcache_cache_conflict';
+            error.conflictNodes = conflicts;
+            throw error;
+        }
+    }
+
     const missingNodes = [];
     for (const node of Object.values(graph)) {
         if (!info[node.class_type]) missingNodes.push(node.class_type);
@@ -2294,6 +2617,10 @@ async function refineVideo(baseRawFilename, opts = {}) {
     }
 
     const startedAt = Date.now();
+    // The refined file replaces the base render, so its reported generation
+    // time is the whole job: base H3 render + this refine pass. Callers pass
+    // the base time in so the gallery doesn't show only the refine slice.
+    const baseGenerationMs = Number(opts.baseGenerationMs) > 0 ? Number(opts.baseGenerationMs) : 0;
     const buffer = fs.readFileSync(filePath);
     const sourceProbe = probeVideoBuffer(buffer, path.extname(safeName));
     const fps = Number(opts.fps) > 0 ? Number(opts.fps) : H3_FPS;
@@ -2374,7 +2701,7 @@ async function refineVideo(baseRawFilename, opts = {}) {
         width: outWidth || null,
         height: outHeight || null,
         loras: activeLoras,
-        generationMs: Date.now() - startedAt,
+        generationMs: (Date.now() - startedAt) + baseGenerationMs,
         video: {
             duration: opts.duration || null,
             frames: opts.frames || null,
@@ -2490,6 +2817,52 @@ function resolveVideoMode(conversationId, message, structuredRequest, explicitSo
 
 // --- Video generation execution -----------------------------------------------
 
+// Human-readable attention labels used only for diagnostics.
+const H3_ATTENTION_LABELS = Object.freeze({
+    auto: 'Auto',
+    comfykitchen: 'Comfy Kitchen',
+    sageattention: 'SageAttention',
+    sla: 'SLA',
+    standard: 'PyTorch (standard)'
+});
+
+// Compact acceleration summary for the chat reply + generated-history metadata.
+// Purely descriptive: it never changes what runs.
+function videoAccelerationInfo(settings, resolvedAttention) {
+    const config = (settings && typeof settings === 'object') ? settings : {};
+    const fbc = normalizeFirstBlockCache(config.firstBlockCache);
+    const turbo = normalizeH3Turbo(config);
+    const requestedAttention = resolvedAttention !== undefined ? resolvedAttention : config.attentionBackend;
+    // Keep the concrete dense fallback distinguishable from an unresolved
+    // `auto` in diagnostics; normalize everything else through the aliases.
+    const attention = requestedAttention === 'standard'
+        ? 'standard'
+        : normalizeH3AttentionBackend(requestedAttention);
+    return {
+        firstBlockCache: fbc.enabled ? fbc.mode : null,
+        firstBlockCacheCustom: (fbc.enabled && fbc.mode === H3_FBCACHE_CUSTOM) ? {
+            threshold: fbc.threshold,
+            startPercent: fbc.startPercent,
+            endPercent: fbc.endPercent,
+            maxConsecutiveHits: fbc.maxConsecutiveHits,
+            temporalGuard: fbc.temporalGuard
+        } : null,
+        attention: H3_ATTENTION_LABELS[attention] || attention,
+        attentionBackend: attention,
+        turbo: turbo.enabled,
+        turboSteps: turbo.enabled ? turbo.steps : null
+    };
+}
+
+function formatAccelerationDiagnostics(info) {
+    if (!info) return '';
+    return [
+        'First Block Cache: ' + (info.firstBlockCache || 'Off'),
+        'Attention: ' + info.attention,
+        'Turbo LoRA: ' + (info.turbo ? 'Enabled' + (info.turboSteps ? ' (' + info.turboSteps + ' steps)' : '') : 'Disabled')
+    ].join('\n');
+}
+
 async function generateVideo(prompt, options = {}) {
     const queueOpts = {
         label: options.label || 'video generation',
@@ -2581,6 +2954,16 @@ async function generateVideo(prompt, options = {}) {
                     normalizeH3Turbo(resolvedSettings).steps + ' steps, ' +
                     normalizeH3Turbo(resolvedSettings).loraName + ')');
             }
+            // First Block Cache is never silently skipped either: it composes
+            // with the resolved attention backend and Turbo LoRA, and a missing
+            // node fails the render with install instructions.
+            const acceleration = videoAccelerationInfo(resolvedSettings, resolvedSettings.attentionBackend);
+            if (acceleration.firstBlockCache) {
+                assertFirstBlockCacheReady(info, resolvedSettings);
+                console.log('[video-generator] H3 First Block Cache enabled (' +
+                    acceleration.firstBlockCache + ')');
+            }
+            console.log('[video-generator] acceleration:', formatAccelerationDiagnostics(acceleration).replace(/\n/g, ' | '));
             const graph = buildH3Graph({
                 prompt: finalPrompt,
                 mode,
@@ -2590,6 +2973,9 @@ async function generateVideo(prompt, options = {}) {
                 seed,
                 settings: resolvedSettings,
                 firstImageName,
+                // Match the installed node's exact input names so required-input
+                // validation passes even if the node pack renames a field.
+                firstBlockCacheInputs: resolveFirstBlockCacheInputNames(info),
             });
 
             await validateH3Graph(info, graph);
@@ -2640,6 +3026,7 @@ async function generateVideo(prompt, options = {}) {
                 width: W,
                 height: H,
                 loras: activeLoras,
+                seed,
                 generationMs: Date.now() - startedAt,
                 video: {
                     duration: h3EffectiveDurationSeconds(duration),
@@ -2647,6 +3034,7 @@ async function generateVideo(prompt, options = {}) {
                     fps: H3_FPS,
                     mode,
                     source: options.sourceImageRawFilename || null,
+                    acceleration,
                     ...(turboState.enabled ? {
                         turbo: { lora: turboState.loraName, strength: H3_TURBO_STRENGTH, steps: turboState.steps, scheduler: H3_TURBO_SCHEDULER }
                     } : {})
@@ -2666,6 +3054,7 @@ async function generateVideo(prompt, options = {}) {
                 mode,
                 prompt: finalPrompt,
                 generationMs: meta.generationMs,
+                acceleration,
                 meta,
                 refined: false
             }, Object.assign({}, options, { signal }));
@@ -2693,6 +3082,7 @@ async function maybeFaceRefine(baseResult, opts = {}) {
             duration: baseResult.duration,
             frames: baseResult.frames,
             sourceImageRawFilename: opts.sourceImageRawFilename || null,
+            baseGenerationMs: baseResult.generationMs || 0,
             signal: opts.signal || null
         });
         return {
@@ -2705,7 +3095,10 @@ async function maybeFaceRefine(baseResult, opts = {}) {
             fps: baseResult.fps,
             mode: baseResult.mode,
             prompt: baseResult.prompt,
-            generationMs: (baseResult.generationMs || 0) + (refined.generationMs || 0),
+            // refineVideo already folds the base render time in, so this is
+            // the total job time — do not add baseResult.generationMs again.
+            generationMs: refined.generationMs || (baseResult.generationMs || 0),
+            acceleration: baseResult.acceleration || null,
             meta: refined.meta,
             refined: true
         };
@@ -3221,6 +3614,29 @@ module.exports = {
     appendH3TurboLora,
     resolveH3TurboAvailability,
     assertH3TurboReady,
+    H3_FBCACHE_NODE,
+    H3_FBCACHE_INSTALL_URL,
+    H3_FBCACHE_INSTALL_MESSAGE,
+    H3_FBCACHE_PRESETS,
+    H3_FBCACHE_MODES,
+    H3_FBCACHE_PRESET_SAFE,
+    H3_FBCACHE_PRESET_FAST,
+    H3_FBCACHE_PRESET_AGGRESSIVE,
+    H3_FBCACHE_EXPERIMENTAL,
+    H3_FBCACHE_CUSTOM,
+    H3_FBCACHE_DEFAULT_MODE,
+    H3_FBCACHE_DEFAULTS,
+    normalizeFirstBlockCache,
+    normalizeFirstBlockCacheMode,
+    validateFirstBlockCache,
+    firstBlockCacheNodeAvailable,
+    resolveFirstBlockCacheAvailability,
+    assertFirstBlockCacheReady,
+    appendFirstBlockCache,
+    resolveFirstBlockCacheInputNames,
+    findConflictingCacheNodes,
+    videoAccelerationInfo,
+    formatAccelerationDiagnostics,
     H3_ATTENTION_BACKENDS,
     H3_AUTO_ATTENTION_PRIORITY,
     H3_CK_ATTENTION_VALUE,

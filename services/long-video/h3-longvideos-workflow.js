@@ -104,7 +104,8 @@ function buildLongVideoGraph(opts = {}) {
         megapixels = 1.0,
         shotSeconds = 15,
         steps = videoGenerator.H3_DEFAULT_STEPS,
-        firstImageName = null
+        firstImageName = null,
+        firstBlockCacheInputs = null
     } = opts;
 
     const graph = clone(WORKFLOW.nodes);
@@ -138,7 +139,10 @@ function buildLongVideoGraph(opts = {}) {
     // H3 graph (model-only adapters; CLIP is left untouched).
     const loras = (Array.isArray(settings.loras) ? settings.loras : [])
         .filter((l) => l && l.on !== false && l.name);
-    let modelNode = 'model';
+    // First Block Cache patches the diffusion MODEL immediately after the
+    // loader, so the LoRA chain, the attention patch and the LongVideos node all
+    // read the cached model (it composes with either attention backend).
+    let modelNode = videoGenerator.appendFirstBlockCache(graph, 'model', settings, firstBlockCacheInputs);
     let loraIndex = 0;
     for (const lora of loras) {
         const name = String(lora.name).trim();
