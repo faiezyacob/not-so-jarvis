@@ -29,6 +29,26 @@
     --glow-focus: 0 0 20px rgba(108, 255, 154, 0.1);
     --font-mono: 'Consolas', 'SF Mono', 'Fira Code', monospace;
     --font-sans: 'Segoe UI', system-ui, -apple-system, sans-serif;
+
+    /* --- Type scale (16px base, rem so it respects user zoom) --- */
+    --fs-2xs: 0.6875rem;   /* 11px - micro badges */
+    --fs-xs: 0.75rem;      /* 12px - captions, labels, metadata */
+    --fs-sm: 0.8125rem;    /* 13px - compact UI text */
+    --fs-md: 0.875rem;     /* 14px - dense UI text */
+    --fs-body: 1rem;       /* 16px - body copy + chat */
+    --fs-lg: 1.125rem;     /* 18px - sub-headings */
+    --fs-xl: 1.25rem;      /* 20px - headings */
+    --fs-2xl: 2rem;        /* 32px - display metrics */
+    --fs-3xl: 2.25rem;     /* 36px - display metrics (large screens) */
+
+    /* --- Layout widths --- */
+    --chat-column: 1080px;
+}
+
+@media (min-width: 1920px) {
+    :root {
+        --chat-column: 1280px;
+    }
 }
 
 html, body {
@@ -37,8 +57,8 @@ html, body {
     background: var(--bg-primary);
     color: var(--text-primary);
     font-family: var(--font-sans);
-    font-size: 14px;
-    line-height: 1.5;
+    font-size: var(--fs-body);
+    line-height: 1.6;
     -webkit-font-smoothing: antialiased;
 }
 
@@ -125,7 +145,7 @@ body {
 }
 
 .header-title {
-    font-size: 15px;
+    font-size: var(--fs-body);
     font-weight: 700;
     letter-spacing: 3px;
     color: var(--accent);
@@ -134,7 +154,7 @@ body {
 
 .header-subtitle {
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     font-weight: 400;
     letter-spacing: 1.5px;
     color: var(--text-secondary);
@@ -150,7 +170,7 @@ body {
 
 .status-label {
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     font-weight: 500;
     letter-spacing: 1.5px;
     color: var(--text-secondary);
@@ -220,7 +240,7 @@ body {
     border-radius: 6px;
     color: var(--text-secondary);
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--fs-sm);
     letter-spacing: 0.4px;
     cursor: pointer;
     transition: all 0.2s ease;
@@ -296,7 +316,7 @@ body {
 
 .model-switcher-title {
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     font-weight: 600;
     letter-spacing: 1.5px;
     color: var(--accent);
@@ -305,7 +325,7 @@ body {
 
 .model-switcher-sub {
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     color: var(--text-dim);
 }
 
@@ -338,7 +358,7 @@ body {
 .msw-check {
     width: 14px;
     flex-shrink: 0;
-    font-size: 12px;
+    font-size: var(--fs-md);
     color: var(--accent);
     opacity: 0;
 }
@@ -357,7 +377,7 @@ body {
 
 .msw-name {
     font-family: var(--font-mono);
-    font-size: 12px;
+    font-size: var(--fs-md);
     color: var(--text-primary);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -366,7 +386,7 @@ body {
 
 .msw-meta {
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     color: var(--text-dim);
 }
 
@@ -378,7 +398,7 @@ body {
     border-radius: 4px;
     color: var(--text-dim);
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: var(--fs-2xs);
     letter-spacing: 0.5px;
     text-transform: uppercase;
     cursor: pointer;
@@ -395,7 +415,7 @@ body {
 .msw-loading {
     padding: 18px 14px;
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--fs-sm);
     color: var(--text-dim);
     text-align: center;
     line-height: 1.5;
@@ -410,7 +430,7 @@ body {
     border-top: 1px solid var(--border-color);
     color: var(--accent-muted);
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--fs-sm);
     letter-spacing: 0.5px;
     text-transform: uppercase;
     cursor: pointer;
@@ -488,7 +508,7 @@ body {
 
 .settings-modal-title {
     font-family: var(--font-mono);
-    font-size: 13px;
+    font-size: var(--fs-md);
     font-weight: 700;
     letter-spacing: 2.5px;
     color: var(--text-primary);
@@ -496,7 +516,7 @@ body {
 
 .settings-modal-subtitle {
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     letter-spacing: 1.5px;
     color: var(--accent-muted);
     text-transform: uppercase;
@@ -511,7 +531,7 @@ body {
     border-radius: 6px;
     color: var(--text-primary);
     font-family: var(--font-mono);
-    font-size: 12px;
+    font-size: var(--fs-md);
     outline: none;
 }
 
@@ -561,13 +581,13 @@ body {
 .settings-footer-hint {
     flex: 1;
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     color: var(--text-dim);
 }
 
 .settings-footer-status {
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     color: var(--accent-muted);
 }
 
@@ -579,7 +599,7 @@ body {
     border-radius: 6px;
     color: var(--accent);
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--fs-sm);
     font-weight: 600;
     letter-spacing: 1px;
     cursor: pointer;
@@ -608,7 +628,7 @@ body {
     border: none;
     border-left: 2px solid transparent;
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     font-weight: 600;
     letter-spacing: 1.5px;
     color: var(--text-secondary);
@@ -662,7 +682,7 @@ body {
 .settings-modal.searching .settings-panel::before {
     content: attr(data-panel);
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 2px;
     color: var(--accent-muted);
@@ -683,7 +703,7 @@ body {
 
 .settings-card-title {
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 2px;
     color: var(--text-secondary);
@@ -701,7 +721,7 @@ details.settings-card summary.settings-card-title {
 details.settings-card summary.settings-card-title::after {
     content: '+';
     color: var(--accent-muted);
-    font-size: 14px;
+    font-size: var(--fs-body);
 }
 
 details.settings-card[open] summary.settings-card-title::after {
@@ -717,7 +737,7 @@ details.settings-card[open] summary.settings-card-title::after {
 
 .settings-card-sub {
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     line-height: 1.5;
     color: var(--text-dim);
 }
@@ -769,7 +789,7 @@ details.settings-card[open] summary.settings-card-title::after {
 
 .engine-card-name {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--fs-sm);
     font-weight: 700;
     letter-spacing: 1px;
     color: var(--text-primary);
@@ -781,7 +801,7 @@ details.settings-card[open] summary.settings-card-title::after {
 
 .engine-card-desc {
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: var(--fs-2xs);
     color: var(--text-dim);
     line-height: 1.4;
 }
@@ -793,7 +813,7 @@ details.settings-card[open] summary.settings-card-title::after {
     border-radius: 5px;
     color: #8fa8ff;
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--fs-sm);
     cursor: pointer;
 }
 
@@ -803,7 +823,7 @@ details.settings-card[open] summary.settings-card-title::after {
 
 .settings-dropdown-title {
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: var(--fs-2xs);
     font-weight: 600;
     letter-spacing: 2px;
     color: var(--text-dim);
@@ -922,7 +942,7 @@ details.settings-card[open] summary.settings-card-title::after {
 
 .settings-toggle-label {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--fs-sm);
     letter-spacing: 0.5px;
     color: var(--text-secondary);
 }
@@ -948,7 +968,7 @@ details.settings-card[open] summary.settings-card-title::after {
 
 .settings-field-label {
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     letter-spacing: 0.5px;
     color: var(--text-dim);
     text-transform: uppercase;
@@ -964,7 +984,7 @@ details.settings-card[open] summary.settings-card-title::after {
     border-radius: 5px;
     color: var(--text-primary);
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--fs-sm);
     outline: none;
     cursor: pointer;
     transition: border-color 0.2s ease, box-shadow 0.2s ease;
@@ -1005,7 +1025,7 @@ details.settings-card[open] summary.settings-card-title::after {
     border-radius: 5px;
     color: #d98c72;
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--fs-sm);
     letter-spacing: 0.5px;
     cursor: pointer;
     transition: all 0.2s ease;
@@ -1033,7 +1053,7 @@ details.settings-card[open] summary.settings-card-title::after {
     border-radius: 5px;
     color: #8fa8ff;
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--fs-sm);
     letter-spacing: 0.5px;
     cursor: pointer;
     transition: all 0.2s ease;
@@ -1061,7 +1081,7 @@ details.settings-card[open] summary.settings-card-title::after {
     border-radius: 5px;
     color: #8fc7ff;
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--fs-sm);
     letter-spacing: 0.5px;
     cursor: pointer;
     transition: all 0.2s ease;
@@ -1112,7 +1132,7 @@ details.settings-card[open] summary.settings-card-title::after {
 
 .conv-panel-title {
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     font-weight: 600;
     letter-spacing: 2.5px;
     color: var(--text-secondary);
@@ -1174,7 +1194,7 @@ details.settings-card[open] summary.settings-card-title::after {
 
 .conv-title {
     font-family: var(--font-mono);
-    font-size: 11.5px;
+    font-size: var(--fs-sm);
     color: var(--text-secondary);
     white-space: nowrap;
     overflow: hidden;
@@ -1220,7 +1240,7 @@ details.settings-card[open] summary.settings-card-title::after {
     border: none;
     border-radius: 4px;
     color: var(--text-dim);
-    font-size: 13px;
+    font-size: var(--fs-md);
     line-height: 1;
     cursor: pointer;
     transition: color 0.15s ease, background 0.15s ease;
@@ -1247,7 +1267,7 @@ details.settings-card[open] summary.settings-card-title::after {
     text-align: center;
     color: var(--text-dim);
     font-family: var(--font-mono);
-    font-size: 12px;
+    font-size: var(--fs-md);
     padding: 40px 20px;
 }
 
@@ -1270,7 +1290,7 @@ details.settings-card[open] summary.settings-card-title::after {
     border-radius: 999px;
     color: var(--text-secondary);
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 1.2px;
     text-transform: uppercase;
@@ -1313,10 +1333,11 @@ details.settings-card[open] summary.settings-card-title::after {
 .chat-messages {
     flex: 1;
     overflow-y: auto;
-    padding: 24px 28px;
+    width: 100%;
+    padding: 28px max(28px, calc((100% - var(--chat-column)) / 2));
     display: flex;
     flex-direction: column;
-    gap: 20px;
+    gap: 24px;
 }
 
 /* --- Messages --- */
@@ -1325,7 +1346,8 @@ details.settings-card[open] summary.settings-card-title::after {
     display: flex;
     flex-direction: column;
     gap: 6px;
-    max-width: 680px;
+    width: 100%;
+    max-width: 100%;
 }
 
 .message--ai {
@@ -1337,11 +1359,12 @@ details.settings-card[open] summary.settings-card-title::after {
     align-self: flex-end;
     padding-left: 14px;
     border-left: 2px solid rgba(212, 232, 220, 0.15);
+    max-width: min(82%, 760px);
 }
 
 .message-role {
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     font-weight: 600;
     letter-spacing: 2px;
     text-transform: uppercase;
@@ -1353,8 +1376,8 @@ details.settings-card[open] summary.settings-card-title::after {
 }
 
 .message-content {
-    font-size: 13.5px;
-    line-height: 1.65;
+    font-size: var(--fs-body);
+    line-height: 1.7;
     color: var(--text-primary);
     white-space: pre-wrap;
 }
@@ -1371,7 +1394,7 @@ details.settings-card[open] summary.settings-card-title::after {
 
 .message-stats {
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     color: var(--text-dim);
     letter-spacing: 0.3px;
     margin-top: 8px;
@@ -1419,7 +1442,7 @@ details.settings-card[open] summary.settings-card-title::after {
 
 .generating-status {
     font-family: var(--font-mono);
-    font-size: 12px;
+    font-size: var(--fs-md);
     color: var(--accent);
     letter-spacing: 0.3px;
     display: flex;
@@ -1482,7 +1505,7 @@ details.settings-card[open] summary.settings-card-title::after {
 
 .director-card-title {
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     font-weight: 600;
     letter-spacing: 2px;
     text-transform: uppercase;
@@ -1492,7 +1515,7 @@ details.settings-card[open] summary.settings-card-title::after {
 .director-card-stage {
     margin-left: auto;
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     letter-spacing: 0.5px;
     text-transform: uppercase;
     color: var(--text-dim);
@@ -1524,7 +1547,7 @@ details.settings-card[open] summary.settings-card-title::after {
     padding: 0 14px;
     border-radius: 5px;
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--fs-sm);
     font-weight: 600;
     letter-spacing: 0.5px;
     text-transform: uppercase;
@@ -1619,7 +1642,7 @@ details.settings-card[open] summary.settings-card-title::after {
 
 .longvideo-card-title {
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     font-weight: 600;
     letter-spacing: 2px;
     text-transform: uppercase;
@@ -1629,7 +1652,7 @@ details.settings-card[open] summary.settings-card-title::after {
 .longvideo-card-stage {
     margin-left: auto;
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     letter-spacing: 0.5px;
     text-transform: uppercase;
     color: var(--text-dim);
@@ -1670,7 +1693,7 @@ details.settings-card[open] summary.settings-card-title::after {
 
 .longvideo-beat-num {
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     font-weight: 600;
     letter-spacing: 1px;
     color: var(--accent);
@@ -1678,20 +1701,20 @@ details.settings-card[open] summary.settings-card-title::after {
 
 .longvideo-beat-dur {
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     color: var(--text-dim);
 }
 
 .longvideo-beat-action {
     margin: 0;
-    font-size: 13px;
+    font-size: var(--fs-md);
     line-height: 1.45;
     color: var(--text-secondary);
 }
 
 .longvideo-beat-cont {
     margin: 0;
-    font-size: 11px;
+    font-size: var(--fs-sm);
     line-height: 1.4;
     font-style: italic;
     color: var(--text-dim);
@@ -1702,7 +1725,7 @@ details.settings-card[open] summary.settings-card-title::after {
     font-style: normal;
     text-transform: uppercase;
     letter-spacing: 0.4px;
-    font-size: 10px;
+    font-size: var(--fs-xs);
 }
 
 .longvideo-stages {
@@ -1718,14 +1741,14 @@ details.settings-card[open] summary.settings-card-title::after {
     align-items: center;
     gap: 6px;
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     letter-spacing: 0.4px;
     text-transform: uppercase;
     color: var(--text-dim);
 }
 
 .longvideo-stage-mark {
-    font-size: 11px;
+    font-size: var(--fs-sm);
     line-height: 1;
 }
 
@@ -1751,7 +1774,7 @@ details.settings-card[open] summary.settings-card-title::after {
     padding: 0 14px;
     border-radius: 5px;
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--fs-sm);
     font-weight: 600;
     letter-spacing: 0.5px;
     text-transform: uppercase;
@@ -1850,7 +1873,7 @@ details.settings-card[open] summary.settings-card-title::after {
     overflow-wrap: anywhere;
     word-break: break-word;
     font-family: var(--font-mono);
-    font-size: 12px;
+    font-size: var(--fs-md);
     line-height: 1.5;
     color: var(--text-primary);
 }
@@ -1861,7 +1884,7 @@ details.settings-card[open] summary.settings-card-title::after {
     border-radius: 4px;
     padding: 2px 6px;
     font-family: var(--font-mono);
-    font-size: 12px;
+    font-size: var(--fs-md);
     color: var(--accent);
 }
 
@@ -1941,7 +1964,7 @@ em {
     display: flex;
     align-items: flex-end;
     gap: 10px;
-    padding: 14px 24px;
+    padding: 16px max(24px, calc((100% - var(--chat-column)) / 2));
     border-top: 1px solid var(--border-color);
     background: rgba(10, 12, 10, 0.6);
     backdrop-filter: blur(6px);
@@ -1958,7 +1981,7 @@ em {
     border-radius: 6px;
     color: var(--text-primary);
     font-family: var(--font-mono);
-    font-size: 12.5px;
+    font-size: var(--fs-md);
     line-height: 1.45;
     letter-spacing: 0.3px;
     outline: none;
@@ -2125,19 +2148,19 @@ em {
 
 .chat-lora-count {
     position: absolute;
-    top: -5px;
-    right: -5px;
-    min-width: 15px;
-    height: 15px;
-    padding: 0 3px;
+    top: -6px;
+    right: -6px;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
     display: flex;
     align-items: center;
     justify-content: center;
     background: var(--accent);
     color: #04110a;
-    border-radius: 8px;
+    border-radius: 9px;
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: var(--fs-2xs);
     font-weight: 700;
     line-height: 1;
 }
@@ -2216,7 +2239,7 @@ em {
     border-radius: 5px;
     color: var(--text-dim);
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     letter-spacing: 0.5px;
     cursor: pointer;
     transition: all 0.15s ease;
@@ -2265,7 +2288,7 @@ em {
 
 .chat-lora-hint {
     font-family: var(--font-mono);
-    font-size: 9.5px;
+    font-size: var(--fs-xs);
     line-height: 1.4;
     color: var(--text-dim);
 }
@@ -2306,7 +2329,7 @@ em {
     border: 1px solid var(--border-color);
     background: rgba(10, 12, 10, 0.9);
     color: var(--text-primary);
-    font-size: 12px;
+    font-size: var(--fs-md);
     line-height: 1;
     cursor: pointer;
     padding: 0;
@@ -2327,7 +2350,7 @@ em {
     border: 1px solid var(--border-focus);
     color: var(--accent);
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     line-height: 16px;
     pointer-events: none;
 }
@@ -2391,7 +2414,7 @@ em {
 
 .chat-mention-name {
     color: var(--text-primary);
-    font-size: 11.5px;
+    font-size: var(--fs-sm);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -2399,7 +2422,7 @@ em {
 
 .chat-mention-prompt {
     color: var(--text-dim);
-    font-size: 11px;
+    font-size: var(--fs-sm);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -2430,7 +2453,7 @@ em {
     justify-content: space-between;
     align-items: baseline;
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     font-weight: 600;
     letter-spacing: 2.5px;
     color: var(--text-secondary);
@@ -2440,7 +2463,7 @@ em {
 }
 
 .monitor-clock {
-    font-size: 10px;
+    font-size: var(--fs-xs);
     font-weight: 500;
     letter-spacing: 0.5px;
     color: var(--text-dim);
@@ -2483,7 +2506,7 @@ em {
 
 .metric-label {
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     font-weight: 600;
     letter-spacing: 2px;
     color: var(--text-dim);
@@ -2492,7 +2515,7 @@ em {
 
 .metric-name {
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     color: var(--text-secondary);
     white-space: nowrap;
     overflow: hidden;
@@ -2501,7 +2524,7 @@ em {
 }
 
 .metric-value {
-    font-size: 28px;
+    font-size: var(--fs-2xl);
     font-weight: 700;
     color: var(--accent);
     line-height: 1.1;
@@ -2510,7 +2533,7 @@ em {
 
 .metric-detail {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--fs-sm);
     color: var(--text-secondary);
     margin-bottom: 8px;
 }
@@ -2526,7 +2549,7 @@ em {
 
 .weather-status {
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     color: var(--text-secondary);
     letter-spacing: 0.3px;
 }
@@ -2542,12 +2565,12 @@ em {
 }
 
 .weather-icon {
-    font-size: 28px;
+    font-size: var(--fs-2xl);
     line-height: 1;
 }
 
 .weather-temp {
-    font-size: 28px;
+    font-size: var(--fs-2xl);
     font-weight: 700;
     color: var(--accent);
     line-height: 1.1;
@@ -2556,13 +2579,13 @@ em {
 
 .weather-detail {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--fs-sm);
     color: var(--text-secondary);
 }
 
 .weather-location {
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: var(--fs-2xs);
     color: var(--text-dim);
     letter-spacing: 0.5px;
     margin-top: 2px;
@@ -2582,7 +2605,7 @@ em {
 .news-scope-btn {
     flex: 1 1 auto;
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: var(--fs-2xs);
     letter-spacing: 0.6px;
     padding: 3px 6px;
     border: 1px solid var(--border-color);
@@ -2606,7 +2629,7 @@ em {
 
 .news-status {
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     color: var(--text-secondary);
     letter-spacing: 0.3px;
 }
@@ -2641,7 +2664,7 @@ em {
 }
 
 .news-title {
-    font-size: 12px;
+    font-size: var(--fs-md);
     line-height: 1.35;
     color: var(--text-primary);
     display: -webkit-box;
@@ -2656,7 +2679,7 @@ em {
 
 .news-meta {
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: var(--fs-2xs);
     color: var(--text-dim);
     letter-spacing: 0.3px;
     white-space: nowrap;
@@ -2675,7 +2698,7 @@ em {
 
 .news-feed-note {
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     color: var(--text-dim);
 }
 
@@ -2698,7 +2721,7 @@ em {
 }
 
 .news-feed-label {
-    font-size: 12px;
+    font-size: var(--fs-md);
     color: var(--text-primary);
     white-space: nowrap;
     overflow: hidden;
@@ -2707,7 +2730,7 @@ em {
 
 .news-feed-url {
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: var(--fs-2xs);
     color: var(--text-dim);
     white-space: nowrap;
     overflow: hidden;
@@ -2725,7 +2748,7 @@ em {
     border-radius: 4px;
     background: transparent;
     color: var(--text-secondary);
-    font-size: 15px;
+    font-size: var(--fs-body);
     line-height: 1;
     cursor: pointer;
     transition: color 0.2s ease, border-color 0.2s ease;
@@ -2740,7 +2763,7 @@ em {
 
 .comfyui-status {
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     letter-spacing: 0.3px;
     margin-bottom: 9px;
 }
@@ -2790,7 +2813,7 @@ em {
 
 .comfyui-detail {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--fs-sm);
     color: var(--text-secondary);
     margin-bottom: 8px;
     white-space: nowrap;
@@ -2807,7 +2830,7 @@ em {
     border-radius: 5px;
     color: var(--text-secondary);
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     font-weight: 600;
     letter-spacing: 1px;
     text-transform: uppercase;
@@ -2839,7 +2862,7 @@ em {
     border-radius: 5px;
     color: var(--accent);
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     font-weight: 600;
     letter-spacing: 1px;
     text-transform: uppercase;
@@ -2875,7 +2898,7 @@ em {
 
 .ollama-detail {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--fs-sm);
     color: var(--text-secondary);
     white-space: nowrap;
     overflow: hidden;
@@ -2895,7 +2918,7 @@ em {
 
 .activity-empty {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--fs-sm);
     color: var(--text-dim);
 }
 
@@ -2925,7 +2948,7 @@ em {
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 10px;
+    font-size: var(--fs-xs);
     line-height: 1;
     color: var(--accent-dim);
     border: 1px solid var(--border-color);
@@ -2955,7 +2978,7 @@ em {
 
 .activity-title {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--fs-sm);
     font-weight: 600;
     color: var(--text-primary);
     white-space: nowrap;
@@ -2966,14 +2989,14 @@ em {
 .activity-time {
     flex: 0 0 auto;
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: var(--fs-2xs);
     color: var(--text-dim);
     letter-spacing: 0.3px;
 }
 
 .activity-detail {
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     color: var(--text-secondary);
     white-space: nowrap;
     overflow: hidden;
@@ -2993,7 +3016,7 @@ em {
     }
 
     .chat-messages {
-        padding: 20px;
+        padding: 20px max(20px, calc((100% - var(--chat-column)) / 2));
     }
 }
 
@@ -3072,7 +3095,7 @@ em {
     }
 
     .metric-value {
-        font-size: 32px;
+        font-size: var(--fs-3xl);
     }
 
     .metric-graph {
@@ -3091,7 +3114,7 @@ em {
     border-radius: 5px;
     color: var(--text-primary);
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--fs-sm);
     line-height: 1.5;
     outline: none;
     resize: vertical;
@@ -3113,7 +3136,7 @@ em {
 
 .settings-hint {
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: var(--fs-2xs);
     line-height: 1.4;
     letter-spacing: 0.3px;
     color: var(--text-dim);
@@ -3121,7 +3144,7 @@ em {
 
 .settings-warning {
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: var(--fs-2xs);
     line-height: 1.5;
     letter-spacing: 0.3px;
     color: #d9a872;
@@ -3134,7 +3157,7 @@ em {
 
 .settings-save-status {
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: var(--fs-2xs);
     letter-spacing: 0.3px;
     color: var(--accent-muted);
     min-height: 12px;
@@ -3146,7 +3169,7 @@ em {
 
 .settings-log {
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: var(--fs-2xs);
     line-height: 1.5;
     letter-spacing: 0.3px;
     color: var(--text-dim);
@@ -3233,7 +3256,7 @@ em {
 
 .lora-name {
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     color: var(--text-secondary);
     min-width: 0;
     overflow: hidden;
@@ -3251,7 +3274,7 @@ em {
 
 .lora-trigger-word {
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: var(--fs-2xs);
     color: var(--accent-muted);
     background: var(--bg-secondary);
     border: 1px solid var(--border-color);
@@ -3285,7 +3308,7 @@ em {
 
 .lora-strength-label {
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     color: var(--accent-muted);
     width: 30px;
     text-align: right;
@@ -3301,7 +3324,7 @@ em {
     background: none;
     border: none;
     color: var(--text-dim);
-    font-size: 14px;
+    font-size: var(--fs-body);
     line-height: 1;
     cursor: pointer;
     flex-shrink: 0;
@@ -3322,7 +3345,7 @@ em {
     border-radius: 5px;
     color: var(--accent-muted);
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--fs-sm);
     letter-spacing: 0.5px;
     cursor: pointer;
     transition: all 0.2s ease;
@@ -3391,7 +3414,7 @@ em {
 
 .model-library-title {
     font-family: var(--font-mono);
-    font-size: 13px;
+    font-size: var(--fs-md);
     font-weight: 700;
     letter-spacing: 2.5px;
     color: var(--accent);
@@ -3400,7 +3423,7 @@ em {
 
 .model-library-subtitle {
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     color: var(--text-dim);
     letter-spacing: 0.5px;
 }
@@ -3436,7 +3459,7 @@ em {
 
 .ml-hardware-title {
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: var(--fs-2xs);
     font-weight: 600;
     letter-spacing: 2.5px;
     color: var(--text-dim);
@@ -3459,7 +3482,7 @@ em {
 
 .ml-hardware-label {
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: var(--fs-2xs);
     font-weight: 600;
     letter-spacing: 1.5px;
     color: var(--text-dim);
@@ -3467,14 +3490,14 @@ em {
 }
 
 .ml-hardware-value {
-    font-size: 15px;
+    font-size: var(--fs-body);
     font-weight: 600;
     color: var(--accent);
 }
 
 .ml-hardware-detail {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--fs-sm);
     color: var(--text-secondary);
 }
 
@@ -3485,7 +3508,7 @@ em {
 .ml-hardware-loading,
 .ml-hardware-unknown {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--fs-sm);
     color: var(--text-dim);
     padding: 4px 0;
 }
@@ -3524,7 +3547,7 @@ em {
     border-radius: 5px;
     color: var(--text-primary);
     font-family: var(--font-mono);
-    font-size: 12px;
+    font-size: var(--fs-md);
     transition: border-color 0.2s ease;
 }
 
@@ -3551,7 +3574,7 @@ em {
     border-radius: 5px;
     color: var(--text-secondary);
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--fs-sm);
     letter-spacing: 0.3px;
     cursor: pointer;
     transition: all 0.15s ease;
@@ -3576,7 +3599,7 @@ em {
     border-radius: 5px;
     color: var(--text-secondary);
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--fs-sm);
     cursor: pointer;
 }
 
@@ -3592,7 +3615,7 @@ em {
     padding: 40px 0;
     text-align: center;
     font-family: var(--font-mono);
-    font-size: 12px;
+    font-size: var(--fs-md);
     color: var(--text-dim);
 }
 
@@ -3601,7 +3624,7 @@ em {
 .ml-section-header {
     grid-column: 1 / -1;
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--fs-sm);
     font-weight: 600;
     letter-spacing: 1.5px;
     color: var(--text-secondary);
@@ -3614,7 +3637,7 @@ em {
 }
 
 .ml-section-icon {
-    font-size: 14px;
+    font-size: var(--fs-body);
 }
 
 .ml-section-divider {
@@ -3663,20 +3686,20 @@ em {
 }
 
 .ml-card-title {
-    font-size: 14px;
+    font-size: var(--fs-body);
     font-weight: 600;
     color: var(--text-primary);
 }
 
 .ml-card-specs {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--fs-sm);
     color: var(--text-secondary);
     letter-spacing: 0.3px;
 }
 
 .ml-card-description {
-    font-size: 12px;
+    font-size: var(--fs-md);
     line-height: 1.5;
     color: var(--text-secondary);
 }
@@ -3691,7 +3714,7 @@ em {
 
 .ml-cap-tag {
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: var(--fs-2xs);
     letter-spacing: 0.5px;
     padding: 2px 7px;
     border-radius: 3px;
@@ -3758,7 +3781,7 @@ em {
 
 .ml-reasoning-label {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--fs-sm);
     letter-spacing: 0.5px;
     color: var(--text-secondary);
     text-transform: uppercase;
@@ -3766,7 +3789,7 @@ em {
 
 .ml-reasoning-hint {
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     color: var(--text-dim);
 }
 
@@ -3782,20 +3805,20 @@ em {
 
 .ml-card-hardware-row {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--fs-sm);
     color: var(--text-secondary);
 }
 
 .ml-card-hardware-dim {
     color: var(--text-dim);
-    font-size: 10px;
+    font-size: var(--fs-xs);
 }
 
 /* --- Compatibility Badge --- */
 
 .ml-compat-badge {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--fs-sm);
     font-weight: 600;
     letter-spacing: 0.3px;
     padding: 6px 10px;
@@ -3833,7 +3856,7 @@ em {
     display: inline-block;
     vertical-align: middle;
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: var(--fs-2xs);
     font-weight: 600;
     letter-spacing: 0.5px;
     text-transform: uppercase;
@@ -3861,7 +3884,7 @@ em {
 
 .ml-category-badge {
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: var(--fs-2xs);
     letter-spacing: 0.5px;
     text-transform: uppercase;
     color: var(--text-dim);
@@ -3873,7 +3896,7 @@ em {
 }
 
 .ml-hardware-notes {
-    font-size: 11px;
+    font-size: var(--fs-sm);
     line-height: 1.4;
     color: var(--text-dim);
     font-style: italic;
@@ -3901,7 +3924,7 @@ em {
 
 .ml-vram-bar-label {
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     color: var(--text-dim);
     margin-top: 4px;
 }
@@ -3944,7 +3967,7 @@ em {
     height: 32px;
     border-radius: 5px;
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--fs-sm);
     font-weight: 600;
     letter-spacing: 0.5px;
     cursor: pointer;
@@ -4061,7 +4084,7 @@ em {
 }
 
 .modal-title {
-    font-size: 15px;
+    font-size: var(--fs-body);
     font-weight: 600;
     color: var(--text-primary);
     display: flex;
@@ -4070,7 +4093,7 @@ em {
 }
 
 .modal-title-icon {
-    font-size: 18px;
+    font-size: var(--fs-lg);
 }
 
 .modal-icon-warning {
@@ -4090,7 +4113,7 @@ em {
 }
 
 .modal-model-name {
-    font-size: 15px;
+    font-size: var(--fs-body);
     font-weight: 600;
     color: var(--accent);
     margin-bottom: 2px;
@@ -4098,13 +4121,13 @@ em {
 
 .modal-model-specs {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--fs-sm);
     color: var(--text-secondary);
 }
 
 .modal-model-size {
     font-family: var(--font-mono);
-    font-size: 12px;
+    font-size: var(--fs-md);
     color: var(--text-secondary);
     margin-top: 4px;
 }
@@ -4112,7 +4135,7 @@ em {
 .modal-compat-badge {
     display: inline-block;
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--fs-sm);
     font-weight: 600;
     letter-spacing: 0.3px;
     padding: 4px 10px;
@@ -4154,7 +4177,7 @@ em {
     justify-content: space-between;
     align-items: center;
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--fs-sm);
 }
 
 .modal-detail-label {
@@ -4167,14 +4190,14 @@ em {
 }
 
 .modal-warning-text {
-    font-size: 12.5px;
+    font-size: var(--fs-md);
     line-height: 1.55;
     color: var(--text-secondary);
     margin-bottom: 8px;
 }
 
 .modal-note {
-    font-size: 11px;
+    font-size: var(--fs-sm);
     line-height: 1.5;
     color: var(--text-dim);
     padding: 8px 10px;
@@ -4201,7 +4224,7 @@ em {
     padding: 0 18px;
     border-radius: 5px;
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--fs-sm);
     font-weight: 600;
     letter-spacing: 0.5px;
     cursor: pointer;
@@ -4275,7 +4298,7 @@ a.modal-btn {
 /* --- App Dialog (prompt/confirm/alert) --- */
 
 .dialog-message {
-    font-size: 12.5px;
+    font-size: var(--fs-md);
     line-height: 1.55;
     color: var(--text-secondary);
     word-break: break-word;
@@ -4291,7 +4314,7 @@ a.modal-btn {
     border-radius: 6px;
     color: var(--text-primary);
     font-family: var(--font-mono);
-    font-size: 12.5px;
+    font-size: var(--fs-md);
     letter-spacing: 0.3px;
     outline: none;
     transition: border-color 0.2s ease, box-shadow 0.2s ease;
@@ -4392,21 +4415,21 @@ a.modal-btn {
 .generated-thumb--broken,
 .gallery-cell--broken {
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: var(--fs-2xs);
     letter-spacing: 1px;
     color: var(--text-dim);
 }
 
 .generated-info {
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     letter-spacing: 0.3px;
     color: var(--text-secondary);
 }
 
 .generated-empty {
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     line-height: 1.5;
     color: var(--text-dim);
     padding: 10px 2px 4px;
@@ -4421,7 +4444,7 @@ a.modal-btn {
     border-radius: 5px;
     color: var(--text-secondary);
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     font-weight: 600;
     letter-spacing: 1px;
     text-transform: uppercase;
@@ -4526,7 +4549,7 @@ a.modal-btn {
     padding: 10px 0 4px;
     background: linear-gradient(to top, var(--bg-secondary) 75%, transparent);
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     letter-spacing: 0.4px;
     color: var(--text-secondary);
 }
@@ -4545,7 +4568,7 @@ a.modal-btn {
     border-radius: 5px;
     color: var(--text-secondary);
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     font-weight: 600;
     letter-spacing: 0.6px;
     text-transform: uppercase;
@@ -4619,7 +4642,7 @@ a.modal-btn {
     z-index: 2;
     padding: 3px 9px;
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     line-height: 1.4;
     color: var(--text-dim);
     background: rgba(0, 0, 0, 0.6);
@@ -4636,7 +4659,7 @@ a.modal-btn {
 
 .gallery-preview-broken {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--fs-sm);
     color: var(--text-dim);
     padding: 32px;
 }
@@ -4657,12 +4680,12 @@ a.modal-btn {
     justify-content: space-between;
     align-items: center;
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--fs-sm);
 }
 
 .gallery-preview-label {
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     letter-spacing: 0.5px;
     color: var(--text-dim);
     text-transform: uppercase;
@@ -4670,7 +4693,7 @@ a.modal-btn {
 
 .gallery-preview-value {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--fs-sm);
     color: var(--text-primary);
     font-weight: 500;
 }
@@ -4683,7 +4706,7 @@ a.modal-btn {
 }
 
 .gallery-preview-prompt-text {
-    font-size: 12.5px;
+    font-size: var(--fs-md);
     line-height: 1.55;
     color: var(--text-secondary);
     white-space: pre-wrap;
@@ -4746,7 +4769,7 @@ a.modal-btn {
 
 .compare-title {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--fs-sm);
     font-weight: 600;
     letter-spacing: 1.5px;
     color: var(--accent);
@@ -4755,7 +4778,7 @@ a.modal-btn {
 
 .compare-dims {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--fs-sm);
     letter-spacing: 0.3px;
     color: var(--text-secondary);
     white-space: nowrap;
@@ -4867,7 +4890,7 @@ a.modal-btn {
     border: 1px solid var(--border-color);
     border-radius: 5px;
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     font-weight: 600;
     letter-spacing: 1.2px;
     color: var(--text-primary);
@@ -4919,7 +4942,7 @@ a.modal-btn {
     border-radius: 6px;
     color: var(--text-dim);
     font-family: var(--font-ui);
-    font-size: 12px;
+    font-size: var(--fs-md);
     cursor: pointer;
     transition: background 0.2s ease, color 0.2s ease;
 }
@@ -4956,7 +4979,7 @@ a.modal-btn {
     border-radius: 6px;
     color: var(--text-primary);
     font-family: var(--font-mono);
-    font-size: 15px;
+    font-size: var(--fs-body);
     line-height: 1;
     cursor: pointer;
     transition: background 0.2s ease, color 0.2s ease;
@@ -4976,7 +4999,7 @@ a.modal-btn {
 .compare-zoom button.compare-text-btn {
     width: auto;
     padding: 0 10px;
-    font-size: 11px;
+    font-size: var(--fs-sm);
     font-weight: 600;
     letter-spacing: 0.5px;
 }
@@ -4985,7 +5008,7 @@ a.modal-btn {
     min-width: 44px;
     text-align: center;
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--fs-sm);
     color: var(--text-dim);
     user-select: none;
 }
@@ -4998,14 +5021,14 @@ a.modal-btn {
 
 .compare-hint {
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     letter-spacing: 0.3px;
     color: var(--text-dim);
 }
 
 .compare-reveal-value {
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     color: var(--text-secondary);
 }
 
@@ -5017,7 +5040,7 @@ a.modal-btn {
     align-items: center;
     justify-content: center;
     font-family: var(--font-mono);
-    font-size: 12px;
+    font-size: var(--fs-md);
     letter-spacing: 1px;
     color: var(--text-dim);
 }
@@ -5040,7 +5063,7 @@ a.modal-btn {
     border-radius: 5px;
     color: var(--accent);
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--fs-sm);
     pointer-events: none;
 }
 
@@ -5223,7 +5246,7 @@ a.modal-btn {
 .jv-time {
     flex-shrink: 0;
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     letter-spacing: 0.3px;
     color: var(--text-dim);
     white-space: nowrap;
@@ -5359,7 +5382,7 @@ a.modal-btn {
     }
 
     .jv-time {
-        font-size: 9px;
+        font-size: var(--fs-2xs);
     }
 }
 
@@ -5384,7 +5407,7 @@ a.modal-btn {
 
 .setup-group-title {
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: var(--fs-2xs);
     font-weight: 600;
     letter-spacing: 1.5px;
     color: var(--text-secondary);
@@ -5408,7 +5431,7 @@ a.modal-btn {
 
 .setup-row-title {
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     font-weight: 600;
     line-height: 1.5;
     color: var(--text-primary);
@@ -5417,7 +5440,7 @@ a.modal-btn {
 
 .setup-row-sub {
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: var(--fs-2xs);
     line-height: 1.7;
     color: var(--text-dim);
     word-break: break-word;
@@ -5430,7 +5453,7 @@ a.modal-btn {
 
 .setup-badge {
     font-family: var(--font-mono);
-    font-size: 8px;
+    font-size: var(--fs-2xs);
     font-weight: 600;
     letter-spacing: 1px;
     padding: 2px 6px;
