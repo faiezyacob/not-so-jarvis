@@ -302,6 +302,18 @@
 
                     <!-- Image -->
                     <div class="settings-panel" data-panel="image">
+                        <div class="settings-card" data-search="image model engine krea2 qwen image 2.1">
+                            <div class="settings-card-title">IMAGE MODEL</div>
+                            <div class="settings-card-sub">Choose which text-to-image pipeline the BASE MODELS below feed.</div>
+                            <div class="settings-field">
+                                <label class="settings-field-label" for="imageModel">Model</label>
+                                <select class="settings-select" id="imageModel">
+                                    <option value="krea2">Krea 2 Turbo</option>
+                                    <option value="qwen_image_2_1">Qwen Image 2.1</option>
+                                </select>
+                                <span class="settings-hint">UNET = diffusion model, CLIP = text encoder, VAE = VAE. Switching models remembers each model's filenames.</span>
+                            </div>
+                        </div>
                         <div class="settings-card" data-search="image aspect ratio size resolution output dimensions">
                             <div class="settings-card-title">OUTPUT</div>
                             <div class="settings-field-row">

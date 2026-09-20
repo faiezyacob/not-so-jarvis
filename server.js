@@ -490,8 +490,8 @@ async function handleAPI(req, res, urlPath) {
     }
 
     // GET /api/settings/image — current + default image generation settings
-    // for the Krea2 pipeline, plus the UNET/CLIP/VAE models ComfyUI has
-    // available (null when ComfyUI is unreachable).
+    // for the active text-to-image pipeline (Krea2 or Qwen Image 2.1), plus
+    // the UNET/CLIP/VAE models ComfyUI has available (null when unreachable).
     if (urlPath === '/api/settings/image' && req.method === 'GET') {
         try {
             const settings = imageGenerator.effectiveSettings();
@@ -3363,6 +3363,8 @@ function friendlyImageError(err) {
         case 'comfyui_missing_nodes':
             return err.message;
         case 'comfyui_krea2_clip_unsupported':
+            return err.message;
+        case 'comfyui_clip_type_unsupported':
             return err.message;
         case 'comfyui_validation_error':
             return err.message;

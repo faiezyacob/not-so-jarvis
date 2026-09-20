@@ -1,9 +1,9 @@
 /* ============================================
    JARVIS — Image Generation Service
    Detects image-generation intent, builds the
-   Krea2 text-to-image workflow graph, submits it
-   to ComfyUI, and stores the finished image so
-   the chat layer can display it.
+   Krea2 or Qwen Image 2.1 text-to-image workflow
+   graph, submits it to ComfyUI, and stores the
+   finished image so the chat layer can display it.
    SPDX-License-Identifier: MIT
    Copyright (c) 2026 not-so-jarvis.
    ============================================ */
@@ -859,11 +859,46 @@ function resolveDimensions(settings) {
 //   KSampler (euler / beta, steps 8, cfg 1, seed from settings)
 //   VAEDecode → SaveImage (not-so-jarvis/gen)
 
+// --- Image model selection ------------------------------------------------------
+//
+// JARVIS ships two text-to-image pipelines and the user picks one with the
+// topmost IMAGE MODEL dropdown in Settings > Image. Both reuse the same
+// UNET(net)/CLIP(text encoder)/VAE slots:
+//   - krea2:          the Krea 2 Turbo graph (euler / beta).
+//   - qwen_image_2_1: the Qwen Image 2.1 graph (Qwen3-VL 8B text encoder,
+//                     euler / simple, cfg 1, its own TextEncodeQwenImage21 node).
+// The Krea2 slot keys (unet/clip/vae) keep their historical meaning; Qwen's
+// filenames live under qwen* keys so switching back and forth remembers both.
+
+const IMAGE_MODELS = ['krea2', 'qwen_image_2_1'];
+const DEFAULT_IMAGE_MODEL = 'krea2';
+const QWEN_IMAGE_CLIP_TYPE = 'qwen_image';
+// Qwen Image 2.1's official pipeline samples at euler/simple, cfg 1, ~25 steps.
+const DEFAULT_QWEN_STEPS = 25;
+const DEFAULT_QWEN_CFG = 1;
+
+function normalizeImageModel(value) {
+    const v = String(value || '').trim().toLowerCase().replace(/[\s.-]+/g, '_');
+    if (v === 'qwen' || v === 'qwen2' || v === 'qwen_2' || v === 'qwen_image' ||
+        v === 'qwen_image_2' || v === 'qwen_image_21' || v === 'qwen_image_2_1') {
+        return 'qwen_image_2_1';
+    }
+    if (v === 'krea2' || v === 'krea_2' || v === 'krea') return 'krea2';
+    return null;
+}
+
 const DEFAULT_SETTINGS = {
+    // Active text-to-image model: 'krea2' (default) or 'qwen_image_2_1'.
+    model: normalizeImageModel(process.env.JARVIS_IMAGE_MODEL) || DEFAULT_IMAGE_MODEL,
     unet: process.env.KREA2_UNET || 'krea2_turbo_fp8_scaled.safetensors',
     clip: process.env.KREA2_CLIP || 'Huihui-Qwen3-VL-4B-Instruct-abliterated-fp8_scaled.safetensors',
     clipType: process.env.KREA2_CLIP_TYPE || 'krea2',
     vae: process.env.KREA2_VAE || 'wan_2.1_vae.safetensors',
+    // Qwen Image 2.1 slot (Comfy-Org/Qwen-Image-2.1). The CLIP type is fixed
+    // to 'qwen_image'; the setup guide downloads these from Hugging Face.
+    qwenUnet: process.env.QWEN_IMAGE_UNET || 'qwen_image_2.1_int8_convrot.safetensors',
+    qwenClip: process.env.QWEN_IMAGE_CLIP || 'qwen3vl_8b_int8_convrot.safetensors',
+    qwenVae: process.env.QWEN_IMAGE_VAE || 'qwen_image_2.1_vae_bf16.safetensors',
     // Identity Edit LoRA used by the Krea2 instruction-based edit pipeline
     // (community fine-tune conradlocke/krea2-identity-edit). It edits a source
     // image from a plain-language instruction while preserving the rest.
@@ -916,7 +951,7 @@ const DEFAULT_SETTINGS = {
 
 // Fields the user may override through the settings panel / API. Kept
 // separate from DEFAULT_SETTINGS so we only persist explicit overrides.
-const CONFIGURABLE_KEYS = ['unet', 'clip', 'clipType', 'vae', 'editLora', 'aspectRatio', 'imageSize', 'width', 'height', 'steps', 'cfg', 'seedMode', 'seed', 'variations', 'loras', 'loraTriggerWords',
+const CONFIGURABLE_KEYS = ['model', 'unet', 'clip', 'clipType', 'vae', 'qwenUnet', 'qwenClip', 'qwenVae', 'editLora', 'aspectRatio', 'imageSize', 'width', 'height', 'steps', 'cfg', 'seedMode', 'seed', 'variations', 'loras', 'loraTriggerWords',
     'upscaleEngine', 'upscaleMode', 'upscaleResolution', 'upscaleMultiplier', 'upscaleProfile', 'upscaleNoise', 'upscalePreScale',
     'seedvr2Dit', 'seedvr2Vae', 'seedvr2Attention'];
 
@@ -941,6 +976,28 @@ function effectiveSettings() {
 
 function getDefaults() {
     return { ...DEFAULT_SETTINGS };
+}
+
+// Resolve the active model's UNET/CLIP/VAE (and CLIP type) from settings.
+// Downstream graph builders read these slots; the Krea2 edit/upscale pipelines
+// keep using the raw Krea2 keys because they are Krea2-specific, while the
+// text-to-image path resolves through here so the selected model actually runs.
+function resolveBaseModels(settings) {
+    const source = settings || DEFAULT_SETTINGS;
+    if (normalizeImageModel(source.model) === 'qwen_image_2_1') {
+        return {
+            unet: String(source.qwenUnet || DEFAULT_SETTINGS.qwenUnet).trim(),
+            clip: String(source.qwenClip || DEFAULT_SETTINGS.qwenClip).trim(),
+            clipType: QWEN_IMAGE_CLIP_TYPE,
+            vae: String(source.qwenVae || DEFAULT_SETTINGS.qwenVae).trim()
+        };
+    }
+    return {
+        unet: String(source.unet || DEFAULT_SETTINGS.unet).trim(),
+        clip: String(source.clip || DEFAULT_SETTINGS.clip).trim(),
+        clipType: String(source.clipType || DEFAULT_SETTINGS.clipType).trim(),
+        vae: String(source.vae || DEFAULT_SETTINGS.vae).trim()
+    };
 }
 
 function clampToRange(value, min, max, fallback) {
@@ -1017,6 +1074,9 @@ function sanitizeSettings(patch) {
             out[key] = sanitizeLoras(value);
         } else if (key === 'loraTriggerWords') {
             out[key] = sanitizeLoraTriggerWords(value);
+        } else if (key === 'model') {
+            const v = normalizeImageModel(value);
+            if (v) out[key] = v;
         } else if (key === 'aspectRatio') {
             const v = normalizeAspectRatio(value);
             if (v) out[key] = v;
@@ -1189,10 +1249,87 @@ function buildKrea2T2IGraph(prompt, options = {}) {
     return graph;
 }
 
-// Confirm ComfyUI knows every node class in the graph and accepts the krea2
-// clip type, so failures surface as specific, actionable errors rather than a
-// raw queue rejection.
-async function validateGraphAgainstComfy(info, graph) {
+// --- Qwen Image 2.1 text-to-image workflow -------------------------------------
+//
+// The canonical JARVIS graph for the Qwen Image 2.1 model, mirroring the
+// official Comfy-Org template (image_qwen_image_2_1_t2i):
+//
+//   UNETLoader (qwen_image_2.1_int8_convrot)  →  CLIPLoader (type qwen_image)
+//   VAELoader (qwen_image_2.1_vae_bf16)
+//   TextEncodeQwenImage21 (prompt + negative_prompt → positive / negative)
+//   EmptyLatentImage
+//   KSampler (euler / simple, cfg 1, 25 steps)
+//   VAEDecode → SaveImage (not-so-jarvis/gen)
+//
+// Qwen Image 2.1 uses ComfyUI's dedicated TextEncodeQwenImage21 node (a Qwen3-VL
+// text encoder with its own prompt/negative template) instead of CLIPTextEncode,
+// so the Krea2 builder above cannot be reused. The negative_prompt stays empty by
+// default because the official path runs at cfg 1, where the negative is unused.
+function buildQwenImage21T2IGraph(prompt, options = {}) {
+    const settings = Object.assign({}, DEFAULT_SETTINGS, options.settings || {});
+    const base = resolveBaseModels(settings);
+    const seed = Number.isInteger(options.seed) && options.seed >= 0 ? options.seed : 0;
+    const width = clampToInt(options.width || settings.width, 64, 4096, settings.width);
+    const height = clampToInt(options.height || settings.height, 64, 4096, settings.height);
+    const steps = clampToInt(options.steps, 1, 100, DEFAULT_QWEN_STEPS);
+    const cfg = Number.isFinite(Number(options.cfg)) ? Math.max(0, Number(options.cfg)) : DEFAULT_QWEN_CFG;
+    const negativeText = String(options.negativePrompt || '').trim();
+    // Reference-image budget for the Qwen3-VL encoder. No reference image is
+    // wired here (pure text-to-image), so 1024 matches the official template.
+    const resolution = clampToInt(options.encoderResolution, 0, 4096, 1024);
+
+    const graph = {
+        unet: buildDiffusionLoaderNode(base.unet),
+        clip: { class_type: 'CLIPLoader', inputs: { clip_name: base.clip, type: QWEN_IMAGE_CLIP_TYPE, device: 'default' } },
+        vae: { class_type: 'VAELoader', inputs: { vae_name: base.vae } }
+    };
+
+    // Apply any attached LoRAs on top of the base model + clip (LoraLoader
+    // consumes and returns both, so the stack feeds the encoder and sampler).
+    const stack = buildLoraChain(graph, settings.loras);
+
+    graph.conditioning = {
+        class_type: 'TextEncodeQwenImage21',
+        inputs: {
+            clip: stack.clip,
+            prompt: String(prompt || ''),
+            negative_prompt: negativeText,
+            resolution
+        }
+    };
+
+    graph.canvas = {
+        class_type: 'EmptyLatentImage',
+        inputs: { width, height, batch_size: 1 }
+    };
+
+    graph.sampler = {
+        class_type: 'KSampler',
+        inputs: {
+            model: stack.model,
+            positive: ['conditioning', 0],
+            negative: ['conditioning', 1],
+            latent_image: ['canvas', 0],
+            seed,
+            steps,
+            cfg,
+            sampler_name: 'euler',
+            scheduler: 'simple',
+            denoise: 1
+        }
+    };
+
+    graph.decoded = { class_type: 'VAEDecode', inputs: { samples: ['sampler', 0], vae: ['vae', 0] } };
+    graph.save = { class_type: 'SaveImage', inputs: { images: ['decoded', 0], filename_prefix: 'not-so-jarvis/gen' } };
+
+    return graph;
+}
+
+// Confirm ComfyUI knows every node class in the graph and accepts the clip type
+// the graph requires, so failures surface as specific, actionable errors rather
+// than a raw queue rejection. `expectedClipType` defaults to the Krea2 type for
+// backwards compatibility.
+async function validateGraphAgainstComfy(info, graph, expectedClipType) {
     const missing = Object.values(graph)
         .filter((node) => !info[node.class_type])
         .map((node) => node.class_type);
@@ -1206,16 +1343,18 @@ async function validateGraphAgainstComfy(info, graph) {
         throw error;
     }
 
+    const requiredType = String(expectedClipType || DEFAULT_SETTINGS.clipType || 'krea2');
     const clipNode = info.CLIPLoader;
     const typeField = clipNode && clipNode.input && clipNode.input.required && clipNode.input.required.type;
     if (typeField) {
         const acceptedTypes = typeField[0];
-        if (Array.isArray(acceptedTypes) && !acceptedTypes.includes('krea2')) {
+        if (Array.isArray(acceptedTypes) && !acceptedTypes.includes(requiredType)) {
             const error = new Error(
-                'This ComfyUI build does not support the krea2 CLIPLoader type. ' +
+                'This ComfyUI build does not support the ' + requiredType + ' CLIPLoader type. ' +
                 'Update ComfyUI, then try again.'
             );
-            error.code = 'comfyui_krea2_clip_unsupported';
+            error.code = requiredType === 'krea2' ? 'comfyui_krea2_clip_unsupported' : 'comfyui_clip_type_unsupported';
+            error.clipType = requiredType;
             throw error;
         }
     }
@@ -1793,13 +1932,21 @@ async function generateImage(prompt, options = {}) {
             ? triggerWords.join(', ') + ', ' + String(cleanPrompt || '')
             : String(cleanPrompt || '');
 
-        const graph = buildKrea2T2IGraph(finalPrompt, Object.assign({}, options, { seed, settings }));
+        // Route to the model selected in Settings > Image. Qwen Image 2.1 needs
+        // its own encoder node and sampler defaults; Krea2 stays byte-for-byte
+        // the graph it always was. The resolved base models are merged into the
+        // builder settings so the active UNET/CLIP/VAE actually run.
+        const activeModel = normalizeImageModel(settings.model) || DEFAULT_IMAGE_MODEL;
+        const modelSettings = Object.assign({}, settings, resolveBaseModels(settings));
+        const graph = activeModel === 'qwen_image_2_1'
+            ? buildQwenImage21T2IGraph(finalPrompt, Object.assign({}, options, { seed, settings: modelSettings }))
+            : buildKrea2T2IGraph(finalPrompt, Object.assign({}, options, { seed, settings }));
 
         const info = await comfyui.getObjectInfo();
-        await validateGraphAgainstComfy(info, graph);
+        await validateGraphAgainstComfy(info, graph, activeModel === 'qwen_image_2_1' ? QWEN_IMAGE_CLIP_TYPE : 'krea2');
 
         const pid = await comfyui.queuePrompt(graph);
-        console.log('[image-generator] queued Krea2 workflow:', pid);
+        console.log('[image-generator] queued ' + (activeModel === 'qwen_image_2_1' ? 'Qwen Image 2.1' : 'Krea2') + ' workflow:', pid);
 
         const history = await comfyui.waitForPrompt(pid, {
             timeoutMs: options.timeoutMs,
@@ -1839,7 +1986,7 @@ async function generateImage(prompt, options = {}) {
             rawFilename: basename,
             conversationId: options.conversationId || null,
             prompt: finalPrompt,
-            model: 'Krea2',
+            model: activeModel === 'qwen_image_2_1' ? 'Qwen Image 2.1' : 'Krea2',
             loras: activeLoras,
             seed,
             width: settings.width,
@@ -1853,6 +2000,7 @@ async function generateImage(prompt, options = {}) {
             width: settings.width,
             height: settings.height,
             seed,
+            model: activeModel,
             prompt: finalPrompt,
             generationMs: meta.generationMs,
             meta
@@ -2340,7 +2488,12 @@ module.exports = {
     generateImage,
     stripLoraTriggerWords,
     buildKrea2T2IGraph,
+    buildQwenImage21T2IGraph,
     buildLoraChain,
+    normalizeImageModel,
+    resolveBaseModels,
+    IMAGE_MODELS,
+    QWEN_IMAGE_CLIP_TYPE,
     buildKrea2IdentityEditGraph,
     normalizeIdentityEditDimensions,
     detectEditIntent,

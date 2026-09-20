@@ -5544,6 +5544,36 @@ a.modal-btn {
     100% { margin-left: 100%; width: 40%; }
 }
 
+.setup-row-job {
+    margin-top: 6px;
+}
+
+.setup-row-bar {
+    height: 6px;
+    background: rgba(0, 0, 0, 0.4);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.setup-row-bar-fill {
+    height: 100%;
+    width: 0;
+    background: var(--accent);
+    transition: width 0.3s ease;
+}
+
+.setup-row-bar-fill--indeterminate {
+    animation: setup-progress-slide 1.2s ease-in-out infinite;
+}
+
+.setup-row-job-text {
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    color: var(--text-dim);
+    margin-top: 4px;
+}
+
 /* --- Creative Playground --- */
 
 .chat-playground-popup {

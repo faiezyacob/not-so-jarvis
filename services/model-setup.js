@@ -67,6 +67,31 @@ const KNOWN_FILES = {
         hfPath: 'split_files/vae/wan_2.1_vae.safetensors',
         approxMB: 254
     },
+    'qwen_image_2.1_int8_convrot.safetensors': {
+        repo: 'Comfy-Org/Qwen-Image-2.1',
+        hfPath: 'diffusion_models/qwen_image_2.1_int8_convrot.safetensors',
+        approxMB: 7440
+    },
+    'qwen_image_2.1_bf16.safetensors': {
+        repo: 'Comfy-Org/Qwen-Image-2.1',
+        hfPath: 'diffusion_models/qwen_image_2.1_bf16.safetensors',
+        approxMB: 14500
+    },
+    'qwen3vl_8b_int8_convrot.safetensors': {
+        repo: 'Comfy-Org/Qwen-Image-2.1',
+        hfPath: 'text_encoders/qwen3vl_8b_int8_convrot.safetensors',
+        approxMB: 9600
+    },
+    'qwen3vl_8b_bf16.safetensors': {
+        repo: 'Comfy-Org/Qwen-Image-2.1',
+        hfPath: 'text_encoders/qwen3vl_8b_bf16.safetensors',
+        approxMB: 17900
+    },
+    'qwen_image_2.1_vae_bf16.safetensors': {
+        repo: 'Comfy-Org/Qwen-Image-2.1',
+        hfPath: 'vae/qwen_image_2.1_vae_bf16.safetensors',
+        approxMB: 500
+    },
     'krea2_identity_edit_v1_2.safetensors': {
         repo: 'conradlocke/krea2-identity-edit',
         hfPath: 'krea2_identity_edit_v1_2.safetensors',
@@ -154,6 +179,9 @@ const MODEL_CATALOG = [
     { id: 'krea2_clip', group: 'image', label: 'Krea2 CLIP (Qwen3-VL 4B FP8)', required: true, dest: 'text_encoders', file: { settings: 'image', key: 'clip' }, minBytes: 1 * 1024 ** 3 },
     { id: 'krea2_vae', group: 'image', label: 'Krea2 VAE (Wan 2.1)', required: true, dest: 'vae', file: { settings: 'image', key: 'vae' }, minBytes: 100 * 1024 ** 2 },
     { id: 'krea2_edit_lora', group: 'image', label: 'Identity Edit LoRA v1.2', required: true, dest: 'loras', file: { settings: 'image', key: 'editLora' }, minBytes: 500 * 1024 ** 2 },
+    { id: 'qwen_image_unet', group: 'image', label: 'Qwen Image 2.1 UNET (int8)', required: false, dest: 'diffusion_models', file: { settings: 'image', key: 'qwenUnet' }, minBytes: 5 * 1024 ** 3, note: 'Needed only when the Qwen Image 2.1 model is selected in Settings > Image.' },
+    { id: 'qwen_image_clip', group: 'image', label: 'Qwen Image 2.1 text encoder (Qwen3-VL 8B int8)', required: false, dest: 'text_encoders', file: { settings: 'image', key: 'qwenClip' }, minBytes: 5 * 1024 ** 3, note: 'Needed only when the Qwen Image 2.1 model is selected in Settings > Image.' },
+    { id: 'qwen_image_vae', group: 'image', label: 'Qwen Image 2.1 VAE', required: false, dest: 'vae', file: { settings: 'image', key: 'qwenVae' }, minBytes: 100 * 1024 ** 2, note: 'Needed only when the Qwen Image 2.1 model is selected in Settings > Image.' },
     { id: 'h3_unet_t2va', group: 'video', label: 'H3 UNET for text-to-video (FL2VA)', required: true, dest: 'diffusion_models', file: { settings: 'video', key: 'h3Unet' }, minBytes: 5 * 1024 ** 3 },
     { id: 'h3_unet_i2va', group: 'video', label: 'H3 UNET for image-to-video (Ref2VA)', required: true, dest: 'diffusion_models', file: 'minimax_h3_ref2va_pruned_int8_convrot.safetensors', minBytes: 5 * 1024 ** 3 },
     { id: 'h3_clip', group: 'video', label: 'H3 CLIP (Qwen3-VL 32B NVFP4)', required: true, dest: 'text_encoders', file: { settings: 'video', key: 'h3Clip' }, minBytes: 5 * 1024 ** 3 },
@@ -623,7 +651,7 @@ async function getStatus() {
         token: { configured: false, source: null, user: null, masked: null },
         models: [],
         nodes: [],
-        ready: { image: false, video: false, upscale: false, edit: false },
+        ready: { image: false, qwenImage: false, video: false, upscale: false, edit: false },
         job: jobState()
     };
 
@@ -705,6 +733,7 @@ async function getStatus() {
         return pack ? pack.ready === true : false;
     };
     status.ready.image = has('krea2_unet') && has('krea2_clip') && has('krea2_vae');
+    status.ready.qwenImage = has('qwen_image_unet') && has('qwen_image_clip') && has('qwen_image_vae');
     status.ready.video = has('h3_unet_t2va') && has('h3_clip') && has('h3_video_vae') && has('h3_audio_vae') && nodeReady('vhs') && nodeReady('h3_native');
     status.ready.upscale = has('seedvr2_dit') && has('seedvr2_vae') && nodeReady('seedvr2_native');
     status.ready.edit = has('krea2_edit_lora') && nodeReady('krea2edit');

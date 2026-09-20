@@ -328,6 +328,28 @@ function setSetupStatus(id, text, isError) {
     el.classList.toggle('settings-save-status--error', !!isError);
 }
 
+function setupRowButton(id) {
+    return Array.from(document.querySelectorAll('[data-setup-download]'))
+        .find((b) => b.getAttribute('data-setup-download') === id) || null;
+}
+
+function setupRowJobEl(id) {
+    return Array.from(document.querySelectorAll('[data-setup-job]'))
+        .find((el) => el.getAttribute('data-setup-job') === id) || null;
+}
+
+function setSetupRowDownloading(id, on) {
+    const btn = setupRowButton(id);
+    if (btn) {
+        btn.disabled = !!on;
+        btn.textContent = on ? 'Downloading…' : 'Download';
+    }
+    if (!on) {
+        const jobEl = setupRowJobEl(id);
+        if (jobEl) jobEl.hidden = true;
+    }
+}
+
 async function fetchSetupStatus() {
     const res = await fetch('/api/setup/status');
     if (!res.ok) throw new Error('Setup status failed: HTTP ' + res.status);
@@ -356,9 +378,14 @@ function renderSetupModels(data) {
             const btn = m.installed
                 ? ''
                 : (m.url ? '<button class="settings-browse-btn setup-row-btn" type="button" data-setup-download="' + escHtml(m.id) + '">Download</button>' : '');
+            const job = m.installed
+                ? ''
+                : '<div class="setup-row-job" data-setup-job="' + escHtml(m.id) + '" hidden>' +
+                    '<div class="setup-row-bar"><div class="setup-row-bar-fill"></div></div>' +
+                    '<div class="setup-row-job-text"></div></div>';
             html += '<div class="setup-row">' + badge +
                 '<div class="setup-row-main"><div class="setup-row-title">' + escHtml(m.label) + '</div>' +
-                '<div class="setup-row-sub">' + sub + '</div></div>' + btn + '</div>';
+                '<div class="setup-row-sub">' + sub + '</div>' + job + '</div>' + btn + '</div>';
         }
     }
     if (!data.comfyAvailable) {
@@ -461,7 +488,9 @@ function renderSetupJob(data) {
     const logEl = document.getElementById('setupJobLog');
     const nodeLogEl = document.getElementById('setupNodesLog');
     const showJob = job.running || (job.done && job.log && job.log.length);
-    if (field) field.hidden = !showJob;
+    // Downloads render their progress under the model row itself; the bottom
+    // bar stays for node installs, which have no per-row target.
+    if (field) field.hidden = !showJob || !isNodeJob;
     if (bar) {
         const cur = job.current || {};
         const knownTotal = job.running && cur.total > 0;
@@ -475,14 +504,44 @@ function renderSetupJob(data) {
         }
     }
 
+    const cur = job.current || {};
+    const mb = (n) => (Number(n) > 0 ? (Number(n) / 1024 / 1024).toFixed(0) + ' MB' : '—');
+
+    // Inline download progress, directly under the model being fetched.
+    if (!isNodeJob && job.running && cur.id) {
+        const jobEl = setupRowJobEl(cur.id);
+        if (jobEl) {
+            jobEl.hidden = false;
+            const knownTotal = cur.total > 0;
+            const fill = jobEl.querySelector('.setup-row-bar-fill');
+            if (fill) {
+                fill.classList.toggle('setup-row-bar-fill--indeterminate', !knownTotal);
+                fill.style.width = knownTotal
+                    ? Math.max(0, Math.min(100, (cur.received / cur.total) * 100)).toFixed(1) + '%'
+                    : '40%';
+            }
+            const text = jobEl.querySelector('.setup-row-job-text');
+            if (text) {
+                text.textContent = knownTotal
+                    ? mb(cur.received) + ' / ' + mb(cur.total)
+                    : 'Starting…';
+            }
+        }
+        setSetupRowDownloading(cur.id, true);
+    }
+
+    const missingBtn = document.getElementById('setupDownloadMissing');
+    if (missingBtn && (!job.running || isNodeJob)) {
+        missingBtn.disabled = false;
+        missingBtn.textContent = 'Download all missing';
+    }
+
     // Build one status line and reuse it in the MODELS card and, for node
     // installs, in the CUSTOM NODES card (where the button actually lives) so
     // the user gets feedback next to what they clicked.
     let statusText = '';
     let statusError = false;
-    const cur = job.current || {};
     if (job.running) {
-        const mb = (n) => (Number(n) > 0 ? (Number(n) / 1024 / 1024).toFixed(0) + ' MB' : '—');
         statusText = (isNodeJob ? 'Installing nodes' : 'Downloading') +
             (cur.label ? ': ' + cur.label : '') +
             (cur.total > 0 ? ' (' + mb(cur.received) + ' / ' + mb(cur.total) + ')' : '') +
@@ -583,22 +642,38 @@ async function refreshSetup(message) {
 }
 
 async function setupDownload(ids) {
+    const targets = Array.isArray(ids) ? ids.slice() : [];
+    targets.forEach((id) => setSetupRowDownloading(id, true));
+    const missingBtn = document.getElementById('setupDownloadMissing');
+    if (missingBtn) {
+        missingBtn.disabled = true;
+        missingBtn.textContent = 'Downloading…';
+    }
+    const restore = () => {
+        targets.forEach((id) => setSetupRowDownloading(id, false));
+        if (missingBtn) {
+            missingBtn.disabled = false;
+            missingBtn.textContent = 'Download all missing';
+        }
+    };
     try {
         setSetupStatus('setupModelsStatus', 'Starting download…');
         const res = await fetch('/api/setup/download', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ids })
+            body: JSON.stringify(targets.length ? { ids: targets } : {})
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok || !data.ok) {
             setSetupStatus('setupModelsStatus', (data && data.reason === 'already running') ? 'A setup job is already running.' : ('Download failed: ' + ((data && data.error) || res.status)), true);
+            restore();
             return;
         }
         setSetupStatus('setupModelsStatus', '');
         startSetupPoll();
     } catch (err) {
         setSetupStatus('setupModelsStatus', 'Download failed: ' + err.message, true);
+        restore();
     }
 }
 
@@ -685,25 +760,7 @@ function initModelSetup() {
         }
     });
     const missingBtn = document.getElementById('setupDownloadMissing');
-    if (missingBtn) missingBtn.addEventListener('click', async () => {
-        try {
-            setSetupStatus('setupModelsStatus', 'Starting download…');
-            const res = await fetch('/api/setup/download', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({})
-            });
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok || !data.ok) {
-                setSetupStatus('setupModelsStatus', (data && data.reason === 'already running') ? 'A setup job is already running.' : ('Download failed: ' + ((data && data.error) || res.status)), true);
-                return;
-            }
-            setSetupStatus('setupModelsStatus', '');
-            startSetupPoll();
-        } catch (err) {
-            setSetupStatus('setupModelsStatus', 'Download failed: ' + err.message, true);
-        }
-    });
+    if (missingBtn) missingBtn.addEventListener('click', () => setupDownload([]));
     const refreshBtn = document.getElementById('setupRefresh');
     if (refreshBtn) refreshBtn.addEventListener('click', () => refreshSetup('Re-checking…'));
     const nodesBtn = document.getElementById('setupInstallNodes');
@@ -840,11 +897,19 @@ function initFreeComfyButton() {
 // image-generator service. Trigger words are prepended to the prompt.
 
 const IMAGE_GEN_FIELDS = [
-    { key: 'unet', inputId: 'imageUnet', listId: 'imageUnetList' },
-    { key: 'clip', inputId: 'imageClip', listId: 'imageClipList' },
-    { key: 'vae', inputId: 'imageVae', listId: 'imageVaeList' },
+    { key: 'unet', inputId: 'imageUnet', listId: 'imageUnetList', modelScoped: true },
+    { key: 'clip', inputId: 'imageClip', listId: 'imageClipList', modelScoped: true },
+    { key: 'vae', inputId: 'imageVae', listId: 'imageVaeList', modelScoped: true },
     { key: 'editLora', inputId: 'imageEditLora' }
 ];
+
+// Per-model setting keys for the shared UNET/CLIP/VAE inputs. Krea2 keeps the
+// historical keys; Qwen Image 2.1 stores its own so switching back and forth
+// remembers both sets of filenames. `editLora` is Krea2-only and never scoped.
+const IMAGE_MODEL_BASE_KEYS = {
+    krea2: { unet: 'unet', clip: 'clip', vae: 'vae' },
+    qwen_image_2_1: { unet: 'qwenUnet', clip: 'qwenClip', vae: 'qwenVae' }
+};
 
 const LORA_STRENGTH_MIN = 0;
 const LORA_STRENGTH_MAX = 2;
@@ -1060,6 +1125,16 @@ function initImageGenSettings() {
     const statusEl = document.getElementById('imageSettingsStatus');
     if (statusEl) statusEl.style.display = 'none';
     let saved = {};
+    let activeModel = 'krea2';
+
+    // The key a base input writes to depends on the selected model; editLora
+    // and any non-scoped field keep their own key.
+    const fieldKey = (field) => {
+        if (field.modelScoped && IMAGE_MODEL_BASE_KEYS[activeModel]) {
+            return IMAGE_MODEL_BASE_KEYS[activeModel][field.key] || field.key;
+        }
+        return field.key;
+    };
 
     const loraState = initLoraStack();
     initLoraSettings(loraState);
@@ -1072,28 +1147,68 @@ function initImageGenSettings() {
     };
 
     const persist = async (field, input) => {
+        const key = fieldKey(field);
         const value = input.value.trim();
-        if (value === (saved[field.key] || '')) return;
+        if (value === (saved[key] || '')) return;
 
         setStatus('Saving...');
         try {
             const res = await fetch('/api/settings/image', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ [field.key]: value })
+                body: JSON.stringify({ [key]: value })
             });
             const data = await res.json().catch(() => ({}));
             if (!res.ok) {
                 setStatus('Save failed: ' + (data.error || 'Unknown error'), true);
                 return;
             }
-            saved[field.key] = value;
+            saved[key] = value;
             setStatus(value ? 'Saved: ' + value : 'Reverted to default');
         } catch {
             setStatus('Save failed: connection error', true);
         }
         setTimeout(() => setStatus(''), 3000);
     };
+
+    // --- Image model selector -------------------------------------------------
+    // Switching models swaps which stored filenames the BASE MODELS inputs show
+    // (Krea2: unet/clip/vae, Qwen: qwenUnet/qwenClip/qwenVae) and remembers each
+    // set. The choice itself is persisted under `model`.
+    const modelSelect = document.getElementById('imageModel');
+    let baseModelData = { settings: {}, defaults: {}, choices: {} };
+
+    const paintBaseFields = () => {
+        const { settings, defaults, choices } = baseModelData;
+        IMAGE_GEN_FIELDS.forEach((f) => {
+            const input = document.getElementById(f.inputId);
+            if (!input) return;
+            const key = fieldKey(f);
+            saved[key] = settings[key] || '';
+            input.value = saved[key];
+            input.placeholder = defaults[key] || (f.key.toUpperCase() + ' model');
+            input.title = 'Default: ' + (defaults[key] || '');
+
+            const list = document.getElementById(f.listId);
+            if (list && !list.dataset.filled) {
+                const options = choices[f.key === 'clip' ? 'clips' : f.key + 's'] || [];
+                options.forEach((name) => {
+                    const opt = document.createElement('option');
+                    opt.value = name;
+                    list.appendChild(opt);
+                });
+                list.dataset.filled = '1';
+            }
+        });
+    };
+
+    if (modelSelect) {
+        modelSelect.addEventListener('change', () => {
+            activeModel = IMAGE_MODEL_BASE_KEYS[modelSelect.value] ? modelSelect.value : 'krea2';
+            paintBaseFields();
+            persistSelect('model', modelSelect);
+        });
+    }
 
     // Aspect Ratio + Size are the only user-facing resolution controls. They
     // map to Krea2 latent dimensions server-side, so no pixel values appear
@@ -1166,26 +1281,15 @@ function initImageGenSettings() {
             const settings = data.settings || {};
             const choices = data.choices || {};
 
-            IMAGE_GEN_FIELDS.forEach((f) => {
-                const input = document.getElementById(f.inputId);
-                if (!input) return;
-                saved[f.key] = settings[f.key] || '';
-                input.value = saved[f.key];
-                input.placeholder = f.key === 'clip'
-                    ? (defaults.clip || 'CLIP model')
-                    : (defaults[f.key] || (f.key.toUpperCase() + ' model'));
-                input.title = 'Default: ' + (defaults[f.key] || '');
-
-                const list = document.getElementById(f.listId);
-                if (list) {
-                    const options = choices[f.key === 'clip' ? 'clips' : f.key + 's'] || [];
-                    options.forEach((name) => {
-                        const opt = document.createElement('option');
-                        opt.value = name;
-                        list.appendChild(opt);
-                    });
-                }
-            });
+            // Restore the selected image model, then paint the BASE MODELS
+            // inputs from that model's stored filenames.
+            if (modelSelect) {
+                const wanted = settings.model || defaults.model;
+                activeModel = IMAGE_MODEL_BASE_KEYS[wanted] ? wanted : 'krea2';
+                modelSelect.value = activeModel;
+            }
+            baseModelData = { settings, defaults, choices };
+            paintBaseFields();
 
             // Load the LoRA stack (attached list + available scan from ComfyUI)
             // and the remembered per-LoRA trigger words.
