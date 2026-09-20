@@ -12,7 +12,7 @@
      Krea2 UNET ......... Comfy-Org/Krea-2 (diffusion_models/)
      Krea2 CLIP (Qwen3-VL 4B fp8) .. ahmed22xa/Huihui-Qwen3-VL-4B-Instruct-abliterated-comfy
      Krea2 VAE (Wan 2.1)  Comfy-Org/Wan_2.1_ComfyUI_repackaged (split_files/vae/)
-     Identity Edit LoRA .. conradlocke/krea2-identity-edit
+     Qwen Image 2.1 UNET/CLIP/VAE ... Comfy-Org/Qwen-Image-2.1 (diffusion_models/, text_encoders/, vae/)
      H3 UNET/CLIP/VAEs ... Comfy-Org/MiniMax-H3 (diffusion_models/, text_encoders/, vae/)
      SeedVR2 DiT (7B fp8, default) .. mekrod/seedvr2_ema_7b_fp8_e4m3fn_mixed_block35_fp16
      SeedVR2 sharp DiT + VAE ........ Comfy-Org/SeedVR2
@@ -20,10 +20,9 @@
 
    Custom nodes checked against ComfyUI's /object_info (upscale included):
      UltimateSDUpscale .... ssitu/ComfyUI_UltimateSDUpscale
-     Krea2Edit* ........... lbouaraba/comfyui-krea2edit
      VHS_LoadVideo ........ Kosinkadink/ComfyUI-VideoHelperSuite
      RTXVideoSuperResolution Comfy-Org/Nvidia_RTX_Nodes_ComfyUI (NVIDIA only)
-     SeedVR2* / MiniMaxH3* .. ship with current ComfyUI — update hint only.
+     SeedVR2* / MiniMaxH3* / TextEncodeQwenImage21* .. ship with current ComfyUI — update hint only.
 
    Zero npm dependencies: node builtins + global fetch, streamed to disk so
    multi-GB checkpoints never sit fully in memory.
@@ -91,11 +90,6 @@ const KNOWN_FILES = {
         repo: 'Comfy-Org/Qwen-Image-2.1',
         hfPath: 'vae/qwen_image_2.1_vae_bf16.safetensors',
         approxMB: 500
-    },
-    'krea2_identity_edit_v1_2.safetensors': {
-        repo: 'conradlocke/krea2-identity-edit',
-        hfPath: 'krea2_identity_edit_v1_2.safetensors',
-        approxMB: 1830
     },
     'minimax_h3_fl2va_pruned_int8_convrot.safetensors': {
         repo: 'Comfy-Org/MiniMax-H3',
@@ -178,10 +172,9 @@ const MODEL_CATALOG = [
     { id: 'krea2_unet', group: 'image', label: 'Krea2 Turbo UNET (FP8)', required: true, dest: 'diffusion_models', file: { settings: 'image', key: 'unet' }, minBytes: 5 * 1024 ** 3 },
     { id: 'krea2_clip', group: 'image', label: 'Krea2 CLIP (Qwen3-VL 4B FP8)', required: true, dest: 'text_encoders', file: { settings: 'image', key: 'clip' }, minBytes: 1 * 1024 ** 3 },
     { id: 'krea2_vae', group: 'image', label: 'Krea2 VAE (Wan 2.1)', required: true, dest: 'vae', file: { settings: 'image', key: 'vae' }, minBytes: 100 * 1024 ** 2 },
-    { id: 'krea2_edit_lora', group: 'image', label: 'Identity Edit LoRA v1.2', required: true, dest: 'loras', file: { settings: 'image', key: 'editLora' }, minBytes: 500 * 1024 ** 2 },
-    { id: 'qwen_image_unet', group: 'image', label: 'Qwen Image 2.1 UNET (int8)', required: false, dest: 'diffusion_models', file: { settings: 'image', key: 'qwenUnet' }, minBytes: 5 * 1024 ** 3, note: 'Needed only when the Qwen Image 2.1 model is selected in Settings > Image.' },
-    { id: 'qwen_image_clip', group: 'image', label: 'Qwen Image 2.1 text encoder (Qwen3-VL 8B int8)', required: false, dest: 'text_encoders', file: { settings: 'image', key: 'qwenClip' }, minBytes: 5 * 1024 ** 3, note: 'Needed only when the Qwen Image 2.1 model is selected in Settings > Image.' },
-    { id: 'qwen_image_vae', group: 'image', label: 'Qwen Image 2.1 VAE', required: false, dest: 'vae', file: { settings: 'image', key: 'qwenVae' }, minBytes: 100 * 1024 ** 2, note: 'Needed only when the Qwen Image 2.1 model is selected in Settings > Image.' },
+    { id: 'qwen_image_unet', group: 'image', label: 'Qwen Image 2.1 UNET (int8)', required: false, dest: 'diffusion_models', file: { settings: 'image', key: 'qwenUnet' }, minBytes: 5 * 1024 ** 3, note: 'Needed for Qwen Image 2.1 generation and for ALL image editing.' },
+    { id: 'qwen_image_clip', group: 'image', label: 'Qwen Image 2.1 text encoder (Qwen3-VL 8B int8)', required: false, dest: 'text_encoders', file: { settings: 'image', key: 'qwenClip' }, minBytes: 5 * 1024 ** 3, note: 'Needed for Qwen Image 2.1 generation and for ALL image editing.' },
+    { id: 'qwen_image_vae', group: 'image', label: 'Qwen Image 2.1 VAE', required: false, dest: 'vae', file: { settings: 'image', key: 'qwenVae' }, minBytes: 100 * 1024 ** 2, note: 'Needed for Qwen Image 2.1 generation and for ALL image editing.' },
     { id: 'h3_unet_t2va', group: 'video', label: 'H3 UNET for text-to-video (FL2VA)', required: true, dest: 'diffusion_models', file: { settings: 'video', key: 'h3Unet' }, minBytes: 5 * 1024 ** 3 },
     { id: 'h3_unet_i2va', group: 'video', label: 'H3 UNET for image-to-video (Ref2VA)', required: true, dest: 'diffusion_models', file: 'minimax_h3_ref2va_pruned_int8_convrot.safetensors', minBytes: 5 * 1024 ** 3 },
     { id: 'h3_clip', group: 'video', label: 'H3 CLIP (Qwen3-VL 32B NVFP4)', required: true, dest: 'text_encoders', file: { settings: 'video', key: 'h3Clip' }, minBytes: 5 * 1024 ** 3 },
@@ -205,11 +198,10 @@ const NODE_CATALOG = [
         note: 'Needed for the Ultimate SD image-upscale engine. Clone with --recursive (it has a submodule).'
     },
     {
-        id: 'krea2edit', label: 'Krea2 Identity Edit', required: true,
-        nodes: ['Krea2EditModelPatch', 'Krea2EditGroundedEncode'],
-        repo: 'https://github.com/lbouaraba/comfyui-krea2edit',
-        dir: 'comfyui-krea2edit', recursive: false,
-        note: 'Needed for "edit this image". No extra Python packages.'
+        id: 'qwen_native', label: 'Qwen Image 2.1 edit (built into ComfyUI)', required: false,
+        nodes: ['TextEncodeQwenImage21'],
+        repo: null, dir: null,
+        note: 'Ships with current ComfyUI. Needed for ALL image editing. If missing, update ComfyUI.'
     },
     {
         id: 'vhs', label: 'VideoHelperSuite', required: true,
@@ -736,7 +728,7 @@ async function getStatus() {
     status.ready.qwenImage = has('qwen_image_unet') && has('qwen_image_clip') && has('qwen_image_vae');
     status.ready.video = has('h3_unet_t2va') && has('h3_clip') && has('h3_video_vae') && has('h3_audio_vae') && nodeReady('vhs') && nodeReady('h3_native');
     status.ready.upscale = has('seedvr2_dit') && has('seedvr2_vae') && nodeReady('seedvr2_native');
-    status.ready.edit = has('krea2_edit_lora') && nodeReady('krea2edit');
+    status.ready.edit = has('qwen_image_unet') && has('qwen_image_clip') && has('qwen_image_vae') && nodeReady('qwen_native');
     return status;
 }
 

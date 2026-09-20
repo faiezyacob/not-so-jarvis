@@ -899,13 +899,12 @@ function initFreeComfyButton() {
 const IMAGE_GEN_FIELDS = [
     { key: 'unet', inputId: 'imageUnet', listId: 'imageUnetList', modelScoped: true },
     { key: 'clip', inputId: 'imageClip', listId: 'imageClipList', modelScoped: true },
-    { key: 'vae', inputId: 'imageVae', listId: 'imageVaeList', modelScoped: true },
-    { key: 'editLora', inputId: 'imageEditLora' }
+    { key: 'vae', inputId: 'imageVae', listId: 'imageVaeList', modelScoped: true }
 ];
 
 // Per-model setting keys for the shared UNET/CLIP/VAE inputs. Krea2 keeps the
 // historical keys; Qwen Image 2.1 stores its own so switching back and forth
-// remembers both sets of filenames. `editLora` is Krea2-only and never scoped.
+// remembers both sets of filenames.
 const IMAGE_MODEL_BASE_KEYS = {
     krea2: { unet: 'unet', clip: 'clip', vae: 'vae' },
     qwen_image_2_1: { unet: 'qwenUnet', clip: 'qwenClip', vae: 'qwenVae' }
@@ -1127,8 +1126,8 @@ function initImageGenSettings() {
     let saved = {};
     let activeModel = 'krea2';
 
-    // The key a base input writes to depends on the selected model; editLora
-    // and any non-scoped field keep their own key.
+    // The key a base input writes to depends on the selected model; any
+    // non-scoped field keeps its own key.
     const fieldKey = (field) => {
         if (field.modelScoped && IMAGE_MODEL_BASE_KEYS[activeModel]) {
             return IMAGE_MODEL_BASE_KEYS[activeModel][field.key] || field.key;

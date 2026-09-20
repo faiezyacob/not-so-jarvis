@@ -1548,7 +1548,7 @@ async function handleChatStream(req, res) {
             return;
         }
         // Optional generated-image reference selected from the @ picker. It
-        // becomes the source for an identity edit or an I2VA first frame.
+        // becomes the source for an image edit or an I2VA first frame.
         const referenceImage = sanitizeReferenceImage(body.reference || body.referenceImage || (Array.isArray(body.references) ? body.references[0] : null));
         // Composer "Director Mode" toggle: pre-selects the Director workflow so
         // a fresh video request skips the Direct-vs-Director question.
@@ -1765,9 +1765,10 @@ async function handleChatStream(req, res) {
             return;
         }
 
-        // Krea2 identity edit: an attached upload or an explicit "edit this
-        // image" edits a source image from a plain-language instruction while
-        // preserving the rest (identity-edit LoRA, not a from-scratch regen).
+        // Image edit: an attached upload or an explicit "edit this image"
+        // edits a source image from a plain-language instruction while
+        // preserving the rest (Qwen Image 2.1 native editor, not a from-scratch
+        // regen).
         if (decision.shouldExecuteTool && decision.task === 'image_edit') {
             const instruction = imageGenerator.cleanEditInstruction(stripImageRefs(decision.updatedPrompt || message));
             const activeTask = taskState.getTask(conversationId);
@@ -1809,12 +1810,11 @@ async function handleChatStream(req, res) {
                 : message;
 
             // Follow-up tweaks of the active image task always run as a full
-            // regen of the rewritten prompt (see below). Identity edits only
-            // run through the explicit image_edit branch above — i.e. when the
-            // user attaches an upload or explicitly asks to "edit this image".
-            // Vague follow-ups ("make her ...", "change her top ...") must not
-            // trigger an edit: the edit LoRA returns the source unchanged for
-            // such instructions, which looks like "the same exact image".
+            // regen of the rewritten prompt (see below). Edits only run through
+            // the explicit image_edit branch above — i.e. when the user attaches
+            // an upload or explicitly asks to "edit this image". Vague
+            // follow-ups ("make her ...", "change her top ...") must not
+            // trigger an edit of the pixels.
 
             // Determine the effective prompt for this generation run.
             let imagePrompt;
@@ -3223,7 +3223,7 @@ function stripImageRefs(text) {
         .trim();
 }
 
-// Resolve the source image for an identity edit: a fresh /images/ upload
+// Resolve the source image for an edit: a fresh /images/ upload
 // referenced in the message wins, otherwise the conversation's latest
 // generated image. Returns { absPath, kind, rawFilename } or null.
 function resolveEditSource(userText, conversationId) {
@@ -3251,7 +3251,7 @@ function resolveGeneratedEditSource(conversationId) {
     return { absPath: fullPath, kind: 'generated', rawFilename: path.basename(found.rawFilename) };
 }
 
-// Handle an identity-edit chat request over SSE. Emits a "generating" status
+// Handle an edit chat request over SSE. Emits a "generating" status
 // event, then an "image" event with the edited result, or an "error" event.
 async function handleImageEditStream(req, res, opts) {
     const { provider, model, conversationId, message, instruction, action, previousPrompt, sourceOverride, think } = opts;
@@ -3384,8 +3384,6 @@ function friendlyImageError(err) {
             return err.message;
         case 'generation_cancelled':
             return 'Generation cancelled. It was removed from the queue before it started.';
-        case 'comfyui_edit_lora_missing':
-            return err.message;
         case 'edit_source_missing':
             return err.message;
         case 'upscale_source_missing':

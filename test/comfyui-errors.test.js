@@ -23,7 +23,7 @@ test('classifyComfyError: missing model file', () => {
 
 test('classifyComfyError: missing custom node', () => {
     assert.equal(comfyui.classifyComfyError("ModuleNotFoundError: No module named 'krea2nodes'").code, 'comfyui_missing_node');
-    assert.equal(comfyui.classifyComfyError('Cannot import Krea2EditModelPatch').code, 'comfyui_missing_node');
+    assert.equal(comfyui.classifyComfyError('Cannot import SomeCustomNode').code, 'comfyui_missing_node');
 });
 
 test('classifyComfyError: unknown validation error is null', () => {

@@ -97,7 +97,7 @@ test('routeMessage: a question about a referenced image stays chat', async () =>
     assert.notEqual(d.task, 'image_edit');
 });
 
-test('routeMessage: an instruction on a referenced image is an identity edit', async () => {
+test('routeMessage: an instruction on a referenced image is an image edit', async () => {
     stub();
     const d = await route('make her hair blue', { referenceImage: 'f.png' });
     assert.equal(d.task, 'image_edit');

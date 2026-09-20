@@ -128,3 +128,33 @@ test('buildKrea2T2IGraph: still uses CLIPTextEncode + EmptySD3LatentImage', () =
     assert.equal(graph.canvas.class_type, 'EmptySD3LatentImage');
     assert.equal(graph.sampler.inputs.scheduler, 'beta');
 });
+
+test('buildQwenImage21EditGraph: always uses the qwen slots (edit is Qwen-only)', () => {
+    // Even with Krea2 as the generation model, editing runs the Qwen editor.
+    const settings = imageGenerator.getDefaults();
+    assert.equal(settings.model, 'krea2');
+    const graph = imageGenerator.buildQwenImage21EditGraph('make it sunset', 'jarvis_edit_x.png', { seed: 3, settings });
+
+    assert.equal(graph.clip.inputs.type, 'qwen_image');
+    assert.equal(graph.clip.inputs.clip_name, settings.qwenClip);
+    assert.equal(graph.unet.inputs.unet_name, settings.qwenUnet);
+    assert.equal(graph.vae.inputs.vae_name, settings.qwenVae);
+    assert.equal(graph.load_image.inputs.image, 'jarvis_edit_x.png');
+    assert.equal(graph.conditioning.class_type, 'TextEncodeQwenImage21');
+    assert.equal(graph.conditioning.inputs.prompt, 'make it sunset');
+    // The API only resolves a link at a top-level (dotted) key; a nested
+    // { images: { image_1 } } object is silently dropped by ComfyUI.
+    assert.deepEqual(graph.conditioning.inputs['images.image_1'], ['load_image', 0]);
+    assert.equal(graph.conditioning.inputs.images, undefined);
+    assert.deepEqual(graph.conditioning.inputs.vae, ['vae', 0]);
+    assert.equal(graph.conditioning.inputs.resolution, 0);
+
+    assert.deepEqual(graph.sampler.inputs.positive, ['conditioning', 0]);
+    assert.deepEqual(graph.sampler.inputs.negative, ['conditioning', 1]);
+    assert.deepEqual(graph.sampler.inputs.latent_image, ['conditioning', 2]);
+    assert.equal(graph.sampler.inputs.steps, 25);
+    assert.equal(graph.sampler.inputs.cfg, 1);
+    assert.equal(graph.sampler.inputs.seed, 3);
+    assert.equal(graph.sampler.inputs.sampler_name, 'euler');
+    assert.equal(graph.sampler.inputs.scheduler, 'simple');
+});

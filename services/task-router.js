@@ -30,8 +30,8 @@ const ROUTER_SYSTEM_PROMPT =
     'router — you never reply to the user and the user does not see your JSON. ' +
     'You are the ONLY authority on tool execution; the chat model is not.\n\n' +
     'Available tools:\n' +
-    '- image_generation (Krea2/ComfyUI local image pipeline). Generate or modify images.\n' +
-    '- image_edit (Krea2 identity-edit LoRA). Edit a SOURCE image from a plain-language ' +
+    '- image_generation (ComfyUI local image pipeline). Generate or modify images.\n' +
+    '- image_edit (ComfyUI native instruction edit). Edit a SOURCE image from a plain-language ' +
     'instruction while preserving the rest. Source is either an attached upload or a ' +
     'previously generated image. NOT for questions about an image.\n' +
     '- video_generation (MiniMax H3/ComfyUI local video pipeline). Generate or modify videos.\n' +
@@ -121,7 +121,7 @@ const ROUTER_FALLBACK = {
 };
 
 // Lightweight question detector for @-reference turns: a question about the
-// referenced image must stay chat, not trigger an identity edit.
+// referenced image must stay chat, not trigger an image edit.
 const QUESTION_LEAD_RE = /^(?:what|which|why|who|when|where|how|is|are|was|were|do|does|did|can|could|would|should|will|tell\s+me|describe|explain|show\s+me)\b/i;
 
 function looksLikeQuestion(text) {
@@ -303,7 +303,7 @@ function normalizeDecision(parsed) {
             action = 'upscale';
             shouldExecuteTool = parsed.shouldExecuteTool !== false;
         } else if (task === 'image_edit' && intent === 'continue_task') {
-            // Follow-up tweaks are always a full-regen modify; an identity edit
+            // Follow-up tweaks are always a full-regen modify; an explicit image edit
             // only runs for an explicit new/switch image_edit decision.
             task = 'image_generation';
             action = 'modify';
@@ -362,7 +362,7 @@ function decisionFromResolvedIntent(resolved, { message, activeTask, conversatio
         };
     }
 
-    // Uploads keep their dedicated question-vs-identity-edit handling below.
+    // Uploads keep their dedicated question-vs-edit handling below.
     if (hasAttachedImage && (intent === 'image_generation' || intent === 'video_generation' ||
         intent === 'modify_previous_generation')) {
         return null;
@@ -505,7 +505,7 @@ async function routeMessage({ message, provider, model, conversationId, hasAttac
     // the turn regardless of the active task:
     //   - a video request turns it into the I2VA first frame;
     //   - a question about it stays chat;
-    //   - any other instruction is an identity edit of the referenced image.
+    //   - any other instruction is an image edit of the referenced image.
     if (referenceImage) {
         const refText = String(message || '')
             .replace(/!\[[^\]]*\]\(\/generated\/[^)]+\)/g, '')

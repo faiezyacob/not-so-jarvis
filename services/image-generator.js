@@ -899,10 +899,6 @@ const DEFAULT_SETTINGS = {
     qwenUnet: process.env.QWEN_IMAGE_UNET || 'qwen_image_2.1_int8_convrot.safetensors',
     qwenClip: process.env.QWEN_IMAGE_CLIP || 'qwen3vl_8b_int8_convrot.safetensors',
     qwenVae: process.env.QWEN_IMAGE_VAE || 'qwen_image_2.1_vae_bf16.safetensors',
-    // Identity Edit LoRA used by the Krea2 instruction-based edit pipeline
-    // (community fine-tune conradlocke/krea2-identity-edit). It edits a source
-    // image from a plain-language instruction while preserving the rest.
-    editLora: process.env.KREA2_EDIT_LORA || 'krea2_identity_edit_v1_2.safetensors',
     // User-facing resolution controls. The UI exposes only these two
     // dropdowns — never raw pixels. Width/height below are always derived
     // from them via resolveDimensions(), so stored or env-provided pixel
@@ -951,7 +947,7 @@ const DEFAULT_SETTINGS = {
 
 // Fields the user may override through the settings panel / API. Kept
 // separate from DEFAULT_SETTINGS so we only persist explicit overrides.
-const CONFIGURABLE_KEYS = ['model', 'unet', 'clip', 'clipType', 'vae', 'qwenUnet', 'qwenClip', 'qwenVae', 'editLora', 'aspectRatio', 'imageSize', 'width', 'height', 'steps', 'cfg', 'seedMode', 'seed', 'variations', 'loras', 'loraTriggerWords',
+const CONFIGURABLE_KEYS = ['model', 'unet', 'clip', 'clipType', 'vae', 'qwenUnet', 'qwenClip', 'qwenVae', 'aspectRatio', 'imageSize', 'width', 'height', 'steps', 'cfg', 'seedMode', 'seed', 'variations', 'loras', 'loraTriggerWords',
     'upscaleEngine', 'upscaleMode', 'upscaleResolution', 'upscaleMultiplier', 'upscaleProfile', 'upscaleNoise', 'upscalePreScale',
     'seedvr2Dit', 'seedvr2Vae', 'seedvr2Attention'];
 
@@ -2008,23 +2004,11 @@ async function generateImage(prompt, options = {}) {
     }, queueOpts);
 }
 
-// --- Krea2 identity edit --------------------------------------------------------
+// --- Image edit intent detection ------------------------------------------------
 //
-// Instruction-based, identity-preserving image editing built on the community
-// Identity Edit LoRA (conradlocke/krea2-identity-edit) plus the
-// lbouaraba/comfyui-krea2edit nodes. Given a source image and a plain-language
-// instruction it edits only what the instruction describes and preserves the
-// rest — people, objects, recolor, restyle, removal. A single reference image
-// is supported.
-//
-// Graph: UNET/CLIP/VAE loaders → identity LoRA (LoraLoaderModelOnly) → user
-// LoRAs (model-only) → LoadImage/VAEEncode source latent →
-// Krea2EditModelPatch (fit geometry, ref_boost fidelity dial) →
-// Krea2EditGroundedEncode positive/negative → KSampler (euler/simple,
-// denoise 1) → VAEDecode → SaveImage (not-so-jarvis/edit).
-
-const MAX_IDENTITY_EDIT_PIXELS = 2000000;
-const IDENTITY_EDIT_NODE_CLASSES = ['Krea2EditModelPatch', 'Krea2EditGroundedEncode'];
+// A narrow deterministic gate that decides when an instruction is aimed at an
+// existing image. The pipeline itself is the Qwen Image 2.1 editor
+// (buildImageEditGraph below).
 
 // Explicit edit phrasing aimed at an existing image ("edit this photo",
 // "retouch it", "replace the frog with a princess"). A narrow deterministic
@@ -2038,16 +2022,15 @@ const EDIT_REF_RE = /\b(this\b|that\b|it\b|them\b|the\s+(?:image|picture|photo|p
 // into phrase naming the replacement ("replace the frog with a princess",
 // "swap the car for a bike", "edit the frog with long hair"). Unlike vague
 // attribute tweaks ("change her dress"), an explicit X-with/for-Y substitution
-// names both the target and the replacement, which is exactly what the
-// identity-edit LoRA is for. Bare generation requests ("generate an image of
-// me replacing my car ...") are excluded via the explicit-new-image guard.
+// names both the target and the replacement. Bare generation requests
+// ("generate an image of me replacing my car ...") are excluded via the
+// explicit-new-image guard.
 const EDIT_SUBSTITUTE_RE =
     /\b(?:replac\w*|swap\w*|substitut\w*|edit\w*)\b[\s\S]{0,60}?\b(?:the|this|that|these|those|it|them|him|her|my|your|our)\b[\s\S]{0,60}?\b(?:with|for|by|to|into)\b/i;
 
 // Transformation phrasing ("change the frog into a prince", "turn the cat
 // into a dog"). Only "into" counts — "change her dress to red" (attribute
-// tweak with "to") stays on the full-regen path, where the edit LoRA would
-// return the source unchanged.
+// tweak with "to") stays on the full-regen path.
 const EDIT_TRANSFORM_RE =
     /\b(?:chang\w*|turn\w*|convert\w*|transform\w*|morph\w*)\b[\s\S]{0,60}?\b(?:the|this|that|these|those|it|them|him|her|my|your)\b[\s\S]{0,60}?\binto\b/i;
 
@@ -2071,7 +2054,7 @@ function detectEditIntent(message, hasImageContext = false) {
     if (/\b(?:video|film|clip|movie|animation|footage|reel)\b/i.test(text)) return null;
     // Meta-talk about the prompt itself ("replace the prompt with ...",
     // "change the prompt into ...") is a generation modify — a full regen of
-    // the rewritten prompt — never an identity edit of the pixels.
+    // the rewritten prompt — never an edit of the pixels.
     if (/\bprompts?\b/i.test(text)) return null;
     // These phrases are context-free on their own ("remove the background
     // noise", "replace the text with X") — only treat them as an edit when an
@@ -2083,10 +2066,10 @@ function detectEditIntent(message, hasImageContext = false) {
     return null;
 }
 
-// Strip leading conversational filler from an edit instruction so the
-// identity-edit grounding encoder gets clean prose ("hahahaha replace the
-// frog with ..." -> "replace the frog with ..."). Only leading tokens are
-// removed; the instruction itself is never rewritten.
+// Strip leading conversational filler from an edit instruction so the editor
+// gets clean prose ("hahahaha replace the frog with ..." -> "replace the frog
+// with ..."). Only leading tokens are removed; the instruction itself is never
+// rewritten.
 const EDIT_LEADING_FILLER_RE =
     /^(?:\s*(?:(?:ha)+h?|hehe\w*|hihi\w*|lol|lmao|rofl|omg|wow|hey|hi|hello|ok(?:ay)?|well|so|please|just|actually|can you(?: please)?|could you(?: please)?|would you(?: please)?|i want you to|i'd like you to|i would like you to)[\s,.!;:]+)+/i;
 
@@ -2105,7 +2088,7 @@ function cleanEditInstruction(text) {
 // it only fires while an image task is active and the LLM router stays the
 // authority for everything else.
 //
-// Explicit identity-edit phrasing ("replace X with Y", "remove X", ...) stays
+// Explicit edit phrasing ("replace X with Y", "remove X", ...) stays
 // on the edit path (detectEditIntent wins — callers check it first), as do
 // questions, display requests, upscales, fresh generations, and video work.
 
@@ -2134,181 +2117,75 @@ function detectImageModifyIntent(message, hasActiveImageTask) {
     return { intent: 'image_generation', action: 'modify' };
 }
 
-function isSameAssetFile(a, b) {
-    const normalize = (value) => {
-        const segments = String(value || '').replace(/\\/g, '/').split('/');
-        return segments[segments.length - 1].toLowerCase();
-    };
-    return normalize(a) === normalize(b);
-}
-
-// Fit the output inside 2MP on a 16px grid. The edit LoRA bleeds or duplicates
-// content above 2MP, so oversized sources are proportionally scaled down first.
-function normalizeIdentityEditDimensions(width, height) {
-    const GRID = 16;
-    const MIN_SIDE = 256;
-    const startW = Math.max(MIN_SIDE, Math.round(Number(width) || 1024));
-    const startH = Math.max(MIN_SIDE, Math.round(Number(height) || 1024));
-    const area = startW * startH;
-    const shrink = area > MAX_IDENTITY_EDIT_PIXELS ? Math.sqrt(MAX_IDENTITY_EDIT_PIXELS / area) : 1;
-    let w = Math.max(MIN_SIDE, Math.round((startW * shrink) / GRID) * GRID);
-    let h = Math.max(MIN_SIDE, Math.round((startH * shrink) / GRID) * GRID);
-    while (w * h > MAX_IDENTITY_EDIT_PIXELS) {
-        if (w >= h) w -= GRID;
-        else h -= GRID;
-    }
-    return { width: w, height: h };
-}
-
-function listEditLoraNames(info) {
-    const node = info && info.LoraLoaderModelOnly;
-    const input = (node && node.input) || {};
-    const spec = (input.required && input.required.lora_name) || input.lora_name;
-    return Array.isArray(spec) && Array.isArray(spec[0]) ? spec[0] : [];
-}
-
-// Fail fast with a friendly error when the edit stack is incomplete.
-function requireEditStack(info, settings) {
-    const unavailable = IDENTITY_EDIT_NODE_CLASSES.filter((cls) => !info[cls]);
-    if (unavailable.length) {
-        const error = new Error(
-            'ComfyUI is missing custom nodes: ' + unavailable.join(', ') +
-            '. Install lbouaraba/comfyui-krea2edit (and restart ComfyUI), then try again.'
-        );
-        error.code = 'comfyui_missing_nodes';
-        error.missingNodes = unavailable;
-        throw error;
-    }
-    const editLora = String(settings.editLora || '').trim();
-    if (!editLora || !listEditLoraNames(info).some((name) => isSameAssetFile(name, editLora))) {
-        const error = new Error(
-            'Krea 2 Edit needs the Identity Edit LoRA in ComfyUI loras: ' +
-            (editLora || '(not configured)') + '.'
-        );
-        error.code = 'comfyui_edit_lora_missing';
-        throw error;
-    }
-}
-
-// Non-throwing availability probe for the modify-turn fallback. Never throws.
-async function checkEditAvailability() {
-    try {
-        if (!(await comfyui.isAvailable())) return { ok: false, reason: 'comfyui_unavailable' };
-        const info = await comfyui.getObjectInfo(15000);
-        requireEditStack(info, effectiveSettings());
-        return { ok: true };
-    } catch (err) {
-        return { ok: false, reason: err.code || 'unavailable' };
-    }
-}
-
-function buildKrea2IdentityEditGraph(instruction, loadName, options = {}) {
+// --- Qwen Image 2.1 edit -------------------------------------------------------
+//
+// Native instruction-based editing for the Qwen Image 2.1 model, mirroring the
+// official Comfy-Org template (image_qwen_image_2_1_image_edit):
+//
+//   UNETLoader → CLIPLoader (qwen_image) → VAELoader
+//   LoadImage (source) → TextEncodeQwenImage21 (prompt + reference image)
+//   TextEncodeQwenImage21 positive/negative → KSampler, and its reference latent
+//   (sized from image_1) → KSampler latent_image
+//   KSampler (euler / simple, cfg 1, 25 steps) → VAEDecode → SaveImage
+//
+// The reference image must be wired with the flat dotted key `images.image_1`
+// (NOT a nested `{ images: { image_1: ... } }` object): the ComfyUI /prompt API
+// only resolves a link when it is a top-level value, and the nested shape is
+// silently dropped before the node ever sees the image.
+//
+// `resolution` is a total pixel budget for the text encoder, not a width or
+// height. 0 (the default here) keeps image_1 at its own size rounded to a
+// multiple of 32, so the edit follows the source's shape and dimensions.
+function buildQwenImage21EditGraph(instruction, loadName, options = {}) {
     const settings = Object.assign({}, DEFAULT_SETTINGS, options.settings || {});
-    const editLora = String(options.editLora || settings.editLora || '').trim();
-    if (!editLora) {
-        const error = new Error('Krea 2 Edit needs the Identity Edit LoRA configured (image settings > Edit LoRA).');
-        error.code = 'comfyui_edit_lora_missing';
-        throw error;
-    }
+    // Editing is always the Qwen Image 2.1 pipeline — even when Krea2 is the
+    // selected text-to-image model — so read the qwen* slots directly.
+    const base = {
+        unet: String(settings.qwenUnet || DEFAULT_SETTINGS.qwenUnet).trim(),
+        clip: String(settings.qwenClip || DEFAULT_SETTINGS.qwenClip).trim(),
+        vae: String(settings.qwenVae || DEFAULT_SETTINGS.qwenVae).trim()
+    };
     if (!loadName) {
-        const error = new Error('Krea 2 Edit needs a source image.');
+        const error = new Error('Qwen Image 2.1 Edit needs a source image.');
         error.code = 'edit_source_missing';
         throw error;
     }
     const seed = Number.isInteger(options.seed) && options.seed >= 0 ? options.seed : 0;
-    const steps = clampToInt(options.steps || 10, 8, 12, 10);
-    const cfg = clampToRange(options.cfg, 1, 5, 1);
-    const refBoost = clampToRange(options.refBoost, 0, 20, 4);
-    const groundingPx = Math.round(clampToRange(options.groundingPx, 384, 1024, 768));
-    const dims = normalizeIdentityEditDimensions(options.width, options.height);
+    const steps = clampToInt(options.steps, 1, 100, DEFAULT_QWEN_STEPS);
+    const cfg = Number.isFinite(Number(options.cfg)) ? Math.max(0, Number(options.cfg)) : DEFAULT_QWEN_CFG;
+    const negativeText = String(options.negativePrompt || '').trim();
+    const resolution = clampToInt(options.resolution, 0, 4096, 0);
 
-    // The identity LoRA must be present and enabled. A disabled stack entry
-    // means the user switched the edit pipeline off, so refuse rather than run
-    // the base UNET without it. Its configured strength is honored; user LoRAs
-    // are then stacked model-only on top.
-    const override = (settings.loras || []).find((l) => l && l.name && isSameAssetFile(l.name, editLora));
-    if (override && override.on === false) {
-        const error = new Error('Krea 2 Edit needs the Identity Edit LoRA enabled.');
-        error.code = 'comfyui_edit_lora_missing';
-        throw error;
-    }
-
-    const graph = {};
-    graph.base_model = buildDiffusionLoaderNode(settings.unet);
-    graph.text_encoder = { class_type: 'CLIPLoader', inputs: { clip_name: settings.clip, type: settings.clipType, device: 'default' } };
-    graph.vae_loader = { class_type: 'VAELoader', inputs: { vae_name: settings.vae } };
-    graph.identity_stack = {
-        class_type: 'LoraLoaderModelOnly',
-        inputs: {
-            model: ['base_model', 0],
-            lora_name: editLora,
-            strength_model: clampToRange(override && override.strength, -100, 100, 1)
-        }
+    const graph = {
+        unet: buildDiffusionLoaderNode(base.unet),
+        clip: { class_type: 'CLIPLoader', inputs: { clip_name: base.clip, type: QWEN_IMAGE_CLIP_TYPE, device: 'default' } },
+        vae: { class_type: 'VAELoader', inputs: { vae_name: base.vae } },
+        load_image: { class_type: 'LoadImage', inputs: { image: loadName } }
     };
 
-    let modelLink = ['identity_stack', 0];
-    let stackIndex = 0;
-    for (const entry of settings.loras || []) {
-        if (!entry || entry.on === false || !entry.name || isSameAssetFile(entry.name, editLora)) continue;
-        stackIndex += 1;
-        const nodeId = 'stack_lora_' + stackIndex;
-        graph[nodeId] = {
-            class_type: 'LoraLoaderModelOnly',
-            inputs: {
-                model: modelLink,
-                lora_name: entry.name,
-                strength_model: clampToRange(entry.strength, -100, 100, 1)
-            }
-        };
-        modelLink = [nodeId, 0];
-    }
+    // Apply any attached LoRAs on top of the base model + clip.
+    const stack = buildLoraChain(graph, settings.loras);
 
-    graph.reference_image = { class_type: 'LoadImage', inputs: { image: loadName } };
-    graph.reference_latent = {
-        class_type: 'VAEEncode',
-        inputs: { pixels: ['reference_image', 0], vae: ['vae_loader', 0] }
-    };
-    graph.edit_patch = {
-        class_type: 'Krea2EditModelPatch',
+    graph.conditioning = {
+        class_type: 'TextEncodeQwenImage21',
         inputs: {
-            model: modelLink,
-            source_latent: ['reference_latent', 0],
-            ref_boost: refBoost,
-            ref_boost_a: 1,
-            fit_mode: 'fit',
-            vae: ['vae_loader', 0],
-            source_image: ['reference_image', 0]
-        }
-    };
-    graph.conditioning_pos = {
-        class_type: 'Krea2EditGroundedEncode',
-        inputs: {
+            clip: stack.clip,
             prompt: String(instruction || ''),
-            grounding_px: groundingPx,
-            clip: ['text_encoder', 0],
-            image: ['reference_image', 0]
+            negative_prompt: negativeText,
+            resolution,
+            vae: ['vae', 0],
+            'images.image_1': ['load_image', 0]
         }
     };
-    graph.conditioning_neg = {
-        class_type: 'Krea2EditGroundedEncode',
-        inputs: {
-            prompt: String(options.negativePrompt || ''),
-            grounding_px: groundingPx,
-            clip: ['text_encoder', 0],
-            image: ['reference_image', 0]
-        }
-    };
-    graph.canvas = {
-        class_type: 'EmptySD3LatentImage',
-        inputs: { width: dims.width, height: dims.height, batch_size: 1 }
-    };
+
     graph.sampler = {
         class_type: 'KSampler',
         inputs: {
-            model: ['edit_patch', 0],
-            positive: ['conditioning_pos', 0],
-            negative: ['conditioning_neg', 0],
-            latent_image: ['canvas', 0],
+            model: stack.model,
+            positive: ['conditioning', 0],
+            negative: ['conditioning', 1],
+            // The node's third output is the reference latent sized from image_1.
+            latent_image: ['conditioning', 2],
             seed,
             steps,
             cfg,
@@ -2317,7 +2194,8 @@ function buildKrea2IdentityEditGraph(instruction, loadName, options = {}) {
             denoise: 1
         }
     };
-    graph.decoded = { class_type: 'VAEDecode', inputs: { samples: ['sampler', 0], vae: ['vae_loader', 0] } };
+
+    graph.decoded = { class_type: 'VAEDecode', inputs: { samples: ['sampler', 0], vae: ['vae', 0] } };
     graph.save = { class_type: 'SaveImage', inputs: { images: ['decoded', 0], filename_prefix: 'not-so-jarvis/edit' } };
 
     return graph;
@@ -2356,12 +2234,14 @@ async function editImage(sourceAbsPath, instruction, options = {}) {
             : Math.floor(Math.random() * 2 ** 32);
         const settings = effectiveSettings();
 
-        // Output follows the source shape (fit inside 2MP); WebP and other
-        // dimension-unknown files fall back to the configured S/M/L canvas.
+        // Editing always uses the Qwen Image 2.1 editor. Output follows the
+        // source (sized from image_1, rounded to a multiple of 32); srcDims is
+        // only a metadata fallback when the output dimensions can't be read.
         const srcDims = readImageDimensions(abs);
-        const dims = (srcDims.width > 0 && srcDims.height > 0)
-            ? normalizeIdentityEditDimensions(srcDims.width, srcDims.height)
-            : normalizeIdentityEditDimensions(settings.width, settings.height);
+        const dims = {
+            width: srcDims.width > 0 ? srcDims.width : settings.width,
+            height: srcDims.height > 0 ? srcDims.height : settings.height
+        };
 
         // LoRA trigger words are prepended exactly once, same as generation.
         const cleanInstruction = stripLoraTriggerWords(instruction);
@@ -2385,24 +2265,20 @@ async function editImage(sourceAbsPath, instruction, options = {}) {
 
         let basename;
         try {
-            const graph = buildKrea2IdentityEditGraph(finalInstruction, loadName, {
+            const graph = buildQwenImage21EditGraph(finalInstruction, loadName, {
                 settings,
                 seed,
-                width: dims.width,
-                height: dims.height,
                 steps: options.steps,
                 cfg: options.cfg,
-                refBoost: options.refBoost,
-                groundingPx: options.groundingPx,
+                resolution: options.resolution,
                 negativePrompt: options.negativePrompt
             });
 
             const info = await comfyui.getObjectInfo();
-            await validateGraphAgainstComfy(info, graph);
-            requireEditStack(info, settings);
+            await validateGraphAgainstComfy(info, graph, QWEN_IMAGE_CLIP_TYPE);
 
             const pid = await comfyui.queuePrompt(graph);
-            console.log('[image-generator] queued Krea2 edit workflow:', pid);
+            console.log('[image-generator] queued Qwen Image 2.1 edit workflow:', pid);
 
             const history = await comfyui.waitForPrompt(pid, { timeoutMs: options.timeoutMs, signal });
             const files = comfyui.findOutputFiles(history.outputs || {}, /\.(?:png|jpg|jpeg|webp)$/i);
@@ -2435,7 +2311,7 @@ async function editImage(sourceAbsPath, instruction, options = {}) {
             rawFilename: basename,
             conversationId: options.conversationId || null,
             prompt: finalInstruction,
-            model: 'Krea2 Edit',
+            model: 'Qwen Image 2.1 Edit',
             loras: activeLoras,
             width: width || dims.width,
             height: height || dims.height,
@@ -2494,14 +2370,11 @@ module.exports = {
     resolveBaseModels,
     IMAGE_MODELS,
     QWEN_IMAGE_CLIP_TYPE,
-    buildKrea2IdentityEditGraph,
-    normalizeIdentityEditDimensions,
+    buildQwenImage21EditGraph,
     detectEditIntent,
     cleanEditInstruction,
     detectImageModifyIntent,
-    checkEditAvailability,
     editImage,
-    MAX_IDENTITY_EDIT_PIXELS,
     validateGraphAgainstComfy,
     effectiveSettings,
     getDefaults,
