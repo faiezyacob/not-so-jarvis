@@ -1334,7 +1334,8 @@ details.settings-card[open] summary.settings-card-title::after {
     flex: 1;
     overflow-y: auto;
     width: 100%;
-    padding: 28px max(28px, calc((100% - var(--chat-column)) / 2));
+    padding: 28px max(24px, calc((100% - var(--chat-column)) / 2));
+    scrollbar-gutter: stable both-edges;
     display: flex;
     flex-direction: column;
     gap: 24px;
@@ -2198,6 +2199,34 @@ em {
     color: var(--accent);
 }
 
+/* --- Creative Playground trigger --- */
+
+.chat-surprise {
+    width: 40px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: all 0.2s ease;
+    flex-shrink: 0;
+}
+
+.chat-surprise:hover {
+    border-color: var(--border-focus);
+    color: var(--accent);
+}
+
+.chat-surprise.active {
+    background: rgba(108, 255, 154, 0.12);
+    border-color: var(--border-focus);
+    color: var(--accent);
+}
+
 .chat-lora-popup {
     position: absolute;
     right: 24px;
@@ -3018,6 +3047,10 @@ em {
 
     .chat-messages {
         padding: 20px max(20px, calc((100% - var(--chat-column)) / 2));
+    }
+
+    .chat-input-bar {
+        padding: 14px max(20px, calc((100% - var(--chat-column)) / 2));
     }
 }
 
@@ -5509,4 +5542,455 @@ a.modal-btn {
 @keyframes setup-progress-slide {
     0% { margin-left: -40%; width: 40%; }
     100% { margin-left: 100%; width: 40%; }
+}
+
+/* --- Creative Playground --- */
+
+.chat-playground-popup {
+    position: absolute;
+    right: 24px;
+    bottom: 70px;
+    width: 320px;
+    max-width: calc(100% - 48px);
+    z-index: 41;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-focus);
+    border-radius: 8px;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+    backdrop-filter: blur(8px);
+}
+
+.chat-playground-popup[hidden] {
+    display: none;
+}
+
+.chat-playground-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    min-height: 18px;
+}
+
+.chat-playground-title {
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--accent);
+}
+
+.chat-playground-sub {
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    color: var(--text-dim);
+}
+
+.playground-character-select {
+    position: relative;
+}
+
+.playground-character-trigger {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    width: 100%;
+    padding: 7px 10px;
+    background: var(--bg-input);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: var(--fs-md);
+    text-align: left;
+    cursor: pointer;
+    transition: border-color 0.15s ease;
+}
+
+.playground-character-trigger:hover,
+.playground-character-trigger[aria-expanded="true"] {
+    border-color: var(--border-focus);
+}
+
+.playground-character-value {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.playground-character-caret {
+    flex: 0 0 auto;
+    color: var(--text-dim);
+    transition: transform 0.15s ease;
+}
+
+.playground-character-trigger[aria-expanded="true"] .playground-character-caret {
+    transform: rotate(180deg);
+}
+
+.playground-character-menu {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: calc(100% + 4px);
+    z-index: 42;
+    max-height: 220px;
+    overflow-y: auto;
+    padding: 4px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-focus);
+    border-radius: 6px;
+    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.5);
+}
+
+.playground-character-menu[hidden] {
+    display: none;
+}
+
+.playground-character-menu-heading {
+    padding: 6px 8px 2px;
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--text-dim);
+}
+
+.playground-character-option {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    border-radius: 4px;
+}
+
+.playground-character-option:hover {
+    background: var(--accent-faint);
+}
+
+.playground-character-option--active {
+    background: rgba(108, 255, 154, 0.12);
+}
+
+.playground-character-option-main {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 7px 8px;
+    background: transparent;
+    border: none;
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: var(--fs-sm);
+    text-align: left;
+    cursor: pointer;
+}
+
+.playground-character-option-label {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.playground-character-option-delete {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    margin-right: 2px;
+    padding: 0;
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: color 0.15s ease, background 0.15s ease;
+}
+
+.playground-character-option-delete:hover:not(:disabled) {
+    color: #e07a5f;
+    background: rgba(224, 122, 95, 0.12);
+}
+
+.playground-character-option-delete:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
+.playground-profile-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.playground-profile-field {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.playground-profile-field > span {
+    flex: 0 0 74px;
+    font-size: var(--fs-sm);
+    color: var(--text-secondary);
+}
+
+.playground-profile-field .settings-select {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.playground-locks-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px 10px;
+}
+
+.playground-lock {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: var(--fs-sm);
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+
+.playground-lock input {
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+
+.playground-lock--disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
+.playground-lock--disabled input {
+    cursor: default;
+}
+
+.playground-submit {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    height: 34px;
+    margin-top: 4px;
+    border-radius: 6px;
+    border: 1px solid rgba(108, 255, 154, 0.3);
+    background: rgba(108, 255, 154, 0.1);
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.playground-submit:hover {
+    background: rgba(108, 255, 154, 0.18);
+    border-color: rgba(108, 255, 154, 0.45);
+}
+
+.playground-submit:active {
+    transform: scale(0.98);
+}
+
+.chat-playground-hint {
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    line-height: 1.4;
+    color: var(--text-dim);
+}
+
+.playground-card {
+    margin-top: 12px;
+    padding: 12px 14px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: var(--bg-card);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    transition: border-color 0.2s ease, opacity 0.2s ease;
+}
+
+.playground-card:hover {
+    border-color: rgba(108, 255, 154, 0.18);
+}
+
+.playground-card--static {
+    opacity: 0.66;
+}
+
+.playground-card--static:hover {
+    border-color: var(--border-color);
+}
+
+.playground-card-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.playground-card-icon {
+    display: inline-flex;
+    color: var(--accent);
+    flex: 0 0 auto;
+}
+
+.playground-card-titles {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+    flex-wrap: wrap;
+}
+
+.playground-card-title {
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--accent);
+}
+
+.playground-card-theme {
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    color: var(--text-dim);
+}
+
+.playground-concept-title {
+    margin: 0;
+    font-size: var(--fs-md);
+    font-weight: 600;
+    line-height: 1.3;
+    color: var(--text-primary);
+}
+
+.playground-concept-desc {
+    margin: 0;
+    font-size: var(--fs-sm);
+    line-height: 1.5;
+    color: var(--text-secondary);
+}
+
+.playground-details {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.playground-detail {
+    display: flex;
+    gap: 10px;
+    font-size: var(--fs-sm);
+    line-height: 1.4;
+}
+
+.playground-detail-label {
+    flex: 0 0 96px;
+    padding-top: 1px;
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    color: var(--text-dim);
+}
+
+.playground-detail-value {
+    flex: 1 1 auto;
+    color: var(--text-secondary);
+}
+
+.playground-locks {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.playground-lock-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    color: var(--text-dim);
+}
+
+.playground-card-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.playground-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    height: 32px;
+    padding: 0 14px;
+    border-radius: 5px;
+    font-family: var(--font-mono);
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    background: transparent;
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+}
+
+.playground-btn svg {
+    flex: 0 0 auto;
+    opacity: 0.9;
+}
+
+.playground-btn:hover:not(:disabled) {
+    background: var(--accent-faint);
+    border-color: var(--border-focus);
+    color: var(--text-primary);
+}
+
+.playground-btn:active:not(:disabled) {
+    transform: scale(0.97);
+}
+
+.playground-btn:disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+
+.playground-btn--primary {
+    background: rgba(108, 255, 154, 0.1);
+    border-color: rgba(108, 255, 154, 0.25);
+    color: var(--accent);
+}
+
+.playground-btn--primary:hover:not(:disabled) {
+    background: rgba(108, 255, 154, 0.18);
+    border-color: rgba(108, 255, 154, 0.4);
+    color: var(--accent);
 }

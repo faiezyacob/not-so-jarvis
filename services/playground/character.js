@@ -1,0 +1,948 @@
+/* ============================================
+   JARVIS — Creative Playground Character Generator
+   Deterministic, seed-based random character
+   identities. Independent appearance / age / gender
+   controls act as constraints on a structured trait
+   space; each appearance category supplies weighted
+   pools (skin, face, eyes, hair, build, features)
+   and light compatibility weighting keeps every
+   combination coherent. No LLM, no GPU, no
+   dependencies. The generator returns a structured
+   identity plus a formatted natural-language
+   description; scene/outfit/style stay separate.
+   SPDX-License-Identifier: MIT
+   Copyright (c) 2026 not-so-jarvis.
+   ============================================ */
+
+// --- Generation controls ------------------------------------------------------
+//
+// Appearance, age and gender are independent selectors. `random` means
+// "unconstrained" and reproduces the general random-character behaviour.
+
+const RANDOM = 'random';
+
+const AGE_KEYS = ['young_adult', 'adult', 'mature', 'older'];
+const GENDER_KEYS = ['woman', 'man'];
+
+// Exact age ranges live here and nowhere else.
+const AGE_GROUPS = {
+    young_adult: {
+        label: 'Young Adult',
+        min: 18,
+        max: 27,
+        ages: ['19-year-old', '21-year-old', '23-year-old', '24-year-old', '26-year-old']
+    },
+    adult: {
+        label: 'Adult',
+        min: 28,
+        max: 44,
+        ages: ['29-year-old', '31-year-old', '34-year-old', '37-year-old', '40-year-old', '43-year-old']
+    },
+    mature: {
+        label: 'Mature',
+        min: 45,
+        max: 59,
+        ages: ['46-year-old', '49-year-old', '53-year-old', '57-year-old']
+    },
+    older: {
+        label: 'Older',
+        min: 60,
+        max: 80,
+        ages: ['62-year-old', '66-year-old', '70-year-old', '75-year-old', '79-year-old']
+    }
+};
+
+const AGE_GROUP_ENTRIES = [
+    { value: 'young_adult', weight: 5 },
+    { value: 'adult', weight: 4 },
+    { value: 'mature', weight: 1.2 },
+    { value: 'older', weight: 0.7 }
+];
+
+const GENDER_ENTRIES = [
+    { value: 'woman', weight: 5 },
+    { value: 'man', weight: 4 }
+];
+
+const GENDER_LABELS = {
+    woman: 'Woman',
+    man: 'Man'
+};
+
+const GENDER_PRESENTATION = {
+    woman: 'woman',
+    man: 'man'
+};
+
+// --- Shared trait pools -------------------------------------------------------
+//
+// These pools are broad on purpose: they apply to every appearance category so
+// no single category collapses into one "look". Demographic traits
+// (skin/hair/eye colour) are category-specific and live on each category.
+
+const ALL_AGE_GROUPS = AGE_KEYS.slice();
+const ALL_SKINS = ['light', 'medium', 'deep'];
+const YOUTHFUL = ['young_adult', 'adult'];
+const AGED = ['mature', 'older'];
+
+const FACE_SHAPES = [
+    'an oval face',
+    'a heart-shaped face',
+    'a round face',
+    'a square face',
+    'an angular face',
+    'a soft diamond-shaped face',
+    'a long oval face',
+    'a delicate heart-shaped face',
+    'a broad face',
+    'a tapered face',
+    'a high-cheekboned face',
+    'an elegantly elongated face',
+    'a softly rounded face',
+    'a defined square face',
+    'a narrow oval face'
+];
+
+const EYE_SHAPES = [
+    'almond-shaped eyes',
+    'round eyes',
+    'hooded eyes',
+    'upturned eyes',
+    'downturned eyes',
+    'monolid eyes',
+    'deep-set eyes',
+    'wide-set eyes',
+    'heavy-lidded eyes',
+    'gently tapered eyes',
+    'large expressive eyes',
+    'narrow eyes',
+    'oval eyes',
+    'long-lashed eyes',
+    'bright clear eyes'
+];
+
+const EYEBROWS = [
+    'softly arched eyebrows',
+    'straight eyebrows',
+    'thick natural eyebrows',
+    'well-defined eyebrows',
+    'tapered eyebrows',
+    'rounded eyebrows',
+    'subtly feathered eyebrows',
+    'strong, straight brows',
+    'naturally full eyebrows',
+    'gently curved eyebrows'
+];
+
+const BUILDS = [
+    { value: 'a slim build', weight: 3 },
+    { value: 'an athletic build', weight: 3 },
+    { value: 'a curvy build', weight: 3 },
+    { value: 'a petite frame', weight: 2, genders: ['woman'] },
+    { value: 'a tall, lean frame', weight: 2 },
+    { value: 'a soft, rounded build', weight: 2 },
+    { value: 'a willowy build', weight: 1.5 },
+    { value: 'a broad-shouldered build', weight: 2, genders: ['man'] },
+    { value: 'a stocky build', weight: 1, genders: ['man'] },
+    { value: 'a muscular build', weight: 2, genders: ['man'] },
+    { value: 'a compact, athletic frame', weight: 2 },
+    { value: 'a long-limbed build', weight: 1.5 },
+    { value: 'a sturdy build', weight: 1.5 }
+];
+
+const DISTINCTIVE_FEATURES = [
+    { value: '', weight: 3 },
+    { value: 'a small beauty mark beneath one eye', weight: 2 },
+    { value: 'a scattering of light freckles across the nose', weight: 2, skins: ['light', 'medium'] },
+    { value: 'deep dimples when smiling', weight: 2 },
+    { value: 'a tiny scar above one eyebrow', weight: 1 },
+    { value: 'a gap between the front teeth', weight: 1 },
+    { value: 'high cheekbones', weight: 2 },
+    { value: 'a strong jawline', weight: 2 },
+    { value: 'a faint dimple in one cheek', weight: 1.5 },
+    { value: 'a small mole on the jawline', weight: 1 },
+    { value: 'a subtly dimpled chin', weight: 1 },
+    { value: 'a slightly upturned nose', weight: 1.5 },
+    { value: 'naturally full lips', weight: 2 },
+    { value: 'a widow\u2019s peak', weight: 1.5 },
+    { value: 'a faint scar on the chin', weight: 1 }
+];
+
+const EXPRESSIONS = [
+    { value: 'a calm, open expression', weight: 3 },
+    { value: 'a warm, easy smile', weight: 3 },
+    { value: 'a thoughtful, serious look', weight: 2 },
+    { value: 'a bright, cheerful expression', weight: 2 },
+    { value: 'a relaxed, unposed look', weight: 2 },
+    { value: 'a confident, level gaze', weight: 2 }
+];
+
+// `textures` gates a style to a hair-texture family; `genders` gates a look to
+// a gender. Untagged entries are available to everyone.
+const HAIR_STYLES = [
+    { value: 'long', type: 'adj', weight: 4, textures: ['straight', 'wavy', 'curly'] },
+    { value: 'shoulder-length', type: 'adj', weight: 3, textures: ['straight', 'wavy', 'curly'] },
+    { value: 'medium-length layered', type: 'adj', weight: 3, textures: ['straight', 'wavy'] },
+    { value: 'tousled', type: 'adj', weight: 2, textures: ['wavy', 'curly'] },
+    { value: 'long layered', type: 'adj', weight: 2, textures: ['straight', 'wavy', 'curly', 'coily'] },
+    { value: 'a short bob', type: 'noun', weight: 3, textures: ['straight', 'wavy'] },
+    { value: 'a sharp bob', type: 'noun', weight: 2, textures: ['straight'] },
+    { value: 'a chin-length bob', type: 'noun', weight: 2, textures: ['straight', 'wavy', 'curly'] },
+    { value: 'a pixie cut', type: 'noun', weight: 1.5, textures: ['straight', 'wavy', 'coily'] },
+    { value: 'a buzz cut', type: 'noun', weight: 1, textures: ['straight', 'coily'], genders: ['man'] },
+    { value: 'a high ponytail', type: 'noun', weight: 2, textures: ['straight', 'wavy', 'curly'] },
+    { value: 'a low ponytail', type: 'noun', weight: 2, textures: ['straight', 'wavy', 'curly', 'coily'] },
+    { value: 'a sleek low bun', type: 'noun', weight: 2, textures: ['straight', 'wavy'] },
+    { value: 'a high bun', type: 'noun', weight: 1.5, textures: ['straight', 'wavy', 'curly', 'coily'] },
+    { value: 'a top knot', type: 'noun', weight: 1.5, textures: ['wavy', 'curly', 'coily'] },
+    { value: 'a messy bun', type: 'noun', weight: 2, textures: ['wavy', 'curly', 'coily'] },
+    { value: 'twists', type: 'noun', weight: 1.5, textures: ['curly', 'coily'] },
+    { value: 'box braids', type: 'noun', weight: 1.5, textures: ['curly', 'coily'] },
+    { value: 'locs', type: 'noun', weight: 1.5, textures: ['coily', 'curly'] },
+    { value: 'a round afro', type: 'noun', weight: 1.5, textures: ['coily', 'curly'] },
+    { value: 'an undercut', type: 'noun', weight: 1, textures: ['straight', 'wavy'], genders: ['man'] },
+    { value: 'a fade', type: 'noun', weight: 1, textures: ['coily', 'straight'], genders: ['man'] },
+    { value: 'a shoulder-length shag', type: 'noun', weight: 1.5, textures: ['wavy', 'curly'] },
+    { value: 'a side-swept fringe', type: 'noun', weight: 1.5, textures: ['straight', 'wavy'] },
+    { value: 'curtain bangs', type: 'noun', weight: 1.5, textures: ['straight', 'wavy', 'curly'] }
+];
+
+// Hair texture is chosen as a family, then realised as one of its variants, so
+// the style pool can stay compatible without collapsing variation.
+const HAIR_TEXTURE_FAMILIES = [
+    { value: 'straight', weight: 4 },
+    { value: 'wavy', weight: 4 },
+    { value: 'curly', weight: 3.5 },
+    { value: 'coily', weight: 2.5 }
+];
+
+const HAIR_TEXTURE_VALUES = {
+    straight: [{ value: 'straight', weight: 4 }, { value: 'sleek straight', weight: 2 }, { value: 'fine straight', weight: 2 }],
+    wavy: [{ value: 'wavy', weight: 4 }, { value: 'loosely wavy', weight: 2 }, { value: 'thick wavy', weight: 2 }],
+    curly: [{ value: 'curly', weight: 4 }, { value: 'tightly curled', weight: 2 }, { value: 'softly curled', weight: 2 }],
+    coily: [{ value: 'coily', weight: 4 }, { value: 'kinky coily', weight: 2 }, { value: 'densely coily', weight: 2 }]
+};
+
+const NAMES = {
+    feminine: ['Maya', 'Hana', 'Sofia', 'Nora', 'Lena', 'Mina', 'Iris', 'Zoe', 'Priya', 'Amara',
+        'Leila', 'Elena', 'Rina', 'Tara', 'Sana', 'Mira', 'Aisha', 'Lucia', 'Nadia', 'Ines',
+        'Mila', 'Juno', 'Yara', 'Mei', 'Anika', 'Farah', 'Simone', 'Camila', 'Dalia', 'Esme'],
+    masculine: ['Kai', 'Theo', 'Ravi', 'Diego', 'Omar', 'Kenji', 'Adrian', 'Malik', 'Elias', 'Noah',
+        'Arjun', 'Mateo', 'Idris', 'Hugo', 'Samir', 'Dario', 'Luca', 'Tomas', 'Yusuf', 'Rohan',
+        'Nico', 'Amir'],
+    neutral: ['Ari', 'Noa', 'Remi', 'Sasha', 'Noor', 'Quinn', 'Rio', 'Kiran', 'Jules', 'Ren',
+        'Sage', 'Ash', 'Micah', 'Eden', 'Lior', 'Toni', 'Devon']
+};
+
+// --- Appearance categories ----------------------------------------------------
+
+function skin(value, group, weight) {
+    return { value, group, weight: weight || 1 };
+}
+
+function hair(value, weight, groups) {
+    return { value, weight, groups: (groups || ALL_AGE_GROUPS).slice() };
+}
+
+function eye(value, weight, skins) {
+    return { value, weight, skins: (skins || ALL_SKINS).slice() };
+}
+
+function tex(value, weight) {
+    return { value, weight: weight || 1 };
+}
+
+function makeCategory(spec) {
+    return Object.assign({
+        hairStyles: HAIR_STYLES,
+        faceShapes: FACE_SHAPES,
+        eyeShapes: EYE_SHAPES,
+        eyebrows: EYEBROWS,
+        builds: BUILDS,
+        distinctiveFeatures: DISTINCTIVE_FEATURES
+    }, spec);
+}
+
+const APPEARANCE_CATEGORIES = {
+    east_asian: makeCategory({
+        label: 'East Asian',
+        weight: 1,
+        skinTones: [
+            skin('fair skin', 'light', 2),
+            skin('light skin', 'light', 2),
+            skin('light olive skin', 'light', 2),
+            skin('light golden skin', 'light', 2),
+            skin('medium golden skin', 'medium', 3),
+            skin('medium warm skin', 'medium', 2),
+            skin('warm tan skin', 'medium', 2)
+        ],
+        hairColors: [
+            hair('black', 5),
+            hair('dark brown', 5),
+            hair('blue-black', 3),
+            hair('brown', 3),
+            hair('chestnut', 2),
+            hair('ash brown', 2),
+            hair('honey brown', 1.5, YOUTHFUL),
+            hair('chestnut brown', 2, YOUTHFUL),
+            hair('burgundy', 0.7, YOUTHFUL),
+            hair('teal', 0.5, YOUTHFUL),
+            hair('pastel pink', 0.5, ['young_adult']),
+            hair('grey-streaked black', 2, AGED),
+            hair('salt-and-pepper', 2, AGED),
+            hair('silver', 1.5, AGED),
+            hair('white', 1, AGED)
+        ],
+        hairTextures: [tex('straight', 6), tex('wavy', 2), tex('curly', 0.7), tex('coily', 0.2)],
+        eyeColors: [
+            eye('dark brown', 5),
+            eye('black-brown', 4),
+            eye('warm brown', 4),
+            eye('light brown', 2),
+            eye('hazel', 1),
+            eye('amber', 1)
+        ]
+    }),
+
+    southeast_asian: makeCategory({
+        label: 'Southeast Asian',
+        weight: 1,
+        skinTones: [
+            skin('light golden skin', 'light', 2),
+            skin('medium golden skin', 'medium', 3),
+            skin('warm tan skin', 'medium', 3),
+            skin('medium olive skin', 'medium', 2),
+            skin('golden brown skin', 'medium', 2),
+            skin('deep golden brown skin', 'deep', 2),
+            skin('warm brown skin', 'deep', 2)
+        ],
+        hairColors: [
+            hair('black', 5),
+            hair('dark brown', 5),
+            hair('jet black', 3),
+            hair('brown', 3),
+            hair('chestnut', 2),
+            hair('auburn', 1.5, YOUTHFUL),
+            hair('honey brown', 1.5, YOUTHFUL),
+            hair('copper', 1, YOUTHFUL),
+            hair('burgundy', 0.6, YOUTHFUL),
+            hair('grey-streaked', 1.5, AGED),
+            hair('salt-and-pepper', 1.5, AGED),
+            hair('silver', 1, AGED)
+        ],
+        hairTextures: [tex('straight', 3), tex('wavy', 4), tex('curly', 2.5), tex('coily', 1.5)],
+        eyeColors: [
+            eye('dark brown', 5),
+            eye('black-brown', 3),
+            eye('warm brown', 4),
+            eye('light brown', 2),
+            eye('amber', 2),
+            eye('hazel', 1.5)
+        ]
+    }),
+
+    south_asian: makeCategory({
+        label: 'South Asian',
+        weight: 1,
+        skinTones: [
+            skin('light olive skin', 'light', 2),
+            skin('warm beige skin', 'light', 2),
+            skin('medium olive skin', 'medium', 3),
+            skin('warm tan skin', 'medium', 2),
+            skin('golden brown skin', 'medium', 2),
+            skin('golden beige skin', 'medium', 2),
+            skin('deep brown skin', 'deep', 3),
+            skin('rich dark brown skin', 'deep', 2)
+        ],
+        hairColors: [
+            hair('black', 5),
+            hair('dark brown', 5),
+            hair('jet black', 3),
+            hair('deep brown', 2),
+            hair('brown', 3),
+            hair('chestnut', 2),
+            hair('auburn', 1, YOUTHFUL),
+            hair('burgundy', 0.6, YOUTHFUL),
+            hair('henna red', 0.8, YOUTHFUL),
+            hair('grey-streaked', 2, AGED),
+            hair('salt-and-pepper', 2, AGED),
+            hair('silver', 1.5, AGED),
+            hair('white', 1, AGED)
+        ],
+        hairTextures: [tex('straight', 3), tex('wavy', 4), tex('curly', 3), tex('coily', 2)],
+        eyeColors: [
+            eye('dark brown', 5),
+            eye('black-brown', 4),
+            eye('warm brown', 4),
+            eye('amber', 2),
+            eye('hazel', 1.5),
+            eye('green', 1)
+        ]
+    }),
+
+    white_european: makeCategory({
+        label: 'White / European',
+        weight: 1,
+        skinTones: [
+            skin('pale porcelain skin', 'light', 2),
+            skin('fair skin', 'light', 3),
+            skin('light skin', 'light', 2),
+            skin('light olive skin', 'light', 2),
+            skin('freckled fair skin', 'light', 1.5),
+            skin('medium warm skin', 'medium', 2),
+            skin('sun-kissed tan skin', 'medium', 2)
+        ],
+        hairColors: [
+            hair('dark brown', 4),
+            hair('brown', 4),
+            hair('light brown', 3),
+            hair('chestnut', 3),
+            hair('black', 3),
+            hair('ash blonde', 2.5),
+            hair('auburn', 2.5, YOUTHFUL),
+            hair('honey blonde', 3, YOUTHFUL),
+            hair('platinum blonde', 2, YOUTHFUL),
+            hair('copper', 1.5, YOUTHFUL),
+            hair('red', 1.5, YOUTHFUL),
+            hair('grey-streaked', 2, AGED),
+            hair('salt-and-pepper', 2, AGED),
+            hair('silver', 2, AGED),
+            hair('white', 1.5, AGED)
+        ],
+        hairTextures: [tex('straight', 4), tex('wavy', 4), tex('curly', 2.5), tex('coily', 0.5)],
+        eyeColors: [
+            eye('blue', 3),
+            eye('grey-blue', 2.5),
+            eye('green', 3),
+            eye('grey', 2),
+            eye('hazel', 2.5),
+            eye('light brown', 3),
+            eye('dark brown', 3),
+            eye('amber', 1)
+        ]
+    }),
+
+    black_african_diaspora: makeCategory({
+        label: 'Black / African Diaspora',
+        weight: 1,
+        skinTones: [
+            skin('light brown skin', 'light', 2),
+            skin('medium brown skin', 'medium', 3),
+            skin('golden brown skin', 'medium', 2),
+            skin('caramel brown skin', 'medium', 2),
+            skin('mahogany brown skin', 'deep', 2),
+            skin('deep brown skin', 'deep', 3),
+            skin('rich dark brown skin', 'deep', 3),
+            skin('deep espresso brown skin', 'deep', 2),
+            skin('warm ebony skin', 'deep', 2)
+        ],
+        hairColors: [
+            hair('jet black', 5),
+            hair('black', 4),
+            hair('dark brown', 4),
+            hair('chestnut brown', 2.5),
+            hair('caramel brown', 2),
+            hair('auburn', 1.5, YOUTHFUL),
+            hair('honey brown', 1.5, YOUTHFUL),
+            hair('copper', 1, YOUTHFUL),
+            hair('burgundy', 0.8, YOUTHFUL),
+            hair('platinum blonde', 0.8, YOUTHFUL),
+            hair('pastel pink', 0.5, ['young_adult']),
+            hair('grey-streaked', 1.5, AGED),
+            hair('salt-and-pepper', 1.5, AGED),
+            hair('silver', 1, AGED),
+            hair('white', 0.8, AGED)
+        ],
+        hairTextures: [tex('coily', 5), tex('curly', 4), tex('wavy', 1.5), tex('straight', 1)],
+        eyeColors: [
+            eye('dark brown', 5),
+            eye('rich brown', 4),
+            eye('black-brown', 4),
+            eye('warm brown', 3),
+            eye('amber', 1.5),
+            eye('hazel', 1)
+        ]
+    }),
+
+    latino_hispanic: makeCategory({
+        label: 'Latino / Hispanic',
+        weight: 1,
+        skinTones: [
+            skin('light tan skin', 'light', 2),
+            skin('light olive skin', 'light', 2),
+            skin('warm beige skin', 'light', 2),
+            skin('medium golden skin', 'medium', 3),
+            skin('olive brown skin', 'medium', 2),
+            skin('caramel skin', 'medium', 2),
+            skin('deep tan skin', 'deep', 2),
+            skin('warm brown skin', 'deep', 2),
+            skin('deep brown skin', 'deep', 2)
+        ],
+        hairColors: [
+            hair('black', 4),
+            hair('dark brown', 5),
+            hair('brown', 4),
+            hair('chestnut', 3),
+            hair('caramel', 2.5),
+            hair('auburn', 2, YOUTHFUL),
+            hair('honey brown', 2, YOUTHFUL),
+            hair('copper', 1.5, YOUTHFUL),
+            hair('blonde', 1.5, YOUTHFUL),
+            hair('burgundy', 0.8, YOUTHFUL),
+            hair('grey-streaked', 1.5, AGED),
+            hair('salt-and-pepper', 1.5, AGED),
+            hair('silver', 1, AGED)
+        ],
+        hairTextures: [tex('wavy', 4), tex('straight', 3), tex('curly', 3), tex('coily', 1.5)],
+        eyeColors: [
+            eye('dark brown', 5),
+            eye('black-brown', 3),
+            eye('warm brown', 4),
+            eye('light brown', 2.5),
+            eye('hazel', 2.5),
+            eye('green', 1.5),
+            eye('amber', 1.5)
+        ]
+    }),
+
+    middle_eastern: makeCategory({
+        label: 'Middle Eastern',
+        weight: 1,
+        skinTones: [
+            skin('light olive skin', 'light', 2),
+            skin('warm beige skin', 'light', 2),
+            skin('medium olive skin', 'medium', 3),
+            skin('medium tan skin', 'medium', 2),
+            skin('golden tan skin', 'medium', 2),
+            skin('golden brown skin', 'medium', 2),
+            skin('deep olive skin', 'deep', 2),
+            skin('warm brown skin', 'deep', 2)
+        ],
+        hairColors: [
+            hair('black', 5),
+            hair('dark brown', 5),
+            hair('jet black', 3),
+            hair('brown', 3),
+            hair('chestnut', 2.5),
+            hair('auburn', 1.5, YOUTHFUL),
+            hair('copper', 1, YOUTHFUL),
+            hair('honey brown', 1.5, YOUTHFUL),
+            hair('burgundy', 0.6, YOUTHFUL),
+            hair('grey-streaked', 2, AGED),
+            hair('salt-and-pepper', 2, AGED),
+            hair('silver', 1.5, AGED)
+        ],
+        hairTextures: [tex('wavy', 4), tex('straight', 3), tex('curly', 3), tex('coily', 1.5)],
+        eyeColors: [
+            eye('dark brown', 5),
+            eye('black-brown', 3),
+            eye('warm brown', 4),
+            eye('light brown', 2.5),
+            eye('hazel', 2.5),
+            eye('green', 2),
+            eye('amber', 1.5)
+        ]
+    }),
+
+    mixed_diverse: makeCategory({
+        label: 'Mixed / Diverse',
+        weight: 1,
+        skinTones: [
+            skin('fair skin', 'light', 2),
+            skin('light tan skin', 'light', 2),
+            skin('light olive skin', 'light', 2),
+            skin('medium golden skin', 'medium', 2.5),
+            skin('olive skin', 'medium', 2),
+            skin('caramel skin', 'medium', 2),
+            skin('medium brown skin', 'medium', 2.5),
+            skin('warm bronze skin', 'medium', 2),
+            skin('deep brown skin', 'deep', 2),
+            skin('rich dark brown skin', 'deep', 2)
+        ],
+        hairColors: [
+            hair('black', 4),
+            hair('jet black', 2),
+            hair('dark brown', 4),
+            hair('brown', 4),
+            hair('chestnut', 3),
+            hair('caramel', 2),
+            hair('auburn', 2, YOUTHFUL),
+            hair('honey blonde', 2, YOUTHFUL),
+            hair('copper', 1.5, YOUTHFUL),
+            hair('burgundy', 0.8, YOUTHFUL),
+            hair('grey-streaked', 1.5, AGED),
+            hair('salt-and-pepper', 1.5, AGED),
+            hair('silver', 1, AGED)
+        ],
+        hairTextures: [tex('straight', 3), tex('wavy', 3.5), tex('curly', 3), tex('coily', 2.5)],
+        eyeColors: [
+            eye('dark brown', 4),
+            eye('warm brown', 4),
+            eye('light brown', 3),
+            eye('hazel', 3),
+            eye('green', 2.5),
+            eye('grey-blue', 2),
+            eye('blue', 1.5),
+            eye('amber', 2)
+        ]
+    })
+};
+
+const APPEARANCE_KEYS = Object.keys(APPEARANCE_CATEGORIES);
+
+const APPEARANCE_ENTRIES = APPEARANCE_KEYS.map((key) => ({
+    value: key,
+    weight: APPEARANCE_CATEGORIES[key].weight || 1
+}));
+
+// --- Profile normalization ----------------------------------------------------
+
+function normalizeProfile(value) {
+    const src = value && typeof value === 'object' ? value : {};
+    return {
+        appearance: APPEARANCE_CATEGORIES[src.appearance] ? src.appearance : RANDOM,
+        age: AGE_GROUPS[src.age] ? src.age : RANDOM,
+        gender: GENDER_KEYS.includes(src.gender) ? src.gender : RANDOM
+    };
+}
+
+function isRandomProfile(profile) {
+    const p = normalizeProfile(profile);
+    return p.appearance === RANDOM && p.age === RANDOM && p.gender === RANDOM;
+}
+
+function sameProfile(a, b) {
+    const x = normalizeProfile(a);
+    const y = normalizeProfile(b);
+    return x.appearance === y.appearance && x.age === y.age && x.gender === y.gender;
+}
+
+// Human-readable label for an appearance category key (empty for unknown).
+function appearanceCategoryLabel(key) {
+    const category = APPEARANCE_CATEGORIES[key];
+    return category ? category.label : '';
+}
+
+function listProfileOptions() {
+    return {
+        appearance: [{ value: RANDOM, label: 'Random' }].concat(
+            APPEARANCE_KEYS.map((key) => ({ value: key, label: APPEARANCE_CATEGORIES[key].label }))
+        ),
+        age: [{ value: RANDOM, label: 'Random' }].concat(
+            AGE_KEYS.map((key) => ({
+                value: key,
+                label: AGE_GROUPS[key].label + ' (' + AGE_GROUPS[key].min + '-' + AGE_GROUPS[key].max + ')'
+            }))
+        ),
+        gender: [{ value: RANDOM, label: 'Random' }].concat(
+            GENDER_KEYS.map((key) => ({ value: key, label: GENDER_LABELS[key] }))
+        )
+    };
+}
+
+// --- Deterministic RNG --------------------------------------------------------
+
+// mulberry32 — small, fast, dependency-free. The same seed always yields the
+// same sequence, so an identity is reproducible from its stored seed.
+function createRng(seed) {
+    let state = (Number(seed) >>> 0) || 1;
+    return function rng() {
+        state = (state + 0x6D2B79F5) >>> 0;
+        let t = Math.imul(state ^ (state >>> 15), 1 | state);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+}
+
+// Accept either a numeric seed or an RNG function (the concept engine's
+// convention). A function contributes one draw to derive the identity seed;
+// every trait is then drawn from that seed's own stream.
+function resolveRng(input) {
+    if (typeof input === 'function') {
+        const seed = Math.floor(input() * 0xFFFFFFFF) >>> 0;
+        return { seed: seed || 1, rng: createRng(seed || 1) };
+    }
+    const seed = (Number(input) >>> 0) || 1;
+    return { seed, rng: createRng(seed) };
+}
+
+function toEntries(pool) {
+    return (Array.isArray(pool) ? pool : [])
+        .map((entry) => (typeof entry === 'string' ? { value: entry } : entry))
+        .filter((entry) => entry && entry.value !== undefined && entry.value !== null);
+}
+
+function isCompatible(entry, context) {
+    if (Array.isArray(entry.groups) && context.ageGroup && !entry.groups.includes(context.ageGroup)) return false;
+    if (Array.isArray(entry.skins) && context.skinGroup && !entry.skins.includes(context.skinGroup)) return false;
+    const gender = context.gender || context.presentation;
+    if (Array.isArray(entry.genders) && gender && !entry.genders.includes(gender)) return false;
+    if (Array.isArray(entry.presentations) && context.presentation && !entry.presentations.includes(context.presentation)) return false;
+    if (Array.isArray(entry.textures) && context.texture && !entry.textures.includes(context.texture)) return false;
+    return true;
+}
+
+function pickWeighted(pool, rng, context = {}) {
+    const entries = toEntries(pool);
+    if (!entries.length) return { value: '' };
+    const compatible = entries.filter((entry) => isCompatible(entry, context));
+    const candidates = compatible.length ? compatible : entries;
+    const weightOf = (entry) => (Number(entry.weight) > 0 ? Number(entry.weight) : 1);
+    const total = candidates.reduce((sum, entry) => sum + weightOf(entry), 0);
+    let roll = rng() * total;
+    for (const entry of candidates) {
+        roll -= weightOf(entry);
+        if (roll <= 0) return entry;
+    }
+    return candidates[candidates.length - 1];
+}
+
+function pickValue(pool, rng, context) {
+    return pickWeighted(pool, rng, context).value;
+}
+
+function pickName(rng, gender) {
+    const pool = gender === 'man'
+        ? NAMES.masculine.concat(NAMES.neutral)
+        : gender === 'woman'
+            ? NAMES.feminine.concat(NAMES.neutral)
+            : NAMES.neutral;
+    return pickValue(pool, rng);
+}
+
+// --- Formatting ---------------------------------------------------------------
+
+function joinList(items) {
+    const arr = (Array.isArray(items) ? items : []).map((item) => String(item || '').trim()).filter(Boolean);
+    if (!arr.length) return '';
+    if (arr.length === 1) return arr[0];
+    return arr.slice(0, -1).join(', ') + ' and ' + arr[arr.length - 1];
+}
+
+function formatEyes(identity) {
+    const color = String(identity.eyeColor || '').trim();
+    const shape = String(identity.eyeShape || '').trim();
+    return [color, shape].filter(Boolean).join(' ');
+}
+
+function formatHair(identity) {
+    const style = String(identity.hairStyle || '').trim();
+    const texture = String(identity.hairTexture || '').trim();
+    const color = String(identity.hairColor || '').trim();
+    if (!style) return color ? [texture, color, 'hair'].filter(Boolean).join(' ') : '';
+    if (identity.hairStyleType === 'noun') return color ? style + ' in ' + color : style;
+    return [style, texture, color, 'hair'].filter(Boolean).join(' ');
+}
+
+// Appearance field for the concept model: skin, face, eyes, brows, build, feature.
+function formatAppearance(identity) {
+    const parts = [];
+    if (identity.skinTone) parts.push(identity.skinTone);
+    if (identity.faceShape) parts.push(identity.faceShape);
+    const eyes = formatEyes(identity);
+    if (eyes) parts.push(eyes);
+    if (identity.eyebrows) parts.push(identity.eyebrows);
+    if (identity.build) parts.push(identity.build);
+    if (identity.distinctiveFeature) parts.push(identity.distinctiveFeature);
+    return joinList(parts);
+}
+
+// The natural-language identity sentence used as the concept's `subject`.
+function formatIdentity(identity) {
+    const age = String(identity.age || '').trim();
+    const presentation = String(identity.presentation || '').trim();
+    const head = ['a', age, presentation].filter(Boolean).join(' ');
+    const parts = [];
+    if (identity.skinTone) parts.push(identity.skinTone);
+    if (identity.faceShape) parts.push(identity.faceShape);
+    const eyes = formatEyes(identity);
+    if (eyes) parts.push(eyes);
+    if (identity.eyebrows) parts.push(identity.eyebrows);
+    const hair = formatHair(identity);
+    if (hair) parts.push(hair);
+    if (identity.build) parts.push(identity.build);
+    if (identity.distinctiveFeature) parts.push(identity.distinctiveFeature);
+    return head + (parts.length ? ' with ' + joinList(parts) : '');
+}
+
+// Compact signature for duplicate detection within a session.
+function identitySignature(identity) {
+    return [
+        identity.age,
+        identity.gender || identity.presentation,
+        identity.skinTone,
+        identity.faceShape,
+        identity.eyeColor,
+        identity.eyeShape,
+        identity.eyebrows,
+        identity.hairColor,
+        identity.hairTexture,
+        identity.hairStyle,
+        identity.build,
+        identity.distinctiveFeature
+    ].map((value) => String(value || '').toLowerCase()).join('|');
+}
+
+// --- Generation ---------------------------------------------------------------
+
+function pickAppearanceCategory(appearance, rng) {
+    if (APPEARANCE_CATEGORIES[appearance]) return appearance;
+    return pickValue(APPEARANCE_ENTRIES, rng);
+}
+
+// Generate one structured identity. Pass a numeric seed for reproducibility or
+// an RNG function (the concept engine's convention); pass a `profile`
+// ({ appearance, age, gender }) to constrain the generation. With no profile
+// (or all `random`) the generator draws from the full trait space, preserving
+// the general random-character behaviour.
+function generateRandomIdentity(input = Math.random, profile) {
+    const { seed, rng } = resolveRng(input);
+    const normalized = normalizeProfile(profile);
+
+    const ageGroup = normalized.age === RANDOM
+        ? pickValue(AGE_GROUP_ENTRIES, rng)
+        : normalized.age;
+    const age = pickValue(AGE_GROUPS[ageGroup].ages, rng);
+    const gender = normalized.gender === RANDOM
+        ? pickValue(GENDER_ENTRIES, rng)
+        : normalized.gender;
+    const presentation = GENDER_PRESENTATION[gender] || 'person';
+    const appearanceKey = pickAppearanceCategory(normalized.appearance, rng);
+    const category = APPEARANCE_CATEGORIES[appearanceKey];
+
+    const skinToneEntry = pickWeighted(category.skinTones, rng);
+    const skinTone = skinToneEntry.value;
+    const skinGroup = skinToneEntry.group || '';
+    const faceShape = pickValue(category.faceShapes, rng);
+    const eyeColor = pickValue(category.eyeColors, rng, { skinGroup });
+    const eyeShape = pickValue(category.eyeShapes, rng);
+    const eyebrows = pickValue(category.eyebrows, rng);
+    const hairColor = pickValue(category.hairColors, rng, { ageGroup });
+    const hairTextureFamily = pickValue(category.hairTextures, rng, { ageGroup, gender });
+    const hairTexture = pickValue(
+        HAIR_TEXTURE_VALUES[hairTextureFamily] || HAIR_TEXTURE_FAMILIES,
+        rng
+    );
+    const hairStyleEntry = pickWeighted(category.hairStyles, rng, {
+        ageGroup,
+        gender,
+        texture: hairTextureFamily
+    });
+    const build = pickValue(category.builds, rng, { gender });
+    const distinctiveFeature = pickValue(category.distinctiveFeatures, rng, { skinGroup, gender });
+    const expression = pickValue(EXPRESSIONS, rng);
+    const name = pickName(rng, gender);
+
+    const identity = {
+        seed,
+        characterSeed: seed,
+        characterProfile: normalized,
+        appearanceCategory: appearanceKey,
+        name,
+        age,
+        ageGroup,
+        gender,
+        presentation,
+        skinTone,
+        skinGroup,
+        faceShape,
+        eyeColor,
+        eyeShape,
+        eyebrows,
+        hairColor,
+        hairTexture,
+        hairTextureFamily,
+        hairStyle: hairStyleEntry.value,
+        hairStyleType: hairStyleEntry.type || 'adj',
+        build,
+        distinctiveFeature,
+        expression
+    };
+    identity.signature = identitySignature(identity);
+    identity.identityText = formatIdentity(identity);
+    return identity;
+}
+
+// Reroll until the identity is not in `avoidSignatures` (bounded). A numeric
+// seed advances by attempt so rerolls actually change the result.
+function generateUniqueIdentity(input = Math.random, avoidSignatures = [], profile, maxAttempts) {
+    if (typeof profile === 'number') {
+        maxAttempts = profile;
+        profile = undefined;
+    }
+    const attempts = Number(maxAttempts) > 0 ? Number(maxAttempts) : 8;
+    const avoid = new Set((Array.isArray(avoidSignatures) ? avoidSignatures : []).map((value) => String(value || '')));
+    const numericSeed = typeof input === 'function' ? null : ((Number(input) >>> 0) || 1);
+    let identity = generateRandomIdentity(input, profile);
+    for (let attempt = 0; attempt < attempts && avoid.has(identity.signature); attempt++) {
+        identity = generateRandomIdentity(numericSeed === null ? input : numericSeed + attempt + 1, profile);
+    }
+    return identity;
+}
+
+// --- Merged catalog (introspection / tests) -----------------------------------
+
+function mergePool(key) {
+    const byValue = new Map();
+    for (const categoryKey of APPEARANCE_KEYS) {
+        for (const raw of toEntries(APPEARANCE_CATEGORIES[categoryKey][key] || [])) {
+            const value = raw.value;
+            if (!byValue.has(value)) {
+                byValue.set(value, Object.assign({}, raw));
+                continue;
+            }
+            const existing = byValue.get(value);
+            existing.weight = Math.max(Number(existing.weight) || 1, Number(raw.weight) || 1);
+            for (const tag of ['groups', 'skins', 'genders', 'textures', 'presentations']) {
+                if (Array.isArray(raw[tag])) {
+                    existing[tag] = Array.from(new Set((existing[tag] || []).concat(raw[tag])));
+                }
+            }
+        }
+    }
+    return Array.from(byValue.values());
+}
+
+const CHARACTER_TRAITS = {
+    ageGroups: AGE_GROUPS,
+    ageGroupWeights: AGE_GROUP_ENTRIES,
+    genders: GENDER_ENTRIES,
+    appearanceCategories: APPEARANCE_CATEGORIES,
+    appearanceKeys: APPEARANCE_KEYS,
+    skinTones: mergePool('skinTones'),
+    faceShapes: mergePool('faceShapes'),
+    eyeShapes: mergePool('eyeShapes'),
+    eyeColors: mergePool('eyeColors'),
+    eyebrows: mergePool('eyebrows'),
+    hairColors: mergePool('hairColors'),
+    hairTextures: mergePool('hairTextures'),
+    hairStyles: mergePool('hairStyles'),
+    builds: mergePool('builds'),
+    distinctiveFeatures: mergePool('distinctiveFeatures'),
+    expressions: EXPRESSIONS,
+    names: NAMES
+};
+
+module.exports = {
+    RANDOM,
+    AGE_KEYS,
+    GENDER_KEYS,
+    AGE_GROUPS,
+    GENDER_PRESENTATION,
+    APPEARANCE_KEYS,
+    APPEARANCE_CATEGORIES,
+    CHARACTER_TRAITS,
+    createRng,
+    normalizeProfile,
+    isRandomProfile,
+    sameProfile,
+    appearanceCategoryLabel,
+    listProfileOptions,
+    generateRandomIdentity,
+    generateUniqueIdentity,
+    formatIdentity,
+    formatAppearance,
+    formatHair,
+    formatEyes,
+    identitySignature
+};

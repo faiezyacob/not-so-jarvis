@@ -628,7 +628,12 @@ const Chat = (() => {
         const suggestion = (window.ChatSuggestions && typeof window.ChatSuggestions.extract === 'function')
             ? window.ChatSuggestions.extract(longParsed.text)
             : { text: longParsed.text, suggested: false };
-        contentEl.innerHTML = Markdown.parse(suggestion.text);
+        // Creative Playground concepts persist as a [[playground:{...}]] marker
+        // and render as an interactive concept card.
+        const playgroundParsed = (window.PlaygroundUI && typeof window.PlaygroundUI.extract === 'function')
+            ? window.PlaygroundUI.extract(suggestion.text)
+            : { text: suggestion.text, cards: [] };
+        contentEl.innerHTML = Markdown.parse(playgroundParsed.text);
         if (streaming) return;
         collapseUpscalePairs(contentEl);
         if (window.VideoPlayer && typeof window.VideoPlayer.scan === 'function') {
@@ -642,6 +647,9 @@ const Chat = (() => {
         }
         if (window.LongVideoUI && typeof window.LongVideoUI.render === 'function') {
             longParsed.cards.forEach((card) => window.LongVideoUI.render(contentEl, card));
+        }
+        if (window.PlaygroundUI && typeof window.PlaygroundUI.render === 'function') {
+            playgroundParsed.cards.forEach((card) => window.PlaygroundUI.render(contentEl, card));
         }
     }
 
@@ -731,6 +739,9 @@ const Chat = (() => {
         }
         if (window.LongVideoUI && typeof window.LongVideoUI.hydrate === 'function') {
             window.LongVideoUI.hydrate(chatMessagesEl, Conversations.currentId());
+        }
+        if (window.PlaygroundUI && typeof window.PlaygroundUI.hydrate === 'function') {
+            window.PlaygroundUI.hydrate(chatMessagesEl, Conversations.currentId());
         }
 
         chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
@@ -889,6 +900,7 @@ const Chat = (() => {
                     references: reference ? [reference.filename] : [],
                     directorAction: override && override.directorAction ? override.directorAction : undefined,
                     longVideoAction: override && override.longVideoAction ? override.longVideoAction : undefined,
+                    playgroundAction: override && override.playgroundAction ? override.playgroundAction : undefined,
                     forceDirector: (typeof ChatDirector !== 'undefined' && ChatDirector && ChatDirector.isOn()) ? true : undefined
                 }),
                 signal: activeStreamAbort.signal
@@ -1054,6 +1066,17 @@ const Chat = (() => {
                                 window.LongVideoUI.hydrate(chatMessagesEl, conversationId);
                             }
                         }
+                        if (data.playground) {
+                            cancelStreamRender();
+                            fullReply = data.playground.content;
+                            if (generatingEl) generatingEl.remove();
+                            setProgressTitle('');
+                            setAiContent(contentEl, data.playground.content);
+                            scrollActiveStream(aiMessageEl);
+                            if (window.PlaygroundUI && typeof window.PlaygroundUI.hydrate === 'function') {
+                                window.PlaygroundUI.hydrate(chatMessagesEl, conversationId);
+                            }
+                        }
                         if (data.chunk) {
                             if (generatingEl) generatingEl.remove();
                             setProgressTitle('');
@@ -1096,6 +1119,9 @@ const Chat = (() => {
                     if (window.LongVideoUI && typeof window.LongVideoUI.strip === 'function') {
                         spoken = window.LongVideoUI.strip(spoken);
                     }
+                    if (window.PlaygroundUI && typeof window.PlaygroundUI.strip === 'function') {
+                        spoken = window.PlaygroundUI.strip(spoken);
+                    }
                     if (window.ChatSuggestions && typeof window.ChatSuggestions.strip === 'function') {
                         spoken = window.ChatSuggestions.strip(spoken);
                     }
@@ -1128,6 +1154,14 @@ const Chat = (() => {
             activeMessageConversationId = null;
             setProgressTitle('');
             setSendingState(false);
+            // A concept card disables its buttons while an action is running.
+            // Re-apply the active concept after the turn settles so a card that
+            // just generated its image (or failed) becomes clickable again —
+            // e.g. to "Save as Character" once the result is visible.
+            if (window.PlaygroundUI && typeof window.PlaygroundUI.hydrate === 'function'
+                && chatMessagesEl.querySelector('.playground-card')) {
+                window.PlaygroundUI.hydrate(chatMessagesEl, conversationId);
+            }
         }
     }
 

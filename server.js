@@ -88,6 +88,8 @@ const taskState = require('./services/task-state');
 const generationQueue = require('./services/generation-queue');
 const director = require('./services/director/director');
 const longVideoDirector = require('./services/long-video/director');
+const playground = require('./services/playground/playground');
+const characterPresets = require('./services/character-presets');
 const GENERATED_DIR = path.join(__dirname, 'data', 'generated');
 const IMAGES_DIR = path.join(__dirname, 'data', 'images');
 const UPLOAD_MIME_TO_EXT = {
@@ -753,6 +755,78 @@ async function handleAPI(req, res, urlPath) {
         const conversationId = query.get('conversationId') || '';
         const plan = longVideoDirector.getPlan(conversationId);
         json(res, 200, { plan: plan || null });
+        return true;
+    }
+
+    // GET /api/playground/themes — the Creative Playground theme catalog
+    // (id + label only; the UI never hardcodes the catalog).
+    if (urlPath === '/api/playground/themes' && req.method === 'GET') {
+        json(res, 200, {
+            themes: playground.listThemes().map((t) => ({
+                id: t.id,
+                label: t.label,
+                description: t.description,
+                categories: Array.isArray(t.categories)
+                    ? t.categories.map((c) => ({ id: c.id, label: c.label }))
+                    : []
+            }))
+        });
+        return true;
+    }
+
+    // GET /api/playground/options — the independent character controls
+    // (appearance / age / gender) the generator understands. The UI never
+    // hardcodes the catalog.
+    if (urlPath === '/api/playground/options' && req.method === 'GET') {
+        json(res, 200, playground.listCharacterOptions());
+        return true;
+    }
+
+    // GET /api/playground/state — the active concept for a conversation, so the
+    // concept card keeps working after a reload.
+    if (urlPath === '/api/playground/state' && req.method === 'GET') {
+        const query = new URL(req.url, 'http://localhost').searchParams;
+        const conversationId = query.get('conversationId') || '';
+        const session = playground.getSession(conversationId);
+        json(res, 200, {
+            concept: session
+                ? playground.buildCard(session, playground.resolveCharacter(session.characterId))
+                : null
+        });
+        return true;
+    }
+
+    // GET /api/characters — saved character presets for the playground picker.
+    if (urlPath === '/api/characters' && req.method === 'GET') {
+        json(res, 200, { characters: characterPresets.list() });
+        return true;
+    }
+
+    // POST /api/characters — create ({ name, identity, appearance, hair, outfit,
+    // style }) or update ({ id, ... }) a character preset.
+    if (urlPath === '/api/characters' && req.method === 'POST') {
+        try {
+            const body = await readBody(req);
+            const preset = body && body.id
+                ? characterPresets.update(body.id, body)
+                : characterPresets.create(body);
+            if (!preset) {
+                json(res, 404, { error: 'Character preset not found' });
+                return true;
+            }
+            json(res, 200, { ok: true, character: preset });
+        } catch (err) {
+            json(res, 400, { error: err.message });
+        }
+        return true;
+    }
+
+    // DELETE /api/characters/:id — remove a saved character preset.
+    const characterDeleteMatch = urlPath.match(/^\/api\/characters\/([^/]+)$/);
+    if (characterDeleteMatch && req.method === 'DELETE') {
+        const id = decodeURIComponent(characterDeleteMatch[1]);
+        const removed = characterPresets.remove(id);
+        json(res, removed ? 200 : 404, { ok: removed });
         return true;
     }
 
@@ -1599,6 +1673,31 @@ async function handleChatStream(req, res) {
             return;
         }
 
+        // Creative Playground. Concept generation is deterministic (no LLM, no
+        // GPU), so a Surprise/Again/Modify/Save/Use-as-context action or a typed
+        // follow-up to an open concept is handled before any model loads. The
+        // Generate action hands the concept to the existing prompt builder and
+        // image pipeline below.
+        const requestedPlaygroundAction = playground.normalizeAction(body.playgroundAction);
+        if (requestedPlaygroundAction) {
+            await handlePlaygroundAction(req, res, { conversationId, provider, model, think }, requestedPlaygroundAction, message);
+            return;
+        }
+        const activePlayground = playground.getSession(conversationId);
+        if (activePlayground && playground.isOpen(activePlayground)) {
+            const playgroundDecision = playground.classifyMessage(message, activePlayground);
+            if (playgroundDecision) {
+                await handlePlaygroundAction(req, res, { conversationId, provider, model, think }, {
+                    type: playgroundDecision.action,
+                    locks: playgroundDecision.locks,
+                    changes: playgroundDecision.changes,
+                    reroll: playgroundDecision.reroll,
+                    conceptId: activePlayground.id
+                }, message);
+                return;
+            }
+        }
+
         // One side resident, always. Routing consults the Ollama chat model and
         // so does prompt building later in the turn, so free ComfyUI up front
         // before any of it runs. If the turn turns out to be a generation, the
@@ -2192,6 +2291,150 @@ async function handleChatStream(req, res) {
             res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
             res.end();
         }
+    }
+}
+
+// --- Creative Playground -----------------------------------------------------
+//
+// Concept discovery built on the existing image pipeline. Concept generation is
+// deterministic (theme catalog + character preset + locks); the final Krea2
+// prompt is still produced by imageGenerator.buildImagePrompt, so the concept is
+// creative direction, never a competing prompt builder.
+
+// Stream the persisted concept card and end the turn. `fullReply` carries the
+// marker so the client saves it and the card survives a reload.
+function emitPlaygroundCard(res, session) {
+    const character = playground.resolveCharacter(session.characterId);
+    const content = playground.renderContent(session, character);
+    sseWrite(res, {
+        playground: {
+            content,
+            status: session.status,
+            card: playground.buildCard(session, character)
+        }
+    });
+    res.end();
+}
+
+async function handlePlaygroundAction(req, res, ctx, action, rawMessage) {
+    const { conversationId, provider, model, think } = ctx;
+    let session = playground.getSession(conversationId);
+    try {
+        if (action.type === playground.ACTIONS.SURPRISE) {
+            session = playground.start({
+                conversationId,
+                themeId: action.themeId,
+                category: action.category,
+                characterId: action.characterId,
+                mode: action.mode,
+                locks: action.locks,
+                profile: action.profile
+            });
+            emitPlaygroundCard(res, session);
+            return;
+        }
+
+        if (!session) {
+            sseWrite(res, { error: 'Creative Playground \u2014 There is no active concept. Use Surprise Me to start one.' });
+            res.end();
+            return;
+        }
+        if (action.conceptId && action.conceptId !== session.id) {
+            sseWrite(res, { error: 'Creative Playground \u2014 That card belongs to an earlier concept. Use the newest one.' });
+            res.end();
+            return;
+        }
+
+        if (action.type === playground.ACTIONS.AGAIN) {
+            session = playground.again(session);
+            emitPlaygroundCard(res, session);
+            return;
+        }
+
+        if (action.type === playground.ACTIONS.MODIFY) {
+            const direction = String(action.direction || rawMessage || '').trim();
+            if (!direction) {
+                sseWrite(res, { error: 'Tell me how the concept should change.' });
+                res.end();
+                return;
+            }
+            const interpreted = playground.classifyMessage(direction, session);
+            const payload = (interpreted && interpreted.action === 'modify')
+                ? interpreted
+                : { locks: {}, changes: { customDirection: direction }, reroll: false };
+            session = playground.modify(session, payload);
+            emitPlaygroundCard(res, session);
+            return;
+        }
+
+        if (action.type === playground.ACTIONS.SAVE) {
+            const character = playground.resolveCharacter(session.characterId);
+            session = playground.save(session, character);
+            emitPlaygroundCard(res, session);
+            return;
+        }
+
+        if (action.type === playground.ACTIONS.USE_CONTEXT) {
+            const character = playground.resolveCharacter(session.characterId);
+            const text = playground.conceptText(session, character);
+            playground.markUsed(session);
+            sseWrite(res, { chunk: text });
+            sseWrite(res, { done: true, fullReply: text });
+            res.end();
+            return;
+        }
+
+        if (action.type === playground.ACTIONS.GENERATE) {
+            const request = playground.buildImageRequest(session);
+            if (!request) {
+                sseWrite(res, { error: 'Creative Playground \u2014 The concept is no longer available.' });
+                res.end();
+                return;
+            }
+            sseWrite(res, { generating: 'Creating the concept image\u2026' });
+            vramManager.rememberChatModel(provider, model);
+            await vramManager.freeVRAMBeforeChat();
+            const enhanced = await imageGenerator.buildImagePrompt(request, providers, provider, model, think);
+            const imagePrompt = enhanced ? enhanced.prompt : request.user_prompt;
+            const attributes = enhanced ? enhanced.attributes : null;
+            taskState.setTask(conversationId, {
+                type: 'image',
+                operation: 'generate',
+                prompt: imagePrompt,
+                originalPrompt: request.user_prompt,
+                lastAction: 'generate',
+                status: 'running',
+                parameters: Object.assign({}, taskState.getTask(conversationId).parameters, {
+                    creative_mode: request.creative_mode,
+                    explicit_constraints: request.explicit_constraints,
+                    attributes: attributes || null,
+                    playgroundId: session.id
+                })
+            });
+            playground.markUsed(session);
+            activityLog.record({
+                type: 'generation',
+                title: 'Creative Playground',
+                detail: session.concept && session.concept.title ? session.concept.title : 'Concept generated',
+                conversationId
+            });
+            await vramManager.freeVRAMBeforeImage();
+            await handleImageGenerationStream(req, res, {
+                provider, model, conversationId, message: rawMessage,
+                imagePrompt,
+                action: 'generate',
+                previousPrompt: null,
+                think
+            });
+            return;
+        }
+
+        sseWrite(res, { error: 'Unknown Creative Playground action.' });
+        res.end();
+    } catch (err) {
+        console.error('[playground] action failed:', err.message);
+        sseWrite(res, { error: 'Creative Playground \u2014 ' + err.message });
+        res.end();
     }
 }
 

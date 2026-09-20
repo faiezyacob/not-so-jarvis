@@ -829,6 +829,55 @@
                 </div>
                 <div class="chat-lora-hint">Applies to every IMAGE / VIDEO generation, the same as the Settings stacks. Adding only works while ComfyUI is reachable.</div>
             </div>
+            <div class="chat-playground-popup" id="chatPlaygroundPopup" hidden>
+                <div class="chat-playground-head">
+                    <span class="chat-playground-title">CREATIVE PLAYGROUND</span>
+                    <span class="chat-playground-sub">Surprise yourself</span>
+                </div>
+                <label class="settings-field-label" for="playgroundTheme">Theme</label>
+                <select class="settings-select" id="playgroundTheme"></select>
+                <div class="settings-field-label">Character</div>
+                <div class="playground-character-select" id="playgroundCharacter">
+                    <button class="playground-character-trigger" id="playgroundCharacterTrigger" type="button" aria-haspopup="listbox" aria-expanded="false">
+                        <span class="playground-character-value" id="playgroundCharacterValue">No character (general exploration)</span>
+                        <svg class="playground-character-caret" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="6 9 12 15 18 9"></polyline>
+                        </svg>
+                    </button>
+                    <div class="playground-character-menu" id="playgroundCharacterMenu" role="listbox" hidden></div>
+                </div>
+                <div class="settings-field-label">Character profile</div>
+                <div class="playground-profile-grid">
+                    <label class="playground-profile-field">
+                        <span>Appearance</span>
+                        <select class="settings-select" id="playgroundAppearance"></select>
+                    </label>
+                    <label class="playground-profile-field">
+                        <span>Age</span>
+                        <select class="settings-select" id="playgroundAge"></select>
+                    </label>
+                    <label class="playground-profile-field">
+                        <span>Gender</span>
+                        <select class="settings-select" id="playgroundGender"></select>
+                    </label>
+                </div>
+                <div class="settings-field-label">Lock attributes</div>
+                <div class="playground-locks-grid">
+                    <label class="playground-lock"><input type="checkbox" data-lock="identity"> Identity</label>
+                    <label class="playground-lock"><input type="checkbox" data-lock="appearance"> Face</label>
+                    <label class="playground-lock"><input type="checkbox" data-lock="hair"> Hair</label>
+                    <label class="playground-lock"><input type="checkbox" data-lock="outfit"> Outfit</label>
+                    <label class="playground-lock"><input type="checkbox" data-lock="style"> Style</label>
+                    <label class="playground-lock"><input type="checkbox" data-lock="environment"> Environment</label>
+                </div>
+                <button class="playground-submit" id="playgroundSurprise" type="button">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 3v4"></path><path d="M12 17v4"></path><path d="M3 12h4"></path><path d="M17 12h4"></path><path d="m5.6 5.6 2.8 2.8"></path><path d="m15.6 15.6 2.8 2.8"></path><path d="m18.4 5.6-2.8 2.8"></path><path d="m8.4 15.6-2.8 2.8"></path>
+                    </svg>
+                    <span>Surprise Me</span>
+                </button>
+                <div class="chat-playground-hint">Picks a character, theme and locked attributes, then proposes a concept — nothing generates until you choose.</div>
+            </div>
             <div class="chat-input-bar">
                 <input
                     type="file"
@@ -883,6 +932,11 @@
                         <path d="M3 11h18v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"></path>
                         <path d="m8 11 3 4"></path>
                         <path d="m14 11 3 4"></path>
+                    </svg>
+                </button>
+                <button class="chat-surprise" id="chatSurprise" aria-label="Creative Playground" aria-expanded="false" title="Creative Playground — Surprise Me">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 3v4"></path><path d="M12 17v4"></path><path d="M3 12h4"></path><path d="M17 12h4"></path><path d="m5.6 5.6 2.8 2.8"></path><path d="m15.6 15.6 2.8 2.8"></path><path d="m18.4 5.6-2.8 2.8"></path><path d="m8.4 15.6-2.8 2.8"></path>
                     </svg>
                 </button>
                 <button class="chat-mic" id="chatMic" aria-label="Start voice input" title="Voice input">
@@ -1071,9 +1125,10 @@
     <script src="js/model-switcher.js"></script>
     <script src="js/conversations.js"></script>
     <script src="js/director.js"></script>
-    <script src="js/long-video.js"></script>
-    <script src="js/chat-suggestions.js"></script>
-    <script src="js/chat.js"></script>
+<script src="js/long-video.js"></script>
+<script src="js/playground.js"></script>
+<script src="js/chat-suggestions.js"></script>
+<script src="js/chat.js"></script>
     <script src="js/voice-input.js"></script>
     <script src="js/voice-output.js"></script>
     <script src="js/chat-lora.js"></script>

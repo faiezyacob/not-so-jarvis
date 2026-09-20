@@ -41,16 +41,18 @@ function getRelevantMessages(conversationId, query) {
 // Director approval cards are persisted as a [[director:{...}]] marker inside
 // the assistant message. It is UI state, not conversation content, so strip it
 // before the message reaches the chat model. The same applies to the
-// [[longvideo:{...}]] storyboard marker and the [[prompt-suggestion]] marker
-// left by prompt-writing replies.
+// [[longvideo:{...}]] storyboard marker, the [[playground:{...}]] concept
+// marker, and the [[prompt-suggestion]] marker left by prompt-writing replies.
 const DIRECTOR_MARKER_RE = /\n*\[\[director:\{[^\n]*?\}\]\]/g;
 const LONG_VIDEO_MARKER_RE = /\n*\[\[longvideo:\{[^\n]*?\}\]\]/g;
+const PLAYGROUND_MARKER_RE = /\n*\[\[playground:\{[^\n]*?\}\]\]/g;
 const PROMPT_SUGGESTION_MARKER_RE = /\n*\[\[prompt-suggestion\]\]/g;
 
 function stripDirectorMarkers(content) {
     return String(content === undefined || content === null ? '' : content)
         .replace(DIRECTOR_MARKER_RE, '')
         .replace(LONG_VIDEO_MARKER_RE, '')
+        .replace(PLAYGROUND_MARKER_RE, '')
         .replace(PROMPT_SUGGESTION_MARKER_RE, '')
         .trim();
 }

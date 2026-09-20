@@ -2506,6 +2506,7 @@ async function bootApp() {
     if (window.VoiceOutput && typeof window.VoiceOutput.init === 'function') window.VoiceOutput.init();
     if (window.ChatLora && typeof window.ChatLora.init === 'function') window.ChatLora.init();
     if (window.ChatDirector && typeof window.ChatDirector.init === 'function') window.ChatDirector.init();
+    if (window.PlaygroundUI && typeof window.PlaygroundUI.init === 'function') window.PlaygroundUI.init();
     await Chat.refreshConversationList();
     renderActiveChat();
 }
