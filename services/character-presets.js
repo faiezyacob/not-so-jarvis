@@ -21,9 +21,13 @@ const PRESETS_PATH = process.env.CHARACTER_PRESETS_PATH || path.join(DATA_DIR, '
 // lockable attribute groups, so locking reuses the same values verbatim.
 // `appearanceCategory`/`appearanceCategoryLabel` preserve the demographic
 // appearance the person was drawn from so reusing the preset renders them.
+// `outfitPack`/`outfitPackCustom` preserve the character's wardrobe
+// personality (an Outfit Pack id, or the custom outfit text) so a saved
+// character keeps its wardrobe independently of its identity.
 const CHARACTER_FIELDS = [
     'identity', 'appearance', 'hair', 'outfit', 'style',
-    'appearanceCategory', 'appearanceCategoryLabel'
+    'appearanceCategory', 'appearanceCategoryLabel',
+    'outfitPack', 'outfitPackCustom'
 ];
 
 const MAX_FIELD_LENGTH = 600;

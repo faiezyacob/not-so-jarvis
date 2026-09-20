@@ -16,6 +16,7 @@ const characterGen = require('./character');
 const state = require('./state');
 const themes = require('./themes');
 const conceptEngine = require('./concept');
+const outfitPacks = require('./outfit-packs');
 
 const ACTIONS = {
     SURPRISE: 'surprise',
@@ -92,6 +93,11 @@ function buildCard(session, character) {
         // can be shown and reproduced.
         characterProfile: concept.characterProfile || session.characterProfile || null,
         characterSeed: concept.characterSeed || null,
+        // The active Outfit Pack (wardrobe personality) and any custom outfit, so
+        // the Surprise Me popover can reflect the open concept's wardrobe.
+        outfitPack: concept.outfitPack || '',
+        outfitPackLabel: concept.outfitPackLabel || '',
+        outfitPackCustom: concept.outfitPackCustom || '',
         title: concept.title || '',
         description: concept.description || '',
         concept: {
@@ -105,6 +111,9 @@ function buildCard(session, character) {
             name: concept.name || '',
             category: concept.category || '',
             outfit: concept.outfit || '',
+            outfitPack: concept.outfitPack || '',
+            outfitPackLabel: concept.outfitPackLabel || '',
+            outfitPackCustom: concept.outfitPackCustom || '',
             environment: concept.environment || '',
             activity: concept.activity || '',
             lighting: concept.lighting || '',
@@ -139,6 +148,7 @@ function conceptText(session, character) {
     if (c.appearance) lines.push('Appearance: ' + c.appearance);
     if (c.hair) lines.push('Hair: ' + c.hair);
     if (c.outfit) lines.push('Outfit: ' + c.outfit);
+    if (c.outfitPackLabel) lines.push('Outfit pack: ' + c.outfitPackLabel);
     if (c.category) lines.push('Category: ' + c.category);
     if (c.activity) lines.push('Activity: ' + c.activity);
     if (c.environment) lines.push('Environment: ' + c.environment);
@@ -179,6 +189,11 @@ function start(input = {}) {
         profile,
         // A new Surprise with "Random new character" always casts a new person.
         freshIdentity: mode === 'random_character',
+        // The Outfit Pack is a character attribute; it composes the specific
+        // outfit from the pack's wardrobe space.
+        outfitPack: input.outfitPack,
+        outfitPackCustom: input.outfitPackCustom,
+        contextText: input.contextText,
         avoidSignatures,
         avoidOutfitSignatures,
         previousOutfitArchetype: previousOutfitArchetype(previous),
@@ -192,6 +207,8 @@ function start(input = {}) {
         mode,
         characterId: character ? character.id : null,
         characterProfile: profile,
+        outfitPack: concept.outfitPack || '',
+        outfitPackCustom: concept.outfitPackCustom || '',
         locks: conceptEngine.normalizeLocks(input.locks),
         concept,
         status: STATUS.PREVIEW,
@@ -226,12 +243,19 @@ function again(session, options = {}) {
         locks: session.locks,
         previous: session.concept,
         profile,
+        // The pack persists across "Surprise Me Again" (it is a wardrobe
+        // personality) and recomposes a new specific outfit from it.
+        outfitPack: session.outfitPack,
+        outfitPackCustom: session.outfitPackCustom,
+        contextText: options.contextText,
         avoidSignatures,
         avoidOutfitSignatures,
         previousOutfitArchetype: session.concept && session.concept.outfitArchetype ? session.concept.outfitArchetype : '',
         rng: options.rng
     });
     session.concept = concept;
+    session.outfitPack = concept.outfitPack || '';
+    session.outfitPackCustom = concept.outfitPackCustom || '';
     rememberIdentity(session, concept);
     rememberOutfit(session, concept);
     session.status = STATUS.PREVIEW;
@@ -269,6 +293,22 @@ function modify(session, action = {}) {
     }
     delete changes.themeId;
 
+    // Outfit Pack changes arrive either from the popover (`action.outfitPack`)
+    // or from typed context ("make the outfit suitable for the gym"). A new pack
+    // is a true replacement: a complete outfit is composed from the new pack's
+    // wardrobe, never appended to the previous clothing.
+    const explicitPack = Object.prototype.hasOwnProperty.call(action, 'outfitPack') ? action.outfitPack : undefined;
+    const changePack = Object.prototype.hasOwnProperty.call(changes, 'outfitPack') ? changes.outfitPack : undefined;
+    const explicitCustom = action.outfitPackCustom;
+    const changeCustom = changes.outfitPackCustom;
+    delete changes.outfitPack;
+    delete changes.outfitPackCustom;
+    const packProvided = explicitPack !== undefined || changePack !== undefined;
+    const requestedPack = String(explicitPack !== undefined ? explicitPack : (changePack !== undefined ? changePack : '')).trim();
+    const requestedCustom = String(explicitCustom || changeCustom || '').trim();
+    const effectivePack = packProvided ? requestedPack : (session.outfitPack || '');
+    const effectiveCustom = packProvided ? requestedCustom : (session.outfitPackCustom || '');
+
     // Explicit character-control changes merge onto the session's profile. A
     // changed profile invalidates the current identity (the person no longer
     // matches the constraints) and casts a new one; untouched controls never
@@ -303,9 +343,34 @@ function modify(session, action = {}) {
     } else {
         concept = conceptEngine.applyChanges(session.concept, changes);
     }
+    // Recompose only when the pack actually changed or the scenario was
+    // re-rolled — a scene-only tweak keeps the exact outfit (applyChanges).
+    if (effectivePack && (packProvided || reroll)) {
+        concept = conceptEngine.applyOutfitPack(concept, {
+            packId: effectivePack,
+            customText: effectiveCustom,
+            rng: action.rng,
+            // A locked outfit is preserved; the pack is recorded as metadata only.
+            preserve: Boolean(locks.outfit && concept.outfit),
+            gender: concept.identity && concept.identity.gender ? concept.identity.gender : '',
+            avoidSignatures: Array.isArray(session.outfitSignatures) ? session.outfitSignatures : [],
+            previousArchetype: concept.outfitArchetype || '',
+            avoidLayers: (() => {
+                const context = action.direction ? outfitPacks.contextModifiers(action.direction) : null;
+                return Boolean(context && context.warm && !context.cold);
+            })()
+        });
+    } else if (packProvided && !effectivePack) {
+        // The pack was explicitly cleared; keep the clothing but drop the metadata.
+        concept.outfitPack = '';
+        concept.outfitPackLabel = '';
+        concept.outfitPackCustom = '';
+    }
     rememberOutfit(session, concept);
     session.locks = locks;
     session.characterProfile = requestedProfile;
+    session.outfitPack = concept.outfitPack || '';
+    session.outfitPackCustom = concept.outfitPackCustom || '';
     session.concept = concept;
     session.status = STATUS.PREVIEW;
     session.updatedAt = new Date().toISOString();
@@ -400,6 +465,10 @@ function normalizeAction(value) {
         if (value.locks) out.locks = value.locks;
         if (value.changes) out.changes = value.changes;
         if (value.reroll) out.reroll = true;
+        // Outfit Pack selection (a pack id, or `custom` with a text override).
+        if (typeof value.outfitPack === 'string') out.outfitPack = value.outfitPack;
+        if (typeof value.outfitPackCustom === 'string') out.outfitPackCustom = value.outfitPackCustom;
+        else if (typeof value.customOutfit === 'string') out.outfitPackCustom = value.customOutfit;
         // Character controls may arrive nested or flat; merge both shapes.
         const profile = {};
         if (value.profile && typeof value.profile === 'object') Object.assign(profile, value.profile);
@@ -421,6 +490,7 @@ module.exports = {
     conceptText,
     themeLabel,
     listThemes: themes.listThemes,
+    listOutfitPacks: outfitPacks.listPacks,
     getSession: state.getSession,
     removeSession: state.removeSession,
     listSaved: state.listSaved,

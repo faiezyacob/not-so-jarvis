@@ -148,6 +148,7 @@ const PlaygroundUI = (() => {
             detailRow('Category', c.category),
             detailRow('Activity', c.activity),
             detailRow('Outfit', c.outfit),
+            detailRow('Outfit pack', c.outfitPackLabel),
             detailRow('Environment', c.environment),
             detailRow('Lighting', c.lighting),
             detailRow('Camera', c.camera),
@@ -232,7 +233,12 @@ const PlaygroundUI = (() => {
                         outfit: c.outfit || '',
                         style: c.style || '',
                         appearanceCategory: c.appearanceCategory || '',
-                        appearanceCategoryLabel: c.appearanceCategoryLabel || ''
+                        appearanceCategoryLabel: c.appearanceCategoryLabel || '',
+                        // A character's wardrobe personality is saved with the
+                        // identity so the pack can be reused (and re-composed)
+                        // without regenerating the person.
+                        outfitPack: c.outfitPack || '',
+                        outfitPackCustom: c.outfitPackCustom || ''
                     })
                 });
                 if (!res.ok) throw new Error('request failed');
@@ -303,6 +309,32 @@ const PlaygroundUI = (() => {
     let genderSelect = null;
     let characterCache = null;
     let profileOptions = null;
+    let outfitPacksEl = null;
+    let outfitCustomEl = null;
+    let outfitPackCache = null;
+    // '', a pack id, or 'custom' — an Outfit Pack is a replaceable character
+    // attribute, so the popover tracks it alongside the character controls.
+    let outfitPackChoice = '';
+    let outfitCustomText = '';
+
+    const SWATCHES = {
+        white: '#f4f4f2', cream: '#f0e6d2', beige: '#e3d5bd', sand: '#e6d3a7',
+        grey: '#9aa0a6', charcoal: '#3c4043', black: '#1b1b1b', navy: '#1f2a44',
+        blue: '#4a7fc1', pale: '#d7e4f0', olive: '#6b7043', sage: '#a3b18a',
+        green: '#7d9b76', pink: '#e8b4c4', blush: '#ecc9d0', burgundy: '#6d2233',
+        brown: '#7a5230', taupe: '#b0a294', denim: '#4f6a92', earth: '#8a6f4e',
+        warm: '#d8c3a5', neutral: '#d8d2c8', metallic: '#b8b0a0', washed: '#8a94a6',
+        muted: '#b6ac9c', soft: '#d9cfc4', dark: '#4a4a4a'
+    };
+
+    function swatchColor(name) {
+        const key = String(name || '').toLowerCase();
+        if (SWATCHES[key]) return SWATCHES[key];
+        for (const token of Object.keys(SWATCHES)) {
+            if (key.includes(token)) return SWATCHES[token];
+        }
+        return '#c9c4bd';
+    }
 
     async function loadCharacters(force) {
         if (characterCache && !force) return characterCache;
@@ -340,6 +372,92 @@ const PlaygroundUI = (() => {
             profileOptions = { appearance: [], age: [], gender: [] };
         }
         return profileOptions;
+    }
+
+    async function loadOutfitPacks() {
+        if (outfitPackCache) return outfitPackCache;
+        try {
+            const res = await fetch('/api/playground/outfits');
+            const data = await res.json();
+            outfitPackCache = Array.isArray(data.packs) ? data.packs : [];
+        } catch (e) {
+            outfitPackCache = [];
+        }
+        return outfitPackCache;
+    }
+
+    function outfitCard(id, label, description, palette) {
+        const card = document.createElement('button');
+        card.type = 'button';
+        card.className = 'playground-outfit-card';
+        card.setAttribute('data-pack', id);
+        if (id === outfitPackChoice) card.classList.add('playground-outfit-card--active');
+
+        const name = document.createElement('span');
+        name.className = 'playground-outfit-name';
+        name.textContent = label;
+        card.appendChild(name);
+
+        if (description) {
+            const desc = document.createElement('span');
+            desc.className = 'playground-outfit-desc';
+            desc.textContent = description;
+            card.appendChild(desc);
+        }
+        if (Array.isArray(palette) && palette.length) {
+            const dots = document.createElement('span');
+            dots.className = 'playground-outfit-palette';
+            palette.slice(0, 6).forEach((color) => {
+                const dot = document.createElement('span');
+                dot.className = 'playground-outfit-dot';
+                dot.style.background = swatchColor(color);
+                dot.title = color;
+                dots.appendChild(dot);
+            });
+            card.appendChild(dots);
+        }
+
+        card.addEventListener('click', (e) => {
+            e.stopPropagation();
+            setOutfitPack(id);
+        });
+        return card;
+    }
+
+    function renderOutfitPacks() {
+        if (!outfitPacksEl) return;
+        outfitPacksEl.innerHTML = '';
+        outfitPacksEl.appendChild(outfitCard('', 'None', 'Let the theme choose the clothing.', []));
+        (outfitPackCache || []).forEach((pack) => {
+            outfitPacksEl.appendChild(outfitCard(pack.id, pack.label, pack.description, pack.palette));
+        });
+        outfitPacksEl.appendChild(outfitCard('custom', 'Custom', 'Describe the exact outfit yourself.', []));
+        syncOutfitCustom();
+    }
+
+    function setOutfitPack(id) {
+        outfitPackChoice = id || '';
+        if (outfitPacksEl) {
+            outfitPacksEl.querySelectorAll('.playground-outfit-card').forEach((el) => {
+                el.classList.toggle('playground-outfit-card--active', el.getAttribute('data-pack') === outfitPackChoice);
+            });
+        }
+        syncOutfitCustom();
+    }
+
+    function syncOutfitCustom() {
+        if (!outfitCustomEl) return;
+        const custom = outfitPackChoice === 'custom';
+        outfitCustomEl.hidden = !custom;
+        if (custom && !outfitCustomEl.value && outfitCustomText) outfitCustomEl.value = outfitCustomText;
+    }
+
+    function selectedOutfit() {
+        const custom = outfitPackChoice === 'custom';
+        return {
+            outfitPack: outfitPackChoice || '',
+            outfitPackCustom: custom && outfitCustomEl ? String(outfitCustomEl.value || '').trim() : ''
+        };
     }
 
     function fillSelect(select, items, placeholder) {
@@ -500,6 +618,8 @@ const PlaygroundUI = (() => {
         fillSelect(appearanceSelect, options.appearance, '');
         fillSelect(ageSelect, options.age, '');
         fillSelect(genderSelect, options.gender, '');
+        await loadOutfitPacks();
+        renderOutfitPacks();
         applyActiveConcept(await loadActiveConcept());
         updateLockAvailability();
     }
@@ -537,6 +657,12 @@ const PlaygroundUI = (() => {
             if (ageSelect) ageSelect.value = concept.characterProfile.age;
             if (genderSelect) genderSelect.value = concept.characterProfile.gender;
         }
+        // Reflect the active Outfit Pack so a pinned wardrobe is visible and
+        // clearable before the next Surprise.
+        outfitPackChoice = concept.outfitPack || '';
+        outfitCustomText = concept.outfitPackCustom || '';
+        if (outfitCustomEl) outfitCustomEl.value = outfitCustomText;
+        renderOutfitPacks();
         const locks = concept.locks || {};
         popupEl.querySelectorAll('.playground-lock input[type="checkbox"]').forEach((box) => {
             box.checked = locks[box.getAttribute('data-lock')] === true;
@@ -610,6 +736,7 @@ const PlaygroundUI = (() => {
             mode = 'random_character';
         }
         const locks = selectedLocks();
+        const outfit = selectedOutfit();
         close();
         send('Surprise me with a creative concept', {
             type: 'surprise',
@@ -617,7 +744,9 @@ const PlaygroundUI = (() => {
             characterId,
             mode,
             locks,
-            profile
+            profile,
+            outfitPack: outfit.outfitPack,
+            outfitPackCustom: outfit.outfitPackCustom
         });
     }
 
@@ -651,6 +780,8 @@ const PlaygroundUI = (() => {
         appearanceSelect = document.getElementById('playgroundAppearance');
         ageSelect = document.getElementById('playgroundAge');
         genderSelect = document.getElementById('playgroundGender');
+        outfitPacksEl = document.getElementById('playgroundOutfitPacks');
+        outfitCustomEl = document.getElementById('playgroundOutfitCustom');
         const submitBtn = document.getElementById('playgroundSurprise');
 
         buttonEl.addEventListener('click', (e) => {

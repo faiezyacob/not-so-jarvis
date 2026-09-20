@@ -12,6 +12,7 @@
 
 const { getTheme, pickScenario, pickAspectRatio, outfitSignature } = require('./themes');
 const identityGen = require('./character');
+const outfitPacks = require('./outfit-packs');
 
 // Lockable attribute groups. Each group maps to the concept/character field it
 // freezes during randomization.
@@ -82,6 +83,80 @@ function finalize(concept, theme) {
     return concept;
 }
 
+// --- Outfit Packs ------------------------------------------------------------
+//
+// An Outfit Pack is a first-class, replaceable wardrobe attribute: selecting one
+// composes a fresh, specific outfit from the pack's wardrobe space (replacing,
+// never appending to, any previous clothing) while identity / face / hair /
+// body / skin stay untouched. A locked outfit is the exception — the exact
+// clothing is preserved and only the pack metadata is recorded.
+
+function conceptGender(concept, character) {
+    if (concept && concept.identity && concept.identity.gender) return concept.identity.gender;
+    if (character && character.gender) return character.gender;
+    return '';
+}
+
+function applyOutfitPack(concept, options = {}) {
+    if (!concept) return concept;
+    const packId = outfitPacks.normalizePackId(options.packId);
+    if (!packId) return concept;
+    const custom = packId === outfitPacks.CUSTOM_PACK_ID;
+    const customText = String(options.customText || '').trim();
+    if (custom && !customText) return concept;
+    const pack = custom ? null : outfitPacks.getPack(packId);
+    if (!custom && !pack) return concept;
+
+    concept.outfitPack = packId;
+    concept.outfitPackLabel = custom ? outfitPacks.CUSTOM_PACK_LABEL : pack.label;
+    concept.outfitPackCustom = custom ? customText : '';
+
+    // A locked outfit is already the source of truth; keep the exact clothing.
+    if (options.preserve && concept.outfit) return concept;
+
+    if (custom) {
+        concept.outfit = customText;
+        concept.outfitComponents = null;
+        concept.outfitArchetype = 'custom';
+        concept.outfitSilhouette = '';
+        concept.outfitSignature = outfitSignature(customText);
+        return concept;
+    }
+
+    const composed = outfitPacks.composeFromPack(packId, options.rng || Math.random, {
+        avoidSignatures: options.avoidSignatures,
+        previousArchetype: options.previousArchetype,
+        gender: options.gender,
+        avoidLayers: options.avoidLayers
+    });
+    if (!composed.outfit) return concept;
+    concept.outfit = composed.outfit;
+    concept.outfitSignature = composed.signature;
+    concept.outfitArchetype = composed.archetype;
+    concept.outfitSilhouette = composed.silhouette;
+    concept.outfitComponents = composed.components;
+    return concept;
+}
+
+// Resolve which pack (if any) a concept should use. Explicit selection wins,
+// then the character preset's wardrobe personality, then context wording.
+function resolveOutfitPack(input = {}, character) {
+    let packId = outfitPacks.normalizePackId(input.outfitPack);
+    let customText = String(input.outfitPackCustom || input.customOutfit || '').trim();
+    if (!packId && character) {
+        const characterPack = outfitPacks.normalizePackId(character.outfitPack);
+        if (characterPack) {
+            packId = characterPack;
+            customText = String(character.outfitPackCustom || '').trim();
+        }
+    }
+    if (!packId && input.contextText) {
+        const detected = outfitPacks.detectOutfitPackFromText(input.contextText);
+        if (detected) packId = detected;
+    }
+    return { packId, customText };
+}
+
 // Assemble a fresh concept from a theme + character + locks. Randomization
 // never alters a locked group: locked values are copied from the character
 // preset when present, otherwise from the previous concept.
@@ -127,6 +202,12 @@ function assembleConcept(input = {}) {
         outfitSignature: scenario.outfitSignature || '',
         outfitArchetype: scenario.outfitArchetype || '',
         outfitSilhouette: scenario.outfitSilhouette || '',
+        // The Outfit Pack (wardrobe personality) that produced the clothing, the
+        // composed pieces, and the user-defined outfit when the pack is Custom.
+        outfitPack: '',
+        outfitPackLabel: '',
+        outfitPackCustom: '',
+        outfitComponents: null,
         environment: scenario.environment || '',
         activity: scenario.activity || '',
         lighting: scenario.lighting || '',
@@ -217,6 +298,23 @@ function assembleConcept(input = {}) {
     if (locks.environment && previous && previous.environment) {
         concept.environment = previous.environment;
     }
+
+    // Outfit Pack: compose the specific outfit from the selected pack's wardrobe
+    // space. A locked outfit wins, so only the pack metadata is recorded then.
+    const resolvedPack = resolveOutfitPack(input, character);
+    if (resolvedPack.packId) {
+        const context = input.contextText ? outfitPacks.contextModifiers(input.contextText) : null;
+        applyOutfitPack(concept, {
+            packId: resolvedPack.packId,
+            customText: resolvedPack.customText,
+            preserve: Boolean(locks.outfit && concept.outfit),
+            rng,
+            gender: conceptGender(concept, character),
+            avoidSignatures: input.avoidOutfitSignatures,
+            previousArchetype: input.previousOutfitArchetype,
+            avoidLayers: Boolean(context && context.warm && !context.cold)
+        });
+    }
     concept.outfitSignature = concept.outfit ? outfitSignature(concept.outfit) : (concept.outfitSignature || '');
 
     return finalize(concept, theme);
@@ -237,8 +335,15 @@ function applyChanges(concept, changes) {
         if (typeof value === 'string' && value.trim()) next[field] = value.trim();
     }
     if (typeof src.outfit === 'string' && src.outfit.trim()) {
+        // An explicitly named outfit is a custom replacement: the user defined
+        // the clothing, so it overrides any pack composition.
         next.outfitSignature = outfitSignature(next.outfit);
-        next.outfitArchetype = '';
+        next.outfitArchetype = 'custom';
+        next.outfitSilhouette = '';
+        next.outfitComponents = null;
+        next.outfitPack = outfitPacks.CUSTOM_PACK_ID;
+        next.outfitPackLabel = outfitPacks.CUSTOM_PACK_LABEL;
+        next.outfitPackCustom = next.outfit;
     }
     if (typeof src.customDirection === 'string' && src.customDirection.trim()) {
         next.customDirection = src.customDirection.trim();
@@ -387,6 +492,20 @@ function detectChanges(text, options = {}) {
             }
         }
     }
+    // Outfit Pack changes: "custom outfit: <text>" names an exact outfit; any
+    // other contextual wording (gym, beach, office, night out …) selects a pack.
+    const customMatch = text.match(/\bcustom\s+outfit\b\s*[:\-]?\s*(.+)$/i);
+    if (customMatch && customMatch[1].trim()) {
+        changes.outfitPack = outfitPacks.CUSTOM_PACK_ID;
+        changes.outfitPackCustom = customMatch[1].trim();
+    } else if (changes.outfit) {
+        // Explicitly named clothing (e.g. "a red dress") is a custom replacement.
+        changes.outfitPack = outfitPacks.CUSTOM_PACK_ID;
+        changes.outfitPackCustom = changes.outfit;
+    } else {
+        const pack = outfitPacks.detectOutfitPackFromText(text);
+        if (pack) changes.outfitPack = pack;
+    }
     return changes;
 }
 
@@ -432,6 +551,8 @@ function conceptToDirection(concept) {
     if (c.appearance) lines.push('Facial appearance: ' + c.appearance + '.');
     if (c.hair) lines.push('Hair and physical appearance: ' + c.hair + '.');
     if (c.outfit) lines.push('Outfit: ' + c.outfit + '.');
+    if (c.outfitPackLabel) lines.push('Outfit pack (wardrobe personality): ' + c.outfitPackLabel + '.');
+    if (c.outfitPackCustom) lines.push('Requested custom outfit: ' + c.outfitPackCustom + '.');
     if (c.activity) lines.push('Character activity: ' + c.activity + '.');
     if (c.environment) lines.push('Environment: ' + c.environment + '.');
     if (c.category) lines.push('Social-media category: ' + c.category + '.');
@@ -477,6 +598,8 @@ module.exports = {
     randomIdentity,
     assembleConcept,
     applyChanges,
+    applyOutfitPack,
+    resolveOutfitPack,
     interpretContextMessage,
     detectChanges,
     conceptToDirection,

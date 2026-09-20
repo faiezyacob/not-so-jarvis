@@ -782,6 +782,13 @@ async function handleAPI(req, res, urlPath) {
         return true;
     }
 
+    // GET /api/playground/outfits — the Outfit Pack catalog (wardrobe
+    // personalities). The UI never hardcodes the catalog.
+    if (urlPath === '/api/playground/outfits' && req.method === 'GET') {
+        json(res, 200, { packs: playground.listOutfitPacks() });
+        return true;
+    }
+
     // GET /api/playground/state — the active concept for a conversation, so the
     // concept card keeps working after a reload.
     if (urlPath === '/api/playground/state' && req.method === 'GET') {
@@ -2328,7 +2335,9 @@ async function handlePlaygroundAction(req, res, ctx, action, rawMessage) {
                 characterId: action.characterId,
                 mode: action.mode,
                 locks: action.locks,
-                profile: action.profile
+                profile: action.profile,
+                outfitPack: action.outfitPack,
+                outfitPackCustom: action.outfitPackCustom
             });
             emitPlaygroundCard(res, session);
             return;
@@ -2362,6 +2371,10 @@ async function handlePlaygroundAction(req, res, ctx, action, rawMessage) {
             const payload = (interpreted && interpreted.action === 'modify')
                 ? interpreted
                 : { locks: {}, changes: { customDirection: direction }, reroll: false };
+            // An explicit pack selection from the popover wins over interpretation.
+            if (action.outfitPack !== undefined) payload.outfitPack = action.outfitPack;
+            if (action.outfitPackCustom !== undefined) payload.outfitPackCustom = action.outfitPackCustom;
+            payload.direction = direction;
             session = playground.modify(session, payload);
             emitPlaygroundCard(res, session);
             return;

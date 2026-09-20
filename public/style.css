@@ -5749,6 +5749,72 @@ a.modal-btn {
     min-width: 0;
 }
 
+.playground-outfit-packs {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 148px;
+    overflow-y: auto;
+    padding-right: 2px;
+}
+
+.playground-outfit-card {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    width: 100%;
+    padding: 6px 9px;
+    text-align: left;
+    background: var(--bg-input);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-family: inherit;
+    cursor: pointer;
+    transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.playground-outfit-card:hover {
+    border-color: var(--border-focus);
+}
+
+.playground-outfit-card--active {
+    border-color: var(--accent);
+    background: var(--accent-faint);
+}
+
+.playground-outfit-name {
+    font-size: var(--fs-sm);
+    font-weight: 600;
+}
+
+.playground-outfit-card--active .playground-outfit-name {
+    color: var(--accent);
+}
+
+.playground-outfit-desc {
+    font-size: var(--fs-2xs);
+    line-height: 1.35;
+    color: var(--text-dim);
+}
+
+.playground-outfit-palette {
+    display: flex;
+    gap: 3px;
+    margin-top: 2px;
+}
+
+.playground-outfit-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+}
+
+.playground-outfit-custom {
+    width: 100%;
+}
+
 .playground-locks-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
