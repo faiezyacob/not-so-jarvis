@@ -62,54 +62,6 @@ const THEMES = [
         ]
     },
     {
-        id: 'lifestyle-candid',
-        label: 'Lifestyle & Candid',
-        description: 'Warm, everyday moments captured as if they were never posed.',
-        aspectRatios: ['1:1', '4:5', '16:9'],
-        environments: [
-            'a sunlit kitchen with a half-drunk cup of coffee',
-            'a lived-in living room with linen and houseplants',
-            'a neighbourhood café beside a rain-speckled window',
-            'a balcony overlooking quiet rooftops at golden hour',
-            'a bookshop aisle between tall wooden shelves'
-        ],
-        activities: [
-            'laughing mid-conversation',
-            'reaching for a warm mug with both hands',
-            'reading with an elbow propped on a table',
-            'stretching after waking, still half in the duvet',
-            'walking a dog down a leafy street'
-        ],
-        outfits: [
-            'an oversized knit sweater and soft denim',
-            'a simple linen shirt with the sleeves rolled up',
-            'relaxed loungewear in warm neutrals',
-            'a light summer dress with sandals',
-            'a casual button-up over a plain tee'
-        ],
-        lighting: [
-            'warm window light with soft shadows',
-            'gentle golden-hour glow through curtains',
-            'bright diffused daylight on an overcast afternoon',
-            'dappled light through leaves',
-            'the warm pool of a single table lamp at dusk'
-        ],
-        cameras: [
-            'candid 35mm framing at eye level',
-            'over-the-shoulder documentary composition',
-            'loose medium shot that includes the room',
-            'close, intimate framing with a shallow depth of field',
-            'handheld-feeling frame with natural imperfections'
-        ],
-        moods: ['warm', 'unguarded', 'content', 'playful', 'cosy'],
-        styles: [
-            'documentary lifestyle photography',
-            'natural light 35mm film look',
-            'soft editorial lifestyle imagery',
-            'Instagram-natural candid photography'
-        ]
-    },
-    {
         id: 'travel-adventure',
         label: 'Travel & Adventure',
         description: 'Expansive destinations, motion, and the romance of being elsewhere.',
@@ -654,18 +606,43 @@ const THEMES = [
         ]
     },
     {
-        // Casual social-media photography. The vocabulary stays deliberately
-        // "phone-camera" and unposed — no editorial/stock-photo language — so
-        // the result reads like a believable personal post. Subcategories are
-        // data-only bundles; add one by adding a `categories` entry below.
-        id: 'instagram-lifestyle',
-        label: 'Instagram Lifestyle',
-        description: 'Casual social-media photography — selfies, mirror selfies, outfit checks, everyday moments, and spontaneous personal photos.',
-        aspectRatios: ['4:5', '9:16', '1:1'],
+        // Warm, everyday photography — candid moments, selfies, mirror selfies,
+        // outfit checks and spontaneous personal photos. The vocabulary stays
+        // deliberately "phone-camera" and unposed — no editorial/stock-photo
+        // language — so the result reads like a believable personal post.
+        // Subcategories are data-only bundles; add one by adding a `categories`
+        // entry below. Outfits are assembled from `outfitSystem` below so the
+        // combination space is much larger than the flat `outfits` list.
+        id: 'lifestyle-candid',
+        label: 'Lifestyle & Candid',
+        description: 'Warm, everyday moments captured as if they were never posed — selfies, mirror selfies, outfit checks, and spontaneous personal photos.',
+        aspectRatios: ['1:1', '4:5', '16:9', '9:16'],
+        // Theme-level fallback pools. Subcategories supply their own
+        // environment/activity/camera/composition; these cover the rest and are
+        // flattened into the "Anything" theme.
+        environments: [
+            'a sunlit kitchen with a half-drunk cup of coffee',
+            'a lived-in living room with linen and houseplants',
+            'a neighbourhood café beside a rain-speckled window',
+            'a balcony overlooking quiet rooftops at golden hour',
+            'a bookshop aisle between tall wooden shelves'
+        ],
+        activities: [
+            'laughing mid-conversation',
+            'reaching for a warm mug with both hands',
+            'reading with an elbow propped on a table',
+            'stretching after waking, still half in the duvet',
+            'walking a dog down a leafy street'
+        ],
         // A curated fallback pool (also flattened into the "Anything" theme).
         // Within this theme outfits are assembled from `outfitSystem` below so
         // the combination space is much larger than this list.
         outfits: [
+            'an oversized knit sweater and soft denim',
+            'a simple linen shirt with the sleeves rolled up',
+            'relaxed loungewear in warm neutrals',
+            'a light summer dress with sandals',
+            'a casual button-up over a plain tee',
             'a fitted T-shirt with straight-leg jeans',
             'an oversized T-shirt with wide-leg jeans',
             'a baby tee with relaxed jeans',
@@ -732,7 +709,7 @@ const THEMES = [
         outfitSystem: {
             // Everyday-casual dominates: separates are the default look, one-piece
             // dresses are common, and a layered (outerwear) look is the exception,
-            // so ordinary Instagram photos often have no outerwear at all.
+            // so ordinary casual photos often have no outerwear at all.
             archetypes: [
                 { id: 'separates', requires: ['tops', 'bottoms'], weight: 6 },
                 { id: 'one-piece', requires: ['onePieces'], weight: 2.5 },
@@ -917,23 +894,40 @@ const THEMES = [
                 ]
             }
         },
+        cameras: [
+            'candid 35mm framing at eye level',
+            'over-the-shoulder documentary composition',
+            'loose medium shot that includes the room',
+            'close, intimate framing with a shallow depth of field',
+            'handheld-feeling frame with natural imperfections'
+        ],
         lighting: [
             'soft natural window light',
+            'warm window light with soft shadows',
+            'gentle golden-hour glow through curtains',
+            'bright diffused daylight on an overcast afternoon',
+            'dappled light through leaves',
+            'the warm pool of a single table lamp at dusk',
             'warm afternoon daylight',
             'bright overcast daylight',
             'everyday indoor lighting',
             'warm lamp light in the evening',
             'the ambient light of a cafe'
         ],
-        moods: ['relaxed', 'playful', 'effortless', 'warm', 'spontaneous', 'low-key', 'cheerful', 'cosy'],
+        moods: ['relaxed', 'playful', 'effortless', 'warm', 'spontaneous', 'low-key', 'cheerful', 'cosy',
+            'unguarded', 'content'],
         styles: [
             'authentic phone-camera photo, casual and unposed',
             'everyday smartphone snapshot',
             'natural social-media photo with small imperfections',
             'candid personal photo, straight off a phone',
-            'relaxed lifestyle photo posted to social media'
+            'relaxed lifestyle photo posted to social media',
+            'documentary lifestyle photography',
+            'natural light 35mm film look',
+            'soft editorial lifestyle imagery',
+            'Instagram-natural candid photography'
         ],
-        // Positive, casual guidance appended to every Instagram concept so the
+        // Positive, casual guidance appended to every Lifestyle & Candid concept so the
         // image never drifts toward a professional photoshoot.
         constraints: [
             'Shoot like an everyday phone snapshot: casual, unposed and natural',
@@ -1077,7 +1071,7 @@ const THEMES = [
 // The "Anything" theme is a meta-theme: it draws from every other theme's pools
 // so the user can ask for a surprise without narrowing the direction first.
 // Category-level pools are flattened too, so subcategory ingredients (e.g. the
-// Instagram vocabulary) are available to the broadest surprise.
+// Lifestyle & Candid vocabulary) are available to the broadest surprise.
 const POOL_KEYS = ['environments', 'activities', 'outfits', 'lighting', 'cameras', 'compositions', 'moods', 'styles'];
 
 function buildAnythingTheme() {
@@ -1111,6 +1105,12 @@ function buildAnythingTheme() {
 
 const ANYTHING = buildAnythingTheme();
 
+// Legacy theme ids kept so persisted concepts/presets from before the
+// Lifestyle & Candid merge still resolve to the merged theme.
+const THEME_ALIASES = {
+    'instagram-lifestyle': 'lifestyle-candid'
+};
+
 function listThemes() {
     return [ANYTHING].concat(THEMES);
 }
@@ -1118,7 +1118,7 @@ function listThemes() {
 function getTheme(id) {
     const key = String(id || '').trim();
     if (!key || key === ANYTHING_ID) return ANYTHING;
-    return THEMES.find((t) => t.id === key) || ANYTHING;
+    return THEMES.find((t) => t.id === (THEME_ALIASES[key] || key)) || ANYTHING;
 }
 
 // Scenario bundles: when a theme declares `scenes`, each entry is a compatible
@@ -1146,7 +1146,7 @@ function resolveCategory(theme, categoryRef) {
 
 // --- Component-based outfit composition ---------------------------------------
 //
-// Themes may declare an `outfitSystem` (currently Instagram Lifestyle) whose
+// Themes may declare an `outfitSystem` (currently Lifestyle & Candid) whose
 // `components` are reusable wardrobe pieces tagged for the subcategories they
 // suit. Composing a look from these keeps the catalog small while producing a
 // large, believable combination space, and keeps outfits character-agnostic:
@@ -1171,7 +1171,7 @@ function eligibleComponents(list, allowedTags) {
 }
 
 // Optional entry weight (`weight`, default 1). Higher = more likely to be
-// chosen. Used to keep Instagram outfits everyday-casual and to keep styled
+// chosen. Used to keep casual outfits everyday and to keep styled
 // pieces (blazers, satin, heels) rare.
 function entryWeight(entry) {
     const weight = Number(entry && entry.weight);

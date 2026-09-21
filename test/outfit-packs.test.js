@@ -136,7 +136,7 @@ test('gender-tagged wardrobe pieces are filtered for the character', () => {
 test('selecting a new pack replaces the outfit and preserves the character', () => {
     const id = conversationId('replace');
     const session = playground.start({
-        conversationId: id, themeId: 'instagram-lifestyle', mode: 'random_character',
+        conversationId: id, themeId: 'lifestyle-candid', mode: 'random_character',
         outfitPack: 'casual-everyday', rng: first
     });
     const before = session.concept;
@@ -166,7 +166,7 @@ test('selecting a new pack replaces the outfit and preserves the character', () 
 test('the whole concept except the outfit is preserved by a pack switch', () => {
     const id = conversationId('preserve');
     const session = playground.start({
-        conversationId: id, themeId: 'instagram-lifestyle', mode: 'random_character',
+        conversationId: id, themeId: 'lifestyle-candid', mode: 'random_character',
         outfitPack: 'casual-everyday', rng: first
     });
     const before = Object.assign({}, session.concept);
@@ -182,7 +182,7 @@ test('the whole concept except the outfit is preserved by a pack switch', () => 
 test('an unchanged pack on a scene-only tweak keeps the outfit intact', () => {
     const id = conversationId('scene-only');
     const session = playground.start({
-        conversationId: id, themeId: 'instagram-lifestyle', mode: 'random_character',
+        conversationId: id, themeId: 'lifestyle-candid', mode: 'random_character',
         outfitPack: 'casual-everyday', rng: first
     });
     const outfit = session.concept.outfit;
@@ -196,7 +196,7 @@ test('an unchanged pack on a scene-only tweak keeps the outfit intact', () => {
 test('a custom pack uses the user-defined outfit verbatim', () => {
     const id = conversationId('custom');
     const session = playground.start({
-        conversationId: id, themeId: 'instagram-lifestyle', mode: 'random_character', rng: first
+        conversationId: id, themeId: 'lifestyle-candid', mode: 'random_character', rng: first
     });
     const next = playground.modify(session, {
         outfitPack: 'custom',
@@ -212,7 +212,7 @@ test('a custom pack uses the user-defined outfit verbatim', () => {
 test('an empty custom outfit is ignored, not blanked', () => {
     const id = conversationId('custom-empty');
     const session = playground.start({
-        conversationId: id, themeId: 'instagram-lifestyle', mode: 'random_character', rng: first
+        conversationId: id, themeId: 'lifestyle-candid', mode: 'random_character', rng: first
     });
     const outfit = session.concept.outfit;
     playground.modify(session, { outfitPack: 'custom', outfitPackCustom: '   ', rng: first });
@@ -252,7 +252,7 @@ test('a locked outfit is preserved even when a pack is selected', () => {
     });
     const id = conversationId('lock');
     const session = playground.start({
-        conversationId: id, themeId: 'instagram-lifestyle', characterId: preset.id,
+        conversationId: id, themeId: 'lifestyle-candid', characterId: preset.id,
         locks: { outfit: true }, outfitPack: 'vacation-summer', rng: first
     });
     assert.equal(session.concept.outfit, 'a striped knit sweater');
@@ -265,11 +265,11 @@ test('a locked outfit survives a context-inferred pack change', () => {
     });
     const id = conversationId('lock-context');
     const session = playground.start({
-        conversationId: id, themeId: 'instagram-lifestyle', characterId: preset.id,
+        conversationId: id, themeId: 'lifestyle-candid', characterId: preset.id,
         locks: { outfit: true }, rng: first
     });
     const text = 'Keep the outfit but make it a beach scene';
-    const info = concept.interpretContextMessage(text, { open: true, themeId: 'instagram-lifestyle' });
+    const info = concept.interpretContextMessage(text, { open: true, themeId: 'lifestyle-candid' });
     assert.equal(info.locks.outfit, true);
     assert.equal(info.changes.outfitPack, 'vacation-summer');
     playground.modify(session, {

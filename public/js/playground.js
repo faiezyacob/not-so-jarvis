@@ -134,6 +134,27 @@ const PlaygroundUI = (() => {
             el.appendChild(desc);
         }
 
+        if (card.characterImage && card.characterImage.url) {
+            const figure = document.createElement('figure');
+            figure.className = 'playground-face';
+            const img = document.createElement('img');
+            img.className = 'playground-face-img';
+            img.src = card.characterImage.url;
+            img.alt = card.characterName ? ('Character \u2014 ' + card.characterName) : 'Character';
+            img.loading = 'lazy';
+            img.addEventListener('click', () => {
+                if (window.Gallery && typeof window.Gallery.openFromUrl === 'function') {
+                    window.Gallery.openFromUrl(card.characterImage.url);
+                }
+            });
+            figure.appendChild(img);
+            const caption = document.createElement('figcaption');
+            caption.className = 'playground-face-caption';
+            caption.textContent = card.characterName ? ('Character \u2014 ' + card.characterName) : 'Character';
+            figure.appendChild(caption);
+            el.appendChild(figure);
+        }
+
         const c = card.concept || {};
         const details = document.createElement('div');
         details.className = 'playground-details';
@@ -768,6 +789,14 @@ const PlaygroundUI = (() => {
         return Boolean(popupEl && !popupEl.hidden);
     }
 
+    // An app dialog (e.g. the delete-character confirmation) sits above the
+    // popover. While it is open, background interactions belong to it — a click
+    // or Escape that dismisses the dialog must not also dismiss the popover.
+    function isAppDialogOpen() {
+        const overlay = document.getElementById('appDialogOverlay');
+        return Boolean(overlay && overlay.classList.contains('open'));
+    }
+
     function init() {
         buttonEl = document.getElementById('chatSurprise');
         popupEl = document.getElementById('chatPlaygroundPopup');
@@ -803,15 +832,13 @@ const PlaygroundUI = (() => {
 
         document.addEventListener('click', (e) => {
             if (!isOpen()) return;
+            if (isAppDialogOpen()) return;
             if (popupEl.contains(e.target) || buttonEl.contains(e.target)) return;
-            // An app dialog (e.g. the delete confirmation) sits above the
-            // popover; interacting with it must not dismiss the popover.
-            const dialogOverlay = document.getElementById('appDialogOverlay');
-            if (dialogOverlay && dialogOverlay.contains(e.target)) return;
             close();
         });
         document.addEventListener('keydown', (e) => {
             if (e.key !== 'Escape' || !isOpen()) return;
+            if (isAppDialogOpen()) return;
             if (characterMenuEl && !characterMenuEl.hidden) {
                 closeCharacterMenu();
                 return;

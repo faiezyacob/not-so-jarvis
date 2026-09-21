@@ -27,6 +27,11 @@ const Dialog = (() => {
         overlay.addEventListener('mousedown', (e) => {
             if (e.target === overlay) settle(active ? active.cancelValue : null);
         });
+        // A modal sits above every popover. Keep clicks inside it from reaching
+        // document-level "click outside to close" handlers — `settle()` detaches
+        // the clicked button, so by the time the event bubbles its target is no
+        // longer inside the overlay and those handlers would wrongly fire.
+        overlay.addEventListener('click', (e) => e.stopPropagation());
         document.addEventListener('keydown', (e) => {
             if (!active || !overlay.classList.contains('open')) return;
             if (e.key === 'Escape') {

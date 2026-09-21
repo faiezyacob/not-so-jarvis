@@ -263,30 +263,135 @@ function makeCategory(spec) {
     }, spec);
 }
 
+// --- East Asian enrichment ----------------------------------------------------
+//
+// The East Asian category carries its own larger pools so random generation
+// yields a wider and more flattering range of fictional East Asian identities.
+// Every value is generic descriptive wording — no nationalities and no real
+// people. Flattering traits are weighted slightly higher while variety stays.
+
+const EAST_ASIAN_FACE_SHAPES = FACE_SHAPES.concat([
+    { value: 'a delicate oval face', weight: 2 },
+    { value: 'a soft V-shaped face', weight: 2 },
+    { value: 'a fine-boned face', weight: 1.5 },
+    { value: 'a porcelain-doll face', weight: 1.5 },
+    { value: 'a serene oval face', weight: 2 },
+    { value: 'an ethereal oval face', weight: 1.5 },
+    { value: 'a luminous heart-shaped face', weight: 1.5 },
+    { value: 'a small, refined face', weight: 2 },
+    { value: 'a softly tapered face', weight: 1.5 },
+    { value: 'a gently rounded face with a tapered chin', weight: 1.5 },
+    { value: 'a graceful face with high cheekbones', weight: 2 },
+    { value: 'a softly angular face', weight: 1.5 }
+]);
+
+const EAST_ASIAN_EYE_SHAPES = EYE_SHAPES.concat([
+    { value: 'large, luminous almond eyes', weight: 2.5 },
+    { value: 'clear, bright almond eyes', weight: 2 },
+    { value: 'double-lidded almond eyes', weight: 2 },
+    { value: 'soft monolid eyes', weight: 2 },
+    { value: 'gentle upturned eyes', weight: 2 },
+    { value: 'cat-like upturned eyes', weight: 1.5 },
+    { value: 'softly hooded almond eyes', weight: 1.5 },
+    { value: 'delicately tapered eyes', weight: 1.5 },
+    { value: 'long, elegant eyes', weight: 1.5 },
+    { value: 'crescent-shaped smiling eyes', weight: 1.5 },
+    { value: 'dark, expressive doe eyes', weight: 2 },
+    { value: 'narrow, graceful eyes', weight: 1.5 }
+]);
+
+const EAST_ASIAN_EYEBROWS = EYEBROWS.concat([
+    { value: 'softly feathered straight brows', weight: 2 },
+    { value: 'delicate, gently arched brows', weight: 2 },
+    { value: 'fine, softly tapered brows', weight: 1.5 },
+    { value: 'natural straight brows', weight: 1.5 },
+    { value: 'softly rounded brows', weight: 1.5 }
+]);
+
+const EAST_ASIAN_BUILDS = BUILDS.concat([
+    { value: 'a slender, willowy frame', weight: 2 },
+    { value: 'a graceful, petite frame', weight: 1.5, genders: ['woman'] },
+    { value: 'a slim, toned build', weight: 2 },
+    { value: 'a soft, delicate frame', weight: 1.5 }
+]);
+
+const EAST_ASIAN_HAIR_STYLES = HAIR_STYLES.concat([
+    { value: 'waist-length', type: 'adj', weight: 2, textures: ['straight', 'wavy'] },
+    { value: 'chest-length', type: 'adj', weight: 2, textures: ['straight', 'wavy', 'curly'] },
+    { value: 'softly layered', type: 'adj', weight: 1.5, textures: ['straight', 'wavy', 'curly'] },
+    { value: 'silky', type: 'adj', weight: 1.5, textures: ['straight'] },
+    { value: 'glossy', type: 'adj', weight: 1.5, textures: ['straight', 'wavy'] },
+    { value: 'a hime cut', type: 'noun', weight: 1.5, textures: ['straight'] },
+    { value: 'blunt bangs', type: 'noun', weight: 1.5, textures: ['straight'] },
+    { value: 'wispy bangs', type: 'noun', weight: 1.5, textures: ['straight', 'wavy'] },
+    { value: 'a soft lob', type: 'noun', weight: 2, textures: ['straight', 'wavy'] },
+    { value: 'a sleek low chignon', type: 'noun', weight: 1.5, textures: ['straight', 'wavy'] },
+    { value: 'a half-up bun', type: 'noun', weight: 1.5, textures: ['straight', 'wavy', 'curly'] },
+    { value: 'double buns', type: 'noun', weight: 1, textures: ['straight', 'wavy'] },
+    { value: 'a side braid', type: 'noun', weight: 1.5, textures: ['straight', 'wavy', 'curly'] },
+    { value: 'twin low braids', type: 'noun', weight: 1, textures: ['straight', 'wavy'] },
+    { value: 'a claw-clip updo', type: 'noun', weight: 1, textures: ['straight', 'wavy'] }
+]);
+
+const EAST_ASIAN_DISTINCTIVE_FEATURES = DISTINCTIVE_FEATURES.concat([
+    { value: 'a small, delicate nose', weight: 2 },
+    { value: 'naturally rosy cheeks', weight: 2, skins: ['light', 'medium'] },
+    { value: 'softly bowed lips', weight: 2 },
+    { value: 'a tiny beauty mark beside the lip', weight: 1.5 },
+    { value: 'a small mole above one eyebrow', weight: 1 },
+    { value: 'a soft, dewy complexion', weight: 1.5, skins: ['light', 'medium'] },
+    { value: 'a gently dimpled smile', weight: 1.5 }
+]);
+
 const APPEARANCE_CATEGORIES = {
     east_asian: makeCategory({
         label: 'East Asian',
         weight: 1,
+        // A larger, flattering trait space (see "East Asian enrichment").
+        faceShapes: EAST_ASIAN_FACE_SHAPES,
+        eyeShapes: EAST_ASIAN_EYE_SHAPES,
+        eyebrows: EAST_ASIAN_EYEBROWS,
+        builds: EAST_ASIAN_BUILDS,
+        hairStyles: EAST_ASIAN_HAIR_STYLES,
+        distinctiveFeatures: EAST_ASIAN_DISTINCTIVE_FEATURES,
         skinTones: [
             skin('fair skin', 'light', 2),
             skin('light skin', 'light', 2),
+            skin('porcelain skin', 'light', 2),
+            skin('luminous fair skin', 'light', 2),
+            skin('light beige skin', 'light', 2),
             skin('light olive skin', 'light', 2),
             skin('light golden skin', 'light', 2),
+            skin('warm ivory skin', 'light', 1.5),
+            skin('soft peach-beige skin', 'light', 1.5),
             skin('medium golden skin', 'medium', 3),
+            skin('medium beige skin', 'medium', 2.5),
+            skin('golden beige skin', 'medium', 2.5),
             skin('medium warm skin', 'medium', 2),
+            skin('warm honey skin', 'medium', 2),
+            skin('light golden-tan skin', 'medium', 2),
             skin('warm tan skin', 'medium', 2)
         ],
         hairColors: [
             hair('black', 5),
             hair('dark brown', 5),
             hair('blue-black', 3),
+            hair('milk-tea brown', 3),
             hair('brown', 3),
+            hair('mocha brown', 2.5),
+            hair('espresso brown', 2.5),
+            hair('smoky brown', 2),
             hair('chestnut', 2),
             hair('ash brown', 2),
+            hair('warm chestnut', 2),
             hair('honey brown', 1.5, YOUTHFUL),
             hair('chestnut brown', 2, YOUTHFUL),
+            hair('ash blonde', 1.5, YOUTHFUL),
+            hair('cherry red', 1, YOUTHFUL),
+            hair('rose gold', 0.8, YOUTHFUL),
             hair('burgundy', 0.7, YOUTHFUL),
             hair('teal', 0.5, YOUTHFUL),
+            hair('lavender grey', 0.6, YOUTHFUL),
             hair('pastel pink', 0.5, ['young_adult']),
             hair('grey-streaked black', 2, AGED),
             hair('salt-and-pepper', 2, AGED),
@@ -296,11 +401,20 @@ const APPEARANCE_CATEGORIES = {
         hairTextures: [tex('straight', 6), tex('wavy', 2), tex('curly', 0.7), tex('coily', 0.2)],
         eyeColors: [
             eye('dark brown', 5),
+            eye('deep espresso brown', 4),
             eye('black-brown', 4),
             eye('warm brown', 4),
+            eye('soft chocolate brown', 3),
+            eye('warm chestnut brown', 3),
             eye('light brown', 2),
+            eye('golden brown', 2),
+            eye('honey brown', 2),
             eye('hazel', 1),
-            eye('amber', 1)
+            eye('amber', 1),
+            eye('grey brown', 1),
+            eye('hazel green', 1),
+            eye('grey-blue', 0.7, ['light']),
+            eye('dark jade', 0.5, ['light', 'medium'])
         ]
     }),
 

@@ -89,6 +89,8 @@ const generationQueue = require('./services/generation-queue');
 const director = require('./services/director/director');
 const longVideoDirector = require('./services/long-video/director');
 const playground = require('./services/playground/playground');
+const ugcStudio = require('./services/ugc/studio');
+const ugcProducts = require('./services/ugc/products');
 const characterPresets = require('./services/character-presets');
 const GENERATED_DIR = path.join(__dirname, 'data', 'generated');
 const IMAGES_DIR = path.join(__dirname, 'data', 'images');
@@ -805,6 +807,66 @@ async function handleAPI(req, res, urlPath) {
                 ? playground.buildCard(session, playground.resolveCharacter(session.characterId))
                 : null
         });
+        return true;
+    }
+
+    // GET /api/ugc/state — the active UGC Studio project for a conversation, so
+    // the card and the "UGC Studio · Active" indicator keep working after a reload.
+    if (urlPath === '/api/ugc/state' && req.method === 'GET') {
+        const query = new URL(req.url, 'http://localhost').searchParams;
+        const conversationId = query.get('conversationId') || '';
+        const project = ugcStudio.getProject(conversationId);
+        json(res, 200, {
+            project: project ? ugcStudio.buildCard(project) : null,
+            drafts: ugcStudio.listProjects().filter((p) => p.status === ugcStudio.STATUS.DRAFT)
+                .map((p) => ({ id: p.id, stage: p.stage, updatedAt: p.updatedAt, product: p.product ? p.product.name : '' }))
+        });
+        return true;
+    }
+
+    // GET /api/ugc/options — the UGC Studio catalogs (content types, environments,
+    // platforms, outfit packs, saved characters). The UI never hardcodes them.
+    if (urlPath === '/api/ugc/options' && req.method === 'GET') {
+        json(res, 200, {
+            contentTypes: ugcStudio.listContentTypes(),
+            environments: ugcStudio.listEnvironments(),
+            platforms: ugcStudio.listPlatforms(),
+            outfitPacks: ugcStudio.listOutfitPacks().map((p) => ({ id: p.id, label: p.label, description: p.description })),
+            characters: ugcStudio.listCharacters().map((c) => ({ id: c.id, name: c.name || 'Character' }))
+        });
+        return true;
+    }
+
+    // GET /api/ugc/products — the reusable product library.
+    if (urlPath === '/api/ugc/products' && req.method === 'GET') {
+        json(res, 200, { products: ugcProducts.list() });
+        return true;
+    }
+
+    // POST /api/ugc/products — create or update a product ({ id } for update).
+    if (urlPath === '/api/ugc/products' && req.method === 'POST') {
+        try {
+            const body = await readBody(req);
+            const product = body && body.id
+                ? ugcProducts.update(body.id, body)
+                : ugcProducts.create(body);
+            if (!product) {
+                json(res, 404, { error: 'Product not found' });
+                return true;
+            }
+            json(res, 200, { ok: true, product });
+        } catch (err) {
+            json(res, err.code === 'product_invalid' ? 400 : 500, { error: err.message });
+        }
+        return true;
+    }
+
+    // DELETE /api/ugc/products/:id — remove a product from the library.
+    const ugcProductDeleteMatch = urlPath.match(/^\/api\/ugc\/products\/([^/]+)$/);
+    if (ugcProductDeleteMatch && req.method === 'DELETE') {
+        const id = decodeURIComponent(ugcProductDeleteMatch[1]);
+        const removed = ugcProducts.remove(id);
+        json(res, removed ? 200 : 404, { ok: removed });
         return true;
     }
 
@@ -1592,7 +1654,11 @@ async function handleChatStream(req, res) {
         // Composer "Director Mode" toggle: pre-selects the Director workflow so
         // a fresh video request skips the Direct-vs-Director question.
         const forceDirector = body.forceDirector === true;
-        if ((!message || typeof message !== 'string' || !message.trim()) && chatImages.length === 0 && !referenceImage) {
+        // A card action (UGC / Director / Long Video / Playground) is a
+        // self-contained turn and may carry no message text of its own.
+        const hasCardAction = Boolean(body && (body.ugcAction || body.directorAction ||
+            body.longVideoAction || body.playgroundAction));
+        if ((!message || typeof message !== 'string' || !message.trim()) && chatImages.length === 0 && !referenceImage && !hasCardAction) {
             json(res, 400, { error: 'message is required' });
             return;
         }
@@ -1619,6 +1685,42 @@ async function handleChatStream(req, res) {
         // small chat model can never downgrade it to a chat reply.
         if (comfyuiLauncher.isStartComfyRequest(message)) {
             await handleStartComfyUIChat(req, res, { conversationId, message });
+            return;
+        }
+
+        // UGC Studio. A conversational workflow layer inside chat: an explicit
+        // card action, a typed follow-up to the open project, or a new UGC
+        // request is handled here — before the duration router and the task
+        // router — so a UGC brief never becomes a normal image/video generation
+        // (and a >15s UGC request is not captured by the Long Video Director).
+        // Unrelated turns fall through to the gates below.
+        const ugcCtx = { conversationId, message, provider, model, think };
+        const requestedUgcAction = ugcStudio.normalizeAction(body.ugcAction);
+        let activeUgcProject = ugcStudio.getProject(conversationId);
+        if (requestedUgcAction) {
+            await handleUGCAction(req, res, ugcCtx, activeUgcProject, requestedUgcAction);
+            return;
+        }
+        if (activeUgcProject && ugcStudio.isActive(activeUgcProject)) {
+            const ugcDecision = ugcStudio.classifyMessage(message, activeUgcProject);
+            if (ugcDecision) {
+                await handleUGCAction(req, res, ugcCtx, activeUgcProject, ugcDecision);
+                return;
+            }
+            // A fresh explicit UGC request while a project is open restarts the
+            // workflow with the new request (the previous project is replaced).
+            if (ugcStudio.detectUgcIntent(message)) {
+                activeUgcProject = null;
+            }
+        }
+        // Resume a saved draft (never auto-discarded).
+        if (activeUgcProject && activeUgcProject.status === ugcStudio.STATUS.DRAFT &&
+            /\b(?:resume|continue|reopen)\b/i.test(message) && /\bugc\b/i.test(message)) {
+            await handleUGCAction(req, res, ugcCtx, activeUgcProject, { type: UGC_ACTION.RESUME });
+            return;
+        }
+        if (!activeUgcProject && ugcStudio.detectUgcIntent(message)) {
+            await handleUGCStart(req, res, ugcCtx);
             return;
         }
 
@@ -2345,6 +2447,477 @@ async function handleChatStream(req, res) {
     }
 }
 
+// --- UGC Studio --------------------------------------------------------------
+//
+// A conversational workflow layer inside chat: brief -> product -> creator ->
+// outfit -> environment -> script -> scenes -> reference frames -> Director Mode.
+// The studio owns the stage machine; image and video execution reuse the
+// existing pipelines and Director Mode.
+
+const UGC_STAGE = ugcStudio.STAGES;
+const UGC_ACTION = ugcStudio.ACTIONS;
+
+// Stream the persisted UGC card and end the turn.
+function emitUGCCard(res, project) {
+    sseWrite(res, {
+        ugc: {
+            content: ugcStudio.renderContent(project),
+            card: ugcStudio.buildCard(project),
+            status: project.status,
+            stage: project.stage
+        }
+    });
+    res.end();
+}
+
+function ugcRawFilename(url) {
+    let name = String(url || '').split('?')[0].split('/').pop();
+    try { name = decodeURIComponent(name); } catch (err) { /* keep raw */ }
+    return name;
+}
+
+// Start a fresh UGC project from a natural-language request.
+async function handleUGCStart(req, res, ctx) {
+    const { conversationId, message, provider, model, think } = ctx;
+    sseWrite(res, { generating: 'UGC Studio \u2014 building your brief\u2026' });
+    try {
+        vramManager.rememberChatModel(provider, model);
+        await vramManager.freeVRAMBeforeChat();
+        const project = await ugcStudio.createProject({ conversationId, message, provider, model, think });
+        activityLog.record({
+            type: 'generation',
+            title: 'UGC project started',
+            detail: (project.product && project.product.name) || message,
+            conversationId
+        });
+        emitUGCCard(res, project);
+    } catch (err) {
+        console.error('[ugc] start failed:', err.message);
+        sseWrite(res, { error: 'UGC Studio could not start this project: ' + err.message });
+        res.end();
+    }
+}
+
+// Execute a UGC workflow action (card button or a typed decision).
+async function handleUGCAction(req, res, ctx, project, action) {
+    const { conversationId, message, provider, model, think } = ctx;
+    if (!project) {
+        sseWrite(res, { error: 'UGC Studio \u2014 There is no active project. Describe the UGC content you want to create.' });
+        res.end();
+        return;
+    }
+    if (action.projectId && action.projectId !== project.id) {
+        const text = 'UGC Studio \u2014 That card belongs to an earlier project. Use the newest UGC card.';
+        sseWrite(res, { chunk: text });
+        sseWrite(res, { done: true, fullReply: text });
+        res.end();
+        return;
+    }
+    // A typed follow-up classified by studio.classifyMessage returns
+    // { action: '...' }; map it onto the button action space so the same switch
+    // executes it. 'edit' is the only classified result with no button twin.
+    if (!action.type && action.action && Object.values(UGC_ACTION).includes(action.action)) {
+        action = Object.assign({}, action, { type: action.action });
+    }
+
+    try {
+        // --- selection stages ---
+        if (action.type === UGC_ACTION.SELECT_PRODUCT) {
+            if (action.productId) {
+                ugcStudio.selectProduct(project, action.productId);
+            } else {
+                // No product named: this is the "Select product" navigation cue.
+                project.stage = UGC_STAGE.PRODUCT_SELECTION;
+                ugcStudio.save(project);
+            }
+            emitUGCCard(res, project);
+            return;
+        }
+        if (action.type === UGC_ACTION.CREATE_PRODUCT) {
+            ugcStudio.createProduct(project, action.product || {});
+            emitUGCCard(res, project);
+            return;
+        }
+        if (action.type === UGC_ACTION.SELECT_CREATOR) {
+            if (action.characterId) ugcStudio.selectCreator(project, action.characterId);
+            else { project.stage = UGC_STAGE.CREATOR_SELECTION; ugcStudio.save(project); }
+            emitUGCCard(res, project);
+            return;
+        }
+        if (action.type === UGC_ACTION.CREATE_CREATOR) {
+            const preset = characterPresets.create(action.creator || {});
+            ugcStudio.selectCreator(project, preset.id);
+            emitUGCCard(res, project);
+            return;
+        }
+        if (action.type === UGC_ACTION.RANDOM_CREATOR) {
+            ugcStudio.randomCreator(project, action.creator && action.creator.profile);
+            emitUGCCard(res, project);
+            return;
+        }
+        if (action.type === UGC_ACTION.SELECT_OUTFIT) {
+            if (action.outfitPack) ugcStudio.selectOutfit(project, action.outfitPack, action.outfitPackCustom);
+            else { project.stage = UGC_STAGE.CREATIVE_DIRECTION; ugcStudio.save(project); }
+            emitUGCCard(res, project);
+            return;
+        }
+        if (action.type === UGC_ACTION.SELECT_ENVIRONMENT) {
+            if (action.environmentId) ugcStudio.selectEnvironment(project, action.environmentId, action.direction || action.value || '');
+            else { project.stage = UGC_STAGE.CREATIVE_DIRECTION; ugcStudio.save(project); }
+            emitUGCCard(res, project);
+            return;
+        }
+        if (action.type === UGC_ACTION.SELECT_CONTENT_TYPE) {
+            if (action.contentTypeId) ugcStudio.selectContentType(project, action.contentTypeId);
+            else { project.stage = UGC_STAGE.CREATIVE_DIRECTION; ugcStudio.save(project); }
+            emitUGCCard(res, project);
+            return;
+        }
+
+        // --- brief ---
+        if (action.type === UGC_ACTION.EDIT_BRIEF) {
+            ugcStudio.editBrief(project, action.brief || {});
+            emitUGCCard(res, project);
+            return;
+        }
+        if (action.type === UGC_ACTION.REGENERATE_BRIEF) {
+            sseWrite(res, { generating: 'UGC Studio \u2014 regenerating the brief\u2026' });
+            vramManager.rememberChatModel(provider, model);
+            await vramManager.freeVRAMBeforeChat();
+            await ugcStudio.regenerateBrief(project, { provider, model, think });
+            emitUGCCard(res, project);
+            return;
+        }
+        if (action.type === UGC_ACTION.APPROVE_BRIEF) {
+            const nextStage = ugcStudio.nextSetupStage(project);
+            if (nextStage !== UGC_STAGE.BRIEF) {
+                project.stage = nextStage;
+                ugcStudio.save(project);
+                emitUGCCard(res, project);
+                return;
+            }
+            sseWrite(res, { generating: 'UGC Studio \u2014 writing the script\u2026' });
+            vramManager.rememberChatModel(provider, model);
+            await vramManager.freeVRAMBeforeChat();
+            await ugcStudio.generateScript(project, { provider, model, think });
+            emitUGCCard(res, project);
+            return;
+        }
+
+        // --- script ---
+        if (action.type === UGC_ACTION.EDIT_SCRIPT) {
+            if (action.script && typeof action.script === 'object') {
+                for (const key of Object.keys(action.script)) {
+                    if (['hook', 'main', 'productInteraction', 'closing'].includes(key)) {
+                        ugcStudio.editScriptField(project, key, action.script[key]);
+                    }
+                }
+            } else {
+                ugcStudio.editScriptField(project, action.field, action.value);
+            }
+            emitUGCCard(res, project);
+            return;
+        }
+        if (action.type === UGC_ACTION.REGENERATE_SCRIPT ||
+            action.type === UGC_ACTION.CHANGE_TONE || action.type === UGC_ACTION.CHANGE_HOOK) {
+            const isTone = action.type === UGC_ACTION.CHANGE_TONE;
+            const isHook = action.type === UGC_ACTION.CHANGE_HOOK;
+            const feedback = String(action.direction || action.value || '').trim();
+            const field = isHook ? 'hook' : (isTone ? null : null);
+            const note = feedback
+                || (isTone ? 'Change the overall tone.' : (isHook ? 'Rewrite the hook.' : ''));
+            sseWrite(res, { generating: 'UGC Studio \u2014 rewriting the script\u2026' });
+            vramManager.rememberChatModel(provider, model);
+            await vramManager.freeVRAMBeforeChat();
+            await ugcStudio.generateScript(project, { provider, model, think, feedback: note, field });
+            emitUGCCard(res, project);
+            return;
+        }
+        if (action.type === UGC_ACTION.APPROVE_SCRIPT) {
+            ugcStudio.approveScript(project);
+            sseWrite(res, { generating: 'UGC Studio \u2014 planning the scenes\u2026' });
+            vramManager.rememberChatModel(provider, model);
+            await vramManager.freeVRAMBeforeChat();
+            await ugcStudio.generateScenes(project, { provider, model, think });
+            emitUGCCard(res, project);
+            return;
+        }
+
+        // --- scenes ---
+        if (action.type === UGC_ACTION.EDIT_SCENE) {
+            ugcStudio.editScene(project, action.sceneId, action.scene || {});
+            emitUGCCard(res, project);
+            return;
+        }
+        if (action.type === UGC_ACTION.ADD_SCENE) {
+            ugcStudio.addScene(project, action.sceneId);
+            emitUGCCard(res, project);
+            return;
+        }
+        if (action.type === UGC_ACTION.DELETE_SCENE) {
+            ugcStudio.deleteScene(project, action.sceneId);
+            emitUGCCard(res, project);
+            return;
+        }
+        if (action.type === UGC_ACTION.MOVE_SCENE) {
+            ugcStudio.moveScene(project, action.sceneId, action.moveDirection || 'down');
+            emitUGCCard(res, project);
+            return;
+        }
+        if (action.type === UGC_ACTION.REGENERATE_SCENE) {
+            const scene = (project.scenes || []).find((s) => s.id === action.sceneId);
+            if (!scene) {
+                sseWrite(res, { error: 'UGC Studio \u2014 That scene no longer exists.' });
+                res.end();
+                return;
+            }
+            sseWrite(res, { generating: 'UGC Studio \u2014 regenerating scene ' + scene.order + '\u2026' });
+            vramManager.rememberChatModel(provider, model);
+            await vramManager.freeVRAMBeforeChat();
+            await ugcStudio.regenerateScene(project, action.sceneId, {
+                provider, model, think,
+                direction: action.direction || action.message || ''
+            });
+            emitUGCCard(res, project);
+            return;
+        }
+        if (action.type === UGC_ACTION.APPROVE_SCENES) {
+            ugcStudio.approveScenes(project);
+            await handleUGCGenerateReferences(req, res, ctx, project, null);
+            return;
+        }
+
+        // --- references ---
+        if (action.type === UGC_ACTION.GENERATE_REFERENCES || action.type === UGC_ACTION.REGENERATE_REFERENCES) {
+            await handleUGCGenerateReferences(req, res, ctx, project, null);
+            return;
+        }
+        if (action.type === UGC_ACTION.REGENERATE_REFERENCE) {
+            let sceneId = action.sceneId || null;
+            if (!sceneId && action.sceneNumber) {
+                const scene = (project.scenes || []).find((s) => s.order === Number(action.sceneNumber));
+                sceneId = scene ? scene.id : null;
+            }
+            await handleUGCGenerateReferences(req, res, ctx, project, sceneId ? [sceneId] : null);
+            return;
+        }
+        if (action.type === UGC_ACTION.EDIT_DIRECTION) {
+            const direction = String(action.direction || action.message || '').trim();
+            if (!direction) {
+                sseWrite(res, { error: 'Tell me how the direction should change.' });
+                res.end();
+                return;
+            }
+            await ugcStudio.applyNaturalEdit(project, direction, { provider, model, think });
+            emitUGCCard(res, project);
+            return;
+        }
+        if (action.type === UGC_ACTION.APPROVE_REFERENCES || action.type === UGC_ACTION.CONTINUE_DIRECTOR) {
+            ugcStudio.approveReferences(project);
+            await handleUGCDirectorHandoff(req, res, ctx, project);
+            return;
+        }
+
+        // --- natural-language typed decisions ---
+        if (action.action === 'edit') {
+            await ugcStudio.applyNaturalEdit(project, action.message || message, { provider, model, think });
+            emitUGCCard(res, project);
+            return;
+        }
+
+        // --- lifecycle ---
+        if (action.type === UGC_ACTION.SAVE_DRAFT || action.type === UGC_ACTION.EXIT) {
+            ugcStudio.exitProject(project);
+            const text = 'UGC Studio \u2014 project saved as a draft. Say "resume the UGC project" or use the UGC Studio bar to continue.';
+            sseWrite(res, { chunk: text });
+            sseWrite(res, { done: true, fullReply: text });
+            res.end();
+            return;
+        }
+        if (action.type === UGC_ACTION.RESUME) {
+            ugcStudio.resumeProject(project);
+            emitUGCCard(res, project);
+            return;
+        }
+        if (action.type === UGC_ACTION.VIEW_BRIEF) {
+            project.stage = project.script ? (project.scenes && project.scenes.length ? UGC_STAGE.SCENE_REVIEW : UGC_STAGE.SCRIPT_REVIEW) : UGC_STAGE.BRIEF;
+            if (project.references && project.references.length) project.stage = UGC_STAGE.REFERENCE_APPROVAL;
+            ugcStudio.save(project);
+            emitUGCCard(res, project);
+            return;
+        }
+        if (action.type === UGC_ACTION.DISCARD) {
+            ugcStudio.removeProject(conversationId);
+            const text = 'UGC Studio \u2014 project discarded.';
+            sseWrite(res, { chunk: text });
+            sseWrite(res, { done: true, fullReply: text });
+            res.end();
+            return;
+        }
+
+        sseWrite(res, { error: 'Unknown UGC Studio action.' });
+        res.end();
+    } catch (err) {
+        console.error('[ugc] action failed:', err.message);
+        sseWrite(res, { error: 'UGC Studio \u2014 ' + err.message });
+        res.end();
+    }
+}
+
+// Generate (or regenerate) the reference frame for every approved scene — or a
+// single scene when `sceneIds` is given. Reuses the existing image pipeline: the
+// studio builds direction, imageGenerator.buildImagePrompt owns the final prompt,
+// and imageGenerator.generateImage renders + records it in the gallery.
+async function handleUGCGenerateReferences(req, res, ctx, project, sceneIds) {
+    const { conversationId, provider, model, think } = ctx;
+    const scenes = (project.scenes || []).slice();
+    const targets = Array.isArray(sceneIds) && sceneIds.length
+        ? scenes.filter((s) => sceneIds.includes(s.id))
+        : scenes;
+    if (!targets.length) {
+        sseWrite(res, { error: 'UGC Studio \u2014 There is no scene plan yet. Approve the scenes first.' });
+        res.end();
+        return;
+    }
+
+    let queueId = null;
+    const onClose = () => {
+        if (!queueId) return;
+        if (imageGenerator.cancelQueued(queueId)) return;
+        if (imageGenerator.isActive(queueId)) {
+            imageGenerator.cancelActive(queueId);
+            comfyui.interrupt().catch(() => {});
+        }
+    };
+    req.on('close', onClose);
+    const stopProgress = forwardComfyProgress(res);
+    const onQueued = (position, id) => {
+        queueId = id;
+        sseWrite(res, { queued: { position, queueId: id } });
+    };
+
+    try {
+        project.stage = UGC_STAGE.REFERENCE_GENERATION;
+        ugcStudio.save(project);
+        sseWrite(res, { generating: 'UGC Studio \u2014 building ' + targets.length + ' reference prompt(s)\u2026' });
+
+        // Prompt building needs the chat model; render needs ComfyUI. Keep the
+        // one-side-resident rule: build every prompt first, then free Ollama once
+        // and render the whole batch on ComfyUI (no per-image ping-pong).
+        vramManager.rememberChatModel(provider, model);
+        await vramManager.freeVRAMBeforeChat();
+        const jobs = [];
+        for (const scene of targets) {
+            const request = ugcStudio.buildReferenceRequest(project, scene);
+            let imagePrompt = request.user_prompt;
+            let attributes = null;
+            try {
+                const enhanced = await imageGenerator.buildImagePrompt(request, providers, provider, model, think);
+                if (enhanced && enhanced.prompt) {
+                    imagePrompt = enhanced.prompt;
+                    attributes = enhanced.attributes || null;
+                }
+            } catch (err) {
+                console.warn('[ugc] reference prompt build failed, using concept:', err.message);
+            }
+            jobs.push({ scene, imagePrompt, attributes, request });
+        }
+
+        await vramManager.freeVRAMBeforeImage();
+        for (let i = 0; i < jobs.length; i++) {
+            const job = jobs[i];
+            sseWrite(res, {
+                generating: 'UGC Studio \u2014 reference ' + (i + 1) + ' of ' + jobs.length +
+                    ' (scene ' + job.scene.order + ')\u2026'
+            });
+            const promise = imageGenerator.generateImage(job.imagePrompt, {
+                provider, model, conversationId, onQueued,
+                onStart: () => sseWrite(res, { generating: 'UGC Studio \u2014 rendering scene ' + job.scene.order + '\u2026' }),
+                label: 'ugc reference', kind: 'image_generation'
+            });
+            queueId = promise.queueId || null;
+            const result = await promise;
+            ugcStudio.recordReference(project, job.scene.id, {
+                url: result.url,
+                filename: ugcRawFilename(result.url),
+                prompt: job.imagePrompt
+            });
+        }
+        ugcStudio.markReferencesReady(project);
+        activityLog.record({
+            type: 'generation',
+            title: 'UGC reference frames',
+            detail: jobs.length + ' frame(s) for ' + ((project.product && project.product.name) || 'project'),
+            conversationId
+        });
+        await vramManager.freeComfyModels('ugc references');
+        emitUGCCard(res, project);
+    } catch (err) {
+        console.error('[ugc] reference generation failed:', err.message);
+        // Recover the stage so the card stays actionable: back to reference
+        // approval when some frames exist, otherwise back to the scene plan.
+        try {
+            project.stage = (project.references && project.references.length)
+                ? UGC_STAGE.REFERENCE_APPROVAL
+                : UGC_STAGE.SCENE_REVIEW;
+            ugcStudio.save(project);
+        } catch (e) { /* keep the original error */ }
+        const friendly = (err && (err.code === 'generation_cancelled'))
+            ? 'Reference generation cancelled.'
+            : friendlyImageError(err);
+        sseWrite(res, { error: 'UGC Studio \u2014 ' + friendly });
+        res.end();
+    } finally {
+        req.removeListener('close', onClose);
+        stopProgress();
+    }
+}
+
+// Hand the approved UGC project to Director Mode. The structured brief + scene
+// plan travel as the Director's own shot list; the approved opening frame becomes
+// the production's first frame. The existing H3 video stage renders the result.
+async function handleUGCDirectorHandoff(req, res, ctx, project) {
+    const { conversationId, message, provider, model, think } = ctx;
+    const input = ugcStudio.directorProductionInput(project);
+    if (!input.openingFrame) {
+        sseWrite(res, { error: 'UGC Studio \u2014 There is no approved reference frame to animate. Generate and approve the references first.' });
+        res.end();
+        return;
+    }
+    try {
+        sseWrite(res, { generating: 'UGC Studio \u2014 handing off to Director Mode\u2026' });
+        vramManager.rememberChatModel(provider, model);
+        await vramManager.freeVRAMBeforeChat();
+        const production = director.createUgcProduction({
+            conversationId,
+            brief: input.brief,
+            duration: input.duration,
+            openingFrame: input.openingFrame,
+            originalRequest: input.originalRequest
+        });
+        ugcStudio.setDirectorProduction(project, production.id);
+        activityLog.record({
+            type: 'generation',
+            title: 'UGC handed to Director',
+            detail: (project.product && project.product.name) || project.request,
+            conversationId
+        });
+        taskState.setTask(conversationId, {
+            type: 'video',
+            operation: 'generate',
+            prompt: production.brief.subject || project.request,
+            originalPrompt: project.request,
+            status: 'running',
+            lastAction: 'ugc production'
+        });
+        await runDirectorVideoStage(req, res, ctx, production);
+    } catch (err) {
+        console.error('[ugc] director handoff failed:', err.message);
+        sseWrite(res, { error: 'UGC Studio could not start the Director production: ' + err.message });
+        res.end();
+    }
+}
+
 // --- Creative Playground -----------------------------------------------------
 //
 // Concept discovery built on the existing image pipeline. Concept generation is
@@ -2367,6 +2940,46 @@ function emitPlaygroundCard(res, session) {
     res.end();
 }
 
+// The face preview is a thumbnail, not the final artwork, so it overrides the
+// global IMAGE settings with a fixed 1:1 256x256 render.
+const PLAYGROUND_FACE_SIZE = 256;
+
+// Pre-render the face of a freshly cast random character so the user sees who
+// the concept is about before the full scene. Fail-open: a failure leaves the
+// text concept fully usable (the user can still Generate).
+async function runPlaygroundFaceStage(req, res, ctx, session) {
+    if (!playground.needsCharacterImage(session)) return;
+    const { conversationId, provider, model, think } = ctx;
+    const request = playground.buildPortraitRequest(session);
+    if (!request) return;
+    try {
+        sseWrite(res, { generating: 'Creative Playground \u2014 Creating the character\u2026' });
+        // Prompt building needs the chat model, generation needs ComfyUI — the
+        // same one-side-resident dance as the concept image.
+        vramManager.rememberChatModel(provider, model);
+        await vramManager.freeVRAMBeforeChat();
+        const enhanced = await imageGenerator.buildImagePrompt(request, providers, provider, model, think);
+        const imagePrompt = enhanced ? enhanced.prompt : request.user_prompt;
+        await vramManager.freeVRAMBeforeImage();
+        const result = await imageGenerator.generateImage(imagePrompt, {
+            provider, model, conversationId,
+            width: PLAYGROUND_FACE_SIZE,
+            height: PLAYGROUND_FACE_SIZE,
+            label: 'playground character', kind: 'image_generation'
+        });
+        playground.setCharacterImage(session, {
+            url: result.url,
+            filename: result.filename,
+            prompt: imagePrompt,
+            seed: result.seed,
+            width: result.width,
+            height: result.height
+        });
+    } catch (err) {
+        console.error('[playground] face stage failed:', err.message);
+    }
+}
+
 async function handlePlaygroundAction(req, res, ctx, action, rawMessage) {
     const { conversationId, provider, model, think } = ctx;
     let session = playground.getSession(conversationId);
@@ -2383,6 +2996,7 @@ async function handlePlaygroundAction(req, res, ctx, action, rawMessage) {
                 outfitPack: action.outfitPack,
                 outfitPackCustom: action.outfitPackCustom
             });
+            await runPlaygroundFaceStage(req, res, ctx, session);
             emitPlaygroundCard(res, session);
             return;
         }
@@ -2400,6 +3014,7 @@ async function handlePlaygroundAction(req, res, ctx, action, rawMessage) {
 
         if (action.type === playground.ACTIONS.AGAIN) {
             session = playground.again(session);
+            await runPlaygroundFaceStage(req, res, ctx, session);
             emitPlaygroundCard(res, session);
             return;
         }
@@ -2420,6 +3035,7 @@ async function handlePlaygroundAction(req, res, ctx, action, rawMessage) {
             if (action.outfitPackCustom !== undefined) payload.outfitPackCustom = action.outfitPackCustom;
             payload.direction = direction;
             session = playground.modify(session, payload);
+            await runPlaygroundFaceStage(req, res, ctx, session);
             emitPlaygroundCard(res, session);
             return;
         }

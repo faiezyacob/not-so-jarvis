@@ -2610,6 +2610,7 @@ async function bootApp() {
     if (window.ChatLora && typeof window.ChatLora.init === 'function') window.ChatLora.init();
     if (window.ChatDirector && typeof window.ChatDirector.init === 'function') window.ChatDirector.init();
     if (window.PlaygroundUI && typeof window.PlaygroundUI.init === 'function') window.PlaygroundUI.init();
+    if (window.UGCUI && typeof window.UGCUI.init === 'function') window.UGCUI.init();
     await Chat.refreshConversationList();
     renderActiveChat();
 }

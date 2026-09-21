@@ -687,3 +687,23 @@ test('renderImageApprovalContent embeds a parseable marker and stripMarkers remo
     assert.doesNotMatch(director.stripMarkers(content), /\[\[director:/);
     assert.match(director.stripMarkers(content), /opening frame/);
 });
+
+// --- H3 dialogue guidance ----------------------------------------------------
+
+test('the H3 director prompt teaches on-screen lip-synced dialogue', () => {
+    const base = videoGenerator.H3_DIRECTOR_SYSTEM_PROMPT;
+    assert.match(base, /SPEAKERS, DIALOGUE AND SINGING/i);
+    assert.match(base, /<d>\[English\]/);
+    assert.match(base, /in sync with the words/i);
+    assert.match(base, /off-screen voiceover/i);
+    assert.match(base, /Never move dialogue or singing into overall_soundscape/i);
+    assert.match(videoGenerator.H3_MULTISHOT_ADDENDUM, /lip-synced mouths/i);
+});
+
+test('the H3 prompt modifier preserves on-screen dialogue', () => {
+    const modifier = videoGenerator.H3_MODIFIER_SYSTEM_PROMPT;
+    assert.match(modifier, /speakers and dialogue/i);
+    assert.match(modifier, /<d>\[Language\]/);
+    assert.match(modifier, /lip-synced/);
+    assert.match(modifier, /never move dialogue into overall_soundscape/i);
+});

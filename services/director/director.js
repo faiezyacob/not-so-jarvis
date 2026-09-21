@@ -244,6 +244,35 @@ async function createProduction({ conversationId, message, provider, model, thin
     return production;
 }
 
+// Create a production from an already-structured external plan (UGC Studio).
+// Unlike createProduction this does NOT re-extract a brief from the message:
+// the caller owns the canonical brief and the approved opening frame, so the
+// production starts at the approval checkpoint with the frame in place. The
+// brief's shotList (built from the UGC scene plan) drives the H3 cut sequence.
+function createUgcProduction({ conversationId, brief, duration, openingFrame, originalRequest }) {
+    const production = productionPlan.create({
+        conversationId,
+        brief,
+        video: { duration },
+        sourceImage: openingFrame ? openingFrame.filename : null,
+        originalRequest: originalRequest || (brief && brief.originalRequest) || ''
+    });
+    if (openingFrame && openingFrame.filename) {
+        production.image = {
+            url: openingFrame.url || ('/generated/' + encodeURIComponent(openingFrame.filename)),
+            rawFilename: openingFrame.filename,
+            prompt: (brief && brief.subject) || '',
+            seed: null,
+            attributes: null,
+            fromSource: true
+        };
+        production.status = productionPlan.STATUS.AWAITING_IMAGE_APPROVAL;
+        production.currentStage = 'image_approval';
+    }
+    productionPlan.set(conversationId, production);
+    return production;
+}
+
 // Build the opening-frame prompt from the brief via the existing image prompt
 // builder. Stores the resulting prompt on the plan so regeneration reuses it.
 async function buildImageStagePrompt(production, { provider, model, think }) {
@@ -566,6 +595,7 @@ module.exports = {
     shouldForceDirector,
     shouldForceDirectorOverLongVideo,
     createProduction,
+    createUgcProduction,
     buildImageStagePrompt,
     applyDirectionUpdate,
     buildVideoStageRequest,

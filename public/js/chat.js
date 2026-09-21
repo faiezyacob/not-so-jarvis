@@ -687,7 +687,12 @@ const Chat = (() => {
         const playgroundParsed = (window.PlaygroundUI && typeof window.PlaygroundUI.extract === 'function')
             ? window.PlaygroundUI.extract(suggestion.text)
             : { text: suggestion.text, cards: [] };
-        contentEl.innerHTML = Markdown.parse(playgroundParsed.text);
+        // UGC Studio projects persist as a [[ugc:{...}]] marker and render as the
+        // interactive workflow card (product/creator/brief/script/scenes/refs).
+        const ugcParsed = (window.UGCUI && typeof window.UGCUI.extract === 'function')
+            ? window.UGCUI.extract(playgroundParsed.text)
+            : { text: playgroundParsed.text, cards: [] };
+        contentEl.innerHTML = Markdown.parse(ugcParsed.text);
         if (streaming) return;
         collapseUpscalePairs(contentEl);
         if (window.VideoPlayer && typeof window.VideoPlayer.scan === 'function') {
@@ -704,6 +709,9 @@ const Chat = (() => {
         }
         if (window.PlaygroundUI && typeof window.PlaygroundUI.render === 'function') {
             playgroundParsed.cards.forEach((card) => window.PlaygroundUI.render(contentEl, card));
+        }
+        if (window.UGCUI && typeof window.UGCUI.render === 'function') {
+            ugcParsed.cards.forEach((card) => window.UGCUI.render(contentEl, card));
         }
     }
 
@@ -796,6 +804,9 @@ const Chat = (() => {
         }
         if (window.PlaygroundUI && typeof window.PlaygroundUI.hydrate === 'function') {
             window.PlaygroundUI.hydrate(chatMessagesEl, Conversations.currentId());
+        }
+        if (window.UGCUI && typeof window.UGCUI.hydrate === 'function') {
+            window.UGCUI.hydrate(chatMessagesEl, Conversations.currentId());
         }
 
         chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
@@ -955,6 +966,7 @@ const Chat = (() => {
                     directorAction: override && override.directorAction ? override.directorAction : undefined,
                     longVideoAction: override && override.longVideoAction ? override.longVideoAction : undefined,
                     playgroundAction: override && override.playgroundAction ? override.playgroundAction : undefined,
+                    ugcAction: override && override.ugcAction ? override.ugcAction : undefined,
                     forceDirector: (typeof ChatDirector !== 'undefined' && ChatDirector && ChatDirector.isOn()) ? true : undefined
                 }),
                 signal: activeStreamAbort.signal
@@ -1131,6 +1143,19 @@ const Chat = (() => {
                                 window.PlaygroundUI.hydrate(chatMessagesEl, conversationId);
                             }
                         }
+                        if (data.ugc) {
+                            cancelStreamRender();
+                            fullReply = data.ugc.content;
+                            if (generatingEl) generatingEl.remove();
+                            setProgressTitle('');
+                            setAiContent(contentEl, data.ugc.content);
+                            scrollActiveStream(aiMessageEl);
+                            generatedMetaCache = null;
+                            if (window.Gallery) window.Gallery.refresh();
+                            if (window.UGCUI && typeof window.UGCUI.hydrate === 'function') {
+                                window.UGCUI.hydrate(chatMessagesEl, conversationId);
+                            }
+                        }
                         if (data.chunk) {
                             if (generatingEl) generatingEl.remove();
                             setProgressTitle('');
@@ -1176,6 +1201,9 @@ const Chat = (() => {
                     if (window.PlaygroundUI && typeof window.PlaygroundUI.strip === 'function') {
                         spoken = window.PlaygroundUI.strip(spoken);
                     }
+                    if (window.UGCUI && typeof window.UGCUI.strip === 'function') {
+                        spoken = window.UGCUI.strip(spoken);
+                    }
                     if (window.ChatSuggestions && typeof window.ChatSuggestions.strip === 'function') {
                         spoken = window.ChatSuggestions.strip(spoken);
                     }
@@ -1215,6 +1243,11 @@ const Chat = (() => {
             if (window.PlaygroundUI && typeof window.PlaygroundUI.hydrate === 'function'
                 && chatMessagesEl.querySelector('.playground-card')) {
                 window.PlaygroundUI.hydrate(chatMessagesEl, conversationId);
+            }
+            // Keep the UGC Studio mode bar in sync with the project state after
+            // every turn (start, selection, exit, resume).
+            if (window.UGCUI && typeof window.UGCUI.refreshBar === 'function') {
+                window.UGCUI.refreshBar();
             }
         }
     }

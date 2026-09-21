@@ -904,6 +904,25 @@ const H3_DIRECTOR_SYSTEM_PROMPT =
     '- Describe the action beginning immediately from that starting state.\n' +
     '- Only introduce delayed timing when the user explicitly specifies it.\n\n' +
 
+    'SPEAKERS, DIALOGUE AND SINGING — CRITICAL:\n' +
+    '- Every character who speaks or sings gets a stable speaker ID like (S1); a character who ' +
+    'never vocalizes gets no ID. A speaker keeps the same ID across shots, and multiple voices ' +
+    'together use a compound ID like (S1,S2).\n' +
+    '- Put the speaker\'s identity, ID, action, and delivery OUTSIDE <d>; put ONLY the language tag ' +
+    'and the exact spoken words INSIDE <d>, for example: The young woman (S1) says: ' +
+    '<d>[English] I get off at the next station.</d>\n' +
+    '- Reproduce every spoken word and punctuation mark verbatim. Never translate, rewrite, ' +
+    'shorten, summarize, or invent dialogue, and never echo the user\'s instruction as dialogue.\n' +
+    '- Spoken dialogue is an on-screen, diegetic event: place it inside the ' +
+    'integrated_multimodal_description with the speaker visible in frame, and describe their mouth ' +
+    'visibly moving and staying in sync with the words as they speak. A spoken line whose speaker ' +
+    'is never shown on screen, or whose mouth does not move, is a defect.\n' +
+    '- Use an off-screen voiceover ONLY when the user explicitly asks for narration; then write ' +
+    'exactly \"says in an off-screen voiceover\" and state that the on-screen character\'s lips ' +
+    'remain completely closed.\n' +
+    '- Never move dialogue or singing into overall_soundscape; the soundscape carries only ' +
+    'ambience, physical action sounds, and non-verbal human sounds.\n\n' +
+
     'CONTINUOUS ACTION:\n' +
     '- Describe how the action develops naturally from beginning to end within [Shot 1].\n' +
     '- You may describe progression such as "begins", "then", "continues", "gradually", and "ends" ' +
@@ -966,7 +985,8 @@ const H3_MULTISHOT_ADDENDUM =
     '- Keep subject identity, wardrobe, colors, key objects, and setting consistent across all shots.\n' +
     '- Write camera motion inside a shot as a natural English action using motion type plus optional ' +
     'amplitude and optional speed (e.g. "The camera pushes in with small amplitude at slow speed toward ...").\n' +
-    '- Speakers keep stable IDs like (S1); put spoken words inside <d>[Language] ...</d>.\n' +
+    '- Speakers keep stable IDs like (S1), stay visible on screen with visibly moving, ' +
+    'lip-synced mouths, and put spoken words inside <d>[Language] ...</d>.\n' +
     '- The last cut time must stay within the video duration; the final shot ends the video.\n';
 
 // --- H3 Video Prompt Modifier (for conversational modifications) ---------------
@@ -980,6 +1000,10 @@ const H3_MODIFIER_SYSTEM_PROMPT =
     '- Preserve the H3 prompt structure (integrated_multimodal_description, ' +
     'overall_soundscape, non_diegetic_music).\n' +
     '- For I2VA prompts, preserve the <Picture 1> alignment and all reference tokens.\n' +
+    '- Preserve speakers and dialogue exactly: keep each speaker\'s (S1) ID and the spoken words ' +
+    'inside <d>[Language] ...</d>, keep the speaker on screen with a visibly moving, lip-synced ' +
+    'mouth, and never move dialogue into overall_soundscape or turn it into narration unless the ' +
+    'modification explicitly asks for an off-screen voiceover.\n' +
     '- When a reference image is attached, it is the video\'s first frame: study ' +
     'it and keep the subject identity, clothing, setting, composition, and ' +
     'visual style unless the modification explicitly changes them.\n' +
@@ -3650,7 +3674,9 @@ module.exports = {
     videoRequestStrength,
     parseRequestedVideoDuration,
     buildH3VideoPrompt,
+    H3_DIRECTOR_SYSTEM_PROMPT,
     H3_MULTISHOT_ADDENDUM,
+    H3_MODIFIER_SYSTEM_PROMPT,
     resolveShotPlan,
     countH3Shots,
     formatCutTime,

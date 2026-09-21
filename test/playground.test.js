@@ -34,9 +34,9 @@ function conversationId(name) {
 
 // --- Theme catalog -----------------------------------------------------------
 
-test('theme catalog exposes Anything plus the eight named themes', () => {
+test('theme catalog exposes Anything plus the seven named themes', () => {
     const list = themes.listThemes();
-    assert.equal(list.length, 9);
+    assert.equal(list.length, 8);
     const ids = list.map((t) => t.id);
     assert.ok(ids.includes('anything'));
     assert.ok(ids.includes('fashion-editorial'));
@@ -46,7 +46,6 @@ test('theme catalog exposes Anything plus the eight named themes', () => {
     assert.ok(ids.includes('fantasy-character-worlds'));
     assert.ok(ids.includes('seasonal-concepts'));
     assert.ok(ids.includes('experimental-photography'));
-    assert.ok(ids.includes('instagram-lifestyle'));
 });
 
 test('Anything draws from every theme pool', () => {
@@ -90,7 +89,7 @@ test('pickScenario prefers an explicit scene bundle when a theme declares one', 
     assert.equal(scenario.mood, 'scene mood');
 });
 
-// --- Instagram Lifestyle theme ----------------------------------------------
+// --- Lifestyle & Candid theme ----------------------------------------------
 
 const AI_SLOP_WORDS = [
     'cinematic', 'highly detailed', 'photorealistic', 'masterpiece',
@@ -109,10 +108,10 @@ function collectStrings(value, out = []) {
     return out;
 }
 
-test('Instagram Lifestyle theme is present with its subcategories', () => {
-    const theme = themes.getTheme('instagram-lifestyle');
-    assert.equal(theme.id, 'instagram-lifestyle');
-    assert.equal(theme.label, 'Instagram Lifestyle');
+test('Lifestyle & Candid theme is present with its subcategories', () => {
+    const theme = themes.getTheme('lifestyle-candid');
+    assert.equal(theme.id, 'lifestyle-candid');
+    assert.equal(theme.label, 'Lifestyle & Candid');
     assert.equal(theme.categories.length, 14);
     const ids = theme.categories.map((c) => c.id);
     for (const id of ['casual-selfie', 'mirror-selfie', 'outfit-check', 'cafe-coffee', 'bedroom-home',
@@ -122,8 +121,8 @@ test('Instagram Lifestyle theme is present with its subcategories', () => {
     }
 });
 
-test('Instagram Lifestyle avoids generic AI-image language', () => {
-    const theme = themes.getTheme('instagram-lifestyle');
+test('Lifestyle & Candid avoids generic AI-image language', () => {
+    const theme = themes.getTheme('lifestyle-candid');
     const text = collectStrings(theme).join(' \u0000 ').toLowerCase();
     for (const word of AI_SLOP_WORDS) {
         assert.ok(!text.includes(word), 'theme contains AI-slop word: ' + word);
@@ -131,8 +130,8 @@ test('Instagram Lifestyle avoids generic AI-image language', () => {
     assert.ok(Array.isArray(theme.constraints) && theme.constraints.length > 0);
 });
 
-test('a named Instagram subcategory pins the scenario', () => {
-    const theme = themes.getTheme('instagram-lifestyle');
+test('a named Lifestyle subcategory pins the scenario', () => {
+    const theme = themes.getTheme('lifestyle-candid');
     const scenario = themes.pickScenario(theme, first, 'gym-fitness');
     assert.equal(scenario.category, 'Gym / Fitness');
     assert.equal(scenario.categoryId, 'gym-fitness');
@@ -141,8 +140,8 @@ test('a named Instagram subcategory pins the scenario', () => {
     assert.ok(scenario.composition);
 });
 
-test('assembleConcept carries the Instagram category and composition', () => {
-    const theme = themes.getTheme('instagram-lifestyle');
+test('assembleConcept carries the Lifestyle category and composition', () => {
+    const theme = themes.getTheme('lifestyle-candid');
     const built = concept.assembleConcept({ theme, mode: 'none', rng: first });
     assert.equal(built.category, 'Casual Selfie');
     assert.equal(built.composition, 'casual framing, slightly off-center');
@@ -151,8 +150,8 @@ test('assembleConcept carries the Instagram category and composition', () => {
     assert.ok(direction.includes(built.composition));
 });
 
-test('Instagram concepts preserve the selected character identity', () => {
-    const theme = themes.getTheme('instagram-lifestyle');
+test('Lifestyle concepts preserve the selected character identity', () => {
+    const theme = themes.getTheme('lifestyle-candid');
     const character = { identity: 'a woman with green eyes and freckles', appearance: 'a soft jawline', hair: 'a dark bob', outfit: 'a beige cardigan' };
     const built = concept.assembleConcept({ theme, mode: 'character', character, locks: {}, rng: first });
     assert.equal(built.subject, character.identity);
@@ -160,8 +159,8 @@ test('Instagram concepts preserve the selected character identity', () => {
     assert.equal(built.hair, character.hair);
 });
 
-test('Instagram typed follow-ups can pin a subcategory', () => {
-    const mirror = concept.interpretContextMessage('make it a mirror selfie', { open: true, themeId: 'instagram-lifestyle' });
+test('Lifestyle typed follow-ups can pin a subcategory', () => {
+    const mirror = concept.interpretContextMessage('make it a mirror selfie', { open: true, themeId: 'lifestyle-candid' });
     assert.equal(mirror.action, 'modify');
     assert.equal(mirror.changes.category, 'mirror-selfie');
     // Subcategory keywords must not leak into other themes.
@@ -169,10 +168,10 @@ test('Instagram typed follow-ups can pin a subcategory', () => {
     assert.ok(!other || !other.changes || other.changes.category === undefined);
 });
 
-test('modify re-rolls within a pinned Instagram subcategory while preserving locks', () => {
+test('modify re-rolls within a pinned Lifestyle subcategory while preserving locks', () => {
     const id = conversationId('instagram-modify');
     const preset = characterPresets.create({ name: 'Mia', identity: 'a woman with auburn hair', outfit: 'a grey hoodie' });
-    const session = playground.start({ conversationId: id, themeId: 'instagram-lifestyle', characterId: preset.id, locks: { outfit: true }, rng: first });
+    const session = playground.start({ conversationId: id, themeId: 'lifestyle-candid', characterId: preset.id, locks: { outfit: true }, rng: first });
     const originalOutfit = session.concept.outfit;
     playground.modify(session, { changes: { category: 'gym-fitness' }, rng: first });
     assert.equal(session.concept.category, 'Gym / Fitness');
@@ -181,9 +180,9 @@ test('modify re-rolls within a pinned Instagram subcategory while preserving loc
     assert.equal(session.concept.subject, preset.identity);
 });
 
-test('buildImageRequest appends the Instagram theme guidance', () => {
+test('buildImageRequest appends the Lifestyle theme guidance', () => {
     const id = conversationId('instagram-request');
-    const session = playground.start({ conversationId: id, themeId: 'instagram-lifestyle', mode: 'none', rng: first });
+    const session = playground.start({ conversationId: id, themeId: 'lifestyle-candid', mode: 'none', rng: first });
     const request = playground.buildImageRequest(session);
     assert.ok(request.explicit_constraints.some((c) => /everyday phone snapshot/i.test(c)));
     assert.ok(/Social-media category:/.test(request.user_prompt));
@@ -256,7 +255,7 @@ test('a new random Surprise casts a new character even while identity is locked'
 test('Surprise Me Again keeps the locked character and rerolls the scene', () => {
     const id = conversationId('again-random');
     const session = playground.start({
-        conversationId: id, themeId: 'instagram-lifestyle', mode: 'random_character',
+        conversationId: id, themeId: 'lifestyle-candid', mode: 'random_character',
         locks: { identity: true }, rng: () => 0
     });
     const beforeSubject = session.concept.subject;
@@ -271,7 +270,7 @@ test('Surprise Me Again keeps the locked character and rerolls the scene', () =>
 test('Surprise Me Again casts a new character when identity is unlocked', () => {
     const id = conversationId('again-unlocked');
     const session = playground.start({
-        conversationId: id, themeId: 'instagram-lifestyle', mode: 'random_character',
+        conversationId: id, themeId: 'lifestyle-candid', mode: 'random_character',
         locks: {}, rng: () => 0
     });
     const beforeSubject = session.concept.subject;
@@ -348,7 +347,7 @@ test('identity text never bakes in scene, outfit or social-media words', () => {
 test('a structured identity maps into the concept fields and a preset round-trips', () => {
     const id = conversationId('save-random');
     const session = playground.start({
-        conversationId: id, themeId: 'instagram-lifestyle', mode: 'random_character', locks: {},
+        conversationId: id, themeId: 'lifestyle-candid', mode: 'random_character', locks: {},
         rng: characterGen.createRng(4242)
     });
     const c = session.concept;
@@ -406,10 +405,10 @@ test('old-format concepts and presets keep working', () => {
     assert.equal(fromPreset.subject, 'a legacy character');
 });
 
-test('Surprise Me Again rerolls the Instagram subcategory', () => {
+test('Surprise Me Again rerolls the Lifestyle subcategory', () => {
     const id = conversationId('again-category');
     const session = playground.start({
-        conversationId: id, themeId: 'instagram-lifestyle', mode: 'none', locks: {},
+        conversationId: id, themeId: 'lifestyle-candid', mode: 'none', locks: {},
         rng: characterGen.createRng(7)
     });
     const firstCategory = session.concept.categoryId;
@@ -539,7 +538,7 @@ test('generated identities never resemble a real celebrity', () => {
 test('a profile-constrained random character saves and reuses as a preset', () => {
     const id = conversationId('save-profile');
     const session = playground.start({
-        conversationId: id, themeId: 'instagram-lifestyle', mode: 'random_character',
+        conversationId: id, themeId: 'lifestyle-candid', mode: 'random_character',
         profile: { appearance: 'latino_hispanic', age: 'adult', gender: 'man' },
         rng: characterGen.createRng(9)
     });
@@ -604,7 +603,7 @@ test('a constrained profile still casts a character from "no character" mode', (
 });
 
 test('an identity lock keeps the same character across a scene reroll', () => {
-    const theme = themes.getTheme('instagram-lifestyle');
+    const theme = themes.getTheme('lifestyle-candid');
     const profile = { appearance: 'south_asian', age: 'young_adult', gender: 'woman' };
     const original = concept.assembleConcept({
         theme, mode: 'random_character', locks: {}, profile, rng: characterGen.createRng(21)
@@ -757,6 +756,58 @@ test('buildImageRequest feeds the existing prompt builder with direction and con
     assert.ok(request.explicit_constraints.some((c) => /botanist/.test(c)));
 });
 
+test('buildPortraitRequest is identity-only direction for the prompt builder', () => {
+    const id = conversationId('portrait');
+    const session = playground.start({
+        conversationId: id, themeId: 'fashion-editorial', mode: 'random_character',
+        profile: { appearance: 'black_african_diaspora', age: 'adult', gender: 'woman' },
+        rng: characterGen.createRng(31)
+    });
+    const request = playground.buildPortraitRequest(session);
+    assert.equal(request.creative_mode, 'light');
+    assert.ok(/portrait/i.test(request.user_prompt));
+    assert.ok(request.user_prompt.includes(session.concept.subject));
+    assert.ok(request.user_prompt.includes(session.concept.appearanceCategoryLabel));
+    assert.ok(request.explicit_constraints.some((c) => /this person/i.test(c)));
+    // Identity-only: the scene/outfit must never leak into a face reference.
+    assert.ok(!/Outfit:/i.test(request.user_prompt));
+    assert.ok(!request.explicit_constraints.some((c) => /Preserve the outfit/i.test(c)));
+});
+
+test('needsCharacterImage pre-renders only fresh random characters and reuses an unchanged face', () => {
+    const id = conversationId('needs-face');
+    const random = playground.start({ conversationId: id, themeId: 'lifestyle-candid', mode: 'random_character', rng: characterGen.createRng(5) });
+    assert.equal(playground.needsCharacterImage(random), true);
+
+    const none = playground.start({ conversationId: id, themeId: 'lifestyle-candid', mode: 'none', rng: first });
+    assert.equal(playground.needsCharacterImage(none), false);
+
+    const preset = characterPresets.create({ name: 'FaceTest', identity: 'a woman with red hair' });
+    const saved = playground.start({ conversationId: id, themeId: 'lifestyle-candid', characterId: preset.id, rng: first });
+    assert.equal(playground.needsCharacterImage(saved), false);
+
+    // Once a face exists for this identity it is reused (no re-render)...
+    playground.setCharacterImage(random, { url: '/generated/face.png', width: 512, height: 512, seed: 7 });
+    assert.equal(playground.needsCharacterImage(random), false);
+    // ...until the person changes.
+    random.concept.identitySignature = 'a-brand-new-person';
+    assert.equal(playground.needsCharacterImage(random), true);
+});
+
+test('setCharacterImage persists a face and the card carries it', () => {
+    const id = conversationId('face-card');
+    const session = playground.start({ conversationId: id, themeId: 'travel-adventure', mode: 'random_character', rng: characterGen.createRng(9) });
+    assert.equal(playground.buildCard(session, null).characterImage, null);
+    playground.setCharacterImage(session, { url: '/generated/abc.png', width: 768, height: 768, seed: 42 });
+    const card = playground.buildCard(session, null);
+    assert.equal(card.characterImage.url, '/generated/abc.png');
+    assert.equal(card.characterImage.seed, 42);
+    // The face survives a reload.
+    const restored = playground.getSession(id);
+    assert.equal(restored.characterImage.url, '/generated/abc.png');
+    assert.ok(restored.characterImage.identitySignature);
+});
+
 test('card payload survives a marker round-trip', () => {
     const id = conversationId('marker');
     const session = playground.start({ conversationId: id, themeId: 'fantasy-character-worlds', mode: 'random_character', rng: first });
@@ -777,14 +828,14 @@ test('normalizeAction accepts strings and objects and rejects unknown types', ()
     assert.equal(playground.normalizeAction(null), null);
 });
 
-// --- Instagram outfit variety (component system) -----------------------------
+// --- Lifestyle outfit variety (component system) -----------------------------
 
 function instagramCategoryIds() {
-    return themes.getTheme('instagram-lifestyle').categories.map((c) => c.id);
+    return themes.getTheme('lifestyle-candid').categories.map((c) => c.id);
 }
 
-test('Instagram Lifestyle generates substantially more outfits than its flat pool', () => {
-    const theme = themes.getTheme('instagram-lifestyle');
+test('Lifestyle & Candid generates substantially more outfits than its flat pool', () => {
+    const theme = themes.getTheme('lifestyle-candid');
     const outfits = new Set();
     for (const categoryId of instagramCategoryIds()) {
         for (let seed = 1; seed <= 150; seed++) {
@@ -795,8 +846,8 @@ test('Instagram Lifestyle generates substantially more outfits than its flat poo
     assert.ok(outfits.size > theme.outfits.length * 4, 'composition should beat the flat pool');
 });
 
-test('Instagram silhouette variation is not just different colours', () => {
-    const theme = themes.getTheme('instagram-lifestyle');
+test('Lifestyle silhouette variation is not just different colours', () => {
+    const theme = themes.getTheme('lifestyle-candid');
     const silhouettes = new Set();
     for (const categoryId of instagramCategoryIds()) {
         for (let seed = 1; seed <= 150; seed++) {
@@ -813,8 +864,8 @@ test('Instagram silhouette variation is not just different colours', () => {
     assert.ok(list.includes('dress') || list.includes('set'), 'expected one-piece looks');
 });
 
-test('Instagram subcategories only receive components tagged for them', () => {
-    const theme = themes.getTheme('instagram-lifestyle');
+test('Lifestyle subcategories only receive components tagged for them', () => {
+    const theme = themes.getTheme('lifestyle-candid');
     const system = theme.outfitSystem;
     const slots = [
         ['top', 'tops'], ['bottom', 'bottoms'], ['onePiece', 'onePieces'],
@@ -839,7 +890,7 @@ test('Instagram subcategories only receive components tagged for them', () => {
 });
 
 test('gym scenarios use athletic clothing', () => {
-    const theme = themes.getTheme('instagram-lifestyle');
+    const theme = themes.getTheme('lifestyle-candid');
     const athletic = ['sports bra', 'athletic top', 'gym T-shirt', 'fitted tank', 'fitted T-shirt',
         'leggings', 'biker shorts', 'running shorts', 'matching athletic set', 'zip jacket',
         'athletic shorts', 'running shoes', 'zip-up hoodie'];
@@ -853,7 +904,7 @@ test('gym scenarios use athletic clothing', () => {
 });
 
 test('travel scenarios use vacation/summer clothing', () => {
-    const theme = themes.getTheme('instagram-lifestyle');
+    const theme = themes.getTheme('lifestyle-candid');
     const summer = ['linen', 'sundress', 'summer dress', 'dress', 'shorts', 'wide-leg', 'tank',
         'sandals', 'maxi skirt', 'cargo pants', 'button-up', 'shirt', 'sneakers', 'flats',
         'camisole', 'skirt', 'slides', 'flip-flops', 'running shoes'];
@@ -867,7 +918,7 @@ test('travel scenarios use vacation/summer clothing', () => {
 });
 
 test('night-out scenarios stay evening-appropriate', () => {
-    const theme = themes.getTheme('instagram-lifestyle');
+    const theme = themes.getTheme('lifestyle-candid');
     for (let seed = 1; seed <= 80; seed++) {
         const scenario = themes.pickScenario(theme, characterGen.createRng(seed * 53), 'night-out');
         assert.ok(/trousers|jeans|denim|skirt|dress|top|blouse|camisole|blazer/i.test(scenario.outfit),
@@ -877,10 +928,10 @@ test('night-out scenarios stay evening-appropriate', () => {
     }
 });
 
-test('consecutive Instagram Surprises do not repeat an exact outfit', () => {
+test('consecutive Lifestyle Surprises do not repeat an exact outfit', () => {
     const id = conversationId('outfit-dup');
     const session = playground.start({
-        conversationId: id, themeId: 'instagram-lifestyle', mode: 'none', locks: {},
+        conversationId: id, themeId: 'lifestyle-candid', mode: 'none', locks: {},
         rng: characterGen.createRng(1234)
     });
     assert.ok(session.concept.outfitSignature, 'expected an outfit signature');
@@ -902,7 +953,7 @@ test('outfit tracking never changes the character identity', () => {
         name: 'Ada', identity: 'a woman with auburn hair', appearance: 'a soft jawline', hair: 'a long braid'
     });
     const session = playground.start({
-        conversationId: id, themeId: 'instagram-lifestyle', characterId: preset.id, locks: {},
+        conversationId: id, themeId: 'lifestyle-candid', characterId: preset.id, locks: {},
         rng: characterGen.createRng(11)
     });
     const subject = session.concept.subject;
@@ -917,7 +968,7 @@ test('outfit tracking never changes the character identity', () => {
 });
 
 test('an identity lock survives an outfit-only reroll', () => {
-    const theme = themes.getTheme('instagram-lifestyle');
+    const theme = themes.getTheme('lifestyle-candid');
     const original = concept.assembleConcept({ theme, mode: 'random_character', locks: {}, rng: characterGen.createRng(21) });
     const rerolled = concept.assembleConcept({
         theme, mode: 'random_character', locks: { identity: true }, previous: original, rng: characterGen.createRng(22)
@@ -926,11 +977,11 @@ test('an identity lock survives an outfit-only reroll', () => {
     assert.equal(rerolled.appearance, original.appearance);
 });
 
-test('a locked Instagram outfit is preserved across rerolls', () => {
+test('a locked Lifestyle outfit is preserved across rerolls', () => {
     const id = conversationId('outfit-lock');
     const preset = characterPresets.create({ name: 'Ivy', identity: 'a woman with curly hair', outfit: 'a striped knit sweater' });
     const session = playground.start({
-        conversationId: id, themeId: 'instagram-lifestyle', characterId: preset.id, locks: { outfit: true },
+        conversationId: id, themeId: 'lifestyle-candid', characterId: preset.id, locks: { outfit: true },
         rng: characterGen.createRng(3)
     });
     assert.equal(session.concept.outfit, 'a striped knit sweater');
@@ -941,8 +992,8 @@ test('a locked Instagram outfit is preserved across rerolls', () => {
     }
 });
 
-test('Instagram outfit vocabulary stays anti-editorial', () => {
-    const theme = themes.getTheme('instagram-lifestyle');
+test('Lifestyle outfit vocabulary stays anti-editorial', () => {
+    const theme = themes.getTheme('lifestyle-candid');
     const text = collectStrings(theme.outfitSystem).join(' \u0000 ').toLowerCase();
     for (const word of AI_SLOP_WORDS) {
         assert.ok(!text.includes(word), 'outfit system contains AI-slop word: ' + word);
@@ -950,8 +1001,8 @@ test('Instagram outfit vocabulary stays anti-editorial', () => {
     assert.ok(!text.includes('editorial'), 'outfit system must not read as editorial');
 });
 
-test('Instagram outfit composition is deterministic for a seed', () => {
-    const theme = themes.getTheme('instagram-lifestyle');
+test('Lifestyle outfit composition is deterministic for a seed', () => {
+    const theme = themes.getTheme('lifestyle-candid');
     const a = themes.pickScenario(theme, characterGen.createRng(777), 'outfit-check');
     const b = themes.pickScenario(theme, characterGen.createRng(777), 'outfit-check');
     assert.deepEqual(a, b);
@@ -960,14 +1011,14 @@ test('Instagram outfit composition is deterministic for a seed', () => {
     assert.deepEqual(c1, c2);
 });
 
-// --- Instagram casual wardrobe expansion -------------------------------------
+// --- Lifestyle casual wardrobe expansion -------------------------------------
 
 function instagramSystem() {
-    return themes.getTheme('instagram-lifestyle').outfitSystem;
+    return themes.getTheme('lifestyle-candid').outfitSystem;
 }
 
 function eligibleValues(key, categoryId) {
-    const theme = themes.getTheme('instagram-lifestyle');
+    const theme = themes.getTheme('lifestyle-candid');
     const category = theme.categories.find((c) => c.id === categoryId);
     return themes.eligibleComponents(theme.outfitSystem.components[key], category.outfitTags)
         .map((entry) => entry.value);
@@ -979,7 +1030,7 @@ const STYLED_RE = /blazer|satin|tailored|varsity|bomber|heels|pleated/i;
 const OUTERWEAR_RE = /jacket|blazer|flannel/i;
 
 function sampleOutfits(categoryId, samples, multiplier = 7919) {
-    const theme = themes.getTheme('instagram-lifestyle');
+    const theme = themes.getTheme('lifestyle-candid');
     const outfits = [];
     for (let seed = 1; seed <= samples; seed++) {
         outfits.push(themes.pickScenario(theme, characterGen.createRng(seed * multiplier), categoryId).outfit);
@@ -987,7 +1038,7 @@ function sampleOutfits(categoryId, samples, multiplier = 7919) {
     return outfits;
 }
 
-test('Instagram tops pool is dominated by everyday casual pieces', () => {
+test('Lifestyle tops pool is dominated by everyday casual pieces', () => {
     const tops = instagramSystem().components.tops;
     const everyday = tops.filter((t) => EVERYDAY_TOP_RE.test(t.value));
     assert.ok(tops.length >= 55, 'expected an expanded tops pool, got ' + tops.length);
@@ -1005,7 +1056,7 @@ test('Instagram tops pool is dominated by everyday casual pieces', () => {
     assert.ok(basicWeight > styledWeight * 4, 'everyday tops should dominate styled ones');
 });
 
-test('Instagram tank tops and basic T-shirts reach casual categories', () => {
+test('Lifestyle tank tops and basic T-shirts reach casual categories', () => {
     for (const categoryId of ['casual-selfie', 'mirror-selfie', 'outfit-check', 'bedroom-home']) {
         const tops = eligibleValues('tops', categoryId);
         const tanks = tops.filter((v) => /tank/i.test(v));
@@ -1015,7 +1066,7 @@ test('Instagram tank tops and basic T-shirts reach casual categories', () => {
     }
 });
 
-test('Instagram casual categories can draw casual shorts and jeans', () => {
+test('Lifestyle casual categories can draw casual shorts and jeans', () => {
     for (const categoryId of ['casual-selfie', 'mirror-selfie', 'outfit-check', 'street-city']) {
         const bottoms = eligibleValues('bottoms', categoryId);
         assert.ok(bottoms.some((v) => /shorts/i.test(v)), categoryId + ' has no shorts');
@@ -1023,7 +1074,7 @@ test('Instagram casual categories can draw casual shorts and jeans', () => {
     }
 });
 
-test('Instagram lounge categories can draw comfy clothing', () => {
+test('Lifestyle lounge categories can draw comfy clothing', () => {
     for (const categoryId of ['bedroom-home', 'morning-routine', 'beauty-skincare']) {
         const tops = eligibleValues('tops', categoryId);
         const bottoms = eligibleValues('bottoms', categoryId);
@@ -1034,8 +1085,8 @@ test('Instagram lounge categories can draw comfy clothing', () => {
     }
 });
 
-test('Instagram casual silhouettes vary across simple separates', () => {
-    const theme = themes.getTheme('instagram-lifestyle');
+test('Lifestyle casual silhouettes vary across simple separates', () => {
+    const theme = themes.getTheme('lifestyle-candid');
     const silhouettes = new Set();
     for (let seed = 1; seed <= 200; seed++) {
         const scenario = themes.pickScenario(theme, characterGen.createRng(seed * 7919), 'casual-selfie');
@@ -1048,7 +1099,7 @@ test('Instagram casual silhouettes vary across simple separates', () => {
     assert.ok(list.some((s) => s.includes('relaxed')), 'expected relaxed looks');
 });
 
-test('Instagram casual categories strongly favour casual clothing', () => {
+test('Lifestyle casual categories strongly favour casual clothing', () => {
     const casualCategories = ['casual-selfie', 'mirror-selfie', 'outfit-check', 'cafe-coffee',
         'bedroom-home', 'street-city', 'beauty-skincare', 'morning-routine'];
     const samples = 400;
@@ -1071,7 +1122,7 @@ test('Night Out can still produce dressier outfits', () => {
     assert.ok(count / samples > 0.15, 'Night Out should still produce dressy looks: ' + count + '/' + samples);
 });
 
-test('Instagram accessories are optional, not mandatory', () => {
+test('Lifestyle accessories are optional, not mandatory', () => {
     const samples = 400;
     const outfits = sampleOutfits('casual-selfie', samples);
     const values = eligibleValues('accessories', 'casual-selfie');
@@ -1081,7 +1132,7 @@ test('Instagram accessories are optional, not mandatory', () => {
     assert.ok(rate < 0.7, 'accessories should not be mandatory: ' + Math.round(rate * 100) + '%');
 });
 
-test('Instagram casual footwear favours sneakers over heels', () => {
+test('Lifestyle casual footwear favours sneakers over heels', () => {
     const samples = 400;
     const outfits = sampleOutfits('casual-selfie', samples);
     const heels = outfits.filter((o) => /heels/i.test(o)).length;

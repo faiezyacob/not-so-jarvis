@@ -46,6 +46,7 @@ function getRelevantMessages(conversationId, query) {
 const DIRECTOR_MARKER_RE = /\n*\[\[director:\{[^\n]*?\}\]\]/g;
 const LONG_VIDEO_MARKER_RE = /\n*\[\[longvideo:\{[^\n]*?\}\]\]/g;
 const PLAYGROUND_MARKER_RE = /\n*\[\[playground:\{[^\n]*?\}\]\]/g;
+const UGC_MARKER_RE = /\n*\[\[ugc:\{[^\n]*?\}\]\]/g;
 const PROMPT_SUGGESTION_MARKER_RE = /\n*\[\[prompt-suggestion\]\]/g;
 
 function stripDirectorMarkers(content) {
@@ -53,6 +54,7 @@ function stripDirectorMarkers(content) {
         .replace(DIRECTOR_MARKER_RE, '')
         .replace(LONG_VIDEO_MARKER_RE, '')
         .replace(PLAYGROUND_MARKER_RE, '')
+        .replace(UGC_MARKER_RE, '')
         .replace(PROMPT_SUGGESTION_MARKER_RE, '')
         .trim();
 }

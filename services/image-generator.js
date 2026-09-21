@@ -1912,6 +1912,11 @@ async function generateImage(prompt, options = {}) {
         // Prefer a fresh read of the global settings so edits made through
         // the settings panel take effect without restarting the server.
         const settings = effectiveSettings();
+        // A caller may pin explicit dimensions (e.g. the Creative Playground
+        // face preview, which must not inherit the global aspect/size); every
+        // other generation derives width/height from aspectRatio + imageSize.
+        const width = Number.isInteger(options.width) && options.width > 0 ? options.width : settings.width;
+        const height = Number.isInteger(options.height) && options.height > 0 ? options.height : settings.height;
         // A per-request seed (e.g. a variation index) wins; a fixed seedMode
         // reuses the stored seed; otherwise a fresh random seed.
         const seed = resolveSeed(settings, options.seed);
@@ -1935,8 +1940,8 @@ async function generateImage(prompt, options = {}) {
         const activeModel = normalizeImageModel(settings.model) || DEFAULT_IMAGE_MODEL;
         const modelSettings = Object.assign({}, settings, resolveBaseModels(settings));
         const graph = activeModel === 'qwen_image_2_1'
-            ? buildQwenImage21T2IGraph(finalPrompt, Object.assign({}, options, { seed, settings: modelSettings }))
-            : buildKrea2T2IGraph(finalPrompt, Object.assign({}, options, { seed, settings }));
+            ? buildQwenImage21T2IGraph(finalPrompt, Object.assign({}, options, { seed, width, height, settings: modelSettings }))
+            : buildKrea2T2IGraph(finalPrompt, Object.assign({}, options, { seed, width, height, settings }));
 
         const info = await comfyui.getObjectInfo();
         await validateGraphAgainstComfy(info, graph, activeModel === 'qwen_image_2_1' ? QWEN_IMAGE_CLIP_TYPE : 'krea2');
@@ -1985,16 +1990,16 @@ async function generateImage(prompt, options = {}) {
             model: activeModel === 'qwen_image_2_1' ? 'Qwen Image 2.1' : 'Krea2',
             loras: activeLoras,
             seed,
-            width: settings.width,
-            height: settings.height,
+            width,
+            height,
             generationMs: Date.now() - startedAt
         });
 
         return {
             url: meta.file,
             filename: basename,
-            width: settings.width,
-            height: settings.height,
+            width,
+            height,
             seed,
             model: activeModel,
             prompt: finalPrompt,

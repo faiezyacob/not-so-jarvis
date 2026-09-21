@@ -429,10 +429,10 @@ const CHANGE_HINTS = [
     { field: 'composition', value: 'looking at the phone screen', re: /\blooking at the phone\b/i }
 ];
 
-// Instagram subcategory keywords. These are only consulted for the Instagram
+// Lifestyle & Candid subcategory keywords. These are only consulted for that
 // theme (the vocabulary does not map onto other themes); they let a typed
 // follow-up pin the subcategory, e.g. "make it a mirror selfie".
-const INSTAGRAM_THEME_ID = 'instagram-lifestyle';
+const CATEGORY_THEME_ID = 'lifestyle-candid';
 const CATEGORY_HINTS = [
     { id: 'mirror-selfie', re: /\bmirror\s+(?:selfie|photo|pic)\b/i },
     { id: 'outfit-check', re: /\boutfit\s+(?:check|post|photo)\b/i },
@@ -483,8 +483,8 @@ function detectChanges(text, options = {}) {
             break;
         }
     }
-    // Subcategory keywords only apply to the Instagram theme.
-    if (options.themeId === INSTAGRAM_THEME_ID) {
+    // Subcategory keywords only apply to the Lifestyle & Candid theme.
+    if (options.themeId === CATEGORY_THEME_ID) {
         for (const hint of CATEGORY_HINTS) {
             if (hint.re.test(text)) {
                 changes.category = hint.id;
@@ -569,6 +569,37 @@ function conceptToDirection(concept) {
     return lines.join(' ');
 }
 
+// A neutral head-and-shoulders studio portrait of the concept's person, shown to
+// the user before the full scene is generated so a random character has a face.
+// Like conceptToDirection this is creative direction only — the image prompt
+// builder still owns the final Krea2 prompt. Face-reference constraints are
+// identity-only: scene, outfit, style and environment must not leak in.
+function conceptToPortraitDirection(concept) {
+    const c = concept || {};
+    const lines = [];
+    lines.push('Creative direction: a head-and-shoulders studio portrait of the character.');
+    if (c.subject) lines.push('Character: ' + c.subject + '.');
+    if (c.appearanceCategoryLabel) lines.push('Character appearance category: ' + c.appearanceCategoryLabel + '.');
+    if (c.appearance) lines.push('Facial appearance: ' + c.appearance + '.');
+    if (c.hair) lines.push('Hair and physical appearance: ' + c.hair + '.');
+    lines.push('Head and shoulders framing, facing the camera with a natural relaxed expression.');
+    lines.push('Plain neutral studio background, soft even lighting, sharp focus on the face.');
+    lines.push('A clean identity reference portrait, not a scene.');
+    return lines.join(' ');
+}
+
+function conceptToPortraitConstraints(concept) {
+    const c = concept || {};
+    const constraints = [];
+    if (c.subject) constraints.push('Show exactly this person: ' + c.subject);
+    if (c.appearance) constraints.push('Show this facial appearance: ' + c.appearance);
+    if (c.hair) constraints.push('Show this hair and physical appearance: ' + c.hair);
+    if (c.appearanceCategoryLabel) constraints.push('Character demographic appearance: ' + c.appearanceCategoryLabel);
+    constraints.push('Head-and-shoulders portrait framing');
+    constraints.push('Plain neutral studio background');
+    return constraints;
+}
+
 // Explicit constraints that reinforce locked/identity details for the builder.
 function conceptToConstraints(concept, options = {}) {
     const c = concept || {};
@@ -603,5 +634,7 @@ module.exports = {
     interpretContextMessage,
     detectChanges,
     conceptToDirection,
+    conceptToPortraitDirection,
+    conceptToPortraitConstraints,
     conceptToConstraints
 };

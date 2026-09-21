@@ -76,6 +76,13 @@ function previousOutfitArchetype(previous) {
     return concept && concept.outfitArchetype ? concept.outfitArchetype : '';
 }
 
+// The identity a face image belongs to. Same key => the same person, so a
+// scene-only re-roll can reuse the existing portrait instead of re-rendering it.
+function characterIdentityKey(session) {
+    const concept = session && session.concept ? session.concept : {};
+    return concept.identitySignature || concept.subject || '';
+}
+
 function buildCard(session, character) {
     const concept = session.concept || {};
     return {
@@ -93,6 +100,16 @@ function buildCard(session, character) {
         // can be shown and reproduced.
         characterProfile: concept.characterProfile || session.characterProfile || null,
         characterSeed: concept.characterSeed || null,
+        // The pre-rendered face of a random character, shown in the card before
+        // the full scene is generated. Null until the face stage runs.
+        characterImage: session.characterImage && session.characterImage.url
+            ? {
+                url: session.characterImage.url,
+                width: session.characterImage.width,
+                height: session.characterImage.height,
+                seed: session.characterImage.seed
+            }
+            : null,
         // The active Outfit Pack (wardrobe personality) and any custom outfit, so
         // the Surprise Me popover can reflect the open concept's wardrobe.
         outfitPack: concept.outfitPack || '',
@@ -435,6 +452,52 @@ function buildImageRequest(session) {
     };
 }
 
+// The pre-rendered face request: identity-only creative direction handed to the
+// same prompt builder as the full concept. The builder owns the final prompt.
+function buildPortraitRequest(session) {
+    if (!session) return null;
+    const concept = session.concept || {};
+    if (!concept.subject && !concept.appearance && !concept.hair) return null;
+    return {
+        intent: 'image_generation',
+        user_prompt: conceptEngine.conceptToPortraitDirection(concept),
+        previous_prompt: '',
+        creative_mode: 'light',
+        explicit_constraints: conceptEngine.conceptToPortraitConstraints(concept)
+    };
+}
+
+// Only a freshly cast random character pre-renders a face: a saved character's
+// identity is already known and a no-character concept has nobody to show. A
+// portrait is regenerated only when the identity actually changed — a re-roll
+// that keeps the person via the Identity lock reuses the existing face.
+function needsCharacterImage(session) {
+    if (!session || session.mode !== 'random_character') return false;
+    const key = characterIdentityKey(session);
+    if (!key) return false;
+    const image = session.characterImage;
+    if (!image || !image.url) return true;
+    return image.identitySignature !== key;
+}
+
+function setCharacterImage(session, image) {
+    if (!session) return session;
+    if (!image || !image.url) return session;
+    session.characterImage = {
+        url: image.url,
+        filename: image.filename || '',
+        prompt: image.prompt || '',
+        seed: image.seed,
+        width: image.width,
+        height: image.height,
+        identitySignature: characterIdentityKey(session),
+        createdAt: new Date().toISOString()
+    };
+    session.updatedAt = new Date().toISOString();
+    state.setSession(session.conversationId, session);
+    return session;
+}
+
 // A concept is "open" only while it is an untouched preview. Once it is saved
 // or used, typed follow-ups flow to the normal router so an active image task
 // is never shadowed by a parked concept. Explicit card actions still work.
@@ -501,6 +564,9 @@ module.exports = {
     again,
     modify,
     buildImageRequest,
+    buildPortraitRequest,
+    needsCharacterImage,
+    setCharacterImage,
     classifyMessage,
     normalizeAction,
     resolveCharacter,
