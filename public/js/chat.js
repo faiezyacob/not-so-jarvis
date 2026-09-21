@@ -16,7 +16,7 @@ const Chat = (() => {
     let conversationListEl;
     let chatMentionPopup;
     let pendingAttachments = [];
-    let pendingReference = null;
+    let pendingReferences = [];
     let mentionItems = [];
     let mentionIndex = 0;
     let mentionToken = 0;
@@ -194,7 +194,7 @@ const Chat = (() => {
 
     function resetReferenceState() {
         generatedMetaCache = null;
-        pendingReference = null;
+        pendingReferences = [];
         closeMentionPopup();
         renderAttachments();
     }
@@ -283,34 +283,34 @@ const Chat = (() => {
     function renderAttachments() {
         if (!chatAttachmentsEl) return;
         chatAttachmentsEl.innerHTML = '';
-        if (!pendingAttachments.length && !pendingReference) {
+        if (!pendingAttachments.length && !pendingReferences.length) {
             chatAttachmentsEl.style.display = 'none';
             return;
         }
         chatAttachmentsEl.style.display = 'flex';
 
-        if (pendingReference) {
+        pendingReferences.forEach((reference, index) => {
             const item = document.createElement('div');
             item.className = 'chat-attachment chat-attachment--reference';
             const img = document.createElement('img');
             img.className = 'chat-attachment-thumb';
-            img.src = pendingReference.url;
-            img.alt = pendingReference.filename;
+            img.src = reference.url;
+            img.alt = reference.filename;
             const badge = document.createElement('span');
             badge.className = 'chat-attachment-badge';
-            badge.textContent = '@';
-            badge.title = 'Reference image';
+            badge.textContent = '@' + (index + 1);
+            badge.title = 'Reference image ' + (index + 1);
             const btn = document.createElement('button');
             btn.className = 'chat-attachment-remove';
             btn.type = 'button';
             btn.textContent = '×';
             btn.title = 'Remove reference';
-            btn.addEventListener('click', clearReference);
+            btn.addEventListener('click', () => removeReference(index + 1));
             item.appendChild(img);
             item.appendChild(badge);
             item.appendChild(btn);
             chatAttachmentsEl.appendChild(item);
-        }
+        });
 
         pendingAttachments.forEach((a) => {
             const item = document.createElement('div');
@@ -349,9 +349,11 @@ const Chat = (() => {
     // --- @ reference picker ---
     //
     // Typing "@" opens a picker of the images generated in the current
-    // conversation. Selecting one attaches it as a reference chip that is sent
-    // with the next message so the pipelines can use it as an edit source or
-    // an I2VA first frame instead of the conversation's latest image.
+    // conversation. Each selection inserts a numbered @imageN token at the
+    // caret and adds a reference chip, so a prompt can position several
+    // references ("make @image1 hold @image2 at @image3"). The tokens are sent
+    // with the next message so the pipelines can use the first as an edit source
+    // or an I2VA first frame and the rest as positional Qwen edit references.
 
     function autoGrowInput() {
         if (!chatInput) return;
@@ -509,9 +511,16 @@ const Chat = (() => {
         const item = mentionItems[index];
         if (!item) return;
         const caret = chatInput.selectionStart || 0;
-        const before = chatInput.value.slice(0, caret).replace(/(?:^|\s)@[^\s@]*$/, ' ');
+        // Replace the in-progress "@query" token with a numbered reference token
+        // (@image1, @image2, …) so the prompt keeps the reference's position.
+        const before = chatInput.value
+            .slice(0, caret)
+            .replace(/(?:^|\s)@[^\s@]*$/, (match) => (match.charAt(0) === '@' ? '' : ' '));
         const after = chatInput.value.slice(caret);
-        chatInput.value = (before + after).replace(/^\s+/, '').replace(/\s{2,}/g, ' ');
+        const token = '@image' + (pendingReferences.length + 1);
+        chatInput.value = before + token + after;
+        const pos = before.length + token.length;
+        if (typeof chatInput.setSelectionRange === 'function') chatInput.setSelectionRange(pos, pos);
         autoGrowInput();
         addReference(item);
         closeMentionPopup();
@@ -519,13 +528,58 @@ const Chat = (() => {
     }
 
     function addReference(item) {
-        pendingReference = item;
+        pendingReferences.push(item);
         renderAttachments();
     }
 
-    function clearReference() {
-        pendingReference = null;
+    function removeReference(n) {
+        if (n < 1 || n > pendingReferences.length) return;
+        pendingReferences.splice(n - 1, 1);
+        // Drop the token and renumber the ones that followed it so the
+        // remaining @imageN tokens stay contiguous.
+        chatInput.value = chatInput.value
+            .replace(new RegExp('\\s*@image' + n + '\\b', 'gi'), '')
+            .replace(/@image\s*(\d+)\b/gi, (match, d) => (Number(d) > n ? '@image' + (Number(d) - 1) : match));
+        autoGrowInput();
         renderAttachments();
+    }
+
+    function clearReferences() {
+        pendingReferences = [];
+        renderAttachments();
+    }
+
+    // Replace inline @imageN tokens with numbered markdown images so the
+    // reference order survives into the persisted message. The backend rewrites
+    // them back to positional wording ("image 1", "image 2") for the editor.
+    // A single reference keeps the legacy shape (plain instruction + the image
+    // appended as an unnumbered `![reference]`), so the editor is not told to
+    // "edit image 1" unnecessarily. Numbered positions are only used for 2+.
+    function materializeReferenceText(text, references) {
+        if (!references.length) return text;
+        if (references.length === 1) {
+            const ref = references[0];
+            const plain = String(text || '')
+                .replace(/@image\s*\d+\b/gi, ' ')
+                .replace(/\s{2,}/g, ' ')
+                .trim();
+            return plain
+                ? plain + '\n\n![reference](' + ref.url + ')'
+                : '![reference](' + ref.url + ')';
+        }
+        const used = new Set();
+        let out = String(text || '').replace(/@image\s*(\d+)\b/gi, (match, n) => {
+            const idx = Number(n) - 1;
+            const ref = references[idx];
+            if (!ref) return match;
+            used.add(idx);
+            return '![reference ' + (idx + 1) + '](' + ref.url + ')';
+        });
+        references.forEach((ref, idx) => {
+            if (used.has(idx)) return;
+            out += (out ? '\n\n' : '') + '![reference ' + (idx + 1) + '](' + ref.url + ')';
+        });
+        return out;
     }
 
     // --- Message rendering ---
@@ -824,8 +878,8 @@ const Chat = (() => {
         // A Director action is a self-contained turn: drafts are ignored so a
         // pending attachment can never leak into an approval click.
         const attachments = override ? [] : pendingAttachments.slice();
-        const reference = override ? null : pendingReference;
-        if (!text && !attachments.length && !reference) return;
+        const references = override ? [] : pendingReferences.slice();
+        if (!text && !attachments.length && !references.length) return;
 
         let conversationId = Conversations.currentId();
 
@@ -838,7 +892,10 @@ const Chat = (() => {
 
         const visionImages = attachments.map((a) => a.base64);
         const parts = [];
-        if (text) parts.push(text);
+        // Inline the @imageN tokens as numbered markdown references so the
+        // prompt keeps each reference's position for the editor.
+        const outgoingText = references.length ? materializeReferenceText(text, references) : text;
+        if (outgoingText) parts.push(outgoingText);
         if (attachments.length) {
             setSendingState(true);
             try {
@@ -850,9 +907,6 @@ const Chat = (() => {
                 return;
             }
         }
-        if (reference) {
-            parts.push('![reference](' + reference.url + ')');
-        }
         const userText = parts.join('\n\n');
 
         addMessageDom('user', userText);
@@ -860,7 +914,7 @@ const Chat = (() => {
             chatInput.value = '';
             autoGrowInput();
             clearAttachments();
-            clearReference();
+            clearReferences();
         }
 
         // Persist user message to backend (context builder source)
@@ -897,7 +951,7 @@ const Chat = (() => {
                     think,
                     message: userText || text,
                     images: visionImages,
-                    references: reference ? [reference.filename] : [],
+                    references: references.map((r) => r.filename),
                     directorAction: override && override.directorAction ? override.directorAction : undefined,
                     longVideoAction: override && override.longVideoAction ? override.longVideoAction : undefined,
                     playgroundAction: override && override.playgroundAction ? override.playgroundAction : undefined,

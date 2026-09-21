@@ -158,3 +158,27 @@ test('buildQwenImage21EditGraph: always uses the qwen slots (edit is Qwen-only)'
     assert.equal(graph.sampler.inputs.sampler_name, 'euler');
     assert.equal(graph.sampler.inputs.scheduler, 'simple');
 });
+
+test('buildQwenImage21EditGraph: extra references wire images.image_2, image_3', () => {
+    const settings = imageGenerator.getDefaults();
+    const graph = imageGenerator.buildQwenImage21EditGraph('hold the bag from image 2', 'edit_1.png', {
+        seed: 1,
+        settings,
+        referenceLoadNames: ['edit_2.png', 'edit_3.png']
+    });
+
+    // image_1 stays the base/source; extras are additional LoadImage nodes.
+    assert.equal(graph.load_image.inputs.image, 'edit_1.png');
+    assert.equal(graph.load_image_2.inputs.image, 'edit_2.png');
+    assert.equal(graph.load_image_3.inputs.image, 'edit_3.png');
+
+    // Flat dotted top-level keys (a nested object is dropped by ComfyUI).
+    assert.deepEqual(graph.conditioning.inputs['images.image_1'], ['load_image', 0]);
+    assert.deepEqual(graph.conditioning.inputs['images.image_2'], ['load_image_2', 0]);
+    assert.deepEqual(graph.conditioning.inputs['images.image_3'], ['load_image_3', 0]);
+    assert.equal(graph.conditioning.inputs.images, undefined);
+    assert.equal(graph.load_image_4, undefined);
+
+    // The reference latent still comes from image_1.
+    assert.deepEqual(graph.sampler.inputs.latent_image, ['conditioning', 2]);
+});

@@ -2128,10 +2128,15 @@ function detectImageModifyIntent(message, hasActiveImageTask) {
 //   (sized from image_1) → KSampler latent_image
 //   KSampler (euler / simple, cfg 1, 25 steps) → VAEDecode → SaveImage
 //
-// The reference image must be wired with the flat dotted key `images.image_1`
-// (NOT a nested `{ images: { image_1: ... } }` object): the ComfyUI /prompt API
-// only resolves a link when it is a top-level value, and the nested shape is
-// silently dropped before the node ever sees the image.
+// The reference images must be wired with the flat dotted keys `images.image_1`,
+// `images.image_2`, … (NOT a nested `{ images: { image_1: ... } }` object): the
+// ComfyUI /prompt API only resolves a link when it is a top-level value, and the
+// nested shape is silently dropped before the node ever sees the image.
+//
+// `TextEncodeQwenImage21` exposes an Autogrow `images` input accepting up to
+// image_1..image_16, sorted numerically. image_1 is the base/source being
+// edited; each extra LoadImage becomes another reference the instruction can
+// address by position ("hold the object from image 2, place it in image 3").
 //
 // `resolution` is a total pixel budget for the text encoder, not a width or
 // height. 0 (the default here) keeps image_1 at its own size rounded to a
@@ -2145,7 +2150,11 @@ function buildQwenImage21EditGraph(instruction, loadName, options = {}) {
         clip: String(settings.qwenClip || DEFAULT_SETTINGS.qwenClip).trim(),
         vae: String(settings.qwenVae || DEFAULT_SETTINGS.qwenVae).trim()
     };
-    if (!loadName) {
+    const loadNames = [loadName]
+        .concat(Array.isArray(options.referenceLoadNames) ? options.referenceLoadNames : [])
+        .map((name) => String(name || '').trim())
+        .filter(Boolean);
+    if (!loadNames.length) {
         const error = new Error('Qwen Image 2.1 Edit needs a source image.');
         error.code = 'edit_source_missing';
         throw error;
@@ -2159,23 +2168,29 @@ function buildQwenImage21EditGraph(instruction, loadName, options = {}) {
     const graph = {
         unet: buildDiffusionLoaderNode(base.unet),
         clip: { class_type: 'CLIPLoader', inputs: { clip_name: base.clip, type: QWEN_IMAGE_CLIP_TYPE, device: 'default' } },
-        vae: { class_type: 'VAELoader', inputs: { vae_name: base.vae } },
-        load_image: { class_type: 'LoadImage', inputs: { image: loadName } }
+        vae: { class_type: 'VAELoader', inputs: { vae_name: base.vae } }
     };
+
+    // One LoadImage per reference, wired into the encoder's flat dotted keys.
+    const imageInputs = {};
+    loadNames.forEach((name, index) => {
+        const nodeId = index === 0 ? 'load_image' : 'load_image_' + (index + 1);
+        graph[nodeId] = { class_type: 'LoadImage', inputs: { image: name } };
+        imageInputs['images.image_' + (index + 1)] = [nodeId, 0];
+    });
 
     // Apply any attached LoRAs on top of the base model + clip.
     const stack = buildLoraChain(graph, settings.loras);
 
     graph.conditioning = {
         class_type: 'TextEncodeQwenImage21',
-        inputs: {
+        inputs: Object.assign({
             clip: stack.clip,
             prompt: String(instruction || ''),
             negative_prompt: negativeText,
             resolution,
-            vae: ['vae', 0],
-            'images.image_1': ['load_image', 0]
-        }
+            vae: ['vae', 0]
+        }, imageInputs)
     };
 
     graph.sampler = {
@@ -2201,6 +2216,11 @@ function buildQwenImage21EditGraph(instruction, loadName, options = {}) {
     return graph;
 }
 
+// Extra references beyond the base image (image_1). The Qwen encoder accepts
+// up to image_16, but 3 extra references (4 images total) already covers the
+// person + object + scene combinations the @ picker produces.
+const MAX_EDIT_REFERENCES = 3;
+
 // Edit a local image file (data/images upload or data/generated output) from
 // a plain-language instruction. Shares the single-generation queue. Returns
 // { url, filename, width, height, prompt, generationMs, meta }.
@@ -2217,13 +2237,22 @@ async function editImage(sourceAbsPath, instruction, options = {}) {
         const startedAt = Date.now();
 
         const abs = String(sourceAbsPath || '');
+        // Additional @-referenced images become image_2, image_3, … in the
+        // encoder. Unreadable/empty/duplicate files are skipped rather than
+        // failing the whole edit.
+        const referencePaths = (Array.isArray(options.references) ? options.references : [])
+            .map((p) => String(p || ''))
+            .filter((p) => {
+                if (!p || p === abs) return false;
+                try { return fs.existsSync(p) && fs.statSync(p).size > 0; } catch (err) { return false; }
+            })
+            .slice(0, MAX_EDIT_REFERENCES);
         if (!abs || !fs.existsSync(abs)) {
             const error = new Error('The image to edit could not be found on disk. It may have been deleted.');
             error.code = 'edit_source_missing';
             throw error;
         }
-        const buffer = fs.readFileSync(abs);
-        if (!buffer.length) {
+        if (!fs.statSync(abs).size) {
             const error = new Error('The image to edit is empty.');
             error.code = 'edit_source_missing';
             throw error;
@@ -2257,11 +2286,24 @@ async function editImage(sourceAbsPath, instruction, options = {}) {
             throw error;
         }
 
-        // Make the source available to ComfyUI's LoadImage node, then always
-        // clean it up afterwards so the input folder does not accumulate files.
-        const uploadName = 'jarvis_edit_' + Date.now() + '_' + path.basename(abs);
-        const uploaded = await comfyui.uploadImage(buffer, uploadName);
-        const loadName = (uploaded && uploaded.name) || uploadName;
+        // Make the source (and every extra reference) available to ComfyUI's
+        // LoadImage nodes, then always clean them up afterwards so the input
+        // folder does not accumulate files.
+        const uploadedNames = [];
+        const uploadSource = async (sourceAbs, index) => {
+            const buffer = fs.readFileSync(sourceAbs);
+            const uploadName = 'jarvis_edit_' + Date.now() + '_' + index + '_' + path.basename(sourceAbs);
+            const uploaded = await comfyui.uploadImage(buffer, uploadName);
+            const loadName = (uploaded && uploaded.name) || uploadName;
+            uploadedNames.push(loadName);
+            return loadName;
+        };
+
+        const loadName = await uploadSource(abs, 0);
+        const referenceLoadNames = [];
+        for (let i = 0; i < referencePaths.length; i++) {
+            referenceLoadNames.push(await uploadSource(referencePaths[i], i + 1));
+        }
 
         let basename;
         try {
@@ -2271,7 +2313,8 @@ async function editImage(sourceAbsPath, instruction, options = {}) {
                 steps: options.steps,
                 cfg: options.cfg,
                 resolution: options.resolution,
-                negativePrompt: options.negativePrompt
+                negativePrompt: options.negativePrompt,
+                referenceLoadNames
             });
 
             const info = await comfyui.getObjectInfo();
@@ -2299,7 +2342,9 @@ async function editImage(sourceAbsPath, instruction, options = {}) {
 
             await comfyui.deleteOutputFile(entry, { history: pid });
         } finally {
-            await comfyui.deleteInputFile(loadName).catch(() => {});
+            for (const name of uploadedNames) {
+                await comfyui.deleteInputFile(name).catch(() => {});
+            }
         }
 
         const { width, height } = readImageDimensions(path.join(GENERATED_DIR, basename));
@@ -2316,7 +2361,10 @@ async function editImage(sourceAbsPath, instruction, options = {}) {
             width: width || dims.width,
             height: height || dims.height,
             generationMs: Date.now() - startedAt,
-            edit: { source: path.basename(abs) }
+            edit: {
+                source: path.basename(abs),
+                references: referencePaths.map((p) => path.basename(p))
+            }
         });
 
         return {

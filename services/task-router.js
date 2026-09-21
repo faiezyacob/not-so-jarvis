@@ -456,7 +456,14 @@ function decisionFromResolvedIntent(resolved, { message, activeTask, conversatio
 // activeTask can be null to indicate no active task; conversationId is used to
 // fetch recent messages for the compact context. hasAttachedImage marks a
 // freshly uploaded photo on this message (vision source for image_edit).
-async function routeMessage({ message, provider, model, conversationId, hasAttachedImage, referenceImage, think }) {
+async function routeMessage({ message, provider, model, conversationId, hasAttachedImage, referenceImage, referenceImages, think }) {
+    // The @ picker can send an ordered list of references; the first is the one
+    // the turn acts on (edit source / I2VA first frame), the rest are extra
+    // positional references for the Qwen editor. Scalar callers still work.
+    const referenceList = Array.isArray(referenceImages) && referenceImages.length
+        ? referenceImages
+        : (referenceImage ? [referenceImage] : []);
+    const primaryReference = referenceList[0] || null;
     // Upscale requests are narrow, deterministic intents. Detect them with
     // heuristics before the LLM router so "upscale this video" always routes
     // to the video upscale pipeline and "upscale this image" always routes to
@@ -506,10 +513,11 @@ async function routeMessage({ message, provider, model, conversationId, hasAttac
     //   - a video request turns it into the I2VA first frame;
     //   - a question about it stays chat;
     //   - any other instruction is an image edit of the referenced image.
-    if (referenceImage) {
+    if (primaryReference) {
         const refText = String(message || '')
             .replace(/!\[[^\]]*\]\(\/generated\/[^)]+\)/g, '')
             .replace(/!\[[^\]]*\]\(\/images\/[^)]+\)/g, '')
+            .replace(/@image\s*\d+\b/gi, '')
             .trim();
 
         if (videoGenerator.VIDEO_WORD_RE.test(refText) || videoGenerator.I2V_REF_RE.test(refText)) {
@@ -518,7 +526,7 @@ async function routeMessage({ message, provider, model, conversationId, hasAttac
                 if (videoIntent && videoIntent.intent === 'video_generation') {
                     videoIntent.has_reference_image = true;
                     videoIntent.videoMode = 'i2va';
-                    videoIntent.sourceImageRawFilename = referenceImage;
+                    videoIntent.sourceImageRawFilename = primaryReference;
                     if (!videoIntent.user_prompt) videoIntent.user_prompt = refText || 'animate this image';
                     return {
                         intent: 'new_task',
@@ -535,12 +543,15 @@ async function routeMessage({ message, provider, model, conversationId, hasAttac
         }
 
         if (refText && !looksLikeQuestion(refText)) {
+            // Keep the raw message (references + @imageN tokens) as the
+            // instruction source: the server materializes positional
+            // references ("image 1", "image 2") before running the editor.
             return {
                 intent: 'new_task',
                 task: 'image_edit',
                 action: 'edit',
                 shouldExecuteTool: true,
-                updatedPrompt: refText
+                updatedPrompt: message
             };
         }
         return ROUTER_FALLBACK;

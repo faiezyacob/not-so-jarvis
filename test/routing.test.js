@@ -104,6 +104,24 @@ test('routeMessage: an instruction on a referenced image is an image edit', asyn
     assert.equal(d.action, 'edit');
 });
 
+test('routeMessage: multiple @-references route to an image edit with the raw message', async () => {
+    stub();
+    const message = 'make @image1 hold @image2 at @image3';
+    const d = await route(message, { referenceImages: ['a.png', 'b.png', 'c.png'] });
+    assert.equal(d.task, 'image_edit');
+    assert.equal(d.action, 'edit');
+    // The raw message is preserved so the server can materialize the
+    // positional references ("image 1", "image 2", "image 3").
+    assert.equal(d.updatedPrompt, message);
+});
+
+test('routeMessage: a question about a multi-referenced image stays chat', async () => {
+    stub();
+    const d = await route('what is in this image?', { referenceImages: ['a.png', 'b.png'] });
+    assert.equal(d.shouldExecuteTool, false);
+    assert.notEqual(d.task, 'image_edit');
+});
+
 test('routeMessage: "another image" runs the image classifier as a new task', async () => {
     stub({
         getTask: () => ({ type: 'image', prompt: 'a cat' }),

@@ -99,6 +99,11 @@ const UPLOAD_MIME_TO_EXT = {
 };
 const UPLOAD_MAX_BYTES = 10 * 1024 * 1024;
 const CHAT_IMAGES_MAX = 3;
+// The @ picker can reference more than one generated image per turn (e.g.
+// "make @image1 hold @image2 in @image3"). image_1 is the edit source and the
+// rest become Qwen edit references; cap the total so a prompt can't wire an
+// unbounded chain of LoadImage nodes.
+const REFERENCE_IMAGES_MAX = 4;
 
 // Share the single-generation lock between image and video pipelines.
 videoGenerator.registerGenerationLock(imageGenerator);
@@ -1271,6 +1276,22 @@ function sanitizeReferenceImage(value) {
     return safeName;
 }
 
+// Validate an ordered list of @-picker references, dropping invalid entries
+// while preserving order and position. Order is meaningful: the first is the
+// edit source and each subsequent entry maps to the matching "image N" wording
+// in the instruction, so entries are NOT de-duplicated.
+function sanitizeReferenceImages(value) {
+    const list = Array.isArray(value) ? value : (value ? [value] : []);
+    const out = [];
+    for (const item of list) {
+        const safeName = sanitizeReferenceImage(item);
+        if (!safeName) continue;
+        out.push(safeName);
+        if (out.length >= REFERENCE_IMAGES_MAX) break;
+    }
+    return out;
+}
+
 // Resolve a reference to the edit-source shape (absPath/kind/rawFilename).
 function resolveReferenceSource(rawFilename) {
     const safeName = sanitizeReferenceImage(rawFilename);
@@ -1282,18 +1303,29 @@ function resolveReferenceSource(rawFilename) {
     };
 }
 
-// Read a referenced generated image as vision base64 (best-effort) so chat can
-// answer questions about it. Oversized or unreadable files are skipped.
+// Resolve an ordered list of references to edit-source shapes.
+function resolveReferenceSources(list) {
+    const names = Array.isArray(list) ? list : (list ? [list] : []);
+    return names.map(resolveReferenceSource).filter(Boolean);
+}
+
+// Read referenced generated image(s) as vision base64 (best-effort) so chat can
+// answer questions about them. Oversized or unreadable files are skipped.
 function referenceVisionImages(referenceImage) {
-    const source = resolveReferenceSource(referenceImage);
-    if (!source) return [];
-    try {
-        const buffer = fs.readFileSync(source.absPath);
-        if (!buffer.length || buffer.length > UPLOAD_MAX_BYTES) return [];
-        return [buffer.toString('base64')];
-    } catch (err) {
-        return [];
+    const list = Array.isArray(referenceImage) ? referenceImage : (referenceImage ? [referenceImage] : []);
+    const out = [];
+    for (const item of list) {
+        const source = resolveReferenceSource(item);
+        if (!source) continue;
+        try {
+            const buffer = fs.readFileSync(source.absPath);
+            if (!buffer.length || buffer.length > UPLOAD_MAX_BYTES) continue;
+            out.push(buffer.toString('base64'));
+        } catch (err) {
+            /* skip unreadable reference */
+        }
     }
+    return out;
 }
 
 // --- Conversation handlers ---
@@ -1547,9 +1579,16 @@ async function handleChatStream(req, res) {
             json(res, 400, { error: err.message });
             return;
         }
-        // Optional generated-image reference selected from the @ picker. It
-        // becomes the source for an image edit or an I2VA first frame.
-        const referenceImage = sanitizeReferenceImage(body.reference || body.referenceImage || (Array.isArray(body.references) ? body.references[0] : null));
+        // Optional generated-image references selected from the @ picker. The
+        // first becomes the source for an image edit (or an I2VA first frame);
+        // any others are positional references for the Qwen editor.
+        const referenceImages = sanitizeReferenceImages(body.references);
+        const legacyReference = sanitizeReferenceImage(body.reference || body.referenceImage);
+        if (legacyReference && !referenceImages.includes(legacyReference)) {
+            referenceImages.unshift(legacyReference);
+            if (referenceImages.length > REFERENCE_IMAGES_MAX) referenceImages.length = REFERENCE_IMAGES_MAX;
+        }
+        const referenceImage = referenceImages[0] || null;
         // Composer "Director Mode" toggle: pre-selects the Director workflow so
         // a fresh video request skips the Direct-vs-Director question.
         const forceDirector = body.forceDirector === true;
@@ -1724,6 +1763,7 @@ async function handleChatStream(req, res) {
             conversationId,
             hasAttachedImage: chatImages.length > 0,
             referenceImage,
+            referenceImages,
             think
         });
 
@@ -1770,7 +1810,10 @@ async function handleChatStream(req, res) {
         // preserving the rest (Qwen Image 2.1 native editor, not a from-scratch
         // regen).
         if (decision.shouldExecuteTool && decision.task === 'image_edit') {
-            const instruction = imageGenerator.cleanEditInstruction(stripImageRefs(decision.updatedPrompt || message));
+            const referenceSources = resolveReferenceSources(referenceImages);
+            const instruction = imageGenerator.cleanEditInstruction(
+                materializeEditInstruction(decision.updatedPrompt || message)
+            );
             const activeTask = taskState.getTask(conversationId);
             const action = (decision.intent === 'new_task' || decision.intent === 'switch_task') ? 'generate' : 'modify';
             taskState.setTask(conversationId, {
@@ -1789,7 +1832,8 @@ async function handleChatStream(req, res) {
                 instruction,
                 action,
                 previousPrompt: activeTask.prompt || null,
-                sourceOverride: referenceImage ? resolveReferenceSource(referenceImage) : undefined,
+                sourceOverride: referenceSources[0] || undefined,
+                referenceSources,
                 think
             });
             return;
@@ -2179,7 +2223,7 @@ async function handleChatStream(req, res) {
         // A referenced generated image is exposed to the chat model as vision
         // so questions about it ("what do you think of this?") are answered
         // with the actual pixels in view.
-        const chatVision = chatImages.concat(referenceVisionImages(referenceImage)).slice(0, CHAT_IMAGES_MAX);
+        const chatVision = chatImages.concat(referenceVisionImages(referenceImages)).slice(0, CHAT_IMAGES_MAX);
 
         const contextMessages = contextBuilder.buildContext(
             conversationId,
@@ -3213,14 +3257,23 @@ async function handleImageGenerationStream(req, res, opts) {
     }
 }
 
-// Strip attached-upload markdown refs from the user text so the edit
-// instruction is clean prose, not image markup.
-function stripImageRefs(text) {
-    return String(text || '')
-        .replace(/!\[[^\]]*\]\(\/images\/[^)]+\)/g, '')
-        .replace(/!\[[^\]]*\]\(\/generated\/[^)]+\)/g, '')
-        .replace(/\n{3,}/g, '\n\n')
-        .trim();
+// @-picker references reach the edit pipeline in one of two shapes: numbered
+// markdown images persisted for display (![reference N](/generated/file)) or
+// inline @imageN tokens typed/picked in the composer. Both carry the reference
+// position, which the Qwen editor addresses as "image 1", "image 2", … — so
+// "make @image1 hold @image2 at @image3" becomes
+// "make image 1 hold image 2 at image 3". Unnumbered upload/generated markdown
+// is dropped like before.
+const REFERENCE_TOKEN_RE = /@image\s*(\d+)\b/gi;
+const NUMBERED_REFERENCE_RE = /!\[[^\]]*?reference\s*(\d+)[^\]]*?\]\(\/(?:generated|images)\/[^)]+\)/gi;
+
+function materializeEditInstruction(text) {
+    const out = String(text || '')
+        .replace(NUMBERED_REFERENCE_RE, (match, n) => ' image ' + n + ' ')
+        .replace(REFERENCE_TOKEN_RE, (match, n) => ' image ' + n + ' ')
+        .replace(/!\[[^\]]*\]\(\/images\/[^)]+\)/g, ' ')
+        .replace(/!\[[^\]]*\]\(\/generated\/[^)]+\)/g, ' ');
+    return out.replace(/\s{2,}/g, ' ').trim();
 }
 
 // Resolve the source image for an edit: a fresh /images/ upload
@@ -3254,7 +3307,7 @@ function resolveGeneratedEditSource(conversationId) {
 // Handle an edit chat request over SSE. Emits a "generating" status
 // event, then an "image" event with the edited result, or an "error" event.
 async function handleImageEditStream(req, res, opts) {
-    const { provider, model, conversationId, message, instruction, action, previousPrompt, sourceOverride, think } = opts;
+    const { provider, model, conversationId, message, instruction, action, previousPrompt, sourceOverride, referenceSources, think } = opts;
 
     let queueId = null;
     const onClose = () => {
@@ -3279,7 +3332,8 @@ async function handleImageEditStream(req, res, opts) {
     };
 
     try {
-        const source = sourceOverride || resolveEditSource(message, conversationId);
+        const resolvedRefs = (Array.isArray(referenceSources) ? referenceSources : []).filter(Boolean);
+        const source = resolvedRefs[0] || sourceOverride || resolveEditSource(message, conversationId);
         if (!source) {
             taskState.setTask(conversationId, { status: 'failed' });
             sseWrite(res, { error: "I couldn't find an image to edit. Attach a photo or generate an image first, then describe the change." });
@@ -3295,9 +3349,11 @@ async function handleImageEditStream(req, res, opts) {
 
         sseWrite(res, { generating: 'Editing image...' });
 
+        const referencePaths = resolvedRefs.slice(1).map((s) => s.absPath);
         const promise = imageGenerator.editImage(source.absPath, instruction, {
             provider, model, conversationId, onQueued, onStart,
-            label: 'image edit', kind: 'image_edit'
+            label: 'image edit', kind: 'image_edit',
+            references: referencePaths
         });
         queueId = promise.queueId || null;
         const result = await promise;
@@ -3309,7 +3365,10 @@ async function handleImageEditStream(req, res, opts) {
             parameters: Object.assign({}, existingParams, {
                 width: result.width,
                 height: result.height,
-                edit: { source: source.rawFilename }
+                edit: {
+                    source: source.rawFilename,
+                    references: resolvedRefs.slice(1).map((s) => s.rawFilename)
+                }
             }),
             // An edit supersedes the prior image lineage so "generate another
             // image" after an edit rebases onto the edited result, not the
