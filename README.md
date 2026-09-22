@@ -82,7 +82,7 @@ Everything runs from a single chat surface — there are no separate tools or da
   <sub><em>MiniMax H3 — text-to-video with synchronized audio</em></sub>
 </p>
 
-https://github.com/user-attachments/assets/REPLACE-WITH-YOUR-VIDEO-ID
+https://github.com/user-attachments/assets/e74c3178-ad92-42bf-a1ca-4f68efde6897
 
 > **Audio note.** Locally the preview above is muted — open [`screenshots/video.mp4`](screenshots/video.mp4) directly to hear the synchronized audio. On GitHub, the attachment player plays with audio.
 
