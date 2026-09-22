@@ -2893,7 +2893,8 @@ async function handleUGCDirectorHandoff(req, res, ctx, project) {
             brief: input.brief,
             duration: input.duration,
             openingFrame: input.openingFrame,
-            originalRequest: input.originalRequest
+            originalRequest: input.originalRequest,
+            references: input.references
         });
         ugcStudio.setDirectorProduction(project, production.id);
         activityLog.record({
@@ -3309,6 +3310,7 @@ async function runDirectorVideoStage(req, res, ctx, production) {
             previousPrompt: null,
             videoMode: stage.videoMode,
             sourceImageRawFilename: stage.sourceImageRawFilename,
+            referenceImages: stage.referenceImages,
             duration: stage.duration,
             width: stage.width,
             height: stage.height,
@@ -4072,7 +4074,7 @@ async function handleVideoGenerationStream(req, res, opts) {
     const {
         provider, model, conversationId, message, videoPrompt,
         structuredRequest, action, previousPrompt, videoMode, sourceImageRawFilename,
-        duration, width, height, think
+        referenceImages, duration, width, height, think
     } = opts;
 
     let queueId = null;
@@ -4108,6 +4110,7 @@ async function handleVideoGenerationStream(req, res, opts) {
         }
         if (videoMode) opts2.mode = videoMode;
         if (sourceImageRawFilename) opts2.sourceImageRawFilename = sourceImageRawFilename;
+        if (Array.isArray(referenceImages) && referenceImages.length) opts2.referenceImages = referenceImages;
         if (duration) opts2.duration = duration;
         if (width) opts2.width = width;
         if (height) opts2.height = height;

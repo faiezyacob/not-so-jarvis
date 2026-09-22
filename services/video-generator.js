@@ -1144,22 +1144,199 @@ function formatCutTime(seconds) {
 // Deterministic multi-shot H3 document used when the director LLM fails. Cut
 // times are distributed evenly across the duration (strictly increasing, inside
 // the duration), and [Shot 1] carries no timestamp.
-function buildMultiShotFallbackPrompt({ shotPlan, hasReferenceImage, durationSeconds }) {
+function buildMultiShotFallbackPrompt({ shotPlan, hasReferenceImage, durationSeconds, referenceCount }) {
     const shots = Array.isArray(shotPlan) ? shotPlan.filter(Boolean) : [];
     if (!shots.length) return '';
-    const alignmentLine = hasReferenceImage
+    const refCount = Number(referenceCount) > 0 ? Number(referenceCount) : 0;
+    // In reference-to-video mode there is no first-frame lock, so the i2va
+    // alignment line is dropped and each shot names the reference it follows.
+    const alignmentLine = (hasReferenceImage && !refCount)
         ? 'For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\n\n'
         : '';
     const duration = Number(durationSeconds) > 0 ? Number(durationSeconds) : 0;
     const parts = shots.map((desc, index) => {
-        if (index === 0) return '[Shot 1] ' + desc;
+        const refNote = refCount
+            ? ' (matching <Picture ' + Math.min(index + 1, refCount) + '>)'
+            : '';
+        if (index === 0) return '[Shot 1] ' + desc + refNote;
         const cut = duration > 0 ? (duration * index) / shots.length : index;
-        return '[Shot ' + (index + 1) + '] At ' + formatCutTime(cut) + ', the camera cuts to ' + desc;
+        return '[Shot ' + (index + 1) + '] At ' + formatCutTime(cut) + ', the camera cuts to ' + desc + refNote;
     });
     return alignmentLine +
         'integrated_multimodal_description:\n' + parts.join(' ') + '\n\n' +
         'overall_soundscape:\nAmbient environmental sounds and physical action sounds matching the scene.\n\n' +
         'non_diegetic_music:\nN/A';
+}
+
+// --- Dialogue repair ----------------------------------------------------------
+//
+// The H3 director LLM is good at describing the action but routinely drops the
+// approved <d>[Language] ...</d> dialogue block. When the block is missing, H3
+// invents speech on its own — most often in the model's dominant language (the
+// Mandarin-dialogue bug). The caller already owns the authoritative spoken line
+// per shot, so the finished prompt is repaired deterministically: the exact
+// words and the correct language tag always survive.
+
+// Read the spoken line out of a shot description: "<d>[...] words</d>". Returns
+// null when the shot carries no dialogue.
+function parseShotDialogue(raw) {
+    const wrapped = String(raw || '').match(/<d>\s*(?:\[([^\]\n]+)\]\s*)?([\s\S]*?)<\/d>/i);
+    if (!wrapped) return null;
+    const text = String(wrapped[2] || '').replace(/\s+/g, ' ').trim();
+    if (!text) return null;
+    return { language: String(wrapped[1] || '').trim(), text };
+}
+
+function extractShotDialogues(shotPlan) {
+    if (!Array.isArray(shotPlan)) return [];
+    return shotPlan.map((desc) => parseShotDialogue(desc));
+}
+
+function dialogueLine(dialogue, defaultLanguage) {
+    return 'The on-screen creator (S1) says: <d>[' +
+        (dialogue.language || defaultLanguage || 'English') + '] ' + dialogue.text + '</d>';
+}
+
+function appendDialogueToShot(section, dialogue, defaultLanguage) {
+    const trimmed = String(section || '').replace(/[\s.,;:]+$/, '');
+    return trimmed + '. ' + dialogueLine(dialogue, defaultLanguage) + ' ';
+}
+
+// Where the integrated description ends (the blank line before the sound
+// sections) so spliced dialogue never lands inside overall_soundscape.
+function findDescriptionEnd(text, start) {
+    const rest = String(text).slice(start);
+    const cut = rest.search(/\n\s*\n/);
+    return cut === -1 ? String(text).length : start + cut;
+}
+
+// Repair the description body only, so [Shot N] references inside
+// retention_analysis (full-reference format) are never mistaken for shots.
+function repairDialogueInBody(body, dialogues, defaultLanguage) {
+    const lang = defaultLanguage || 'English';
+    const markers = [];
+    const re = /\[Shot\s+(\d+)\]/g;
+    let match;
+    while ((match = re.exec(body))) markers.push({ shot: Number(match[1]), index: match.index });
+
+    if (!markers.length) {
+        // Single continuous shot: repair the existing block, else append.
+        const spoken = dialogues.filter(Boolean);
+        if (!spoken.length) return body;
+        const words = spoken.map((d) => d.text).join(' ');
+        const language = spoken[0].language || lang;
+        if (/<d>[\s\S]*?<\/d>/i.test(body)) {
+            return body.replace(/<d>[\s\S]*?<\/d>/i, '<d>[' + language + '] ' + words + '</d>');
+        }
+        return String(body).replace(/[\s.,;:]+$/, '') +
+            '. The on-screen creator (S1) says: <d>[' + language + '] ' + words + '</d>';
+    }
+
+    // Rebuild each shot span from the end so earlier indices stay valid. The
+    // body is already trimmed to the description, so the last shot ends there.
+    let out = body;
+    for (let i = markers.length - 1; i >= 0; i--) {
+        const dialogue = dialogues[markers[i].shot - 1];
+        if (!dialogue) continue;
+        const start = markers[i].index;
+        const end = i + 1 < markers.length ? markers[i + 1].index : out.length;
+        let section = out.slice(start, end);
+        section = /<d>[\s\S]*?<\/d>/i.test(section)
+            ? section.replace(
+                /<d>[\s\S]*?<\/d>/i,
+                '<d>[' + (dialogue.language || lang) + '] ' + dialogue.text + '</d>'
+            )
+            : appendDialogueToShot(section, dialogue, lang);
+        out = out.slice(0, start) + section + out.slice(end);
+    }
+    return out;
+}
+
+// Guarantee every planned shot's dialogue is present with its language tag. The
+// authoritative words replace any dialogue the LLM invented or translated.
+function ensureShotDialogue(prompt, shotPlan, defaultLanguage) {
+    const text = String(prompt || '');
+    const dialogues = extractShotDialogues(shotPlan);
+    if (!dialogues.some(Boolean)) return text;
+    const header = /(?:detailed_description|integrated_multimodal_description)\s*:/i.exec(text);
+    if (!header) return text;
+    const bodyStart = header.index + header[0].length;
+    const bodyEnd = findDescriptionEnd(text, bodyStart);
+    return text.slice(0, bodyStart) +
+        repairDialogueInBody(text.slice(bodyStart, bodyEnd), dialogues, defaultLanguage) +
+        text.slice(bodyEnd);
+}
+
+// Deterministic full-reference document used when the director LLM fails or
+// returns a non-compliant rewrite. Mirrors the official Full-Reference Mode
+// guide's six sections.
+function buildReferenceFallbackPrompt({ shotPlan, referenceCount, durationSeconds }) {
+    const shots = Array.isArray(shotPlan) ? shotPlan.filter(Boolean) : [];
+    const refCount = Number(referenceCount) > 0 ? Number(referenceCount) : 1;
+    const duration = Number(durationSeconds) > 0 ? Number(durationSeconds) : 0;
+    const shotCount = Math.max(1, shots.length);
+    const pictures = Array.from({ length: refCount }, (_, i) => '<Picture ' + (i + 1) + '>').join(', ');
+    const appearances = shotCount > 1 ? '[Shot 1] and [Shot ' + shotCount + ']' : '[Shot 1]';
+    const body = shots.length
+        ? shots.map((desc, index) => {
+            const anchor = ' (the shot begins from <Picture ' + Math.min(index + 1, refCount) + '>)';
+            if (index === 0) return '[Shot 1] ' + desc + anchor;
+            const cut = duration > 0 ? (duration * index) / shots.length : index;
+            return '[Shot ' + (index + 1) + '] At ' + formatCutTime(cut) + ', the shot cuts to ' + desc + anchor;
+        }).join(' ')
+        : '[Shot 1] The creator from <Picture 1> speaks to camera with natural, continuous motion.';
+    return 'subject_definitions:\n' +
+        '<Subject 1> is the creator shown in <Picture 1>, preserving their identity, hairstyle, ' +
+        'wardrobe and the exact product and environment established by the reference frames.\n\n' +
+        'summary:\n' +
+        '[reference generation + keyframe completion] The target video follows the approved reference ' +
+        'frames ' + pictures + ' across ' + shotCount + ' shot(s), preserving the creator, wardrobe, ' +
+        'product and environment.\n\n' +
+        'retention_analysis:\n' +
+        '<Subject 1> (appears in ' + appearances + '): fully_preserved - identity, wardrobe, product ' +
+        'and setting from the references are retained.\n\n' +
+        'detailed_description:\n' +
+        'The target video is a photorealistic user-generated-content phone-camera look with natural ' +
+        'lighting and handheld framing. ' + body + '\n\n' +
+        'overall_soundscape:\n' +
+        'Ambient environmental sounds and physical action sounds matching the scene.\n\n' +
+        'non_diegetic_music:\nN/A';
+}
+
+// Appended to the H3 director system prompt for reference-to-video productions.
+// Replaces the T2VA/I2VA structure with the official Full-Reference Mode
+// rewrite: six sections, <Subject N>/<Picture N> labels, detailed_description.
+function buildReferenceAddendum(count) {
+    const n = Number(count) > 0 ? Number(count) : 1;
+    const pictures = Array.from({ length: n }, (_, i) => '<Picture ' + (i + 1) + '>').join(', ');
+    return '\n\nOVERRIDE \u2014 FULL-REFERENCE MODE (ref2va, NOT i2va):\n' +
+        n + ' reference image(s) are supplied as ' + pictures + ' (1-based, in that order).\n' +
+        'IGNORE the T2VA/I2VA structure above: do NOT use integrated_multimodal_description, and do NOT ' +
+        'write the "at 0.00 seconds ... fully referenced" alignment sentence. Instead write a ' +
+        'full-reference rewrite whose prompt is EXACTLY these six sections, in order, each introduced ' +
+        'by its name followed by a colon on its own line:\n' +
+        'subject_definitions:\nsummary:\nretention_analysis:\ndetailed_description:\n' +
+        'overall_soundscape:\nnon_diegetic_music:\n\n' +
+        'SECTION RULES:\n' +
+        '- subject_definitions: one line per tracked referenced item. Define reusable visible content ' +
+        'with <Subject N> (the creator, their wardrobe, the product, the environment) and name the ' +
+        '<Picture N> each comes from, e.g. "<Subject 1> is the creator shown in <Picture 1>, with ...". ' +
+        'Use a standalone <Picture N> only when that image is a shot\'s concrete starting/keyframe anchor.\n' +
+        '- summary: ONE paragraph, beginning with the task type in square brackets. Use ' +
+        '"[reference generation]" and add " + keyframe completion" only if a picture is used as a ' +
+        'concrete frame anchor. Do not introduce new labels.\n' +
+        '- retention_analysis: one line per label, e.g. "<Subject 1> (appears in [Shot 1], [Shot 2]): ' +
+        'fully_preserved - ...". Allowed markers only: fully_preserved, partially_preserved, ' +
+        'attribute_transfer, weak_reference.\n' +
+        '- detailed_description: the main body, in English. Establish the look in one or two sentences ' +
+        'BEFORE [Shot 1]. [Shot 1] has no timestamp; every later shot starts with ' +
+        '"[Shot N] At MM:SS.mmm, the shot cuts to ...". Insert each <Subject N>/<Picture N> at first ' +
+        'appearance and where its role applies, e.g. "the shot begins from <Picture 1>". Every cut must ' +
+        'reveal new information.\n' +
+        '- overall_soundscape / non_diegetic_music: as usual. Never repeat dialogue there.\n' +
+        '- Preserve identity, wardrobe, colours, key objects and setting from the reference frames. ' +
+        'Keep every speaker on screen with a visibly moving, lip-synced mouth and the exact spoken ' +
+        'words inside <d>[Language] ...</d>. Never drop a dialogue block.\n';
 }
 
 async function detectVideoIntent(message, providers, provider, model, think) {
@@ -1348,11 +1525,27 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
     const isModify = Boolean(previous_prompt && structuredRequest.modification);
     const shotPlan = resolveShotPlan(structuredRequest);
     const multiShot = shotPlan.length > 1;
+    // Reference-to-video (ref2va): every approved scene frame is conditioned via
+    // the MiniMaxH3ReferenceToVideo node and addressed as <Picture i>. This is
+    // what makes the UGC reference frames actually reach the final video.
+    const referenceImages = Array.isArray(structuredRequest.reference_images)
+        ? structuredRequest.reference_images.map((f) => String(f || '').trim()).filter(Boolean).slice(0, 9)
+        : [];
+    const isRefMode = referenceImages.length > 0;
+    const refCount = referenceImages.length;
+    const hasFirstFrameRef = !isRefMode && Boolean(has_reference_image);
+    const mode = isRefMode ? 'ref2va' : (has_reference_image ? 'i2va' : 't2va');
+    const dialogueLanguage = String(
+        structuredRequest.dialogue_language || structuredRequest.dialogueLanguage || ''
+    ).trim();
+    // The approved dialogue is authoritative; repair the finished prompt so the
+    // exact words + language tag always reach H3 (see ensureShotDialogue).
+    const finalizePrompt = (p) => ensureShotDialogue(p, shotPlan, dialogueLanguage);
 
     let visionAvailable = false;
     let sourceImageBase64 = null;
 
-    if (has_reference_image && !isModify && sourceImageRawFilename) {
+    if ((has_reference_image || isRefMode) && !isModify && sourceImageRawFilename) {
         const modelInfo = getModelById(model);
         if (modelInfo && modelInfo.capabilities && modelInfo.capabilities.includes('vision')) {
             const filePath = path.join(GENERATED_DIR, sourceImageRawFilename);
@@ -1400,13 +1593,18 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
             'USER MODIFICATION REQUEST:\n"' + structuredRequest.modification + '"\n\n' +
             'creative_mode: "' + creative_mode + '"\n' +
             'explicit_constraints: ' + JSON.stringify(explicit_constraints || []) + '\n\n' +
-            'Mode: ' + (has_reference_image ? 'i2va' : 't2va') + '\n' +
+            'Mode: ' + mode + '\n' +
             'Video duration: ' + durationSeconds + ' seconds\n' +
             'Output ONLY the JSON described in the system prompt.';
     } else {
-        const mode = has_reference_image ? 'i2va' : 't2va';
         let sourceNote;
-        if (has_reference_image && visionAvailable) {
+        if (isRefMode) {
+            sourceNote =
+                'REFERENCE IMAGES: ' + refCount + ' approved reference frame(s) are provided as ' +
+                referenceImages.map((_, i) => '<Picture ' + (i + 1) + '>').join(', ') + '.\n' +
+                'Each is the keyframe anchor for its shot: <Picture 1> anchors [Shot 1], <Picture i> ' +
+                'anchors [Shot i]. Define the reusable creator/wardrobe/product/environment from them.\n';
+        } else if (has_reference_image && visionAvailable) {
             sourceNote =
                 'SOURCE IMAGE: The image is attached directly below. Study it carefully.\n' +
                 'It is the exact first frame of the video at 0.00 seconds. Describe what you see ' +
@@ -1426,6 +1624,7 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
             'MODE: ' + mode + '\n' +
             'creative_mode: "' + creative_mode + '"\n' +
             'has_reference_image: ' + JSON.stringify(has_reference_image) + '\n' +
+            (isRefMode ? 'reference_images: ' + refCount + '\n' : '') +
             'explicit_constraints: ' + JSON.stringify(explicit_constraints || []) + '\n\n' +
             'Video duration: ' + durationSeconds + ' seconds\n' +
             'Output ONLY the JSON described in the system prompt.';
@@ -1435,17 +1634,37 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
     }
 
     // Director mode: hand the H3 director the explicit cut plan so its rewrite
-    // covers every planned shot with strictly increasing cut times.
+    // covers every planned shot with strictly increasing cut times. In reference
+    // mode each shot is tied to its approved reference frame.
     if (multiShot && !isModify) {
+        const planLines = shotPlan.map((desc, index) => {
+            const refNote = isRefMode
+                ? ' (keyframe: <Picture ' + Math.min(index + 1, refCount) + '>)'
+                : '';
+            return '[Shot ' + (index + 1) + '] ' + desc + refNote;
+        });
         userMessage +=
             '\n\nSHOT PLAN (authoritative \u2014 exactly these shots, in order):\n' +
-            shotPlan.map((desc, index) => '[Shot ' + (index + 1) + '] ' + desc).join('\n') +
-            '\nOutput exactly ' + shotPlan.length + ' shots with strictly increasing cut times.';
+            planLines.join('\n') +
+            '\nOutput exactly ' + shotPlan.length + ' shots with strictly increasing cut times.' +
+            (isRefMode ? ' Name each shot\'s <Picture i> reference in the shot text.' : '');
     }
 
     const requestRaw = String(
         (isModify ? structuredRequest.modification : user_prompt) || user_prompt || ''
     ).trim();
+
+    const fallbackOpts = {
+        shotPlan,
+        hasReferenceImage: hasFirstFrameRef,
+        referenceCount: isRefMode ? refCount : 0,
+        durationSeconds
+    };
+    const refFallback = () => buildReferenceFallbackPrompt({
+        shotPlan,
+        referenceCount: refCount,
+        durationSeconds
+    });
 
     // Run the director LLM, retrying once when it returns unparseable JSON or
     // merely echoes the user's instruction instead of rewriting it. The raw
@@ -1460,22 +1679,31 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
                   ? ' You MUST include every shot from the SHOT PLAN as [Shot 1], [Shot 2], ... ' +
                     'with strictly increasing cut times inside the duration.'
                   : '') +
+              (isRefMode
+                  ? ' You MUST output the full-reference sections subject_definitions, summary, ' +
+                    'retention_analysis, detailed_description, overall_soundscape and non_diegetic_music.'
+                  : '') +
               ' Output ONLY the JSON object.'
             : '';
         try {
             const userMsg = { role: 'user', content: userMessage + retryNote };
             if (userMessageImages) userMsg.images = userMessageImages;
+            const systemPrompt = H3_DIRECTOR_SYSTEM_PROMPT +
+                (multiShot ? H3_MULTISHOT_ADDENDUM : '') +
+                (isRefMode ? buildReferenceAddendum(refCount) : '');
             const raw = await providers.chat(provider, [
-                { role: 'system', content: H3_DIRECTOR_SYSTEM_PROMPT + (multiShot ? H3_MULTISHOT_ADDENDUM : '') },
+                { role: 'system', content: systemPrompt },
                 userMsg
             ], model, { think });
 
             const parsed = parseDirectorJson(raw);
+            const refFormatOk = !isRefMode ||
+                /(?:^|\n)\s*detailed_description\s*:/i.test(String((parsed && parsed.prompt) || ''));
             if (parsed && parsed.prompt && !isRawRequestEcho(parsed.prompt, requestRaw) &&
-                (!multiShot || countH3Shots(parsed.prompt) >= 2)) {
+                (!multiShot || countH3Shots(parsed.prompt) >= 2) && refFormatOk) {
                 return {
-                    mode: parsed.mode || (has_reference_image ? 'i2va' : 't2va'),
-                    prompt: String(parsed.prompt).trim(),
+                    mode: isRefMode ? 'ref2va' : (parsed.mode || mode),
+                    prompt: finalizePrompt(String(parsed.prompt).trim()),
                     duration: durationSeconds,
                     width: Number(parsed.width) || 1024,
                     height: Number(parsed.height) || 768,
@@ -1505,24 +1733,25 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
         if (looksLikeValidLitePrompt(lite) && !/^\{/.test(lite) && !isRawRequestEcho(lite, requestRaw)) {
             if (multiShot) {
                 return {
-                    mode: has_reference_image ? 'i2va' : 't2va',
-                    prompt: buildMultiShotFallbackPrompt({
-                        shotPlan, hasReferenceImage: has_reference_image, durationSeconds
-                    }),
+                    mode,
+                    prompt: finalizePrompt(isRefMode ? refFallback() : buildMultiShotFallbackPrompt(fallbackOpts)),
                     duration: durationSeconds,
                     width: 1024,
                     height: 768,
                 };
             }
-            const liteAlignment = has_reference_image
+            const liteAlignment = hasFirstFrameRef
                 ? 'For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\n\n'
                 : '';
-            return {
-                mode: has_reference_image ? 'i2va' : 't2va',
-                prompt: liteAlignment +
+            const litePrompt = isRefMode
+                ? refFallback()
+                : (liteAlignment +
                     'integrated_multimodal_description:\n[Shot 1] ' + lite + '\n\n' +
                     'overall_soundscape:\nAmbient environmental sounds matching the scene.\n\n' +
-                    'non_diegetic_music:\nN/A',
+                    'non_diegetic_music:\nN/A');
+            return {
+                mode,
+                prompt: finalizePrompt(litePrompt),
                 duration: durationSeconds,
                 width: 1024,
                 height: 768,
@@ -1536,40 +1765,40 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
     // Fallback: never forward the user's raw imperative. Strip the video-request
     // scaffolding and meta filler, then describe what remains. If the request
     // carried no concrete subject, use a neutral mode-appropriate line.
-    const mode = has_reference_image ? 'i2va' : 't2va';
     // Director mode still gets its planned cut sequence even if every LLM step
     // failed; the shot plan is deterministic and H3-compliant.
     if (multiShot) {
         return {
             mode,
-            prompt: buildMultiShotFallbackPrompt({
-                shotPlan, hasReferenceImage: has_reference_image, durationSeconds
-            }),
+            prompt: finalizePrompt(isRefMode ? refFallback() : buildMultiShotFallbackPrompt(fallbackOpts)),
             duration: durationSeconds,
             width: 1024,
             height: 768,
         };
     }
     const concept = stripVideoRequestMeta(requestRaw) || (
-        has_reference_image
-            ? 'the subject from the reference image comes to life with natural, continuous motion'
-            : 'a cinematic scene with natural movement and camera motion'
+        isRefMode
+            ? 'the creator from the approved reference frames speaks to camera with natural, continuous motion'
+            : has_reference_image
+                ? 'the subject from the reference image comes to life with natural, continuous motion'
+                : 'a cinematic scene with natural movement and camera motion'
     );
-    const alignmentLine = has_reference_image
+    const alignmentLine = hasFirstFrameRef
         ? 'For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\n\n'
         : '';
-    const fallbackPrompt =
-        alignmentLine +
-        'integrated_multimodal_description:\n' +
-        '[Shot 1] ' + concept + '\n\n' +
-        'overall_soundscape:\n' +
-        'Ambient environmental sounds matching the scene.\n\n' +
-        'non_diegetic_music:\n' +
-        'N/A';
+    const fallbackPrompt = isRefMode
+        ? refFallback()
+        : (alignmentLine +
+            'integrated_multimodal_description:\n' +
+            '[Shot 1] ' + concept + '\n\n' +
+            'overall_soundscape:\n' +
+            'Ambient environmental sounds matching the scene.\n\n' +
+            'non_diegetic_music:\n' +
+            'N/A');
 
     return {
         mode,
-        prompt: fallbackPrompt,
+        prompt: finalizePrompt(fallbackPrompt),
         duration: durationSeconds,
         width: 1024,
         height: 768,
@@ -2099,6 +2328,7 @@ function buildH3Graph(opts) {
         seed = 0,
         settings = {},
         firstImageName = null,
+        refImageNames = [],
         firstBlockCacheInputs = null,
     } = opts;
 
@@ -2154,28 +2384,56 @@ function buildH3Graph(opts) {
     // backends leave the scheduler on the unpatched (Turbo) chain.
     const schedulerModelNode = attention === 'sla' ? patchedModelNode : turboModelNode;
 
-    const hasFirstFrame = mode === 'i2va' && Boolean(firstImageName);
-    if (hasFirstFrame) {
-        graph.first_image = {
-            class_type: 'LoadImage',
-            inputs: { image: firstImageName },
+    // Reference-to-video: one LoadImage per approved frame, wired into the
+    // MiniMaxH3ReferenceToVideo Autogrow input. The keys are the node's own
+    // 0-based `ref_images.ref_image_<i>` slots (verified against /object_info +
+    // the ComfyUI schema); the <Picture i> ordinals follow the supplied order.
+    const refNames = Array.isArray(refImageNames)
+        ? refImageNames.map((n) => String(n || '').trim()).filter(Boolean).slice(0, 9)
+        : [];
+    if (refNames.length) {
+        const refInputs = {};
+        refNames.forEach((name, index) => {
+            const nodeId = 'ref_image_load_' + (index + 1);
+            graph[nodeId] = { class_type: 'LoadImage', inputs: { image: name } };
+            refInputs['ref_images.ref_image_' + index] = [nodeId, 0];
+        });
+        graph.condition = {
+            class_type: 'MiniMaxH3ReferenceToVideo',
+            inputs: Object.assign({
+                clip: ['clip', 0],
+                vae: ['video_vae', 0],
+                prompt: String(prompt || ''),
+                width: W,
+                height: H,
+                length: frames,
+                ref_image_size: 'match',
+            }, refInputs),
+        };
+    } else {
+        const hasFirstFrame = mode === 'i2va' && Boolean(firstImageName);
+        if (hasFirstFrame) {
+            graph.first_image = {
+                class_type: 'LoadImage',
+                inputs: { image: firstImageName },
+            };
+        }
+
+        // MiniMaxH3ImageToVideo covers both T2V and first-frame I2V.
+        const conditionInputs = {
+            clip: ['clip', 0],
+            vae: ['video_vae', 0],
+            prompt: String(prompt || ''),
+            width: W,
+            height: H,
+            length: frames,
+        };
+        if (hasFirstFrame) conditionInputs.first_frame = ['first_image', 0];
+        graph.condition = {
+            class_type: 'MiniMaxH3ImageToVideo',
+            inputs: conditionInputs,
         };
     }
-
-    // MiniMaxH3ImageToVideo covers both T2V and first-frame I2V.
-    const conditionInputs = {
-        clip: ['clip', 0],
-        vae: ['video_vae', 0],
-        prompt: String(prompt || ''),
-        width: W,
-        height: H,
-        length: frames,
-    };
-    if (hasFirstFrame) conditionInputs.first_frame = ['first_image', 0];
-    graph.condition = {
-        class_type: 'MiniMaxH3ImageToVideo',
-        inputs: conditionInputs,
-    };
 
     graph.scheduler = {
         class_type: 'BasicScheduler',
@@ -2904,7 +3162,13 @@ async function generateVideo(prompt, options = {}) {
             : Math.floor(Math.random() * 2 ** 32);
 
         const settings = effectiveVideoSettings();
-        const mode = options.mode || 't2va';
+        // Reference-to-video: the approved scene frames are conditioned through
+        // MiniMaxH3ReferenceToVideo instead of a single locked first frame.
+        const referenceImages = Array.isArray(options.referenceImages)
+            ? options.referenceImages.map((f) => String(f || '').trim()).filter(Boolean).slice(0, 9)
+            : [];
+        const useRefs = referenceImages.length > 0;
+        const mode = useRefs ? 'ref2va' : (options.mode || 't2va');
         // Explicit per-request duration wins over the configured default.
         const requestedDuration = Number(options.duration);
         const duration = Number.isFinite(requestedDuration) && requestedDuration > 0
@@ -2914,8 +3178,9 @@ async function generateVideo(prompt, options = {}) {
 
         let videoWidth = options.width || 1024;
         let videoHeight = options.height || 768;
-        if (mode === 'i2va' && options.sourceImageRawFilename) {
-            const imgPath = path.join(GENERATED_DIR, options.sourceImageRawFilename);
+        const dimSource = useRefs ? referenceImages[0] : options.sourceImageRawFilename;
+        if ((mode === 'i2va' || mode === 'ref2va') && dimSource) {
+            const imgPath = path.join(GENERATED_DIR, dimSource);
             const imgDims = readStillImageDimensions(imgPath);
             if (imgDims) {
                 videoWidth = imgDims.width;
@@ -2949,7 +3214,24 @@ async function generateVideo(prompt, options = {}) {
         }
 
         let firstImageName = null;
-        if (mode === 'i2va' && options.sourceImageRawFilename) {
+        const uploadedInputNames = [];
+        const refImageNames = [];
+        if (useRefs) {
+            for (let i = 0; i < referenceImages.length; i++) {
+                const raw = referenceImages[i];
+                const filePath = path.join(GENERATED_DIR, raw);
+                if (!fs.existsSync(filePath)) {
+                    console.warn('[video] reference image not found:', filePath);
+                    continue;
+                }
+                const buffer = fs.readFileSync(filePath);
+                const uploadName = 'jarvis_video_ref_' + Date.now() + '_' + i + '_' + raw;
+                const uploaded = await comfyui.uploadImage(buffer, uploadName);
+                const name = (uploaded && uploaded.name) || uploadName;
+                refImageNames.push(name);
+                uploadedInputNames.push(name);
+            }
+        } else if (mode === 'i2va' && options.sourceImageRawFilename) {
             // Upload source image to ComfyUI input for LoadImage node.
             const filePath = path.join(GENERATED_DIR, options.sourceImageRawFilename);
             if (fs.existsSync(filePath)) {
@@ -2957,6 +3239,7 @@ async function generateVideo(prompt, options = {}) {
                 const uploadName = 'jarvis_video_' + Date.now() + '_' + options.sourceImageRawFilename;
                 const uploaded = await comfyui.uploadImage(buffer, uploadName);
                 firstImageName = (uploaded && uploaded.name) || uploadName;
+                uploadedInputNames.push(firstImageName);
             }
         }
 
@@ -2997,6 +3280,7 @@ async function generateVideo(prompt, options = {}) {
                 seed,
                 settings: resolvedSettings,
                 firstImageName,
+                refImageNames,
                 // Match the installed node's exact input names so required-input
                 // validation passes even if the node pack renames a field.
                 firstBlockCacheInputs: resolveFirstBlockCacheInputNames(info),
@@ -3058,6 +3342,7 @@ async function generateVideo(prompt, options = {}) {
                     fps: H3_FPS,
                     mode,
                     source: options.sourceImageRawFilename || null,
+                    refs: useRefs ? refImageNames.length : 0,
                     acceleration,
                     ...(turboState.enabled ? {
                         turbo: { lora: turboState.loraName, strength: H3_TURBO_STRENGTH, steps: turboState.steps, scheduler: H3_TURBO_SCHEDULER }
@@ -3083,8 +3368,8 @@ async function generateVideo(prompt, options = {}) {
                 refined: false
             }, Object.assign({}, options, { signal }));
         } finally {
-            if (firstImageName) {
-                await comfyui.deleteInputFile(firstImageName).catch(() => {});
+            for (const name of uploadedInputNames) {
+                await comfyui.deleteInputFile(name).catch(() => {});
             }
         }
     }, queueOpts);
@@ -3681,6 +3966,11 @@ module.exports = {
     countH3Shots,
     formatCutTime,
     buildMultiShotFallbackPrompt,
+    parseShotDialogue,
+    extractShotDialogues,
+    ensureShotDialogue,
+    buildReferenceAddendum,
+    buildReferenceFallbackPrompt,
     parseDirectorJson,
     stripVideoRequestMeta,
     isRawRequestEcho,

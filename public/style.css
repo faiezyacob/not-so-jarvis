@@ -2407,6 +2407,14 @@ em {
     display: none;
 }
 
+/* The reusable @ picker (UGC product form, etc.) floats near its input. */
+.mention-picker-popup {
+    position: fixed;
+    z-index: 60;
+    bottom: auto;
+    right: auto;
+}
+
 .chat-mention-item {
     display: flex;
     align-items: center;
@@ -6270,6 +6278,10 @@ a.modal-btn {
 .ugc-detail--block {
     flex-direction: column;
     gap: 2px;
+}
+
+.ugc-detail--block .ugc-detail-label {
+    flex: none;
 }
 
 .ugc-detail-label {

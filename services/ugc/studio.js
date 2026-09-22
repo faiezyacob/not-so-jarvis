@@ -323,7 +323,12 @@ function isOpen(project) {
 
 function save(project) {
     if (!project) return null;
-    if (project.scenes && project.scenes.length) reconcileContinuity(project);
+    if (project.scenes && project.scenes.length) {
+        reconcileContinuity(project);
+        // Never persist a line that cannot be spoken inside its shot's duration;
+        // an over-long line is delivered too fast and sounds robotic.
+        prompts.enforceDialogueBudgets(project.scenes);
+    }
     project.updatedAt = new Date().toISOString();
     state.setProject(project.conversationId, project);
     return project;
@@ -650,11 +655,15 @@ async function generateScript(project, { provider, model, think, feedback, field
     const product = project.product || {};
     const brief = project.brief || {};
     const creator = project.creator || {};
+    const scriptBudget = prompts.dialogueWordBudget(brief.duration || 15);
     const context = [
         'PRODUCT: ' + JSON.stringify(product),
         'CREATIVE BRIEF: ' + JSON.stringify(brief),
         'CONTENT TYPE: ' + (project.contentType ? project.contentType.label : ''),
         'CREATOR: ' + JSON.stringify({ name: creator.name, identity: creator.identity, tone: brief.tone }),
+        'SPEAKING BUDGET: the whole script is spoken across the video, so keep the total at ' +
+        'about ' + scriptBudget + ' words (roughly 2.3 words per second of ' +
+        (brief.duration || 15) + 's). A longer script has to be rushed and sounds robotic.',
         feedback ? 'REVISION REQUEST (apply this to the previous script): "' + feedback + '"' : '',
         field ? 'FOCUS: rewrite only the ' + field + ' and keep the rest close to the original.' : ''
     ].filter(Boolean).join('\n');
@@ -765,6 +774,10 @@ async function generateScenes(project, { provider, model, think }) {
         'TOTAL DURATION (seconds): ' + (brief.duration || 15),
         'CONTENT TYPE: ' + (project.contentType ? project.contentType.label : ''),
         'SCRIPT: ' + (project.script ? project.script.fullText : ''),
+        'SPEAKING BUDGET: each scene\'s "dialogue" must fit its own "duration" at about 2.3 ' +
+        'words per second (a 3s scene is at most ~' + prompts.dialogueWordBudget(3) +
+        ' words, a 5s scene ~' + prompts.dialogueWordBudget(5) + '). Split a longer thought ' +
+        'across scenes; an over-long line is spoken too fast and sounds robotic.',
         'CREATOR: ' + JSON.stringify({ name: creator.name, identity: creator.identity }),
         'OUTFIT (keep consistent): ' + (outfit.outfit || ''),
         'ENVIRONMENT (keep consistent): ' + (environment.description || environment.label || ''),
@@ -872,6 +885,8 @@ async function regenerateScene(project, sceneId, { provider, model, think, direc
         'Environment (keep): ' + ((project.environment || {}).description || (project.environment || {}).label || ''),
         'Product: ' + JSON.stringify({ name: (project.product || {}).name, description: (project.product || {}).description }),
         'CURRENT SCENE ' + scene.order + ': ' + JSON.stringify({ objective: scene.objective, action: scene.action, camera: scene.camera, productVisibility: scene.productVisibility }),
+        'DIALOGUE BUDGET: at most ~' + prompts.dialogueWordBudget(scene.duration) + ' words for this ' +
+        scene.duration + 's scene (about 2.3 words per second; keep it natural, not rushed).',
         'REQUESTED CHANGE: ' + (direction || 'Regenerate this scene with a fresh, different camera and action.')
     ].join('\n');
     let replacement = null;
@@ -966,14 +981,32 @@ function approveReferences(project) {
     return save(project);
 }
 
-// The opening frame the Director animates: the first approved reference.
-function resolveOpeningFrame(project) {
+// All approved reference frames in scene order. The Director conditions the
+// final video on every scene's approved frame (reference-to-video), not just
+// the first — this is what makes the generated scene frames actually reach the
+// video instead of being discarded after approval.
+function resolveReferenceFrames(project) {
     const approved = project.approvedReferences && project.approvedReferences.length
         ? project.approvedReferences
         : (project.references || []);
-    const first = approved.find((r) => r && r.filename) || null;
-    if (!first) return null;
-    return { url: first.url, filename: first.filename };
+    return approved
+        .filter((r) => r && r.filename)
+        .slice()
+        .sort((a, b) => (Number(a.order) || 0) - (Number(b.order) || 0))
+        .map((r) => ({
+            sceneId: r.sceneId || null,
+            order: Number(r.order) || 0,
+            url: r.url || ('/generated/' + encodeURIComponent(r.filename)),
+            filename: r.filename
+        }));
+}
+
+// The opening frame shown in the Director approval card: the first approved
+// reference, which is also <Picture 1> for the video.
+function resolveOpeningFrame(project) {
+    const frames = resolveReferenceFrames(project);
+    const first = frames[0] || null;
+    return first ? { url: first.url, filename: first.filename } : null;
 }
 
 // --- Natural-language editing -------------------------------------------------
@@ -1195,7 +1228,8 @@ function directorProductionInput(project) {
         brief,
         duration,
         originalRequest: project.request || '',
-        openingFrame: resolveOpeningFrame(project)
+        openingFrame: resolveOpeningFrame(project),
+        references: resolveReferenceFrames(project)
     };
 }
 

@@ -62,6 +62,9 @@ const SCRIPT_SYSTEM_PROMPT =
     '(application, holding, revealing) — consistent with the supplied product facts.\n' +
     '- "closing": the call to action.\n' +
     '- "fullText": the complete script as a single flowing block the creator would say aloud.\n' +
+    '- Speaking pace: the whole script is spoken across the video, so keep the total at ' +
+    'about 2.3 words per second of the requested duration (a 15-second video is roughly ' +
+    '30-35 words total). A longer script has to be rushed and sounds robotic.\n' +
     '- Keep it concise enough for the requested duration and platform.\n' +
     '- NEVER invent personal experiences, fake testimonials, ingredients, clinical or ' +
     'medical results, prices, or performance guarantees. Use ONLY the supplied product facts.\n' +
@@ -81,6 +84,10 @@ const SCENE_SYSTEM_PROMPT =
     '- The scene durations in seconds MUST add up to EXACTLY the total requested duration.\n' +
     '- Each scene is one continuous shot; "transition" describes how it cuts from the previous one.\n' +
     '- "productVisibility" describes how the product appears in the scene (or "not visible").\n' +
+    '- Speaking pace: each scene\'s "dialogue" must fit that scene\'s "duration" at about ' +
+    '2.3 words per second (a 5-second scene is at most ~11 words). Split a longer thought ' +
+    'across scenes instead of writing one long line — an over-long line is spoken too fast ' +
+    'and sounds robotic. Leave "dialogue" empty in scenes where nobody speaks.\n' +
     '- The creator, outfit and environment stay consistent across scenes unless the brief says otherwise.\n' +
     '- Never invent product claims. Describe only what is on camera.';
 
@@ -170,6 +177,56 @@ function heuristicBrief(message) {
         creatorDescription: '',
         additionalInstructions: ''
     };
+}
+
+// --- Speaking-rate budget -----------------------------------------------------
+//
+// H3 renders a spoken line at the pace the shot's duration implies: a line with
+// more words than the shot has seconds gets compressed into a fast, robotic
+// delivery. Keep every line inside a natural words-per-second budget so a 5s
+// cut carries ~11-12 words, not 25.
+
+const SPEAKING_WORDS_PER_SECOND = 2.3;
+
+function countWords(text) {
+    const value = String(text || '').replace(/\s+/g, ' ').trim();
+    return value ? value.split(' ').length : 0;
+}
+
+// Whole-word budget for a shot of `seconds`, floored so a tiny shot still gets
+// a usable line.
+function dialogueWordBudget(seconds) {
+    const s = Number(seconds) > 0 ? Number(seconds) : 3;
+    return Math.max(3, Math.round(s * SPEAKING_WORDS_PER_SECOND));
+}
+
+// Trim a spoken line to the budget at the last complete sentence that fits,
+// falling back to a whole-word cut. Never cuts mid-word.
+function fitDialogueToBudget(text, seconds) {
+    const value = String(text || '').replace(/\s+/g, ' ').trim();
+    if (!value) return '';
+    const budget = dialogueWordBudget(seconds);
+    if (countWords(value) <= budget) return value;
+    const sentences = value.match(/[^.!?]+[.!?]+/g) || [];
+    let out = '';
+    for (const sentence of sentences) {
+        const next = (out ? out + ' ' : '') + sentence.trim();
+        if (countWords(next) > budget) break;
+        out = next;
+    }
+    if (out) return out.trim();
+    const clipped = value.split(' ').slice(0, budget).join(' ')
+        .replace(/[\s,;:.\-]+$/, '');
+    return /[.!?]$/.test(clipped) ? clipped : clipped + '.';
+}
+
+// Enforce the budget on every scene in place (after durations are final).
+function enforceDialogueBudgets(scenes) {
+    for (const scene of (Array.isArray(scenes) ? scenes : [])) {
+        if (!scene || !scene.dialogue) continue;
+        scene.dialogue = fitDialogueToBudget(scene.dialogue, scene.duration);
+    }
+    return scenes;
 }
 
 // Deterministic script fallback built only from supplied facts.
@@ -277,7 +334,7 @@ function deterministicScenes(project) {
             duration: durations[i],
             objective: base.objective,
             action: base.action,
-            dialogue: dialogueLines[i],
+            dialogue: fitDialogueToBudget(dialogueLines[i], durations[i]),
             camera: base.camera,
             productVisibility: base.productVisibility,
             transition: i === 0 ? 'opens the video' : 'cut from the previous scene'
@@ -342,6 +399,43 @@ function normalizeDialogue(value) {
     return text.replace(/^["'\u201c\u201d]+|["'\u201c\u201d]+$/g, '').trim();
 }
 
+// Spoken-language tag for the H3 <d>[Language] ...</d> wrapper. H3 defaults to
+// its dominant language when the tag is missing (the Mandarin-dialogue bug), so
+// the tag is always written explicitly. A named language in the request wins,
+// otherwise English.
+const DIALOGUE_LANGUAGES = [
+    { tag: 'English', re: /\b(?:english|in\s+english)\b/i },
+    { tag: 'Chinese', re: /\b(?:chinese|mandarin|cantonese|in\s+chinese)\b/i },
+    { tag: 'Spanish', re: /\b(?:spanish|espa[nñ]ol|espanol|castellano)\b/i },
+    { tag: 'French', re: /\b(?:french|fran[cç]ais)\b/i },
+    { tag: 'German', re: /\b(?:german|deutsch)\b/i },
+    { tag: 'Portuguese', re: /\b(?:portuguese|portugu[eê]s)\b/i },
+    { tag: 'Italian', re: /\b(?:italian|italiano)\b/i },
+    { tag: 'Japanese', re: /\b(?:japanese|nihongo)\b/i },
+    { tag: 'Korean', re: /\b(?:korean|hangul)\b/i },
+    { tag: 'Hindi', re: /\b(?:hindi|urdu)\b/i },
+    { tag: 'Arabic', re: /\b(?:arabic)\b/i },
+    { tag: 'Russian', re: /\b(?:russian)\b/i }
+];
+
+function detectDialogueLanguage(text) {
+    const value = String(text || '');
+    if (!value.trim()) return '';
+    for (const entry of DIALOGUE_LANGUAGES) {
+        if (entry.re.test(value)) return entry.tag;
+    }
+    return '';
+}
+
+function dialogueLanguageFor(project) {
+    const brief = (project && project.brief) || {};
+    const explicit = String(brief.dialogueLanguage || '').trim();
+    if (explicit) return explicit;
+    return detectDialogueLanguage(project && project.request)
+        || detectDialogueLanguage(brief.additionalInstructions)
+        || 'English';
+}
+
 // Compose the Director's canonical brief from a UGC project. The structured
 // scene plan becomes the Director's shot list, so the handoff is not a text blob.
 function directorBrief(project) {
@@ -350,6 +444,7 @@ function directorBrief(project) {
     const outfit = project.outfit || {};
     const environment = project.environment || {};
     const brief = project.brief || {};
+    const language = dialogueLanguageFor(project);
     const scenes = Array.isArray(project.scenes) ? project.scenes : [];
     const subjectParts = [];
     if (creator.identity) subjectParts.push(creator.identity);
@@ -360,12 +455,16 @@ function directorBrief(project) {
         const camera = scene.camera || {};
         const cam = [camera.shotType, camera.movement].filter(Boolean).join(' ');
         let shot = (action + (cam ? ' (camera: ' + cam + ')' : '')).replace(/\s+$/, '').replace(/\.+$/, '');
-        const dialogue = normalizeDialogue(scene.dialogue);
+        const dialogue = fitDialogueToBudget(normalizeDialogue(scene.dialogue), scene.duration);
         if (dialogue) {
             // The creator speaks on camera, so the line keeps a stable (S1) ID and
-            // an H3 <d> wrapper. This is what makes H3 render visible lip-sync
-            // instead of treating the words as off-screen narration.
-            shot += '. The on-screen creator (S1) says: <d>[English] ' + dialogue + '</d>';
+            // an H3 <d> wrapper. The explicit language tag stops H3 from inventing
+            // speech in its dominant language. This is what makes H3 render
+            // visible lip-sync instead of treating the words as off-screen
+            // narration. The H3 stage also re-asserts this dialogue
+            // deterministically (ensureShotDialogue) because the director LLM
+            // otherwise drops it.
+            shot += '. The on-screen creator (S1) says: <d>[' + language + '] ' + dialogue + '</d>';
         }
         return shot;
     }).filter(Boolean);
@@ -376,7 +475,7 @@ function directorBrief(project) {
     if (product.keyBenefits && product.keyBenefits.length) details.push('benefits: ' + product.keyBenefits.join(', '));
     if (outfit.outfit) details.push('outfit: ' + outfit.outfit);
     if (shotList.some((shot) => shot.includes('<d>'))) {
-        details.push('the creator speaks directly to camera in English with natural on-camera lip-sync');
+        details.push('the creator speaks directly to camera in ' + language + ' with natural on-camera lip-sync');
     }
     if (brief.callToAction) details.push('call to action: ' + brief.callToAction);
     if (product.claimsToAvoid && product.claimsToAvoid.length) {
@@ -420,8 +519,15 @@ module.exports = {
     scriptSentences,
     distributeDialogue,
     normalizeDialogue,
+    detectDialogueLanguage,
+    dialogueLanguageFor,
     splitDuration,
     sceneCountFor,
+    SPEAKING_WORDS_PER_SECOND,
+    countWords,
+    dialogueWordBudget,
+    fitDialogueToBudget,
+    enforceDialogueBudgets,
     referenceConcept,
     directorBrief
 };

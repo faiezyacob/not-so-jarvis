@@ -424,6 +424,56 @@ test('directorBrief carries scene dialogue as on-screen H3 dialogue', () => {
     assert.ok(/lip-sync/i.test(input.brief.details));
 });
 
+test('directorProductionInput carries every approved reference frame', () => {
+    const project = baseProject();
+    project.scenes = [
+        { id: 's1', order: 1, duration: 7, action: 'walks in', camera: {} },
+        { id: 's2', order: 2, duration: 8, action: 'applies', camera: {} }
+    ];
+    project.approvedReferences = [
+        { sceneId: 's1', order: 1, url: '/generated/a.png', filename: 'a.png' },
+        { sceneId: 's2', order: 2, url: '/generated/b.png', filename: 'b.png' }
+    ];
+    const input = studio.directorProductionInput(project);
+    assert.equal(input.references.length, 2);
+    assert.deepEqual(input.references.map((r) => r.filename), ['a.png', 'b.png']);
+    assert.equal(input.openingFrame.filename, 'a.png');
+});
+
+test('a UGC handoff renders the video reference-to-video from every scene frame', async () => {
+    const director = require('../services/director/director');
+    const project = baseProject();
+    project.scenes = [
+        { id: 's1', order: 1, duration: 7, action: 'walks in', dialogue: 'Hi there.', camera: {} },
+        { id: 's2', order: 2, duration: 8, action: 'applies it', dialogue: 'It sinks in.', camera: {} }
+    ];
+    project.approvedReferences = [
+        { sceneId: 's1', order: 1, url: '/generated/a.png', filename: 'a.png' },
+        { sceneId: 's2', order: 2, url: '/generated/b.png', filename: 'b.png' }
+    ];
+    const input = studio.directorProductionInput(project);
+    const production = director.createUgcProduction({
+        conversationId: conversationId('refs'),
+        brief: input.brief,
+        duration: input.duration,
+        openingFrame: input.openingFrame,
+        originalRequest: input.originalRequest,
+        references: input.references
+    });
+    assert.equal(production.references.length, 2);
+    const stage = await director.buildVideoStageRequest(production, {
+        provider: 'ollama', model: 'test-model', think: false
+    });
+    assert.equal(stage.videoMode, 'ref2va');
+    assert.deepEqual(stage.referenceImages, ['a.png', 'b.png']);
+    assert.deepEqual(stage.structuredRequest.reference_images, ['a.png', 'b.png']);
+    assert.equal(stage.structuredRequest.has_reference_image, false);
+    // Approved dialogue survives into the final H3 prompt with its language tag.
+    assert.match(stage.videoPrompt, /<d>\[English\] Hi there\.<\/d>/);
+    assert.match(stage.videoPrompt, /<d>\[English\] It sinks in\.<\/d>/);
+    director.removeProduction(production.conversationId);
+});
+
 test('deterministicScenes distributes the script across scenes as dialogue', () => {
     const project = baseProject({
         script: { fullText: 'First line. Second line. Third line. Fourth line.' }
@@ -435,6 +485,49 @@ test('deterministicScenes distributes the script across scenes as dialogue', () 
     // The opening scene speaks the hook and the last scene lands the closing line.
     assert.ok(scenes[0].dialogue.includes('First line.'));
     assert.ok(scenes[scenes.length - 1].dialogue.includes('Fourth line.'));
+});
+
+test('dialogue is trimmed to a natural pace for its scene duration', () => {
+    const long = 'Okay so I have been using this serum for a whole week now and honestly my ' +
+        'skin has never felt this hydrated or looked this calm in the morning before.';
+    const fitted = prompts.fitDialogueToBudget(long, 5);
+    assert.ok(prompts.countWords(fitted) <= prompts.dialogueWordBudget(5), fitted);
+    assert.ok(fitted.endsWith('.'));
+    // A short line that already fits is left untouched.
+    assert.equal(prompts.fitDialogueToBudget('It sinks in fast.', 5), 'It sinks in fast.');
+    // The budget scales with the shot: twice the seconds, twice the words.
+    assert.ok(prompts.dialogueWordBudget(10) > prompts.dialogueWordBudget(5));
+});
+
+test('deterministicScenes never assigns more words than a scene can hold', () => {
+    const project = baseProject({
+        script: { fullText: 'This opening hook is deliberately far too long for a five second scene and must be trimmed. It sinks in fast. Third line. Fourth line.' }
+    });
+    const scenes = prompts.deterministicScenes(project);
+    scenes.forEach((scene) => {
+        assert.ok(prompts.countWords(scene.dialogue) <= prompts.dialogueWordBudget(scene.duration),
+            scene.duration + 's: ' + scene.dialogue);
+    });
+});
+
+test('generateScenes trims an over-long LLM line to the scene budget', async () => {
+    const original = providers.chat;
+    providers.chat = async () => JSON.stringify({
+        scenes: [
+            { duration: 5, action: 'a', dialogue: 'One two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty twentyone twentytwo twentythree twentyfour twentyfive twentysix.' },
+            { duration: 5, action: 'b', dialogue: 'Short line.' }
+        ]
+    });
+    try {
+        const project = baseProject();
+        await studio.generateScenes(project, { provider: 'ollama', model: 'test-model', think: false });
+        project.scenes.forEach((scene) => {
+            assert.ok(prompts.countWords(scene.dialogue) <= prompts.dialogueWordBudget(scene.duration),
+                scene.duration + 's: ' + scene.dialogue);
+        });
+    } finally {
+        providers.chat = original;
+    }
 });
 
 test('script and scene generation use the LLM when it returns valid JSON', async () => {

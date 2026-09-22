@@ -249,7 +249,7 @@ async function createProduction({ conversationId, message, provider, model, thin
 // the caller owns the canonical brief and the approved opening frame, so the
 // production starts at the approval checkpoint with the frame in place. The
 // brief's shotList (built from the UGC scene plan) drives the H3 cut sequence.
-function createUgcProduction({ conversationId, brief, duration, openingFrame, originalRequest }) {
+function createUgcProduction({ conversationId, brief, duration, openingFrame, originalRequest, references }) {
     const production = productionPlan.create({
         conversationId,
         brief,
@@ -257,6 +257,17 @@ function createUgcProduction({ conversationId, brief, duration, openingFrame, or
         sourceImage: openingFrame ? openingFrame.filename : null,
         originalRequest: originalRequest || (brief && brief.originalRequest) || ''
     });
+    // Every approved scene frame travels with the production so the video stage
+    // can condition H3 on all of them (reference-to-video), not only <Picture 1>.
+    production.references = (Array.isArray(references) ? references : [])
+        .filter((r) => r && r.filename)
+        .slice(0, 9)
+        .map((r) => ({
+            sceneId: r.sceneId || null,
+            order: Number(r.order) || 0,
+            url: r.url || ('/generated/' + encodeURIComponent(r.filename)),
+            filename: r.filename
+        }));
     if (openingFrame && openingFrame.filename) {
         production.image = {
             url: openingFrame.url || ('/generated/' + encodeURIComponent(openingFrame.filename)),
@@ -426,8 +437,20 @@ function cancel(production) {
 // brief + requested duration. Returns everything handleVideoGenerationStream
 // needs; the H3 director LLM (reused, not reimplemented) writes the prompt.
 async function buildVideoStageRequest(production, { provider, model, think }) {
-    const sourceImageRawFilename =
-        (production.image && production.image.rawFilename) || production.sourceImage || null;
+    const references = Array.isArray(production.references)
+        ? production.references.filter((r) => r && r.filename).slice(0, 9)
+        : [];
+    // If the opening frame was upscaled, animate the higher-resolution file as
+    // <Picture 1> so the reference used matches the frame the user approved.
+    const upscaledFrame = production.image && production.image.upscaled
+        ? production.image.rawFilename
+        : null;
+    const referenceImages = references.map((r) => r.filename);
+    if (upscaledFrame && referenceImages.length) referenceImages[0] = upscaledFrame;
+    const useRefs = referenceImages.length > 0;
+    const sourceImageRawFilename = useRefs
+        ? referenceImages[0]
+        : ((production.image && production.image.rawFilename) || production.sourceImage || null);
     const duration = Number(production.video && production.video.duration) > 0
         ? Number(production.video.duration)
         : defaultVideoDuration();
@@ -441,7 +464,9 @@ async function buildVideoStageRequest(production, { provider, model, think }) {
         user_prompt: prompts.composeVideoDirection(production.brief, duration, { authoritative, shotList }),
         previous_prompt: '',
         creative_mode: 'none',
-        has_reference_image: Boolean(sourceImageRawFilename),
+        has_reference_image: !useRefs && Boolean(sourceImageRawFilename),
+        // Reference-to-video: every approved scene frame conditions the render.
+        reference_images: useRefs ? referenceImages : [],
         requested_duration: duration,
         explicit_constraints: production.brief.explicitConstraints || [],
         shots: shotList.length,
@@ -464,8 +489,9 @@ async function buildVideoStageRequest(production, { provider, model, think }) {
     return {
         videoPrompt: director.prompt,
         structuredRequest,
-        videoMode: sourceImageRawFilename ? 'i2va' : 't2va',
+        videoMode: useRefs ? 'ref2va' : (sourceImageRawFilename ? 'i2va' : 't2va'),
         sourceImageRawFilename,
+        referenceImages: useRefs ? referenceImages : [],
         duration: director.duration || duration,
         width: director.width,
         height: director.height

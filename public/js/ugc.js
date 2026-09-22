@@ -200,7 +200,7 @@ const UGCUI = (() => {
         form.appendChild(el('div', 'ugc-section-title', 'New product'));
         const name = input(suggested, 'Product name');
         const brand = input('', 'Brand');
-        const description = textarea('', 'Short description (what it is, what it looks like)', 2);
+        const description = textarea('', 'Short description (what it is, what it looks like). Type @ to add a generated image.', 2);
         const benefits = input('', 'Key benefits (comma separated)');
         const avoid = input('', 'Claims to avoid (comma separated)');
 
@@ -221,7 +221,8 @@ const UGCUI = (() => {
         const refs = [];
         const refThumbs = el('div', 'ugc-ref-uploads');
         const uploadBtn = button('Add reference images', 'image', '', () => fileInput.click());
-        const refNote = el('span', 'ugc-file-note', 'PNG, JPEG or WebP.');
+        const REF_NOTE = 'PNG, JPEG or WebP, or type @ in the description.';
+        const refNote = el('span', 'ugc-file-note', REF_NOTE);
 
         function renderRefThumbs() {
             refThumbs.innerHTML = '';
@@ -240,11 +241,30 @@ const UGCUI = (() => {
                 remove.addEventListener('click', () => {
                     refs.splice(index, 1);
                     renderRefThumbs();
-                    refNote.textContent = refs.length ? refs.length + ' attached.' : 'PNG, JPEG or WebP.';
+                    refNote.textContent = refs.length ? refs.length + ' attached.' : REF_NOTE;
                 });
                 thumb.appendChild(remove);
                 refThumbs.appendChild(thumb);
             });
+        }
+
+        // Add a reference by URL (from an upload or an @ mention), de-duplicated
+        // and capped at the same limit the server enforces.
+        function addReferenceUrl(url) {
+            if (!url || refs.includes(url)) return;
+            if (refs.length >= 6) {
+                refNote.textContent = 'Up to 6 reference images.';
+                return;
+            }
+            refs.push(url);
+            renderRefThumbs();
+            refNote.textContent = refs.length + ' attached.';
+        }
+
+        // Typing "@" in the description opens the generated-image picker from
+        // the current conversation; the chosen image becomes a reference.
+        if (typeof MentionPicker !== 'undefined' && MentionPicker) {
+            MentionPicker.attach(description, (item) => addReferenceUrl(item.url));
         }
 
         fileInput.addEventListener('change', async () => {
@@ -253,10 +273,9 @@ const UGCUI = (() => {
             try {
                 for (const file of Array.from(fileInput.files || [])) {
                     const url = await uploadImage(file);
-                    if (url) refs.push(url);
+                    addReferenceUrl(url);
                 }
-                renderRefThumbs();
-                refNote.textContent = refs.length ? refs.length + ' attached.' : 'PNG, JPEG or WebP.';
+                refNote.textContent = refs.length ? refs.length + ' attached.' : REF_NOTE;
             } catch (e) {
                 refNote.textContent = 'Upload failed.';
             } finally {
