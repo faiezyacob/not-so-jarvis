@@ -2,7 +2,7 @@
 
 **JARVIS — a local AI assistant dashboard that runs entirely on your machine.**
 
-Chat, generate images, edit photos, produce videos with sound, upscale both — all driven from one conversational UI. Built with **plain Node.js** (zero npm dependencies) and **vanilla HTML/CSS/JS** (no bundler, no build step). No cloud, no accounts, no telemetry.
+Chat, generate images, edit photos, produce videos with sound, design UGC ads, and invent characters — all driven from one conversational UI. Built with **plain Node.js** (zero npm dependencies) and **vanilla HTML/CSS/JS** (no bundler, no build step). No cloud, no accounts, no telemetry.
 
 ![Dashboard Overview](screenshots/dashboard-overview.png)
 
@@ -13,37 +13,91 @@ Chat, generate images, edit photos, produce videos with sound, upscale both — 
 - [Quick start](#quick-start)
 - [First-run setup](#first-run-setup)
 - [How it works](#how-it-works)
-- [Environment variables](#environment-variables)
-- [Project structure](#project-structure)
 - [Architecture](#architecture)
 - [Development](#development)
 - [License](#license)
 
 ## Features
 
-### Chat & assistant
+Everything runs from a single chat surface — there are no separate tools or dashboards.
+
+### Chat
 
 - **Ollama chat** with SSE token streaming, markdown rendering, and persisted conversation history
 - **Context builder** that assembles a bounded prompt (system prompt + rolling summary + recent messages)
 - **Task router / ActiveTask** — remembers the active image or video session across turns, so *"make the sky darker"* or *"another one"* keeps working without restating context
-- **`@` image references** — type `@` in the composer to attach an earlier generated image as a reference; questions use it as vision input, instructions route to an identity edit, video wording routes to image-to-video
+- **`@` image references** — type `@` in the composer to attach earlier generated images as references; questions use them as vision input, instructions route to a multi-reference edit, and video wording routes to image-to-video
 - **Voice input** — push-to-talk dictation via the browser Web Speech API (optional auto-send)
 - **Spoken replies** — read JARVIS replies aloud via the SpeechSynthesis API, with voice selection and rate control
 - **Live machine, weather & news awareness** — ask about your CPU/GPU/VRAM, the weather, or the news and the assistant is given a gated live snapshot (system telemetry + Open-Meteo + RSS headlines) as context, so it answers with real values and real sources instead of guessing
 
-### Image
+### Image generation
 
-- **Text-to-image** via Krea2 on a local ComfyUI instance — the chat LLM acts as a "visual director" that enriches your prompt before the workflow runs
-- **Identity edit** — attach a photo (or say *"edit this image"*) and describe the change; the Krea2 Identity Edit LoRA re-stages, recolors, adds, or removes objects while preserving the rest
+- **Text-to-image** via Krea2 (default) or Qwen Image 2.1 on a local ComfyUI instance — the chat LLM acts as a "visual director" that enriches your prompt before the workflow runs
 - **LoRA stack** — attach multiple LoRAs with per-LoRA strength, on/off toggle, and automatic trigger words
 - **Image upscaling** — SeedVR2 (tiled diffusion) or Ultimate SD, with a before/after compare viewer
 
-### Video
+<p align="center">
+  <img src="screenshots/image-gen.png" alt="Text-to-image result — surrealist glass whale floating through a pine forest" width="72%"><br>
+  <sub><em>Prompt: generate image A surrealist oil painting of a giant whale floating through a dense pine forest instead of water. The whale is made of iridescent glass, and inside its body, a miniature glowing city is visible. Soft golden sunlight filters through the trees, casting long shadows</em></sub>
+</p>
+<p align="center">
+  <img src="screenshots/image-gen-upscale.png" alt="Upscaled version of the generated image" width="72%"><br>
+  <sub><em>Prompt: upscale this image</em></sub>
+</p>
+<p align="center">
+  <img src="screenshots/image-gen-before-and-after.png" alt="Built-in before/after comparison slider after an upscale" width="72%"><br>
+  <sub><em>Built-in image comparison when an image gets upscaled</em></sub>
+</p>
+
+### Image edit
+
+- **Instruction editing** with Qwen Image 2.1 — attach a photo (or say *"edit this image"*) and describe the change; JARVIS re-stages, recolors, adds, or removes objects while preserving the rest
+- **Multi-reference editing** — attach several images and address each by position (*"make image 1 hold image 2 at image 3"*)
+- Edited files carry an `_edit_` marker and keep the source untouched
+
+<table align="center">
+  <tr>
+    <td align="center" valign="top" width="50%">
+      <img src="screenshots/image-edit-before.png" alt="Image before editing" width="100%"><br>
+      <sub><em>Before</em></sub>
+    </td>
+    <td align="center" valign="top" width="50%">
+      <img src="screenshots/image-edit-after.png" alt="Image after editing" width="100%"><br>
+      <sub><em>Prompt: change her outfit to golden silky dress</em></sub>
+    </td>
+  </tr>
+</table>
+
+### Video generation
 
 - **Video generation** with MiniMax H3 — text-to-video-audio (T2VA) and image-to-video-audio (I2VA), with synchronized audio
+- **Director Mode** — multi-stage productions (brief → opening image approval → H3 video) with contextual direction changes and film-style shot lists
+- **Long Video Director** — videos beyond H3's 15-second ceiling, planned as a continuous, motion-consistent beat chain rendered in one job
 - **FaceRefine** — optional second H3 pass that tracks faces per frame, re-generates them at low denoise, and stitches them back to fix small or distant faces
-- **First Block Cache** — optional H3 acceleration patch (via the `ComfyUI-MiniMaxH3-FirstBlockCache` custom node) that reduces redundant transformer computation; composes with the attention backend and Turbo LoRA
 - **Video upscaling** — fast RTX super-resolution (default) or the SeedVR2 quality path, audio-preserving
+
+<p align="center">
+  <video src="screenshots/video.mp4" width="72%" controls muted loop playsinline></video><br>
+  <sub><em>Prompt: generate video donald trump eating ice cream and say in Malay 'sedap juga aiskrim ni'</em></sub>
+</p>
+
+> **Audio note.** The preview above is muted. To hear synchronized audio, open [`screenshots/video.mp4`](screenshots/video.mp4) directly.
+
+### UGC Studio
+
+- **Chat-first UGC workflow** — ask for a TikTok-style ad and the studio walks the whole production: brief, product, creator, creative direction, script, scenes, reference frames, then the final video
+- **Facts-only scripts** — never invents product claims, ingredients, certifications, or testimonials; uses only what you or the Product Library supply
+- **Product Library** — reusable product records with reference images
+- **Director handoff** — approved scenes and every approved reference frame continue into the existing Director pipeline
+
+### Creative Playground
+
+- **Surprise Me** — deterministic concept discovery that invents a scene, a character and a look without touching the GPU until you hit Generate
+- **Character generator** — independent appearance × age × gender controls over structured trait pools; a fresh character pre-renders its face so you meet them before the scene
+- **Themes, techniques & outfits** — lifestyle/candid, experimental photography and more, composing outfits, environments and activities
+- **Outfit Packs** — 10 wardrobe personalities (plus custom) that compose a concrete, coherent outfit while never changing who the person is
+- **Locks & iteration** — pin an identity, outfit or scene, then re-roll or modify only what you want to change
 
 ### Dashboard & tooling
 
@@ -57,6 +111,19 @@ Chat, generate images, edit photos, produce videos with sound, upscale both — 
 - **Settings panel** — provider, chat, image, upscale, video, and system configuration with search
 
 ### Engineering
+
+<p align="center">
+  <img src="screenshots/engineering.png" alt="Engineering showcase" width="72%">
+</p>
+
+<!-- Replace the image above with a video if you prefer:
+<p align="center">
+  <video src="screenshots/video.mp4" width="72%" controls muted loop playsinline></video><br>
+  <sub><em>MiniMax H3 — text-to-video with synchronized audio</em></sub>
+</p>
+
+> **Audio note.** The preview above is muted. To hear the synchronized audio, open [`screenshots/video.mp4`](screenshots/video.mp4) directly.
+On GitHub, use a GIF or a github.com/user-attachments video URL instead. -->
 
 - **Zero dependencies** — even `.env` loading, markdown parsing, PNG dimension reading, and the HTTP routing are hand-rolled
 - **No framework** — a Node `http` server plus a vanilla JS frontend
@@ -89,7 +156,7 @@ Then open **http://localhost:3001**.
 If image or video features report missing pieces, open **Settings > Setup**:
 
 1. Install and start **ComfyUI** (Desktop or portable), then start this server so the guide can detect it.
-2. Create a free **Hugging Face** account, accept the **Krea 2 / MiniMax H3** model licenses, and paste a **read** access token (stored in `data/config.json`; `HF_TOKEN`/`HUGGINGFACE_TOKEN` env vars override it).
+2. Create a free **Hugging Face** account, accept the **Krea 2 / MiniMax H3** model licenses, and paste a **read** access token (stored in `data/config.json`).
 3. Click **Download all missing** — the model set is large (60 GB+), so leave it running.
 4. Click **Install all missing** for custom nodes, then **restart ComfyUI**.
 
@@ -108,7 +175,7 @@ Every message flows through `task-router.js` before any tool runs. The router de
 
 A fast regex signal decides whether a structured LLM classifier is needed; the classifier's JSON is the authority on execution — the chat model's free-text reply never triggers a tool. Deterministic pre-LLM gates own narrow intents (upscaling, typo-tolerant phrasings, bare *"again"*, anaphoric *"another image"*, explicit new-generation requests) so small chat models cannot downgrade them to chat. Classification runs at temperature 0.
 
-When a tool does run, VRAM is freed first (`vram-manager` unloads the chat model to make room), the workflow is queued, and results stream back into the conversation. Once the chat model is needed again, the image/video models are unloaded in turn. Unloads are verified rather than fire-and-forget: JARVIS polls Ollama until the chat model actually leaves memory (and holds a short settle for the OS to reclaim the RAM) before loading ComfyUI, so a still-resident `llama-server` can't be stacked under the video model. The timings are tunable via `JARVIS_MODEL_RELEASE_TIMEOUT_MS`, `JARVIS_MODEL_RELEASE_POLL_MS`, and `JARVIS_MODEL_RELEASE_SETTLE_MS` (see `.env.example`).
+When a tool does run, VRAM is freed first (`vram-manager` unloads the chat model to make room), the workflow is queued, and results stream back into the conversation. Once the chat model is needed again, the image/video models are unloaded in turn. Unloads are verified rather than fire-and-forget: JARVIS polls Ollama until the chat model actually leaves memory (and holds a short settle for the OS to reclaim the RAM) before loading ComfyUI, so a still-resident `llama-server` can't be stacked under the video model.
 
 ### Environment awareness
 
@@ -118,17 +185,17 @@ Chat has no tools, so live machine state is injected as system context when rele
 
 1. Detect the image intent (two-level: regex signal → structured LLM classifier).
 2. Enrich the prompt with the chat LLM as a visual director.
-3. Build the Krea2 text-to-image graph (UNET + CLIP + VAE + KSampler).
+3. Build the text-to-image graph (Krea2 by default, or Qwen Image 2.1).
 4. Submit to ComfyUI and wait, relaying step progress over SSE.
 5. Download the output to `data/generated/` and show it inline.
 
-### Identity edit
+### Image edit
 
-Attach a photo and describe a change (*"remove the car"*), or say *"edit this image, make it night"* to edit the last generated image. JARVIS resolves the source (a fresh upload wins, otherwise the latest generated image), builds the Krea2 identity-edit graph (UNET + Identity Edit LoRA + your LoRAs), and shows the result inline. Edited files carry an `_edit_` marker. Only explicit edit requests run the identity path — vague tweaks like *"change her dress"* are treated as full re-generations.
+Attach a photo and describe a change (*"remove the car"*), or say *"edit this image, make it night"* to edit the last generated image. JARVIS resolves the source (a fresh upload wins, otherwise the latest generated image), builds the Qwen Image 2.1 instruction-edit graph, and shows the result inline. Multiple `@` references are wired in as `image 1` … `image N`, so a single instruction can address each by position. Edited files carry an `_edit_` marker. Only explicit edit requests run the edit path — vague tweaks like *"change her dress"* are treated as full re-generations.
 
 ### Video generation
 
-Text prompts (T2VA) or an attached/referenced image (I2VA) produce a MiniMax H3 video with synchronized audio. If FaceRefine is enabled, a second pass refines faces before the final file is written. On first enable, the ComfyUI-side nodes and face detector are auto-installed in the background.
+Text prompts (T2VA) or an attached/referenced image (I2VA) produce a MiniMax H3 video with synchronized audio. Director Mode turns a production into discrete stages (brief → opening image approval → video), and the Long Video Director plans >15 s requests as a continuous beat chain. If FaceRefine is enabled, a second pass refines faces before the final file is written. On first enable, the ComfyUI-side nodes and face detector are auto-installed in the background.
 
 ### Upscaling
 
@@ -146,185 +213,6 @@ Say *"upscale this image"* or *"upscale this video"* (also *"make it higher res"
 ### LoRA stack
 
 Attach LoRAs from ComfyUI's available models. Each entry has an on/off toggle, a strength slider (0–2, default 1), and a trigger word that is prepended to the prompt automatically. Active LoRAs compose in order via chained `LoraLoader` nodes.
-
-## Environment variables
-
-Copy `.env.example` to `.env` and adjust as needed. Variables already set by the shell are not overwritten.
-
-### Core
-
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `PORT` | `3001` | Server port |
-| `OLLAMA_URL` | `http://localhost:11434` | Ollama endpoint |
-| `COMFYUI_URL` | `http://127.0.0.1:8188` | ComfyUI instance |
-| `COMFYUI_TIMEOUT_MS` | `900000` | Generation timeout (15 min) |
-
-### ComfyUI paths (usually auto-detected)
-
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `COMFYUI_OUTPUT_DIR` | auto-detected | Output folder, for cleanup after download |
-| `COMFYUI_ROOT` | auto-detected | ComfyUI install folder (contains `main.py`); used by the FaceRefine installer |
-| `COMFYUI_MODEL_DIR` | auto-detected | ComfyUI `models/` folder, for upscale model discovery |
-| `COMFYUI_INPUT_DIR` | auto-detected | ComfyUI `input/` folder, for uploaded-source cleanup |
-
-### Krea2 image
-
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `KREA2_UNET` | `krea2_turbo_fp8_scaled.safetensors` | UNET model |
-| `KREA2_CLIP` | `Huihui-Qwen3-VL-4B-Instruct-abliterated-fp8_scaled.safetensors` | CLIP model |
-| `KREA2_CLIP_TYPE` | `krea2` | CLIP type passed to ComfyUI |
-| `KREA2_VAE` | `wan_2.1_vae.safetensors` | VAE model |
-| `KREA2_EDIT_LORA` | `krea2_identity_edit_v1_2.safetensors` | Identity Edit LoRA |
-| `KREA2_ASPECT_RATIO` | `4:5` | Default aspect ratio |
-| `KREA2_IMAGE_SIZE` | `M` | Default size (S 0.75MP / M 1MP / L 1.75MP) |
-| `KREA2_WIDTH`, `KREA2_HEIGHT` | derived | Explicit latent dimensions |
-| `KREA2_STEPS` | `8` | KSampler steps |
-| `KREA2_CFG` | `1` | KSampler CFG |
-
-### Upscaling
-
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `KREA2_SEEDVR2_DIR` | auto-detected | Directory of SeedVR2 DiT/VAE checkpoints |
-| `COMFYUI_SEEDVR2_DIR` | auto-detected | Alternate SeedVR2 directory |
-
-### Hugging Face
-
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `HF_TOKEN` / `HUGGINGFACE_TOKEN` | — | Token for gated model downloads; overrides the token stored via Settings > Setup |
-
-### MiniMax H3 video
-
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `H3_UNET_T2VA` | `minimax_h3_fl2va_pruned_int8_convrot.safetensors` | UNET for text-to-video-audio |
-| `H3_UNET_I2VA` | `minimax_h3_ref2va_pruned_int8_convrot.safetensors` | UNET for image-to-video-audio |
-| `H3_VAE` | `minimax_h3_video_vae_fp16.safetensors` | Video VAE |
-| `H3_AUDIO_VAE` | `minimax_h3_audio_vae_fp32.safetensors` | Audio VAE |
-| `H3_CLIP` | `qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors` | CLIP (must match the UNET precision) |
-| `H3_SIZE` | `M` | Video size (S / M / L) |
-| `H3_DURATION` | `5` | Duration in seconds (5–15) |
-| `H3_ATTENTION_BACKEND` | `auto` | `auto`, `comfykitchen`, `sageattention`, or `sla` |
-
-### H3 First Block Cache
-
-First Block Cache is an optional acceleration patch for native MiniMax H3. It runs the first transformer block on every denoising step and reuses the cached residual of the remaining block stack when the residual change is small enough. **It is an approximation, not a lossless optimization — higher cache aggressiveness can change the denoising trajectory.** Review important outputs visually; `H3 Fast` is the recommended practical preset.
-
-It is implemented entirely by an external ComfyUI custom node; JARVIS only detects it, wires it immediately after the H3 diffusion-model loader, validates it and reports diagnostics. It composes with every attention backend (Auto / Comfy Kitchen / SageAttention / SLA) and with the Turbo LoRA, and it only ever applies to the MiniMax H3 pipeline.
-
-**Install (required before enabling):**
-
-```bash
-git clone https://github.com/duckyshell/ComfyUI-MiniMaxH3-FirstBlockCache.git
-```
-
-Clone it into `ComfyUI/custom_nodes`, then restart ComfyUI — or use the **Install / check First Block Cache** button in **Settings > Video → FIRST BLOCK CACHE** (same pattern as FaceRefine). Enabling the option also starts that install automatically when the node is missing. The node has no additional Python dependencies or model downloads, so cloning it is the whole install; ComfyUI must be restarted to load it. If the node is still missing when the setting is on, generation stops with an install message, and you can turn the toggle off to continue normally.
-
-Modes (passed straight to the node; manual values are locked to Custom):
-
-| Mode | Threshold |
-|------|-----------|
-| H3 Safe | 0.08 |
-| H3 Fast (default) | 0.10 |
-| H3 Aggressive | 0.12 |
-| H3 Experimental | deep-reuse cache |
-| Custom | threshold, start/end %, max consecutive hits, temporal guard |
-
-Settings > Video shows the mode and the custom fields (locked to Custom). The chosen mode, attention backend and Turbo state are recorded in the generated-history metadata, and the compact acceleration summary is added to the chat reply when First Block Cache is active.
-
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `H3_FBCACHE_ENABLED` | `false` | Enable the First Block Cache MODEL patch |
-| `H3_FBCACHE_MODE` | `H3 Fast — 0.10 / max 2` | Exact node mode string |
-| `H3_FBCACHE_THRESHOLD` | `0.10` | Custom-mode residual threshold (0–1) |
-| `H3_FBCACHE_START` | `0.10` | Custom-mode start of the denoising window (0–1) |
-| `H3_FBCACHE_END` | `0.95` | Custom-mode end of the denoising window (0–1) |
-| `H3_FBCACHE_MAX_HITS` | `2` | Custom-mode consecutive-hit cap (1–20) |
-| `H3_FBCACHE_TEMPORAL_GUARD` | `false` | Custom-mode per-frame temporal guard |
-
-### H3 FaceRefine
-
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `H3_FACEREFINE_ENABLED` | `false` | Enable the second refine pass |
-| `H3_FACEREFINE_DETECTOR` | `face_yolov8m.pt` | Face detector model |
-| `H3_FACEREFINE_DENOISE` | `0.4` | Refine denoise strength |
-| `H3_FACEREFINE_STEPS` | `8` | Refine steps |
-| `H3_FACEREFINE_CROP` | `2.5` | Crop factor around detected faces |
-| `H3_FACEREFINE_CANVAS` | `auto_capped_768` | Crop canvas size |
-| `H3_FACEREFINE_SELECT` | `largest_face` | Subject selection strategy |
-| `H3_FACEREFINE_FEATHER` | `24` | Stitch feather radius |
-
-> Settings saved in `data/config.json` (through the UI) take precedence over these environment defaults for video/upscale.
-
-## Project structure
-
-```
-server.js                 Entry point — raw HTTP server, all API routing, static file serving
-start.bat                 Windows launcher (installs Node if missing, exit-code-100 restart loop)
-start.sh                  macOS/Linux launcher (same behavior)
-install-node.ps1          Windows Node.js LTS installer (winget, then official MSI)
-install-node.sh           macOS/Linux Node.js LTS installer (brew/apt/dnf/pacman, then official tarball)
-package.json              Zero dependencies
-.env.example              Documented environment template
-
-server/                   Backend services
-  config-manager.js         Load/save data/config.json, active provider/model, image settings
-  context-builder.js        Assembles bounded chat context (system prompt + summary + recent msgs)
-  conversation-service.js   Conversation + message persistence to data/conversations.json
-  models.js                 Static model catalog + hardware estimates
-  provider-manager.js       Detects providers, discovers/downloads/loads/unloads models
-  providers.js              Ollama chat/stream/summarize implementation
-
-services/                 Independent / cross-cutting services
-  comfyui.js                All ComfyUI HTTP communication (health, queue, wait, download)
-  generation-queue.js       Single-generation lock and cancellable job queue
-  image-generator.js        Image intent, prompt building, Krea2 T2I + identity-edit graphs, upscaling
-  video-generator.js        MiniMax H3 video graphs, FaceRefine pipeline, video upscaling
-  face-refine.js            ComfyUI-side FaceRefine readiness checks + background auto-install
-  model-setup.js            First-run guide: HF-token model downloads + custom-node installs
-  system-monitor.js         CPU/RAM/VRAM/GPU telemetry (nvidia-smi), live polling
-  task-router.js            Context-aware intent/action router (ActiveTask continuation)
-  task-state.js             Per-conversation ActiveTask/TaskContext store (data/task-state.json)
-  generated-history.js      Metadata store for generated media
-  weather.js                Server-side Open-Meteo lookups + location store; feeds live weather into chat
-  news.js                   Keyless RSS/Atom news reader + feed cache; powers the NEWS widget and chat
-  vram-manager.js           Orchestrates unloading chat <-> image/video models based on VRAM pressure
-
-public/                   Frontend
-  index.html                Single-page dashboard UI
-  app.js                    Main application logic (settings, LoRA stack, widgets, charts)
-  style.css                 All styles
-  js/                       Feature modules
-    chat.js                   Chat rendering, streaming, @ reference picker, attachments
-    conversations.js          Conversation list and switching
-    db.js                     Client-side IndexedDB persistence
-    gallery.js                Generated gallery, preview, compare viewer
-    hardware-compat.js        Hardware compatibility checks
-    markdown.js               Hand-rolled markdown renderer
-    model-library.js          Model browsing/download UI
-    video-player.js           Video playback in chat and gallery
-    voice-input.js            Push-to-talk dictation
-    voice-output.js           Spoken replies
-
-data/                     Runtime state (JSON + generated media)
-  config.json
-  conversations.json
-  generated-history.json
-  task-state.json
-  generated/                Generated files, served at /generated/<file>
-  images/                   Uploaded image sources
-
-test/                     Zero-dependency test suites (node --test)
-  routing.test.js
-  intent.test.js
-  generation.test.js
-  news.test.js
-```
 
 ## Architecture
 
