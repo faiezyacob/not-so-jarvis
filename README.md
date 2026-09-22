@@ -79,10 +79,12 @@ Everything runs from a single chat surface — there are no separate tools or da
 
 <p align="center">
   <video src="screenshots/video.mp4" width="72%" controls muted loop playsinline></video><br>
-  <sub><em>Prompt: generate video donald trump eating ice cream and say in Malay 'sedap juga aiskrim ni'</em></sub>
+  <sub><em>MiniMax H3 — text-to-video with synchronized audio</em></sub>
 </p>
 
-> **Audio note.** The preview above is muted. To hear synchronized audio, open [`screenshots/video.mp4`](screenshots/video.mp4) directly.
+https://github.com/user-attachments/assets/REPLACE-WITH-YOUR-VIDEO-ID
+
+> **Audio note.** Locally the preview above is muted — open [`screenshots/video.mp4`](screenshots/video.mp4) directly to hear the synchronized audio. On GitHub, the attachment player plays with audio.
 
 ### UGC Studio
 
