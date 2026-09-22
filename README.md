@@ -79,7 +79,7 @@ Everything runs from a single chat surface — there are no separate tools or da
 
 <p align="center">
   <video src="screenshots/video.mp4" width="72%" controls muted loop playsinline></video><br>
-  <sub><em>MiniMax H3 — text-to-video with synchronized audio</em></sub>
+  <sub><em>Prompt: generate video donald trump eating ice cream and say in Malay 'sedap juga aiskrim ni'</em></sub>
 </p>
 
 https://github.com/user-attachments/assets/e74c3178-ad92-42bf-a1ca-4f68efde6897
