@@ -112,19 +112,6 @@ Everything runs from a single chat surface — there are no separate tools or da
 
 ### Engineering
 
-<p align="center">
-  <img src="screenshots/engineering.png" alt="Engineering showcase" width="72%">
-</p>
-
-<!-- Replace the image above with a video if you prefer:
-<p align="center">
-  <video src="screenshots/video.mp4" width="72%" controls muted loop playsinline></video><br>
-  <sub><em>MiniMax H3 — text-to-video with synchronized audio</em></sub>
-</p>
-
-> **Audio note.** The preview above is muted. To hear the synchronized audio, open [`screenshots/video.mp4`](screenshots/video.mp4) directly.
-On GitHub, use a GIF or a github.com/user-attachments video URL instead. -->
-
 - **Zero dependencies** — even `.env` loading, markdown parsing, PNG dimension reading, and the HTTP routing are hand-rolled
 - **No framework** — a Node `http` server plus a vanilla JS frontend
 - **Single generation lock** — one image or video job at a time, with queued jobs cancellable from chat
