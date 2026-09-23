@@ -899,6 +899,11 @@ const DEFAULT_SETTINGS = {
     qwenUnet: process.env.QWEN_IMAGE_UNET || 'qwen_image_2.1_int8_convrot.safetensors',
     qwenClip: process.env.QWEN_IMAGE_CLIP || 'qwen3vl_8b_int8_convrot.safetensors',
     qwenVae: process.env.QWEN_IMAGE_VAE || 'qwen_image_2.1_vae_bf16.safetensors',
+    // Qwen Image 2.1 samples at its own step/CFG defaults (see DEFAULT_QWEN_*),
+    // so the sampling controls are model-scoped like the base-model filenames:
+    // Krea 2 reads `steps`/`cfg`, Qwen reads `qwenSteps`/`qwenCfg`.
+    qwenSteps: DEFAULT_QWEN_STEPS,
+    qwenCfg: DEFAULT_QWEN_CFG,
     // User-facing resolution controls. The UI exposes only these two
     // dropdowns — never raw pixels. Width/height below are always derived
     // from them via resolveDimensions(), so stored or env-provided pixel
@@ -947,7 +952,7 @@ const DEFAULT_SETTINGS = {
 
 // Fields the user may override through the settings panel / API. Kept
 // separate from DEFAULT_SETTINGS so we only persist explicit overrides.
-const CONFIGURABLE_KEYS = ['model', 'unet', 'clip', 'clipType', 'vae', 'qwenUnet', 'qwenClip', 'qwenVae', 'aspectRatio', 'imageSize', 'width', 'height', 'steps', 'cfg', 'seedMode', 'seed', 'variations', 'loras', 'loraTriggerWords',
+const CONFIGURABLE_KEYS = ['model', 'unet', 'clip', 'clipType', 'vae', 'qwenUnet', 'qwenClip', 'qwenVae', 'aspectRatio', 'imageSize', 'width', 'height', 'steps', 'cfg', 'qwenSteps', 'qwenCfg', 'seedMode', 'seed', 'variations', 'loras', 'loraTriggerWords',
     'upscaleEngine', 'upscaleMode', 'upscaleResolution', 'upscaleMultiplier', 'upscaleProfile', 'upscaleNoise', 'upscalePreScale',
     'seedvr2Dit', 'seedvr2Vae', 'seedvr2Attention'];
 
@@ -1079,10 +1084,10 @@ function sanitizeSettings(patch) {
         } else if (key === 'imageSize') {
             const v = normalizeImageSize(value);
             if (v) out[key] = v;
-        } else if (key === 'width' || key === 'height' || key === 'steps') {
+        } else if (key === 'width' || key === 'height' || key === 'steps' || key === 'qwenSteps') {
             const n = Math.round(Number(value));
             if (Number.isFinite(n) && n > 0) out[key] = n;
-        } else if (key === 'cfg') {
+        } else if (key === 'cfg' || key === 'qwenCfg') {
             const n = Number(value);
             if (Number.isFinite(n) && n >= 0) out[key] = n;
         } else if (key === 'seedMode') {
@@ -1267,8 +1272,10 @@ function buildQwenImage21T2IGraph(prompt, options = {}) {
     const seed = Number.isInteger(options.seed) && options.seed >= 0 ? options.seed : 0;
     const width = clampToInt(options.width || settings.width, 64, 4096, settings.width);
     const height = clampToInt(options.height || settings.height, 64, 4096, settings.height);
-    const steps = clampToInt(options.steps, 1, 100, DEFAULT_QWEN_STEPS);
-    const cfg = Number.isFinite(Number(options.cfg)) ? Math.max(0, Number(options.cfg)) : DEFAULT_QWEN_CFG;
+    const steps = clampToInt(options.steps || settings.qwenSteps, 1, 100, DEFAULT_QWEN_STEPS);
+    const cfg = Number.isFinite(Number(options.cfg))
+        ? Math.max(0, Number(options.cfg))
+        : (Number.isFinite(Number(settings.qwenCfg)) ? Math.max(0, Number(settings.qwenCfg)) : DEFAULT_QWEN_CFG);
     const negativeText = String(options.negativePrompt || '').trim();
     // Reference-image budget for the Qwen3-VL encoder. No reference image is
     // wired here (pure text-to-image), so 1024 matches the official template.

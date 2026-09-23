@@ -114,7 +114,7 @@ test('buildQwenImage21T2IGraph: uses the qwen encoder node, clip type and sample
     assert.deepEqual(graph.sampler.inputs.latent_image, ['canvas', 0]);
     assert.equal(graph.sampler.inputs.sampler_name, 'euler');
     assert.equal(graph.sampler.inputs.scheduler, 'simple');
-    assert.equal(graph.sampler.inputs.cfg, 1);
+    assert.equal(graph.sampler.inputs.cfg, imageGenerator.getDefaults().qwenCfg);
     assert.equal(graph.sampler.inputs.steps, 25);
     assert.equal(graph.sampler.inputs.seed, 7);
     assert.equal(graph.save.inputs.filename_prefix, 'not-so-jarvis/gen');
@@ -153,7 +153,7 @@ test('buildQwenImage21EditGraph: always uses the qwen slots (edit is Qwen-only)'
     assert.deepEqual(graph.sampler.inputs.negative, ['conditioning', 1]);
     assert.deepEqual(graph.sampler.inputs.latent_image, ['conditioning', 2]);
     assert.equal(graph.sampler.inputs.steps, 25);
-    assert.equal(graph.sampler.inputs.cfg, 1);
+    assert.equal(graph.sampler.inputs.cfg, imageGenerator.getDefaults().qwenCfg);
     assert.equal(graph.sampler.inputs.seed, 3);
     assert.equal(graph.sampler.inputs.sampler_name, 'euler');
     assert.equal(graph.sampler.inputs.scheduler, 'simple');
@@ -181,4 +181,41 @@ test('buildQwenImage21EditGraph: extra references wire images.image_2, image_3',
 
     // The reference latent still comes from image_1.
     assert.deepEqual(graph.sampler.inputs.latent_image, ['conditioning', 2]);
+});
+
+test('defaults expose per-model sampling (Krea 2 steps/cfg, Qwen qwenSteps/qwenCfg)', () => {
+    const defaults = imageGenerator.getDefaults();
+    assert.equal(defaults.steps, 8);
+    assert.equal(defaults.cfg, 1);
+    assert.equal(defaults.qwenSteps, 25);
+    assert.equal(defaults.qwenCfg, 1);
+});
+
+test('sanitizeSettings: qwen sampling values are validated', () => {
+    assert.deepEqual(
+        imageGenerator.sanitizeSettings({ qwenSteps: '30', qwenCfg: '4.5' }),
+        { qwenSteps: 30, qwenCfg: 4.5 }
+    );
+    assert.deepEqual(imageGenerator.sanitizeSettings({ qwenSteps: 0 }), {});
+    assert.deepEqual(imageGenerator.sanitizeSettings({ qwenSteps: -3 }), {});
+    assert.deepEqual(imageGenerator.sanitizeSettings({ qwenCfg: -1 }), {});
+    assert.deepEqual(imageGenerator.sanitizeSettings({ qwenCfg: 'x' }), {});
+});
+
+test('buildQwenImage21T2IGraph: honours qwenSteps / qwenCfg from settings', () => {
+    const settings = Object.assign({}, imageGenerator.getDefaults(), {
+        model: 'qwen_image_2_1',
+        qwenSteps: 30,
+        qwenCfg: 5
+    });
+    const graph = imageGenerator.buildQwenImage21T2IGraph('a red fox', { seed: 1, settings, width: 1024, height: 1024 });
+    assert.equal(graph.sampler.inputs.steps, 30);
+    assert.equal(graph.sampler.inputs.cfg, 5);
+});
+
+test('buildKrea2T2IGraph: keeps using the shared steps / cfg', () => {
+    const settings = Object.assign({}, imageGenerator.getDefaults(), { steps: 12, cfg: 2.5 });
+    const graph = imageGenerator.buildKrea2T2IGraph('a red fox', { seed: 1, settings });
+    assert.equal(graph.sampler.inputs.steps, 12);
+    assert.equal(graph.sampler.inputs.cfg, 2.5);
 });

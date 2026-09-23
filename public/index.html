@@ -337,6 +337,21 @@
                         </div>
                             </div>
                         </div>
+                        <div class="settings-card" data-search="sampling steps cfg guidance classifier free diffusion quality">
+                            <div class="settings-card-title">SAMPLING</div>
+                            <div class="settings-card-sub">Diffusion steps and CFG guidance. Krea 2 and Qwen Image 2.1 keep separate values, shown for the selected model.</div>
+                            <div class="settings-field-row">
+                                <div class="settings-field">
+                                    <label class="settings-field-label" for="imageSteps">Steps</label>
+                                    <input type="number" class="settings-input" id="imageSteps" min="1" max="100" step="1" value="8">
+                                </div>
+                                <div class="settings-field">
+                                    <label class="settings-field-label" for="imageCfg">CFG</label>
+                                    <input type="number" class="settings-input" id="imageCfg" min="0" max="30" step="0.1" value="1">
+                                </div>
+                            </div>
+                            <span class="settings-hint">Double-click a value to reset it to the selected model's default.</span>
+                        </div>
                         <div class="settings-card" data-search="seed variations batch reproducibility lock">
                             <div class="settings-card-title">SEED &amp; VARIATIONS</div>
                             <div class="settings-card-sub">Lock a seed to reproduce a result, or generate up to 4 variations per request.</div>
@@ -582,6 +597,21 @@
                             </select>
                             <span class="settings-hint">Auto picks the best backend ComfyUI offers: Comfy Kitchen attention (built into ComfyUI v0.32+) first, then SageAttention, else dense PyTorch attention. Choose one explicitly to force it.</span>
                         </div>
+                            </div>
+                        </div>
+                        <div class="settings-card" data-search="video sampling steps cfg guidance h3 diffusion quality">
+                            <div class="settings-card-title">SAMPLING</div>
+                            <div class="settings-card-sub">H3 diffusion steps and CFG guidance for standard (≤15s) video. Double-click a value to reset it to the default.</div>
+                            <div class="settings-field-row">
+                                <div class="settings-field">
+                                    <label class="settings-field-label" for="videoSteps">Steps</label>
+                                    <input type="number" class="settings-input" id="videoSteps" min="1" max="100" step="1" value="20">
+                                </div>
+                                <div class="settings-field">
+                                    <label class="settings-field-label" for="videoCfg">CFG</label>
+                                    <input type="number" class="settings-input" id="videoCfg" min="0" max="30" step="0.1" value="1">
+                                    <span class="settings-hint">1 = unguided (default). Above 1 adds a negative-conditioning guidance pass.</span>
+                                </div>
                             </div>
                         </div>
                         <div class="settings-card" data-search="video minimax h3 turbo lora fast steps acceleration low step">

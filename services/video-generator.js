@@ -40,6 +40,9 @@ const H3_IMAGE_SIZES = H3_SIZE_SCALES;
 // --- Default H3 Video Settings ------------------------------------------------
 
 const H3_DEFAULT_STEPS = Number(process.env.H3_STEPS) || 20;
+// H3 runs unguided (cfg 1) by default, which lets the graph use the lighter
+// BasicGuider. Raising it adds a negative-conditioning pass (CFGGuider).
+const H3_DEFAULT_CFG = Number(process.env.H3_CFG) || 1;
 
 // --- MiniMax H3 Turbo LoRA (Larryvrh/ComfyUI-MiniMax-H3-Turbo) ----------------
 // Optional 4-8 step generation path. When enabled the graph routes the H3
@@ -66,6 +69,22 @@ function normalizeH3TurboSteps(value, fallback) {
     const base = fallback !== undefined ? fallback : H3_TURBO_DEFAULT_STEPS;
     if (!Number.isFinite(n)) return base;
     return Math.min(H3_TURBO_STEPS[H3_TURBO_STEPS.length - 1], Math.max(H3_TURBO_STEPS[0], n));
+}
+
+// Base H3 sampling controls (independent of the Turbo step count). Steps clamp
+// to 1-100; CFG is a non-negative guidance scale where 1 = no guidance.
+function normalizeH3Steps(value, fallback) {
+    const base = fallback !== undefined ? fallback : H3_DEFAULT_STEPS;
+    const n = Math.round(Number(value));
+    if (!Number.isFinite(n)) return base;
+    return Math.min(100, Math.max(1, n));
+}
+
+function normalizeH3Cfg(value, fallback) {
+    const base = fallback !== undefined ? fallback : H3_DEFAULT_CFG;
+    const n = Number(value);
+    if (!Number.isFinite(n)) return base;
+    return Math.max(0, n);
 }
 
 // Read the Turbo toggle/step/filename from a settings object. Enabled is only
@@ -351,6 +370,10 @@ const H3_DEFAULTS = {
     h3AudioVae: process.env.H3_AUDIO_VAE || H3_MODEL_FILES.audioVae,
     h3Duration: Number(process.env.H3_DURATION) || 5,
     h3Size: process.env.H3_SIZE || 'M',
+    // Base sampling controls for the normal H3 pipeline. h3Steps is the
+    // scheduler step count; h3Cfg = 1 keeps the unguided BasicGuider path.
+    h3Steps: normalizeH3Steps(process.env.H3_STEPS, H3_DEFAULT_STEPS),
+    h3Cfg: normalizeH3Cfg(process.env.H3_CFG, H3_DEFAULT_CFG),
     // MiniMax H3 Turbo LoRA (4-8 step generation). Off by default so the
     // normal H3 workflow is completely unchanged for existing users.
     h3TurboEnabled: String(process.env.H3_TURBO_ENABLED || '').toLowerCase() === 'true' ||
@@ -396,7 +419,7 @@ const H3_DEFAULTS = {
 
 const H3_CONFIGURABLE_KEYS = [
     'h3Unet', 'h3Clip', 'h3VideoVae', 'h3AudioVae',
-    'h3Duration', 'h3Size', 'attentionBackend', 'firstBlockCache',
+    'h3Duration', 'h3Size', 'h3Steps', 'h3Cfg', 'attentionBackend', 'firstBlockCache',
     'loras', 'loraTriggerWords',
     'h3TurboEnabled', 'h3TurboSteps', 'h3TurboLora',
     'faceRefineEnabled', 'faceRefineDetector', 'faceRefineCropFactor',
@@ -1865,6 +1888,10 @@ function effectiveVideoSettings() {
             if (key === 'h3Size') {
                 const s = String(value).trim().toUpperCase();
                 value = Object.prototype.hasOwnProperty.call(H3_IMAGE_SIZES, s) ? s : H3_DEFAULTS.h3Size;
+            } else if (key === 'h3Steps') {
+                value = normalizeH3Steps(value, H3_DEFAULTS.h3Steps);
+            } else if (key === 'h3Cfg') {
+                value = normalizeH3Cfg(value, H3_DEFAULTS.h3Cfg);
             } else if (key === 'attentionBackend') {
                 value = normalizeH3AttentionBackend(value);
             } else if (key === 'h3TurboEnabled') {
@@ -2005,6 +2032,10 @@ function saveVideoSettings(patch) {
         } else if (key === 'h3Size') {
             const s = String(value).trim().toUpperCase();
             if (Object.prototype.hasOwnProperty.call(H3_IMAGE_SIZES, s)) out[key] = s;
+        } else if (key === 'h3Steps') {
+            out[key] = normalizeH3Steps(value, H3_DEFAULTS.h3Steps);
+        } else if (key === 'h3Cfg') {
+            out[key] = normalizeH3Cfg(value, H3_DEFAULTS.h3Cfg);
         } else if (key === 'attentionBackend') {
             out[key] = normalizeH3AttentionBackend(value);
         } else if (key === 'h3TurboEnabled') {
@@ -2435,23 +2466,45 @@ function buildH3Graph(opts) {
         };
     }
 
+    // Base sampling: the scheduler runs the user step count (Turbo overrides it
+    // with its own step count), and the guider is unguided unless the user
+    // raised CFG above 1 — then a zeroed negative drives a CFGGuider.
+    const baseSteps = normalizeH3Steps(settings.h3Steps, H3_DEFAULT_STEPS);
+    const h3Cfg = normalizeH3Cfg(settings.h3Cfg, H3_DEFAULT_CFG);
+
     graph.scheduler = {
         class_type: 'BasicScheduler',
         inputs: {
             model: [schedulerModelNode, 0],
             scheduler: turbo.enabled ? H3_TURBO_SCHEDULER : 'simple',
-            steps: turbo.enabled ? turbo.steps : H3_DEFAULT_STEPS,
+            steps: turbo.enabled ? turbo.steps : baseSteps,
             denoise: 1,
         },
     };
 
-    graph.guider = {
-        class_type: 'BasicGuider',
-        inputs: {
-            model: [patchedModelNode, 0],
-            conditioning: ['condition', 0],
-        },
-    };
+    if (h3Cfg === 1) {
+        graph.guider = {
+            class_type: 'BasicGuider',
+            inputs: {
+                model: [patchedModelNode, 0],
+                conditioning: ['condition', 0],
+            },
+        };
+    } else {
+        graph.negative = {
+            class_type: 'ConditioningZeroOut',
+            inputs: { conditioning: ['condition', 0] },
+        };
+        graph.guider = {
+            class_type: 'CFGGuider',
+            inputs: {
+                model: [patchedModelNode, 0],
+                positive: ['condition', 0],
+                negative: ['negative', 0],
+                cfg: h3Cfg,
+            },
+        };
+    }
 
     graph.sample = {
         class_type: 'SamplerCustomAdvanced',
@@ -3909,6 +3962,9 @@ module.exports = {
     H3_DEFAULTS,
     H3_CONFIGURABLE_KEYS,
     H3_DEFAULT_STEPS,
+    H3_DEFAULT_CFG,
+    normalizeH3Steps,
+    normalizeH3Cfg,
     H3_TURBO_SAMPLER_NODE,
     H3_TURBO_LORA_NODE,
     H3_TURBO_REQUIRED_NODES,

@@ -910,6 +910,14 @@ const IMAGE_MODEL_BASE_KEYS = {
     qwen_image_2_1: { unet: 'qwenUnet', clip: 'qwenClip', vae: 'qwenVae' }
 };
 
+// Per-model sampling keys for the shared Steps / CFG inputs. Krea 2 and Qwen
+// Image 2.1 have their own calibrated defaults, so each model remembers its own
+// values (mirroring the base-model filenames above).
+const IMAGE_MODEL_SAMPLING_KEYS = {
+    krea2: { steps: 'steps', cfg: 'cfg' },
+    qwen_image_2_1: { steps: 'qwenSteps', cfg: 'qwenCfg' }
+};
+
 const LORA_STRENGTH_MIN = 0;
 const LORA_STRENGTH_MAX = 2;
 const LORA_STRENGTH_STEP = 0.05;
@@ -1115,6 +1123,21 @@ function initLoraSettings(state) {
 // re-run them the moment ComfyUI finishes starting.
 const comfyDependentReloaders = [];
 
+// Double-clicking a settings input restores the default recorded on
+// `dataset.default` (set when the panel loads) and persists it through the
+// input's own change handler.
+function attachDefaultReset(input) {
+    if (!input || input.__defaultResetBound) return;
+    input.__defaultResetBound = true;
+    input.addEventListener('dblclick', () => {
+        const def = input.dataset.default;
+        if (def === undefined || def === null || def === '') return;
+        if (String(input.value) === String(def)) return;
+        input.value = def;
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+}
+
 function initImageGenSettings() {
     const inputs = IMAGE_GEN_FIELDS
         .map(f => ({ f, input: document.getElementById(f.inputId) }))
@@ -1177,6 +1200,11 @@ function initImageGenSettings() {
     const modelSelect = document.getElementById('imageModel');
     let baseModelData = { settings: {}, defaults: {}, choices: {} };
 
+    const stepsInput = document.getElementById('imageSteps');
+    const cfgInput = document.getElementById('imageCfg');
+    const samplingKeyFor = (kind) =>
+        (IMAGE_MODEL_SAMPLING_KEYS[activeModel] || IMAGE_MODEL_SAMPLING_KEYS.krea2)[kind];
+
     const paintBaseFields = () => {
         const { settings, defaults, choices } = baseModelData;
         IMAGE_GEN_FIELDS.forEach((f) => {
@@ -1199,6 +1227,20 @@ function initImageGenSettings() {
                 list.dataset.filled = '1';
             }
         });
+
+        // Steps / CFG are model-scoped: repaint them from the active model's
+        // keys so switching models shows (and later saves) that model's values.
+        const paintSampling = (input, kind) => {
+            if (!input) return;
+            const key = samplingKeyFor(kind);
+            const def = (defaults[key] !== undefined && defaults[key] !== null) ? defaults[key] : '';
+            const stored = settings[key];
+            input.value = (stored !== undefined && stored !== null && stored !== '') ? stored : def;
+            input.dataset.default = def;
+            input.title = 'Default: ' + def + ' — double-click to reset';
+        };
+        paintSampling(stepsInput, 'steps');
+        paintSampling(cfgInput, 'cfg');
     };
 
     if (modelSelect) {
@@ -1267,6 +1309,29 @@ function initImageGenSettings() {
     if (variationsSelect) variationsSelect.addEventListener('change', () => persistValue('variations', Number(variationsSelect.value), variationsSelect.value));
     if (seedModeSelect) seedModeSelect.addEventListener('change', () => { syncSeedDisabled(); persistValue('seedMode', seedModeSelect.value, seedModeSelect.value); });
     if (seedInput) seedInput.addEventListener('change', () => persistValue('seed', Math.max(0, Math.floor(Number(seedInput.value) || 0)), seedInput.value));
+
+    // Steps / CFG persist under the active model's keys. The snapshot is
+    // updated too so switching the image model away and back keeps the value.
+    if (stepsInput) {
+        stepsInput.addEventListener('change', () => {
+            if (!stepsInput.value.trim()) stepsInput.value = stepsInput.dataset.default || stepsInput.value;
+            const key = samplingKeyFor('steps');
+            const value = Math.max(1, Math.min(100, Math.round(Number(stepsInput.value) || 1)));
+            baseModelData.settings[key] = value;
+            persistValue(key, value, stepsInput.value);
+        });
+        attachDefaultReset(stepsInput);
+    }
+    if (cfgInput) {
+        cfgInput.addEventListener('change', () => {
+            if (!cfgInput.value.trim()) cfgInput.value = cfgInput.dataset.default || cfgInput.value;
+            const key = samplingKeyFor('cfg');
+            const value = Math.max(0, Number(cfgInput.value) || 0);
+            baseModelData.settings[key] = value;
+            persistValue(key, value, cfgInput.value);
+        });
+        attachDefaultReset(cfgInput);
+    }
 
     const loadSettings = async () => {
         setStatus('');
@@ -1522,6 +1587,12 @@ const VIDEO_TEXT_FIELDS = [
     { key: 'h3VideoVae', id: 'videoVae' },
     { key: 'h3AudioVae', id: 'videoAudioVae' },
     { key: 'h3TurboLora', id: 'videoTurboLora' }
+];
+
+// H3 base sampling controls (number inputs, persisted like the text fields).
+const VIDEO_NUMBER_FIELDS = [
+    { key: 'h3Steps', id: 'videoSteps' },
+    { key: 'h3Cfg', id: 'videoCfg' }
 ];
 
 const VIDEO_HINTS = {
@@ -1850,6 +1921,22 @@ function initVideoSettings() {
         });
     });
 
+    VIDEO_NUMBER_FIELDS.forEach(({ key, id }) => {
+        const input = document.getElementById(id);
+        if (!input) return;
+        input.addEventListener('change', () => {
+            if (!input.value.trim()) input.value = input.dataset.default || input.value;
+            persistText(key, input);
+        });
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                input.blur();
+            }
+        });
+        attachDefaultReset(input);
+    });
+
     // --- FaceRefine: enable toggle, tuning selects, detector, installer ---
     const faceRefineToggle = document.getElementById('videoFaceRefineEnabled');
     if (faceRefineToggle) {
@@ -2058,6 +2145,16 @@ function initVideoSettings() {
                 input.value = (stored !== undefined && stored !== null && stored !== '') ? stored : '';
                 input.placeholder = defaults[key] || VIDEO_HINTS[id] || key;
                 input.title = 'Default: ' + (defaults[key] || VIDEO_HINTS[id] || '');
+            });
+
+            VIDEO_NUMBER_FIELDS.forEach(({ key, id }) => {
+                const input = document.getElementById(id);
+                if (!input) return;
+                const stored = settings[key];
+                const def = (defaults[key] !== undefined && defaults[key] !== null) ? defaults[key] : '';
+                input.value = (stored !== undefined && stored !== null && stored !== '') ? stored : def;
+                input.dataset.default = def;
+                input.title = 'Default: ' + def + ' — double-click to reset';
             });
 
             const faceRefineToggle = document.getElementById('videoFaceRefineEnabled');
