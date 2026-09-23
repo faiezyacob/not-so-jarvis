@@ -699,7 +699,12 @@ const PROMPT_BUILDER_LITE_SYSTEM_PROMPT =
 // The enhancer is retried, then a plain-text rewrite is attempted, and only if
 // both fail does it fall back to a sanitized concept (never the raw request).
 async function buildImagePrompt(structuredRequest, providers, provider, model, think) {
-    const { user_prompt, creative_mode, explicit_constraints, base_prompt, modification, previous_prompt, base_attributes } = structuredRequest;
+    const { user_prompt, creative_mode, explicit_constraints, authoritativeConstraints, base_prompt, modification, previous_prompt, base_attributes } = structuredRequest;
+    const subject = structuredRequest.subject && typeof structuredRequest.subject === 'object' ? structuredRequest.subject : null;
+    const scene = structuredRequest.scene && typeof structuredRequest.scene === 'object' ? structuredRequest.scene : null;
+    if (structuredRequest.portrait && scene && Object.values(scene).some(Boolean)) {
+        throw new Error('Portrait prompt cannot contain scene fields.');
+    }
     const isModify = Boolean(base_prompt && modification);
     // Escalate to "full" when the modification itself grants creative freedom,
     // otherwise keep the creative mode carried by the active task.
@@ -723,8 +728,10 @@ async function buildImagePrompt(structuredRequest, providers, provider, model, t
         // can continue the same subject instead of starting from scratch.
         userMessage =
             'user concept: "' + user_prompt + '"\n' +
+            (subject ? 'AUTHORITATIVE SUBJECT JSON: ' + JSON.stringify(subject) + '\n' : '') +
+            (scene ? 'STRUCTURED SCENE JSON: ' + JSON.stringify(scene) + '\n' : '') +
             'creative_mode: "' + mode + '"\n' +
-            'explicit_constraints: ' + JSON.stringify(explicit_constraints || []) + '\n\n';
+            'explicit_constraints: ' + JSON.stringify(explicit_constraints || authoritativeConstraints || []) + '\n\n';
         if (previous_prompt) {
             userMessage +=
                 'PREVIOUS IMAGE PROMPT (context — continue the same subject when ' +
@@ -749,12 +756,12 @@ async function buildImagePrompt(structuredRequest, providers, provider, model, t
 
             const parsed = parseEnhancerJson(raw);
             const prompt = parsed && typeof parsed.prompt === 'string' ? parsed.prompt.trim() : '';
-            if (prompt && !isImagePromptEcho(prompt, requestRaw)) {
+            if (prompt && !isImagePromptEcho(prompt, requestRaw) && validateStructuredPrompt(prompt, structuredRequest)) {
                 let attributes = normalizeAttributes(parsed.attributes);
                 if (isModify) {
                     attributes = mergeVisualAttributes(base_attributes, parsed.attributes, parsed.changed);
                 }
-                return { prompt, attributes };
+                return { prompt, attributes, builderVersion: 'structured-1' };
             }
             console.warn('[image-generator] Prompt builder returned an invalid or echoing prompt (attempt ' + (attempt + 1) + ')');
         } catch (err) {
@@ -769,10 +776,11 @@ async function buildImagePrompt(structuredRequest, providers, provider, model, t
             { role: 'user', content: userMessage }
         ], model, { think });
         const lite = String(raw || '').trim();
-        if (looksLikeValidLitePrompt(lite) && !/^\{/.test(lite) && !isImagePromptEcho(lite, requestRaw)) {
+        if (looksLikeValidLitePrompt(lite) && !/^\{/.test(lite) && !isImagePromptEcho(lite, requestRaw) && validateStructuredPrompt(lite, structuredRequest)) {
             return {
                 prompt: lite,
-                attributes: isModify ? (base_attributes || null) : null
+                attributes: isModify ? (base_attributes || null) : null,
+                builderVersion: 'structured-lite-1'
             };
         }
         console.warn('[image-generator] Prompt builder lite retry returned an invalid or echoing prompt');
@@ -791,10 +799,45 @@ async function buildImagePrompt(structuredRequest, providers, provider, model, t
     const sanitized = stripCreativeMetaInstructions(
         (extractImageSubject(user_prompt || '').prompt || '').trim()
     );
+    const fallback = sanitized || String(user_prompt || '').trim() || 'a detailed imaginative scene';
     return {
-        prompt: sanitized || String(user_prompt || '').trim() || 'a detailed imaginative scene',
-        attributes: null
+        prompt: repairStructuredPrompt(fallback, structuredRequest),
+        attributes: null,
+        builderVersion: 'structured-fallback-1'
     };
+}
+
+function structuredTerms(request) {
+    const subject = request && request.subject && typeof request.subject === 'object' ? request.subject : {};
+    const scene = request && request.scene && typeof request.scene === 'object' ? request.scene : {};
+    return [subject.identityText, subject.appearanceCategory, subject.appearance, subject.hair,
+        ...(request && Array.isArray(request.authoritativeConstraints) ? request.authoritativeConstraints : []),
+        ...(request && Array.isArray(request.explicit_constraints) ? request.explicit_constraints : []),
+        ...(request && Array.isArray(request.lockedConstraints) ? request.lockedConstraints : []),
+        ...Object.values(scene)].map((value) => String(value || '').trim()).filter(Boolean);
+}
+
+function validateStructuredPrompt(prompt, request) {
+    const text = String(prompt || '').toLowerCase();
+    if (request && request.portrait && request.scene && Object.values(request.scene).some(Boolean)) return false;
+    const subject = request && request.subject;
+    if (!subject) return true;
+    if (subject.identityText && !text.includes(String(subject.identityText).toLowerCase())) return false;
+    if (subject.appearanceCategory && !text.includes(String(subject.appearanceCategory).toLowerCase()) &&
+        subject.appearanceCategoryLabel && !text.includes(String(subject.appearanceCategoryLabel).toLowerCase())) return false;
+    const constraints = (request && (request.authoritativeConstraints || request.explicit_constraints)) || [];
+    return structuredTerms(request).filter((term) => term.length > 3).every((term) => {
+        if (request.portrait && /outfit|environment|activity|style|camera|lighting|scene/i.test(term)) return false;
+        const match = String(term).match(/(?:exactly|exact|preserve|keep|show)\b[^:]*:\s*(.+)$/i);
+        return !match || text.includes(match[1].trim().toLowerCase());
+    });
+}
+
+function repairStructuredPrompt(prompt, request) {
+    const terms = structuredTerms(request);
+    if (!terms.length) return prompt;
+    const missing = terms.filter((term) => !String(prompt).toLowerCase().includes(term.toLowerCase()));
+    return missing.length ? String(prompt).trim() + '. ' + missing.join('. ') : String(prompt).trim();
 }
 
 // --- Resolution (Aspect Ratio + Size) ------------------------------------------
@@ -2406,6 +2449,7 @@ module.exports = {
     isActive: generationQueue.isActive,
     detectIntent,
     buildImagePrompt,
+    validateStructuredPrompt,
     parseEnhancerJson,
     isImagePromptEcho,
     repairJsonControlChars,

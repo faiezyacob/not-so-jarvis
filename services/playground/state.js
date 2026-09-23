@@ -33,7 +33,8 @@ function loadStore() {
 }
 
 function saveStore() {
-    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+    const parent = path.dirname(STORE_PATH);
+    if (!fs.existsSync(parent)) fs.mkdirSync(parent, { recursive: true });
     const data = loadStore();
     fs.writeFileSync(STORE_PATH, JSON.stringify({
         updatedAt: new Date().toISOString(),
@@ -87,11 +88,23 @@ function removeSaved(id) {
     return true;
 }
 
+function listScenes() {
+    return loadStore().saved.slice().map((record) => record.scene || record.concept).filter(Boolean);
+}
+
+function getComposition(id) {
+    const session = Object.values(loadStore().sessions).find((item) => item && item.id === String(id));
+    if (session) return session.composition || session;
+    return loadStore().saved.find((item) => item && item.id === String(id)) || null;
+}
+
 module.exports = {
     getSession,
     setSession,
     removeSession,
     listSaved,
     addSaved,
-    removeSaved
+    removeSaved,
+    listScenes,
+    getComposition
 };

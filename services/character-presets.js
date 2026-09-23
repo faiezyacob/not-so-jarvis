@@ -12,6 +12,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const characterModel = require('./playground/character');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 // An explicit path keeps the tests hermetic (they never touch data/).
@@ -25,9 +26,10 @@ const PRESETS_PATH = process.env.CHARACTER_PRESETS_PATH || path.join(DATA_DIR, '
 // personality (an Outfit Pack id, or the custom outfit text) so a saved
 // character keeps its wardrobe independently of its identity.
 const CHARACTER_FIELDS = [
-    'identity', 'appearance', 'hair', 'outfit', 'style',
+    'identityText', 'identitySignature', 'appearance', 'hair', 'outfit', 'style',
     'appearanceCategory', 'appearanceCategoryLabel',
-    'outfitPack', 'outfitPackCustom'
+    'outfitPack', 'outfitPackCustom', 'referenceImages', 'portraitReference',
+    'wardrobePreference', 'visualPreferences', 'provenance'
 ];
 
 const MAX_FIELD_LENGTH = 600;
@@ -40,7 +42,7 @@ function loadPresets() {
     try {
         const raw = fs.readFileSync(PRESETS_PATH, 'utf-8');
         const parsed = JSON.parse(raw);
-        presets = Array.isArray(parsed.presets) ? parsed.presets : [];
+        presets = Array.isArray(parsed.presets) ? parsed.presets.map(migratePreset) : [];
     } catch (err) {
         presets = [];
     }
@@ -48,7 +50,8 @@ function loadPresets() {
 }
 
 function savePresets() {
-    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+    const parent = path.dirname(PRESETS_PATH);
+    if (!fs.existsSync(parent)) fs.mkdirSync(parent, { recursive: true });
     const payload = { updatedAt: new Date().toISOString(), presets };
     fs.writeFileSync(PRESETS_PATH, JSON.stringify(payload, null, 2), 'utf-8');
 }
@@ -57,17 +60,37 @@ function clean(value) {
     return String(value === undefined || value === null ? '' : value).trim().slice(0, MAX_FIELD_LENGTH);
 }
 
+function migratePreset(value) {
+    const src = value && typeof value === 'object' ? value : {};
+    const structured = characterModel.canonicalIdentity(src.identity, src);
+    const normalized = characterModel.normalizeCharacter(src);
+    const out = Object.assign({}, src, normalized, {
+        id: String(src.id || ''),
+        name: clean(src.name).slice(0, MAX_NAME_LENGTH),
+        schemaVersion: characterModel.CHARACTER_SCHEMA_VERSION,
+        identity: structured || (typeof src.identity === 'string' ? clean(src.identity) : null),
+        identityText: clean(src.identityText || (typeof src.identity === 'string' ? src.identity : normalized.identityText)),
+        identitySignature: clean(src.identitySignature || (structured && structured.identitySignature) || ''),
+        appearance: clean(src.appearance),
+        hair: clean(src.hair),
+        outfit: clean(src.outfit),
+        style: clean(src.style || (normalized.visualPreferences && normalized.visualPreferences.preferredStyle)),
+        appearanceCategory: clean(src.appearanceCategory || (structured && structured.appearanceCategory)),
+        appearanceCategoryLabel: clean(src.appearanceCategoryLabel || (structured && structured.appearanceCategoryLabel)),
+        outfitPack: clean(src.outfitPack || (normalized.wardrobePreference && normalized.wardrobePreference.packId)),
+        outfitPackCustom: clean(src.outfitPackCustom || (normalized.wardrobePreference && normalized.wardrobePreference.customText)),
+        revision: Number(src.revision) > 0 ? Number(src.revision) : 1
+    });
+    if (!structured) out.warning = 'Legacy character has no structured identity data; create a new character to enable identity locking.';
+    return out;
+}
+
 // Coerce arbitrary input into the canonical preset shape. Returns null when
 // the preset has neither a name nor any identity detail.
 function sanitizePreset(value) {
     const src = value && typeof value === 'object' ? value : {};
-    const out = { name: clean(src.name).slice(0, MAX_NAME_LENGTH) };
-    let any = Boolean(out.name);
-    for (const field of CHARACTER_FIELDS) {
-        out[field] = clean(src[field]);
-        if (out[field]) any = true;
-    }
-    return any ? out : null;
+    const out = migratePreset(src);
+    return (out.name || out.identityText || out.identity) ? out : null;
 }
 
 function makeId() {
@@ -93,7 +116,7 @@ function create(value) {
     }
     loadPresets();
     const now = new Date().toISOString();
-    const preset = Object.assign({ id: makeId(), createdAt: now, updatedAt: now }, cleanPreset);
+    const preset = Object.assign({}, cleanPreset, { id: makeId(), createdAt: now, updatedAt: now, revision: 1 });
     presets.push(preset);
     savePresets();
     return preset;
@@ -108,7 +131,7 @@ function update(id, patch) {
         err.code = 'character_invalid';
         throw err;
     }
-    Object.assign(preset, merged, { updatedAt: new Date().toISOString() });
+    Object.assign(preset, merged, { updatedAt: new Date().toISOString(), revision: (Number(preset.revision) || 1) + 1 });
     savePresets();
     return preset;
 }
@@ -122,6 +145,23 @@ function remove(id) {
     return true;
 }
 
+function duplicate(id, patch = {}) {
+    const source = get(id);
+    if (!source) return null;
+    return create(Object.assign({}, source, patch, { id: undefined, name: patch.name || source.name + ' Copy' }));
+}
+
+function setPortrait(id, portrait) {
+    const preset = get(id);
+    if (!preset) return null;
+    preset.portraitReference = portrait && typeof portrait === 'object'
+        ? Object.assign({}, portrait, { identitySignature: preset.identitySignature, characterRevision: preset.revision })
+        : null;
+    preset.updatedAt = new Date().toISOString();
+    savePresets();
+    return preset;
+}
+
 module.exports = {
     CHARACTER_FIELDS,
     sanitizePreset,
@@ -129,5 +169,7 @@ module.exports = {
     get,
     create,
     update,
+    duplicate,
+    setPortrait,
     remove
 };

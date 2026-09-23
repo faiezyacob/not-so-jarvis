@@ -5853,6 +5853,14 @@ a.modal-btn {
     width: 100%;
 }
 
+.playground-prompt-input {
+    width: 100%;
+    resize: vertical;
+    min-height: 58px;
+    line-height: 1.45;
+    font-family: inherit;
+}
+
 .playground-locks-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -6136,6 +6144,21 @@ a.modal-btn {
     font-family: var(--font-mono);
     font-size: var(--fs-xs);
     letter-spacing: 0.5px;
+}
+
+.playground-domain-labels {
+    display: flex;
+    gap: 6px;
+    margin: 10px 0 2px;
+    color: var(--text-muted, #8d8a84);
+    font-size: 9px;
+    letter-spacing: .14em;
+}
+
+.playground-domain-labels span {
+    border: 1px solid rgba(180, 170, 150, .25);
+    border-radius: 999px;
+    padding: 3px 7px;
 }
 
 /* The author `display: flex` above overrides the UA `[hidden]` rule, so the
@@ -6705,4 +6728,3 @@ a.modal-btn {
 .ugc-bar--complete .ugc-bar-dot {
     background: var(--accent-success, #4a9d5f);
 }
-

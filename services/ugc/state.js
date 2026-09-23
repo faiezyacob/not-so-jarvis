@@ -41,7 +41,8 @@ function loadStore() {
 }
 
 function saveStore() {
-    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+    const parent = path.dirname(STORE_PATH);
+    if (!fs.existsSync(parent)) fs.mkdirSync(parent, { recursive: true });
     const data = loadStore();
     fs.writeFileSync(STORE_PATH, JSON.stringify({
         updatedAt: new Date().toISOString(),

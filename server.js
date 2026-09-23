@@ -92,6 +92,7 @@ const playground = require('./services/playground/playground');
 const ugcStudio = require('./services/ugc/studio');
 const ugcProducts = require('./services/ugc/products');
 const characterPresets = require('./services/character-presets');
+const characterStudio = require('./services/character-studio');
 const GENERATED_DIR = path.join(__dirname, 'data', 'generated');
 const IMAGES_DIR = path.join(__dirname, 'data', 'images');
 const UPLOAD_MIME_TO_EXT = {
@@ -892,6 +893,70 @@ async function handleAPI(req, res, urlPath) {
         } catch (err) {
             json(res, 400, { error: err.message });
         }
+        return true;
+    }
+
+    if (urlPath === '/api/playground/scenes' && req.method === 'GET') {
+        json(res, 200, { scenes: playground.listScenes() });
+        return true;
+    }
+    if (urlPath === '/api/playground/scenes' && req.method === 'POST') {
+        try {
+            const body = await readBody(req);
+            const record = Object.assign({}, body || {}, { id: body && body.id || 'scene_' + Date.now().toString(36) });
+            const saved = playground.saveScene(Object.assign({}, record, {
+                themeId: record.themeId || (record.scene && record.scene.themeId) || 'anything',
+                scene: record.scene || record.concept || {}, concept: record.scene || record.concept || {}
+            }));
+            json(res, 200, { ok: true, scene: saved });
+        } catch (err) {
+            json(res, 400, { error: err.message, code: err.code || 'scene_invalid' });
+        }
+        return true;
+    }
+    const compositionMatch = urlPath.match(/^\/api\/playground\/compositions\/([^/]+)$/);
+    if (compositionMatch && req.method === 'GET') {
+        const composition = playground.getComposition(decodeURIComponent(compositionMatch[1]));
+        json(res, composition ? 200 : 404, composition ? { composition } : { error: 'Composition not found' });
+        return true;
+    }
+    const compositionCloneMatch = urlPath.match(/^\/api\/playground\/compositions\/([^/]+)\/clone$/);
+    if (compositionCloneMatch && req.method === 'POST') {
+        const composition = playground.cloneComposition(decodeURIComponent(compositionCloneMatch[1]));
+        json(res, composition ? 200 : 404, composition ? { ok: true, composition } : { error: 'Composition not found' });
+        return true;
+    }
+
+    const characterResourceMatch = urlPath.match(/^\/api\/characters\/([^/]+)$/);
+    if (characterResourceMatch && req.method === 'GET') {
+        const character = characterPresets.get(decodeURIComponent(characterResourceMatch[1]));
+        json(res, character ? 200 : 404, character ? { character } : { error: 'Character not found' });
+        return true;
+    }
+    if (characterResourceMatch && req.method === 'PATCH') {
+        try {
+            const body = await readBody(req);
+            const character = characterStudio.updateCharacter(
+                decodeURIComponent(characterResourceMatch[1]), body, body && body.expectedRevision
+            );
+            json(res, character ? 200 : 404, character ? { ok: true, character } : { error: 'Character not found' });
+        } catch (err) {
+            json(res, err.code === 'stale_revision' ? 409 : 400, { error: err.message, code: err.code || 'character_invalid' });
+        }
+        return true;
+    }
+    const characterDuplicateMatch = urlPath.match(/^\/api\/characters\/([^/]+)\/duplicate$/);
+    if (characterDuplicateMatch && req.method === 'POST') {
+        const body = await readBody(req);
+        const character = characterPresets.duplicate(decodeURIComponent(characterDuplicateMatch[1]), body || {});
+        json(res, character ? 200 : 404, character ? { ok: true, character } : { error: 'Character not found' });
+        return true;
+    }
+    const characterPortraitMatch = urlPath.match(/^\/api\/characters\/([^/]+)\/portrait$/);
+    if (characterPortraitMatch && req.method === 'POST') {
+        const body = await readBody(req);
+        const character = characterPresets.setPortrait(decodeURIComponent(characterPortraitMatch[1]), body && (body.portrait || body));
+        json(res, character ? 200 : 404, character ? { ok: true, character } : { error: 'Character not found' });
         return true;
     }
 
@@ -3127,7 +3192,9 @@ async function handlePlaygroundAction(req, res, ctx, action, rawMessage) {
                 locks: action.locks,
                 profile: action.profile,
                 outfitPack: action.outfitPack,
-                outfitPackCustom: action.outfitPackCustom
+                outfitPackCustom: action.outfitPackCustom,
+                // The user's own prompt, used verbatim with the chosen character.
+                customPrompt: action.customPrompt
             });
             await runPlaygroundFaceStage(req, res, ctx, session);
             emitPlaygroundCard(res, session);
@@ -3144,9 +3211,20 @@ async function handlePlaygroundAction(req, res, ctx, action, rawMessage) {
             res.end();
             return;
         }
+        if (action.expectedRevision !== undefined && Number(action.expectedRevision) !== Number(session.revision || 1)) {
+            sseWrite(res, { error: 'Creative Playground — This card is stale. Refresh the current composition.' });
+            res.end();
+            return;
+        }
 
         if (action.type === playground.ACTIONS.AGAIN) {
             session = playground.again(session);
+            await runPlaygroundFaceStage(req, res, ctx, session);
+            emitPlaygroundCard(res, session);
+            return;
+        }
+
+        if (action.type === playground.ACTIONS.RETRY_PORTRAIT) {
             await runPlaygroundFaceStage(req, res, ctx, session);
             emitPlaygroundCard(res, session);
             return;
@@ -3203,6 +3281,17 @@ async function handlePlaygroundAction(req, res, ctx, action, rawMessage) {
             const enhanced = await imageGenerator.buildImagePrompt(request, providers, provider, model, think);
             const imagePrompt = enhanced ? enhanced.prompt : request.user_prompt;
             const attributes = enhanced ? enhanced.attributes : null;
+            session.generatedPrompt = {
+                prompt: imagePrompt,
+                attributes: attributes || null,
+                builderVersion: enhanced && enhanced.builderVersion || 'legacy',
+                characterRevision: session.characterRef && session.characterRef.revision,
+                sceneRevision: session.revision
+            };
+            session.composition = Object.assign({}, session.composition, {
+                generatedPrompt: session.generatedPrompt,
+                updatedAt: new Date().toISOString()
+            });
             taskState.setTask(conversationId, {
                 type: 'image',
                 operation: 'generate',

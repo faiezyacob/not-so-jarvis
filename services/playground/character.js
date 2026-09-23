@@ -20,6 +20,7 @@
 // "unconstrained" and reproduces the general random-character behaviour.
 
 const RANDOM = 'random';
+const CHARACTER_SCHEMA_VERSION = 1;
 
 const AGE_KEYS = ['young_adult', 'adult', 'mature', 'older'];
 const GENDER_KEYS = ['woman', 'man'];
@@ -897,6 +898,101 @@ function identitySignature(identity) {
     ].map((value) => String(value || '').toLowerCase()).join('|');
 }
 
+function canonicalIdentity(value, legacy = {}) {
+    const src = value && typeof value === 'object' ? value : {};
+    const fallback = legacy && typeof legacy === 'object' ? legacy : {};
+    const profile = normalizeProfile(src.profile || src.characterProfile || fallback.profile || fallback.characterProfile);
+    const appearanceCategory = src.appearanceCategory || fallback.appearanceCategory || '';
+    const age = src.age || fallback.age || '';
+    const ageGroup = src.ageGroup || fallback.ageGroup || '';
+    const gender = src.gender || src.presentation && (src.presentation === 'woman' || src.presentation === 'man' ? src.presentation : '') || fallback.gender || '';
+    const hairSource = src.hair && typeof src.hair === 'object' ? src.hair : {};
+    const faceSource = src.face && typeof src.face === 'object' ? src.face : {};
+    const eyesSource = src.eyes && typeof src.eyes === 'object' ? src.eyes : {};
+    const skinSource = src.skin && typeof src.skin === 'object' ? src.skin : {};
+    const out = {
+        seed: src.seed !== undefined ? src.seed : (src.characterSeed !== undefined ? src.characterSeed : fallback.seed),
+        profile,
+        appearanceCategory,
+        appearanceCategoryLabel: src.appearanceCategoryLabel || fallback.appearanceCategoryLabel || appearanceCategoryLabel(appearanceCategory),
+        age,
+        ageGroup,
+        gender,
+        skin: Object.keys(skinSource).length ? Object.assign({}, skinSource) : {
+            tone: src.skinTone || fallback.skinTone || '',
+            group: src.skinGroup || fallback.skinGroup || ''
+        },
+        face: Object.keys(faceSource).length ? Object.assign({}, faceSource) : {
+            shape: src.faceShape || fallback.faceShape || ''
+        },
+        eyes: Object.keys(eyesSource).length ? Object.assign({}, eyesSource) : {
+            color: src.eyeColor || fallback.eyeColor || '',
+            shape: src.eyeShape || fallback.eyeShape || ''
+        },
+        eyebrows: src.eyebrows || fallback.eyebrows || '',
+        hair: Object.keys(hairSource).length ? Object.assign({}, hairSource) : {
+            color: src.hairColor || fallback.hairColor || '',
+            texture: src.hairTexture || fallback.hairTexture || '',
+            textureFamily: src.hairTextureFamily || fallback.hairTextureFamily || '',
+            style: src.hairStyle || fallback.hairStyle || '',
+            styleType: src.hairStyleType || fallback.hairStyleType || 'adj'
+        },
+        build: src.build || fallback.build || '',
+        distinctiveFeature: src.distinctiveFeature || fallback.distinctiveFeature || ''
+    };
+    const hasTraits = Boolean(out.seed || out.age || out.ageGroup || out.gender ||
+        out.skin.tone || out.face.shape || out.eyes.color || out.eyes.shape || out.hair.color || out.hair.style || out.build || out.distinctiveFeature);
+    if (!hasTraits) return null;
+    const legacyShape = Object.assign({}, src, {
+        age: out.age,
+        gender: out.gender,
+        skinTone: out.skin.tone,
+        skinGroup: out.skin.group,
+        faceShape: out.face.shape,
+        eyeColor: out.eyes.color,
+        eyeShape: out.eyes.shape,
+        hairColor: out.hair.color,
+        hairTexture: out.hair.texture,
+        hairTextureFamily: out.hair.textureFamily,
+        hairStyle: out.hair.style,
+        hairStyleType: out.hair.styleType,
+        build: out.build,
+        distinctiveFeature: out.distinctiveFeature
+    });
+    out.identitySignature = src.identitySignature || src.signature || fallback.identitySignature || identitySignature(legacyShape);
+    out.identityText = src.identityText || fallback.identityText || formatIdentity(legacyShape);
+    return out;
+}
+
+function normalizeCharacter(value) {
+    const src = value && typeof value === 'object' ? value : {};
+    const identity = canonicalIdentity(src.identity, src);
+    const now = new Date().toISOString();
+    return {
+        id: String(src.id || ''),
+        schemaVersion: Number(src.schemaVersion) || CHARACTER_SCHEMA_VERSION,
+        name: String(src.name || '').trim(),
+        identity,
+        identityText: String(src.identityText || (identity && identity.identityText) || src.identity || '').trim(),
+        identitySignature: String(src.identitySignature || (identity && identity.identitySignature) || '').trim(),
+        referenceImages: Array.isArray(src.referenceImages) ? src.referenceImages.slice() : [],
+        portraitReference: src.portraitReference && typeof src.portraitReference === 'object' ? Object.assign({}, src.portraitReference) : null,
+        wardrobePreference: {
+            packId: String((src.wardrobePreference && src.wardrobePreference.packId) || src.outfitPack || '').trim(),
+            customText: String((src.wardrobePreference && src.wardrobePreference.customText) || src.outfitPackCustom || '').trim()
+        },
+        visualPreferences: {
+            preferredStyle: String((src.visualPreferences && src.visualPreferences.preferredStyle) || src.style || '').trim(),
+            preferredAspectRatio: String((src.visualPreferences && src.visualPreferences.preferredAspectRatio) || src.aspectRatio || '').trim()
+        },
+        provenance: src.provenance && typeof src.provenance === 'object' ? Object.assign({}, src.provenance) : { type: identity ? 'generated' : 'legacy' },
+        createdAt: src.createdAt || now,
+        updatedAt: src.updatedAt || now,
+        revision: Number(src.revision) > 0 ? Number(src.revision) : 1,
+        warning: identity ? '' : 'This legacy character has display text but no structured identity data.'
+    };
+}
+
 // --- Generation ---------------------------------------------------------------
 
 function pickAppearanceCategory(appearance, rng) {
@@ -1038,6 +1134,7 @@ const CHARACTER_TRAITS = {
 };
 
 module.exports = {
+    CHARACTER_SCHEMA_VERSION,
     RANDOM,
     AGE_KEYS,
     GENDER_KEYS,
@@ -1059,4 +1156,6 @@ module.exports = {
     formatHair,
     formatEyes,
     identitySignature
+    ,canonicalIdentity
+    ,normalizeCharacter
 };

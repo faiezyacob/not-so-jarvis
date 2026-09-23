@@ -17,6 +17,7 @@ const state = require('./state');
 const themes = require('./themes');
 const conceptEngine = require('./concept');
 const outfitPacks = require('./outfit-packs');
+const characterStudio = require('../character-studio');
 
 const ACTIONS = {
     SURPRISE: 'surprise',
@@ -24,7 +25,8 @@ const ACTIONS = {
     MODIFY: 'modify',
     GENERATE: 'generate',
     SAVE: 'save',
-    USE_CONTEXT: 'use_context'
+    USE_CONTEXT: 'use_context',
+    RETRY_PORTRAIT: 'retry_portrait'
 };
 
 const STATUS = {
@@ -87,6 +89,7 @@ function buildCard(session, character) {
     const concept = session.concept || {};
     return {
         id: session.id,
+        revision: session.revision || 1,
         status: session.status || STATUS.PREVIEW,
         themeId: session.themeId,
         theme: themeLabel(session.themeId),
@@ -120,12 +123,15 @@ function buildCard(session, character) {
         concept: {
             characterProfile: concept.characterProfile || session.characterProfile || null,
             characterSeed: concept.characterSeed || null,
-            subject: concept.subject || '',
+             subject: concept.subject || '',
+             identity: concept.identity || null,
+             identitySignature: concept.identitySignature || '',
             appearanceCategory: concept.appearanceCategory || '',
             appearanceCategoryLabel: concept.appearanceCategoryLabel || '',
             appearance: concept.appearance || '',
             hair: concept.hair || '',
             name: concept.name || '',
+            userPrompt: concept.userPrompt || '',
             category: concept.category || '',
             outfit: concept.outfit || '',
             outfitPack: concept.outfitPack || '',
@@ -164,6 +170,7 @@ function conceptText(session, character) {
     if (c.appearanceCategoryLabel) lines.push('Appearance category: ' + c.appearanceCategoryLabel);
     if (c.appearance) lines.push('Appearance: ' + c.appearance);
     if (c.hair) lines.push('Hair: ' + c.hair);
+    if (c.userPrompt) lines.push('Prompt: ' + c.userPrompt);
     if (c.outfit) lines.push('Outfit: ' + c.outfit);
     if (c.outfitPackLabel) lines.push('Outfit pack: ' + c.outfitPackLabel);
     if (c.category) lines.push('Category: ' + c.category);
@@ -211,6 +218,9 @@ function start(input = {}) {
         outfitPack: input.outfitPack,
         outfitPackCustom: input.outfitPackCustom,
         contextText: input.contextText,
+        // A user's own prompt (with a saved or random character) replaces the
+        // theme's randomised scene; the character identity is untouched.
+        userPrompt: input.customPrompt,
         avoidSignatures,
         avoidOutfitSignatures,
         previousOutfitArchetype: previousOutfitArchetype(previous),
@@ -236,6 +246,22 @@ function start(input = {}) {
         identitySignatures: avoidSignatures.slice(-12),
         outfitSignatures: avoidOutfitSignatures.slice(-12)
     };
+    const characterSnapshot = character
+        ? characterStudio.normalizeCharacter(character)
+        : (concept.identity ? characterStudio.normalizeCharacter({
+            name: concept.name,
+            identity: concept.identity,
+            identityText: concept.subject,
+            identitySignature: concept.identitySignature,
+            appearance: concept.appearance,
+            hair: concept.hair,
+            provenance: { type: 'session-generated' }
+        }) : null);
+    session.revision = 1;
+    session.characterRef = character ? { id: character.id, revision: character.revision || 1 } : null;
+    session.characterSnapshot = characterSnapshot;
+    session.scene = createScene(concept, theme);
+    session.composition = createCompositionSnapshot(session);
     rememberIdentity(session, concept);
     rememberOutfit(session, concept);
     state.setSession(conversationId, session);
@@ -265,12 +291,18 @@ function again(session, options = {}) {
         outfitPack: session.outfitPack,
         outfitPackCustom: session.outfitPackCustom,
         contextText: options.contextText,
+        // A user prompt is preserved: "Surprise Me Again" re-runs the same
+        // prompt instead of silently dropping the user's own wording.
+        userPrompt: session.concept && session.concept.userPrompt,
         avoidSignatures,
         avoidOutfitSignatures,
         previousOutfitArchetype: session.concept && session.concept.outfitArchetype ? session.concept.outfitArchetype : '',
         rng: options.rng
     });
     session.concept = concept;
+    session.scene = createScene(concept, theme);
+    session.revision = (Number(session.revision) || 1) + 1;
+    session.composition = createCompositionSnapshot(session);
     session.outfitPack = concept.outfitPack || '';
     session.outfitPackCustom = concept.outfitPackCustom || '';
     rememberIdentity(session, concept);
@@ -353,6 +385,10 @@ function modify(session, action = {}) {
             avoidSignatures: Array.isArray(session.identitySignatures) ? session.identitySignatures : [],
             avoidOutfitSignatures: Array.isArray(session.outfitSignatures) ? session.outfitSignatures : [],
             previousOutfitArchetype: session.concept && session.concept.outfitArchetype ? session.concept.outfitArchetype : '',
+            // Preserve an existing user prompt unless the action replaces it.
+            userPrompt: action.customPrompt !== undefined
+                ? action.customPrompt
+                : (session.concept && session.concept.userPrompt),
             rng: action.rng
         });
         concept = conceptEngine.applyChanges(concept, changes);
@@ -389,6 +425,9 @@ function modify(session, action = {}) {
     session.outfitPack = concept.outfitPack || '';
     session.outfitPackCustom = concept.outfitPackCustom || '';
     session.concept = concept;
+    session.scene = createScene(concept, theme);
+    session.revision = (Number(session.revision) || 1) + 1;
+    session.composition = createCompositionSnapshot(session);
     session.status = STATUS.PREVIEW;
     session.updatedAt = new Date().toISOString();
     state.setSession(session.conversationId, session);
@@ -397,9 +436,17 @@ function modify(session, action = {}) {
 
 function save(session, character) {
     if (!session) return null;
+    if (session.mode === 'none' || (!session.characterSnapshot && !character)) {
+        const error = new Error('A scene without a character cannot be saved as a character.');
+        error.code = 'characterless_scene';
+        throw error;
+    }
     const card = buildCard(session, character);
     const record = {
         id: session.id,
+        schemaVersion: 1,
+        revision: session.revision || 1,
+        conversationId: session.conversationId,
         title: card.title,
         description: card.description,
         themeId: session.themeId,
@@ -409,6 +456,12 @@ function save(session, character) {
         characterName: card.characterName,
         locks: card.locks,
         concept: card.concept,
+        scene: session.scene || null,
+        characterRef: session.characterRef || null,
+        characterSnapshot: session.characterSnapshot || null,
+        promptRequest: session.promptRequest || null,
+        generatedPrompt: session.generatedPrompt || null,
+        composition: Object.assign(createCompositionSnapshot(session), { status: STATUS.SAVED }),
         createdAt: new Date().toISOString()
     };
     state.addSaved(record);
@@ -435,21 +488,48 @@ function buildImageRequest(session) {
         locks: session.locks,
         mode: session.mode
     });
+    const c = session.concept || {};
+    const userPrompt = String(c.userPrompt || '').trim();
     // Theme-level guidance (e.g. Instagram's casual, unposed direction) is
-    // appended as explicit constraints so the prompt builder honors it.
-    if (Array.isArray(theme.constraints)) {
+    // appended as explicit constraints so the prompt builder honors it. A user
+    // prompt is authoritative, so the theme's scene guidance is skipped then.
+    if (!userPrompt && Array.isArray(theme.constraints)) {
         for (const value of theme.constraints) {
             const text = String(value || '').trim();
             if (text) constraints.push(text);
         }
     }
-    return {
+    const identity = session.characterSnapshot && session.characterSnapshot.identity;
+    const request = {
         intent: 'image_generation',
+        subject: {
+            identityText: (session.characterSnapshot && session.characterSnapshot.identityText) || c.subject || '',
+            appearance: c.appearance || '',
+            hair: c.hair || '',
+            age: identity && identity.age,
+            gender: identity && identity.gender,
+            appearanceCategory: c.appearanceCategory || (identity && identity.appearanceCategory) || '',
+            identitySignature: (session.characterSnapshot && session.characterSnapshot.identitySignature) || c.identitySignature || ''
+        },
+        scene: {
+            activity: c.activity || '', environment: c.environment || '', outfit: c.outfit || '',
+            lighting: c.lighting || '', camera: c.camera || '', composition: c.composition || '',
+            mood: c.mood || '', style: c.style || '', technique: c.technique || '', texture: c.texture || '',
+            customDirection: userPrompt || c.customDirection || ''
+        },
         user_prompt: conceptEngine.conceptToDirection(session.concept),
         previous_prompt: '',
         creative_mode: 'light',
-        explicit_constraints: constraints
+        explicit_constraints: constraints,
+        authoritativeConstraints: constraints,
+        creativeHints: Array.isArray(theme.constraints) ? theme.constraints : [],
+        characterRevision: session.characterRef && session.characterRef.revision,
+        sceneRevision: session.revision
     };
+    session.promptRequest = request;
+    session.composition = createCompositionSnapshot(session);
+    state.setSession(session.conversationId, session);
+    return request;
 }
 
 // The pre-rendered face request: identity-only creative direction handed to the
@@ -458,12 +538,49 @@ function buildPortraitRequest(session) {
     if (!session) return null;
     const concept = session.concept || {};
     if (!concept.subject && !concept.appearance && !concept.hair) return null;
-    return {
+    const request = {
         intent: 'image_generation',
+        subject: {
+            identityText: concept.subject,
+            appearance: concept.appearance,
+            hair: concept.hair,
+            appearanceCategory: concept.appearanceCategory,
+            identitySignature: concept.identitySignature
+        },
+        scene: {},
         user_prompt: conceptEngine.conceptToPortraitDirection(concept),
         previous_prompt: '',
         creative_mode: 'light',
-        explicit_constraints: conceptEngine.conceptToPortraitConstraints(concept)
+        explicit_constraints: conceptEngine.conceptToPortraitConstraints(concept),
+        authoritativeConstraints: conceptEngine.conceptToPortraitConstraints(concept),
+        creativeHints: [],
+        portrait: true
+    };
+    return request;
+}
+
+function createScene(concept, theme) {
+    const c = concept || {};
+    return {
+        id: 'scene_' + Date.now().toString(36), schemaVersion: 1,
+        themeId: theme && theme.id || '', categoryId: c.categoryId || '', activity: c.activity || '',
+        environment: c.environment || '', outfit: c.outfit || '', outfitPack: c.outfitPack || '',
+        lighting: c.lighting || '', camera: c.camera || '', composition: c.composition || '', mood: c.mood || '',
+        style: c.style || '', technique: c.technique || '', texture: c.texture || '', aspectRatio: c.aspectRatio || '',
+        customDirection: c.customDirection || '', userPrompt: c.userPrompt || '',
+        locks: {}, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), revision: 1
+    };
+}
+
+function createCompositionSnapshot(session) {
+    return {
+        id: session.id, conversationId: session.conversationId, revision: session.revision || 1,
+        characterRef: session.characterRef || null,
+        characterSnapshot: session.characterSnapshot || null,
+        scene: session.scene || null, promptRequest: session.promptRequest || null,
+        generatedPrompt: session.generatedPrompt || null,
+        characterReferenceImage: session.characterSnapshot && session.characterSnapshot.portraitReference || session.characterImage || null,
+        status: session.status || STATUS.PREVIEW, createdAt: session.createdAt, updatedAt: session.updatedAt
     };
 }
 
@@ -483,7 +600,7 @@ function needsCharacterImage(session) {
 function setCharacterImage(session, image) {
     if (!session) return session;
     if (!image || !image.url) return session;
-    session.characterImage = {
+    const portrait = {
         url: image.url,
         filename: image.filename || '',
         prompt: image.prompt || '',
@@ -491,8 +608,13 @@ function setCharacterImage(session, image) {
         width: image.width,
         height: image.height,
         identitySignature: characterIdentityKey(session),
+        characterRevision: session.characterSnapshot && session.characterSnapshot.revision || 1,
         createdAt: new Date().toISOString()
     };
+    session.characterImage = portrait;
+    if (session.characterSnapshot) session.characterSnapshot.portraitReference = Object.assign({}, portrait);
+    if (session.characterId) characterPresets.setPortrait(session.characterId, portrait);
+    session.composition = createCompositionSnapshot(session);
     session.updatedAt = new Date().toISOString();
     state.setSession(session.conversationId, session);
     return session;
@@ -520,7 +642,10 @@ function normalizeAction(value) {
     const out = { type: key };
     if (value && typeof value === 'object') {
         if (value.conceptId) out.conceptId = String(value.conceptId);
+        if (value.expectedRevision !== undefined) out.expectedRevision = Number(value.expectedRevision);
         if (value.direction) out.direction = String(value.direction);
+        if (typeof value.customPrompt === 'string') out.customPrompt = value.customPrompt;
+        else if (typeof value.userPrompt === 'string') out.customPrompt = value.userPrompt;
         if (value.themeId) out.themeId = String(value.themeId);
         if (value.category) out.category = String(value.category);
         if (value.characterId) out.characterId = String(value.characterId);
@@ -541,6 +666,37 @@ function normalizeAction(value) {
         if (Object.keys(profile).length) out.profile = profile;
     }
     return out;
+}
+
+function listScenes() {
+    return state.listScenes();
+}
+
+function getComposition(id) {
+    return state.getComposition(id);
+}
+
+function cloneComposition(id) {
+    const source = state.getComposition(id);
+    if (!source) return null;
+    const copy = JSON.parse(JSON.stringify(source));
+    copy.id = makeId();
+    copy.revision = 1;
+    copy.status = STATUS.PREVIEW;
+    copy.createdAt = new Date().toISOString();
+    copy.updatedAt = copy.createdAt;
+    state.addSaved(copy);
+    return copy;
+}
+
+function saveScene(scene) {
+    const now = new Date().toISOString();
+    const record = Object.assign({
+        id: 'scene_' + Date.now().toString(36), schemaVersion: 1, revision: 1,
+        createdAt: now, updatedAt: now, status: STATUS.SAVED
+    }, scene || {});
+    state.addSaved(record);
+    return record;
 }
 
 module.exports = {
@@ -570,5 +726,9 @@ module.exports = {
     classifyMessage,
     normalizeAction,
     resolveCharacter,
+    listScenes,
+    getComposition,
+    cloneComposition,
+    saveScene,
     listCharacterOptions: characterGen.listProfileOptions
 };

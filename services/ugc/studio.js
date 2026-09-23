@@ -728,9 +728,10 @@ function selectCreator(project, characterId) {
         characterId: preset.id,
         source: 'character',
         name: preset.name || 'Character',
-        identity: preset.identity || '',
-        appearance: preset.appearance || '',
-        hair: preset.hair || '',
+        identity: preset.identityText || (preset.identity && preset.identity.identityText) || (typeof preset.identity === 'string' ? preset.identity : ''),
+        appearance: preset.appearance || (preset.identity && preset.identity.skin ? [preset.identity.skin.tone, preset.identity.face && preset.identity.face.shape, preset.identity.eyes && preset.identity.eyes.color].filter(Boolean).join(', ') : ''),
+        hair: preset.hair || (preset.identity && preset.identity.hair ? [preset.identity.hair.style, preset.identity.hair.texture, preset.identity.hair.color, 'hair'].filter(Boolean).join(' ') : ''),
+        characterSnapshot: preset,
         appearanceCategory: preset.appearanceCategory || '',
         // Derive the label when an older preset stored only the category key,
         // so the creator's ethnicity survives into the image/video prompts.

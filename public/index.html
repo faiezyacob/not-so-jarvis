@@ -866,7 +866,7 @@
             <div class="chat-playground-popup" id="chatPlaygroundPopup" hidden>
                 <div class="chat-playground-head">
                     <span class="chat-playground-title">CREATIVE PLAYGROUND</span>
-                    <span class="chat-playground-sub">Surprise yourself</span>
+                    <span class="chat-playground-sub">CHARACTER · SCENE · PROMPT</span>
                 </div>
                 <label class="settings-field-label" for="playgroundTheme">Theme</label>
                 <select class="settings-select" id="playgroundTheme"></select>
@@ -895,6 +895,13 @@
                         <select class="settings-select" id="playgroundGender"></select>
                     </label>
                 </div>
+                <label class="settings-field-label" for="playgroundPrompt">Your prompt (optional)</label>
+                <textarea
+                    class="settings-input playground-prompt-input"
+                    id="playgroundPrompt"
+                    rows="3"
+                    placeholder="Use your saved character with your own scene, e.g. walking a neon-lit Tokyo street at night"
+                ></textarea>
                 <div class="settings-field-label">Outfit pack</div>
                 <div class="playground-outfit-packs" id="playgroundOutfitPacks"></div>
                 <input
@@ -918,9 +925,9 @@
                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                         <path d="M12 3v4"></path><path d="M12 17v4"></path><path d="M3 12h4"></path><path d="M17 12h4"></path><path d="m5.6 5.6 2.8 2.8"></path><path d="m15.6 15.6 2.8 2.8"></path><path d="m18.4 5.6-2.8 2.8"></path><path d="m8.4 15.6-2.8 2.8"></path>
                     </svg>
-                    <span>Surprise Me</span>
+                    <span class="playground-submit-label">Surprise Me</span>
                 </button>
-                <div class="chat-playground-hint">Picks a character, theme and locked attributes, then proposes a concept — nothing generates until you choose.</div>
+                <div class="chat-playground-hint">Picks a character, theme and locked attributes, then proposes a concept. Pick a saved character and type your own prompt to render that character into your scene — nothing generates until you choose.</div>
             </div>
             <div class="chat-input-bar">
                 <input

@@ -24,6 +24,7 @@ const concept = require('../services/playground/concept');
 const playground = require('../services/playground/playground');
 const characterGen = require('../services/playground/character');
 const characterPresets = require('../services/character-presets');
+const characterStudio = require('../services/character-studio');
 
 // Deterministic rng: always returns the first option so assertions are stable.
 const first = () => 0;
@@ -826,6 +827,79 @@ test('normalizeAction accepts strings and objects and rejects unknown types', ()
     assert.equal(playground.normalizeAction({ type: 'generate', conceptId: 'x' }).conceptId, 'x');
     assert.equal(playground.normalizeAction('not-a-real-action'), null);
     assert.equal(playground.normalizeAction(null), null);
+});
+
+test('canonical generated characters round-trip with identity and portrait ownership', () => {
+    const identity = characterGen.generateRandomIdentity(90210, {
+        appearance: 'south_asian', age: 'adult', gender: 'woman'
+    });
+    const saved = characterPresets.create({
+        name: identity.name, identity, identityText: identity.identityText,
+        identitySignature: identity.signature, provenance: { type: 'generated' }
+    });
+    const loaded = characterPresets.get(saved.id);
+    assert.equal(loaded.schemaVersion, 1);
+    assert.equal(loaded.identity.identitySignature, identity.signature);
+    assert.equal(loaded.identity.ageGroup, identity.ageGroup);
+    assert.equal(loaded.identity.appearanceCategory, 'south_asian');
+    assert.equal(loaded.identity.gender, 'woman');
+    characterPresets.setPortrait(saved.id, { url: '/generated/portrait.png' });
+    assert.equal(characterPresets.get(saved.id).portraitReference.identitySignature, identity.signature);
+    assert.equal(characterStudio.resolveCharacter(saved.id).identity.hair.color, identity.hairColor);
+});
+
+test('scene rerolls retain the character snapshot and no-character scenes cannot become characters', () => {
+    const id = conversationId('canonical-boundaries');
+    const session = playground.start({ conversationId: id, themeId: 'anything', mode: 'random_character', rng: characterGen.createRng(71) });
+    const snapshot = JSON.stringify(session.characterSnapshot);
+    playground.again(session, { rng: characterGen.createRng(72) });
+    assert.equal(JSON.stringify(session.characterSnapshot), snapshot);
+    assert.throws(() => playground.save(
+        playground.start({ conversationId: conversationId('none-save'), mode: 'none', rng: first }), null
+    ), (error) => error.code === 'characterless_scene');
+});
+
+// --- Saved character + user's own prompt -------------------------------------
+
+test('a saved character is rendered into the user\'s own prompt', () => {
+    const id = conversationId('custom-prompt');
+    const preset = characterPresets.create({
+        name: 'Mara', identity: 'a woman with copper hair and green eyes',
+        appearance: 'a soft jawline', hair: 'long copper hair'
+    });
+    const session = playground.start({
+        conversationId: id, themeId: 'lifestyle-candid', characterId: preset.id,
+        customPrompt: 'standing on a neon-lit Tokyo street at night', rng: first
+    });
+    assert.equal(session.concept.userPrompt, 'standing on a neon-lit Tokyo street at night');
+    assert.equal(session.concept.subject, preset.identityText);
+    // The randomised scene is dropped so it cannot contradict the user's prompt.
+    assert.equal(session.concept.environment, '');
+    assert.equal(session.concept.activity, '');
+    assert.equal(session.concept.outfit, '');
+    assert.ok(/User prompt \(follow this exactly\)/.test(concept.conceptToDirection(session.concept)));
+
+    const request = playground.buildImageRequest(session);
+    assert.equal(request.subject.identityText, preset.identityText);
+    assert.ok(request.user_prompt.includes('standing on a neon-lit Tokyo street at night'));
+    // The theme's scene guidance is skipped for a user prompt...
+    assert.ok(!request.explicit_constraints.some((c) => /everyday phone snapshot/i.test(c)));
+    // ...but the character identity stays authoritative.
+    assert.ok(request.explicit_constraints.some((c) => /copper hair and green eyes/.test(c)));
+});
+
+test('a user prompt survives "Surprise Me Again" and a custom prompt with no character stays characterless', () => {
+    const id = conversationId('custom-prompt-again');
+    const session = playground.start({
+        conversationId: id, themeId: 'anything', mode: 'none',
+        customPrompt: 'a quiet library with tall windows', rng: first
+    });
+    playground.again(session, { rng: () => 0.9 });
+    assert.equal(session.concept.userPrompt, 'a quiet library with tall windows');
+    assert.equal(session.concept.subject, '');
+    const request = playground.buildImageRequest(session);
+    assert.equal(request.subject.identityText, '');
+    assert.ok(request.user_prompt.includes('a quiet library with tall windows'));
 });
 
 // --- Lifestyle outfit variety (component system) -----------------------------

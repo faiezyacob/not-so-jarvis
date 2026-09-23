@@ -43,6 +43,7 @@ const PlaygroundUI = (() => {
         { type: 'modify', label: 'Modify Concept', icon: 'pencil', variant: '' },
         { type: 'save', label: 'Save Concept', icon: 'bookmark', variant: '' },
         { type: 'save_character', label: 'Save as Character', icon: 'user', variant: '' },
+        { type: 'retry_portrait', label: 'Retry Portrait', icon: 'refresh', variant: '' },
         { type: 'use_context', label: 'Use as Chat Context', icon: 'chat', variant: '' }
     ];
 
@@ -156,9 +157,15 @@ const PlaygroundUI = (() => {
         }
 
         const c = card.concept || {};
+        const hasCharacter = Boolean(card.character || c.subject || c.identitySignature);
+        const section = document.createElement('div');
+        section.className = 'playground-domain-labels';
+        section.innerHTML = '<span>CHARACTER</span><span>SCENE</span><span>PROMPT</span>';
+        el.appendChild(section);
         const details = document.createElement('div');
         details.className = 'playground-details';
         const rows = [
+            detailRow('Prompt', c.userPrompt),
             detailRow('Scene', c.activity && c.environment ? c.activity + ' — ' + c.environment : (c.activity || c.environment)),
             detailRow('Character', card.character
                 ? card.character.name
@@ -187,6 +194,8 @@ const PlaygroundUI = (() => {
         const actions = document.createElement('div');
         actions.className = 'playground-card-actions';
         BUTTONS.forEach((spec) => {
+            if (spec.type === 'save_character' && !hasCharacter) return;
+            if (spec.type === 'retry_portrait' && (!hasCharacter || card.characterImage)) return;
             const btn = document.createElement('button');
             btn.type = 'button';
             btn.className = 'playground-btn' + (spec.variant ? ' playground-btn--' + spec.variant : '');
@@ -227,7 +236,7 @@ const PlaygroundUI = (() => {
             save: 'Save this creative concept',
             use_context: 'Use this creative concept as chat context'
         };
-        send(labels[type] || type, { type, conceptId: card.id });
+        send(labels[type] || type, { type, conceptId: card.id, expectedRevision: card.revision });
     }
 
     async function saveAsCharacter(button, card) {
@@ -248,7 +257,10 @@ const PlaygroundUI = (() => {
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         name: clean,
-                        identity: c.subject || '',
+                        identity: c.identity || c.subject || '',
+                        identityText: c.subject || '',
+                        identitySignature: c.identitySignature || '',
+                        characterIdentity: c.identity || null,
                         appearance: c.appearance || '',
                         hair: c.hair || '',
                         outfit: c.outfit || '',
@@ -330,6 +342,9 @@ const PlaygroundUI = (() => {
     let genderSelect = null;
     let characterCache = null;
     let profileOptions = null;
+    // The user's own prompt: when set, the character is rendered into the
+    // user's scene instead of a randomly drawn one.
+    let promptEl = null;
     let outfitPacksEl = null;
     let outfitCustomEl = null;
     let outfitPackCache = null;
@@ -684,6 +699,10 @@ const PlaygroundUI = (() => {
         outfitCustomText = concept.outfitPackCustom || '';
         if (outfitCustomEl) outfitCustomEl.value = outfitCustomText;
         renderOutfitPacks();
+        // Reflect the active user prompt so it can be edited and re-run.
+        const activePrompt = (concept.concept && concept.concept.userPrompt) || concept.userPrompt || '';
+        if (promptEl) promptEl.value = activePrompt;
+        syncPromptMode();
         const locks = concept.locks || {};
         popupEl.querySelectorAll('.playground-lock input[type="checkbox"]').forEach((box) => {
             box.checked = locks[box.getAttribute('data-lock')] === true;
@@ -739,11 +758,21 @@ const PlaygroundUI = (() => {
         }
     }
 
+    // The submit button reflects the mode: with a prompt it renders the
+    // character into the user's own scene instead of a random Surprise.
+    function syncPromptMode() {
+        if (!promptEl) return;
+        const hasPrompt = String(promptEl.value || '').trim().length > 0;
+        const label = document.querySelector('#playgroundSurprise .playground-submit-label');
+        if (label) label.textContent = hasPrompt ? 'Use My Prompt' : 'Surprise Me';
+    }
+
     function submit() {
         if (!popupEl) return;
         const themeId = themeSelect && themeSelect.value ? themeSelect.value : 'anything';
         const choice = characterChoice;
         const profile = selectedProfile();
+        const customPrompt = promptEl ? String(promptEl.value || '').trim() : '';
         let mode = 'none';
         let characterId = null;
         if (choice === '__random__') {
@@ -759,7 +788,7 @@ const PlaygroundUI = (() => {
         const locks = selectedLocks();
         const outfit = selectedOutfit();
         close();
-        send('Surprise me with a creative concept', {
+        send(customPrompt ? 'Use my character with my prompt' : 'Surprise me with a creative concept', {
             type: 'surprise',
             themeId,
             characterId,
@@ -767,7 +796,8 @@ const PlaygroundUI = (() => {
             locks,
             profile,
             outfitPack: outfit.outfitPack,
-            outfitPackCustom: outfit.outfitPackCustom
+            outfitPackCustom: outfit.outfitPackCustom,
+            customPrompt
         });
     }
 
@@ -776,6 +806,7 @@ const PlaygroundUI = (() => {
         popupEl.hidden = false;
         if (buttonEl) buttonEl.setAttribute('aria-expanded', 'true');
         refreshPopover();
+        syncPromptMode();
     }
 
     function close() {
@@ -811,6 +842,7 @@ const PlaygroundUI = (() => {
         genderSelect = document.getElementById('playgroundGender');
         outfitPacksEl = document.getElementById('playgroundOutfitPacks');
         outfitCustomEl = document.getElementById('playgroundOutfitCustom');
+        promptEl = document.getElementById('playgroundPrompt');
         const submitBtn = document.getElementById('playgroundSurprise');
 
         buttonEl.addEventListener('click', (e) => {
@@ -829,6 +861,7 @@ const PlaygroundUI = (() => {
         [appearanceSelect, ageSelect, genderSelect].forEach((sel) => {
             if (sel) sel.addEventListener('change', syncCharacterMode);
         });
+        if (promptEl) promptEl.addEventListener('input', syncPromptMode);
 
         document.addEventListener('click', (e) => {
             if (!isOpen()) return;

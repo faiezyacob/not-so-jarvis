@@ -54,12 +54,18 @@ function capitalize(text) {
 }
 
 function titleFor(concept, theme) {
-    const base = firstWords(concept.activity || concept.scene || '', 5);
+    const base = firstWords(concept.userPrompt || concept.activity || concept.scene || '', 5);
     return capitalize(base) || capitalize(theme.label);
 }
 
 function describe(concept, theme) {
     const who = concept.subject ? concept.subject : 'the subject';
+    // A user-supplied prompt is the concept: keep the identity up front and the
+    // user's own wording intact instead of a randomised scene description.
+    if (concept.userPrompt) {
+        return ('A custom ' + theme.label.toLowerCase() + ' image of ' + who + ': ' + concept.userPrompt)
+            .replace(/\s+/g, ' ').trim() + '.';
+    }
     const mood = concept.mood ? concept.mood + ' ' : '';
     let text = 'A ' + mood + theme.label.toLowerCase() + ' image: ' + who;
     if (concept.activity) text += ' ' + concept.activity;
@@ -167,6 +173,9 @@ function assembleConcept(input = {}) {
     const character = input.character && typeof input.character === 'object' ? input.character : null;
     const locks = normalizeLocks(input.locks);
     const previous = input.previous && typeof input.previous === 'object' ? input.previous : null;
+    // The user's own prompt: an authoritative scene brief that replaces the
+    // theme's randomised scene (identity still comes from the character).
+    const userPrompt = String(input.userPrompt || '').trim();
     // Independent character controls (appearance/age/gender). `random` in every
     // field reproduces the general random-character behaviour.
     const profile = identityGen.normalizeProfile(input.profile);
@@ -179,6 +188,9 @@ function assembleConcept(input = {}) {
         subject: '',
         appearance: '',
         hair: '',
+        // The user's own prompt, when supplied. It owns the scene/wardrobe and
+        // is rendered verbatim into the creative direction.
+        userPrompt: '',
         // Display name (a saved character's name, or a temporary random one) and
         // the structured random identity that produced `subject`/`appearance`/
         // `hair`. Kept so a random character can be reasoned about and saved.
@@ -228,10 +240,26 @@ function assembleConcept(input = {}) {
     // identity/appearance/hair locks additionally carry a character (or the
     // previous concept in the other modes) across randomizations.
     if (mode === 'character' && character) {
-        concept.subject = character.identity || '';
-        concept.appearance = character.appearance || '';
-        concept.hair = character.hair || '';
+        const savedIdentity = character.identity && typeof character.identity === 'object' ? character.identity : null;
+        concept.subject = character.identityText || (savedIdentity && savedIdentity.identityText) || character.identity || '';
+        concept.appearance = character.appearance || (savedIdentity && identityGen.formatAppearance({
+            skinTone: savedIdentity.skin && savedIdentity.skin.tone,
+            faceShape: savedIdentity.face && savedIdentity.face.shape,
+            eyeColor: savedIdentity.eyes && savedIdentity.eyes.color,
+            eyeShape: savedIdentity.eyes && savedIdentity.eyes.shape,
+            eyebrows: savedIdentity.eyebrows,
+            build: savedIdentity.build,
+            distinctiveFeature: savedIdentity.distinctiveFeature
+        })) || '';
+        concept.hair = character.hair || (savedIdentity && identityGen.formatHair({
+            hairColor: savedIdentity.hair && savedIdentity.hair.color,
+            hairTexture: savedIdentity.hair && savedIdentity.hair.texture,
+            hairStyle: savedIdentity.hair && savedIdentity.hair.style,
+            hairStyleType: savedIdentity.hair && savedIdentity.hair.styleType
+        })) || '';
         concept.name = character.name || '';
+        concept.identity = savedIdentity;
+        concept.identitySignature = character.identitySignature || (savedIdentity && savedIdentity.identitySignature) || null;
         // Carry the saved demographic back so the prompt builder renders the
         // intended person instead of a generic one.
         concept.appearanceCategory = character.appearanceCategory || '';
@@ -301,7 +329,10 @@ function assembleConcept(input = {}) {
 
     // Outfit Pack: compose the specific outfit from the selected pack's wardrobe
     // space. A locked outfit wins, so only the pack metadata is recorded then.
-    const resolvedPack = resolveOutfitPack(input, character);
+    // With a user prompt the character's saved wardrobe is not auto-applied —
+    // the prompt owns the clothing unless the user explicitly chose a pack.
+    const packCharacter = (userPrompt && !input.outfitPack && !input.outfitPackCustom) ? null : character;
+    const resolvedPack = resolveOutfitPack(input, packCharacter);
     if (resolvedPack.packId) {
         const context = input.contextText ? outfitPacks.contextModifiers(input.contextText) : null;
         applyOutfitPack(concept, {
@@ -314,6 +345,32 @@ function assembleConcept(input = {}) {
             previousArchetype: input.previousOutfitArchetype,
             avoidLayers: Boolean(context && context.warm && !context.cold)
         });
+    }
+
+    // A user-supplied prompt is the authoritative scene brief. Drop the
+    // randomly drawn scene fields so the final prompt cannot contradict it;
+    // only locked groups and an explicitly chosen Outfit Pack survive.
+    if (userPrompt) {
+        concept.userPrompt = userPrompt;
+        if (!locks.outfit && !resolvedPack.packId) {
+            concept.outfit = '';
+            concept.outfitArchetype = '';
+            concept.outfitSilhouette = '';
+            concept.outfitComponents = null;
+            concept.outfitSignature = '';
+        }
+        if (!locks.style) concept.style = '';
+        if (!locks.environment) concept.environment = '';
+        concept.activity = '';
+        concept.lighting = '';
+        concept.camera = '';
+        concept.composition = '';
+        concept.mood = '';
+        concept.technique = '';
+        concept.techniqueLabel = '';
+        concept.texture = '';
+        concept.category = '';
+        concept.categoryId = '';
     }
     concept.outfitSignature = concept.outfit ? outfitSignature(concept.outfit) : (concept.outfitSignature || '');
 
@@ -550,6 +607,7 @@ function conceptToDirection(concept) {
     if (c.appearanceCategoryLabel) lines.push('Character appearance category: ' + c.appearanceCategoryLabel + '.');
     if (c.appearance) lines.push('Facial appearance: ' + c.appearance + '.');
     if (c.hair) lines.push('Hair and physical appearance: ' + c.hair + '.');
+    if (c.userPrompt) lines.push('User prompt (follow this exactly): ' + c.userPrompt + '.');
     if (c.outfit) lines.push('Outfit: ' + c.outfit + '.');
     if (c.outfitPackLabel) lines.push('Outfit pack (wardrobe personality): ' + c.outfitPackLabel + '.');
     if (c.outfitPackCustom) lines.push('Requested custom outfit: ' + c.outfitPackCustom + '.');

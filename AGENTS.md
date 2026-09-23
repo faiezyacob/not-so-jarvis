@@ -49,6 +49,7 @@ services/             Independent services (monitoring, image generation, ComfyU
   model-setup.js        First-run setup guide: HF-token model downloads + custom-node checks
   face-refine.js        FaceRefine ComfyUI readiness + background installer
   character-presets.js  Saved character identities for the Creative Playground (data/character-presets.json)
+  character-studio.js    Canonical Character records, migration, revisions, and portraits
   playground/           Creative Playground — deterministic concept discovery (no LLM/GPU until Generate)
     themes.js             Creative theme catalog (8 data-only themes; Lifestyle & Candid carries 14 subcategory pools + the component outfit system)
     concept.js            Concept assembly, attribute locking, context interpretation, direction/constraints
