@@ -18,7 +18,7 @@ const DATA_DIR = path.join(__dirname, '..', '..', 'data');
 const PRODUCTS_PATH = process.env.UGC_PRODUCTS_PATH || path.join(DATA_DIR, 'ugc-products.json');
 
 const PRODUCT_FIELDS = [
-    'name', 'brand', 'category', 'description', 'usageInstructions'
+    'name', 'brand', 'category', 'description', 'usageInstructions', 'targetAudience'
 ];
 const PRODUCT_LIST_FIELDS = [
     'keyBenefits', 'keySellingPoints', 'brandColors', 'claimsToAvoid'
@@ -110,16 +110,35 @@ function get(id) {
     return loadProducts().find((p) => p.id === key) || null;
 }
 
-// Case-insensitive name match used to bind a product named in a brief to a
-// saved library entry without asking the user again.
+// Exact (case-insensitive) name match. Only an exact match may bind a product
+// named in a brief automatically; a fuzzy/substring match must be confirmed by
+// the user so the wrong product is never silently selected.
 function findByName(name) {
     const key = String(name || '').trim().toLowerCase();
     if (!key) return null;
-    const all = loadProducts();
-    return all.find((p) => String(p.name || '').trim().toLowerCase() === key)
-        || all.find((p) => String(p.name || '').trim().toLowerCase().includes(key))
-        || all.find((p) => key.includes(String(p.name || '').trim().toLowerCase()) && String(p.name || '').trim())
-        || null;
+    return loadProducts().find((p) => String(p.name || '').trim().toLowerCase() === key) || null;
+}
+
+// Candidate products whose names overlap the given name. Used to offer a
+// "did you mean" confirmation instead of silently binding a fuzzy match.
+function findByNameFuzzy(name) {
+    const key = String(name || '').trim().toLowerCase();
+    if (!key) return [];
+    return loadProducts().filter((p) => {
+        const candidate = String(p.name || '').trim().toLowerCase();
+        if (!candidate) return false;
+        return candidate === key || candidate.includes(key) || key.includes(candidate);
+    });
+}
+
+// Resolve a name to a binding decision: { product, exact, ambiguous }.
+// `product` is only set for an exact match; a fuzzy match yields candidates so
+// the caller can ask the user to confirm.
+function resolveByName(name) {
+    const exact = findByName(name);
+    if (exact) return { product: exact, exact: true, candidates: [exact] };
+    const candidates = findByNameFuzzy(name);
+    return { product: null, exact: false, candidates };
 }
 
 function create(value) {
@@ -188,6 +207,8 @@ module.exports = {
     list,
     get,
     findByName,
+    findByNameFuzzy,
+    resolveByName,
     create,
     update,
     remove,

@@ -1153,7 +1153,10 @@ const Chat = (() => {
                             generatedMetaCache = null;
                             if (window.Gallery) window.Gallery.refresh();
                             if (window.UGCUI && typeof window.UGCUI.hydrate === 'function') {
-                                window.UGCUI.hydrate(chatMessagesEl, conversationId);
+                                // A card action just emitted the next active card;
+                                // bring it into view smoothly instead of leaving the
+                                // previous card on screen.
+                                window.UGCUI.hydrate(chatMessagesEl, conversationId, { scroll: true });
                             }
                         }
                         if (data.chunk) {

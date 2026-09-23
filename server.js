@@ -1713,6 +1713,11 @@ async function handleChatStream(req, res) {
                 activeUgcProject = null;
             }
         }
+        // A completed project no longer intercepts ordinary chat or blocks a new
+        // UGC request; the next explicit UGC request starts a fresh project.
+        if (activeUgcProject && activeUgcProject.status === ugcStudio.STATUS.COMPLETED) {
+            activeUgcProject = null;
+        }
         // Resume a saved draft (never auto-discarded).
         if (activeUgcProject && activeUgcProject.status === ugcStudio.STATUS.DRAFT &&
             /\b(?:resume|continue|reopen)\b/i.test(message) && /\bugc\b/i.test(message)) {
@@ -2498,7 +2503,12 @@ async function handleUGCStart(req, res, ctx) {
     }
 }
 
-// Execute a UGC workflow action (card button or a typed decision).
+// Execute a UGC workflow action (card button or a typed decision). The server —
+// never the UI — enforces workflow order: every action is validated against the
+// project's stage, a stale card is rejected by version, and overlapping actions
+// for the same conversation are serialized.
+const ugcActionLocks = new Set();
+
 async function handleUGCAction(req, res, ctx, project, action) {
     const { conversationId, message, provider, model, think } = ctx;
     if (!project) {
@@ -2513,6 +2523,16 @@ async function handleUGCAction(req, res, ctx, project, action) {
         res.end();
         return;
     }
+    // A stale card (from an older project version) must not mutate the current
+    // project. Typed decisions carry no version and are always evaluated against
+    // the live project.
+    if (ugcStudio.isStaleAction(project, action)) {
+        const text = 'UGC Studio \u2014 That card is out of date. Use the latest UGC card.';
+        sseWrite(res, { chunk: text });
+        sseWrite(res, { done: true, fullReply: text });
+        res.end();
+        return;
+    }
     // A typed follow-up classified by studio.classifyMessage returns
     // { action: '...' }; map it onto the button action space so the same switch
     // executes it. 'edit' is the only classified result with no button twin.
@@ -2520,6 +2540,28 @@ async function handleUGCAction(req, res, ctx, project, action) {
         action = Object.assign({}, action, { type: action.action });
     }
 
+    if (ugcActionLocks.has(conversationId)) {
+        sseWrite(res, { error: 'UGC Studio \u2014 Another action is still running. Try again in a moment.' });
+        res.end();
+        return;
+    }
+    // Validate the action against the live stage before any work runs.
+    const validation = ugcStudio.validateAction(project, action.type);
+    if (!validation.ok) {
+        sseWrite(res, { error: 'UGC Studio \u2014 ' + validation.error });
+        res.end();
+        return;
+    }
+    ugcActionLocks.add(conversationId);
+    try {
+        await dispatchUGCAction(req, res, ctx, project, action);
+    } finally {
+        ugcActionLocks.delete(conversationId);
+    }
+}
+
+async function dispatchUGCAction(req, res, ctx, project, action) {
+    const { conversationId, message, provider, model, think } = ctx;
     try {
         // --- selection stages ---
         if (action.type === UGC_ACTION.SELECT_PRODUCT) {
@@ -2538,6 +2580,16 @@ async function handleUGCAction(req, res, ctx, project, action) {
             emitUGCCard(res, project);
             return;
         }
+        if (action.type === UGC_ACTION.DELETE_PRODUCT) {
+            const removed = ugcStudio.deleteProduct(project, action.productId);
+            if (!removed.ok) {
+                sseWrite(res, { error: 'UGC Studio \u2014 ' + removed.error });
+                res.end();
+                return;
+            }
+            emitUGCCard(res, project);
+            return;
+        }
         if (action.type === UGC_ACTION.SELECT_CREATOR) {
             if (action.characterId) ugcStudio.selectCreator(project, action.characterId);
             else { project.stage = UGC_STAGE.CREATOR_SELECTION; ugcStudio.save(project); }
@@ -2552,6 +2604,11 @@ async function handleUGCAction(req, res, ctx, project, action) {
         }
         if (action.type === UGC_ACTION.RANDOM_CREATOR) {
             ugcStudio.randomCreator(project, action.creator && action.creator.profile);
+            emitUGCCard(res, project);
+            return;
+        }
+        if (action.type === UGC_ACTION.SKIP_CREATOR) {
+            ugcStudio.skipCreator(project);
             emitUGCCard(res, project);
             return;
         }
@@ -2576,7 +2633,12 @@ async function handleUGCAction(req, res, ctx, project, action) {
 
         // --- brief ---
         if (action.type === UGC_ACTION.EDIT_BRIEF) {
-            ugcStudio.editBrief(project, action.brief || {});
+            const result = ugcStudio.editBrief(project, action.brief || {});
+            if (result && result.durationInvalid) {
+                sseWrite(res, { error: 'UGC Studio \u2014 Duration must be between 1 and ' + ugcStudio.DURATION_LIMITS.max + ' seconds.' });
+                res.end();
+                return;
+            }
             emitUGCCard(res, project);
             return;
         }
@@ -2623,7 +2685,7 @@ async function handleUGCAction(req, res, ctx, project, action) {
             const isTone = action.type === UGC_ACTION.CHANGE_TONE;
             const isHook = action.type === UGC_ACTION.CHANGE_HOOK;
             const feedback = String(action.direction || action.value || '').trim();
-            const field = isHook ? 'hook' : (isTone ? null : null);
+            const field = isHook ? 'hook' : null;
             const note = feedback
                 || (isTone ? 'Change the overall tone.' : (isHook ? 'Rewrite the hook.' : ''));
             sseWrite(res, { generating: 'UGC Studio \u2014 rewriting the script\u2026' });
@@ -2665,7 +2727,12 @@ async function handleUGCAction(req, res, ctx, project, action) {
             return;
         }
         if (action.type === UGC_ACTION.REGENERATE_SCENE) {
-            const scene = (project.scenes || []).find((s) => s.id === action.sceneId);
+            let sceneId = action.sceneId || null;
+            if (!sceneId && action.sceneNumber) {
+                const scene = (project.scenes || []).find((s) => s.order === Number(action.sceneNumber));
+                sceneId = scene ? scene.id : null;
+            }
+            const scene = (project.scenes || []).find((s) => s.id === sceneId);
             if (!scene) {
                 sseWrite(res, { error: 'UGC Studio \u2014 That scene no longer exists.' });
                 res.end();
@@ -2674,7 +2741,7 @@ async function handleUGCAction(req, res, ctx, project, action) {
             sseWrite(res, { generating: 'UGC Studio \u2014 regenerating scene ' + scene.order + '\u2026' });
             vramManager.rememberChatModel(provider, model);
             await vramManager.freeVRAMBeforeChat();
-            await ugcStudio.regenerateScene(project, action.sceneId, {
+            await ugcStudio.regenerateScene(project, sceneId, {
                 provider, model, think,
                 direction: action.direction || action.message || ''
             });
@@ -2689,7 +2756,7 @@ async function handleUGCAction(req, res, ctx, project, action) {
 
         // --- references ---
         if (action.type === UGC_ACTION.GENERATE_REFERENCES || action.type === UGC_ACTION.REGENERATE_REFERENCES) {
-            await handleUGCGenerateReferences(req, res, ctx, project, null);
+            await handleUGCGenerateReferences(req, res, ctx, project, null, { fresh: true });
             return;
         }
         if (action.type === UGC_ACTION.REGENERATE_REFERENCE) {
@@ -2699,6 +2766,16 @@ async function handleUGCAction(req, res, ctx, project, action) {
                 sceneId = scene ? scene.id : null;
             }
             await handleUGCGenerateReferences(req, res, ctx, project, sceneId ? [sceneId] : null);
+            return;
+        }
+        if (action.type === UGC_ACTION.RETRY_FAILED) {
+            const pending = ugcStudio.pendingReferenceSceneIds(project);
+            if (!pending.length) {
+                sseWrite(res, { error: 'UGC Studio \u2014 Every scene already has a current reference frame.' });
+                res.end();
+                return;
+            }
+            await handleUGCGenerateReferences(req, res, ctx, project, pending);
             return;
         }
         if (action.type === UGC_ACTION.EDIT_DIRECTION) {
@@ -2712,8 +2789,24 @@ async function handleUGCAction(req, res, ctx, project, action) {
             emitUGCCard(res, project);
             return;
         }
+        if (action.type === UGC_ACTION.CONFIRM_DURATION) {
+            ugcStudio.confirmDuration(project);
+            const approval = ugcStudio.approveReferences(project);
+            if (!approval.ok) {
+                sseWrite(res, { error: 'UGC Studio \u2014 ' + approval.error });
+                res.end();
+                return;
+            }
+            await handleUGCDirectorHandoff(req, res, ctx, project);
+            return;
+        }
         if (action.type === UGC_ACTION.APPROVE_REFERENCES || action.type === UGC_ACTION.CONTINUE_DIRECTOR) {
-            ugcStudio.approveReferences(project);
+            const approval = ugcStudio.approveReferences(project);
+            if (!approval.ok) {
+                sseWrite(res, { error: 'UGC Studio \u2014 ' + approval.error });
+                res.end();
+                return;
+            }
             await handleUGCDirectorHandoff(req, res, ctx, project);
             return;
         }
@@ -2768,8 +2861,9 @@ async function handleUGCAction(req, res, ctx, project, action) {
 // single scene when `sceneIds` is given. Reuses the existing image pipeline: the
 // studio builds direction, imageGenerator.buildImagePrompt owns the final prompt,
 // and imageGenerator.generateImage renders + records it in the gallery.
-async function handleUGCGenerateReferences(req, res, ctx, project, sceneIds) {
+async function handleUGCGenerateReferences(req, res, ctx, project, sceneIds, options) {
     const { conversationId, provider, model, think } = ctx;
+    const opts = options || {};
     const scenes = (project.scenes || []).slice();
     const targets = Array.isArray(sceneIds) && sceneIds.length
         ? scenes.filter((s) => sceneIds.includes(s.id))
@@ -2797,6 +2891,12 @@ async function handleUGCGenerateReferences(req, res, ctx, project, sceneIds) {
     };
 
     try {
+        // A fresh full regeneration must not mix new frames with old ones: drop
+        // the existing set (and any approval) before generating.
+        if (opts.fresh && !sceneIds) {
+            project.references = [];
+            project.approvedReferences = [];
+        }
         project.stage = UGC_STAGE.REFERENCE_GENERATION;
         ugcStudio.save(project);
         sseWrite(res, { generating: 'UGC Studio \u2014 building ' + targets.length + ' reference prompt(s)\u2026' });
@@ -2824,30 +2924,46 @@ async function handleUGCGenerateReferences(req, res, ctx, project, sceneIds) {
         }
 
         await vramManager.freeVRAMBeforeImage();
+        let failed = 0;
         for (let i = 0; i < jobs.length; i++) {
             const job = jobs[i];
             sseWrite(res, {
                 generating: 'UGC Studio \u2014 reference ' + (i + 1) + ' of ' + jobs.length +
                     ' (scene ' + job.scene.order + ')\u2026'
             });
-            const promise = imageGenerator.generateImage(job.imagePrompt, {
-                provider, model, conversationId, onQueued,
-                onStart: () => sseWrite(res, { generating: 'UGC Studio \u2014 rendering scene ' + job.scene.order + '\u2026' }),
-                label: 'ugc reference', kind: 'image_generation'
-            });
-            queueId = promise.queueId || null;
-            const result = await promise;
-            ugcStudio.recordReference(project, job.scene.id, {
-                url: result.url,
-                filename: ugcRawFilename(result.url),
-                prompt: job.imagePrompt
-            });
+            try {
+                const promise = imageGenerator.generateImage(job.imagePrompt, {
+                    provider, model, conversationId, onQueued,
+                    // Product reference images travel on their own channel; they
+                    // are never merged with the scene reference frames.
+                    productReferences: job.request.product_references || [],
+                    onStart: () => sseWrite(res, { generating: 'UGC Studio \u2014 rendering scene ' + job.scene.order + '\u2026' }),
+                    label: 'ugc reference', kind: 'image_generation'
+                });
+                queueId = promise.queueId || null;
+                const result = await promise;
+                ugcStudio.recordReference(project, job.scene.id, {
+                    url: result.url,
+                    filename: ugcRawFilename(result.url),
+                    prompt: job.imagePrompt
+                });
+            } catch (err) {
+                // Cancellation aborts the batch; any other per-scene failure is
+                // recorded so the successful frames are preserved and the failed
+                // scene can be retried on its own.
+                if (err && err.code === 'generation_cancelled') throw err;
+                failed += 1;
+                console.warn('[ugc] reference for scene ' + job.scene.order + ' failed:', err.message);
+                ugcStudio.recordReferenceFailure(project, job.scene.id, friendlyImageError(err));
+                sseWrite(res, { generating: 'UGC Studio \u2014 scene ' + job.scene.order + ' failed, continuing\u2026' });
+            }
         }
         ugcStudio.markReferencesReady(project);
         activityLog.record({
             type: 'generation',
             title: 'UGC reference frames',
-            detail: jobs.length + ' frame(s) for ' + ((project.product && project.product.name) || 'project'),
+            detail: (jobs.length - failed) + ' of ' + jobs.length + ' frame(s) for ' +
+                ((project.product && project.product.name) || 'project'),
             conversationId
         });
         await vramManager.freeComfyModels('ugc references');
@@ -2881,6 +2997,22 @@ async function handleUGCDirectorHandoff(req, res, ctx, project) {
     const input = ugcStudio.directorProductionInput(project);
     if (!input.openingFrame) {
         sseWrite(res, { error: 'UGC Studio \u2014 There is no approved reference frame to animate. Generate and approve the references first.' });
+        res.end();
+        return;
+    }
+    // A brief longer than the H3 ceiling is never silently clamped. Explain the
+    // limit and ask the user to confirm the 15-second render explicitly.
+    if (input.durationCapped && !project.durationConfirmed) {
+        // Stay at the approval checkpoint so the confirm action is valid.
+        project.stage = UGC_STAGE.REFERENCE_APPROVAL;
+        ugcStudio.save(project);
+        const text = 'UGC Studio \u2014 This brief is ' + input.requestedDuration +
+            ' seconds, but the Director\u2019s H3 stage renders at most ' +
+            ugcStudio.DURATION_LIMITS.renderMax + ' seconds. I can render the first ' +
+            ugcStudio.DURATION_LIMITS.renderMax + ' seconds, or shorten the brief. ' +
+            'Reply "continue at 15 seconds" to render the capped cut.';
+        sseWrite(res, { chunk: text });
+        sseWrite(res, { done: true, fullReply: text });
         res.end();
         return;
     }
@@ -3321,6 +3453,7 @@ async function runDirectorVideoStage(req, res, ctx, production) {
         console.error('[director] video stage failed:', err.message);
         const friendly = friendlyVideoError(err);
         director.markVideoFailed(production, friendly);
+        ugcStudio.syncDirectorOutcome(production.conversationId, production.id, 'failed', { message: friendly });
         sseWrite(res, { director: director.buildCard(production, director.renderFailureContent(production, 'video', friendly)) });
         res.end();
     }
@@ -3616,6 +3749,7 @@ async function handleDirectorAction(req, res, ctx, production, action) {
             comfyui.interrupt().catch(() => {});
         }
         director.cancel(production);
+        ugcStudio.syncDirectorOutcome(production.conversationId, production.id, 'cancelled', { message: 'Production cancelled.' });
         taskState.clearTask(conversationId);
         const text = 'Director \u2014 Production cancelled.';
         sseWrite(res, { chunk: text });
@@ -4140,6 +4274,9 @@ async function handleVideoGenerationStream(req, res, opts) {
                     url: finalResult.url,
                     prompt: videoPrompt
                 });
+                // If this production came from a UGC handoff, mark the linked
+                // project complete so it stops being an active workflow.
+                ugcStudio.syncDirectorOutcome(conversationId, production.id, 'completed', { url: finalResult.url });
                 const existingDirectorParams = taskState.getTask(conversationId).parameters || {};
                 taskState.setTask(conversationId, {
                     type: 'video',
@@ -4235,6 +4372,7 @@ async function handleVideoGenerationStream(req, res, opts) {
             if (production) {
                 if (err.code === 'generation_cancelled') {
                     director.cancel(production);
+                    ugcStudio.syncDirectorOutcome(conversationId, production.id, 'cancelled', { message: 'Production cancelled.' });
                     sseWrite(res, {
                         director: director.buildCard(
                             production,
@@ -4245,6 +4383,7 @@ async function handleVideoGenerationStream(req, res, opts) {
                     taskState.setTask(conversationId, { status: 'failed' });
                     const friendly = friendlyVideoError(err);
                     director.markVideoFailed(production, friendly);
+                    ugcStudio.syncDirectorOutcome(conversationId, production.id, 'failed', { message: friendly });
                     sseWrite(res, {
                         director: director.buildCard(
                             production,

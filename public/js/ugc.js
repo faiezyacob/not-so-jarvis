@@ -67,9 +67,17 @@ const UGCUI = (() => {
         return extract(markdown).text;
     }
 
+    // The version of the newest rendered card. Every action from an interactive
+    // card carries it so the server can reject a stale card.
+    let activeVersion = 0;
+
     function send(text, ugcAction) {
+        let action = ugcAction;
+        if (action && action.projectId && action.version === undefined) {
+            action = Object.assign({}, action, { version: activeVersion });
+        }
         if (typeof Chat !== 'undefined' && Chat && typeof Chat.sendMessage === 'function') {
-            Chat.sendMessage({ text, ugcAction });
+            Chat.sendMessage({ text, ugcAction: action });
         }
     }
 
@@ -177,12 +185,18 @@ const UGCUI = (() => {
         if (products.length) {
             const list = el('div', 'ugc-list');
             products.forEach((p) => {
+                const row = el('div', 'ugc-list-row');
                 const item = el('button', 'ugc-list-item');
                 item.type = 'button';
                 item.appendChild(el('span', 'ugc-list-title', p.name || 'Product'));
                 const meta = [p.brand, p.category].filter(Boolean).join(' \u00b7 ');
                 if (meta) item.appendChild(el('span', 'ugc-list-sub', meta));
                 if (p.description) item.appendChild(el('span', 'ugc-list-desc', String(p.description).slice(0, 140)));
+                if (p.usageInstructions) item.appendChild(el('span', 'ugc-list-sub', 'Use: ' + String(p.usageInstructions).slice(0, 100)));
+                if (p.keySellingPoints && p.keySellingPoints.length) {
+                    item.appendChild(el('span', 'ugc-list-sub', 'Selling points: ' + p.keySellingPoints.join(', ')));
+                }
+                if (p.targetAudience) item.appendChild(el('span', 'ugc-list-sub', 'Audience: ' + String(p.targetAudience).slice(0, 80)));
                 if (p.referenceImages && p.referenceImages.length) {
                     item.appendChild(el('span', 'ugc-list-sub', p.referenceImages.length + ' reference image(s)'));
                 }
@@ -190,7 +204,25 @@ const UGCUI = (() => {
                     lock(container.closest('.ugc-card'));
                     send('Use the product "' + (p.name || '') + '"', { type: 'select_product', projectId: card.id, productId: p.id });
                 });
-                list.appendChild(item);
+                row.appendChild(item);
+
+                const del = button('', 'x', 'danger', () => {
+                    Dialog.confirm({
+                        title: 'Delete product',
+                        message: 'Delete "' + (p.name || 'this product') + '" from your product library? This cannot be undone.',
+                        confirmText: 'Delete'
+                    }).then((ok) => {
+                        if (!ok) return;
+                        // A successful delete re-emits the card (and the new card
+                        // scrolls into view); a failed one leaves this card usable.
+                        send('Delete the product "' + (p.name || '') + '"', { type: 'delete_product', projectId: card.id, productId: p.id });
+                    });
+                });
+                del.classList.add('ugc-list-delete');
+                del.title = 'Delete product';
+                del.setAttribute('aria-label', 'Delete product');
+                row.appendChild(del);
+                list.appendChild(row);
             });
             container.appendChild(list);
         }
@@ -200,14 +232,24 @@ const UGCUI = (() => {
         form.appendChild(el('div', 'ugc-section-title', 'New product'));
         const name = input(suggested, 'Product name');
         const brand = input('', 'Brand');
+        const category = input('', 'Category (e.g. skincare, home)');
         const description = textarea('', 'Short description (what it is, what it looks like). Type @ to add a generated image.', 2);
+        const usage = textarea('', 'How the product is used (facts you supply)', 2);
         const benefits = input('', 'Key benefits (comma separated)');
+        const sellingPoints = input('', 'Key selling points (comma separated)');
+        const audience = input('', 'Target audience');
+        const colors = input('', 'Brand colors (comma separated)');
         const avoid = input('', 'Claims to avoid (comma separated)');
 
         form.appendChild(labelWrap('Name', name));
         form.appendChild(labelWrap('Brand', brand));
+        form.appendChild(labelWrap('Category', category));
         form.appendChild(labelWrap('Description', description));
+        form.appendChild(labelWrap('How it is used', usage));
         form.appendChild(labelWrap('Key benefits', benefits));
+        form.appendChild(labelWrap('Key selling points', sellingPoints));
+        form.appendChild(labelWrap('Target audience', audience));
+        form.appendChild(labelWrap('Brand colors', colors));
         form.appendChild(labelWrap('Claims to avoid', avoid));
 
         // Reference images: a styled button drives a hidden file input, and
@@ -306,8 +348,13 @@ const UGCUI = (() => {
                 product: {
                     name: name.value.trim(),
                     brand: brand.value.trim(),
+                    category: category.value.trim(),
                     description: description.value.trim(),
+                    usageInstructions: usage.value.trim(),
                     keyBenefits: benefits.value.trim(),
+                    keySellingPoints: sellingPoints.value.trim(),
+                    targetAudience: audience.value.trim(),
+                    brandColors: colors.value.trim(),
                     claimsToAvoid: avoid.value.trim(),
                     referenceImages: refs
                 }
@@ -358,10 +405,14 @@ const UGCUI = (() => {
                 creator: { profile: { appearance: appearance.value, age: age.value, gender: gender.value } }
             });
         });
+        const skip = button('Product only (no creator)', 'box', '', () => {
+            lock(container.closest('.ugc-card'));
+            send('Skip the creator and make it product-only', { type: 'skip_creator', projectId: card.id });
+        });
         const playground = button('Open Character Playground', 'user', '', () => {
             if (window.PlaygroundUI && typeof window.PlaygroundUI.open === 'function') window.PlaygroundUI.open();
         });
-        form.appendChild(actionRow([roll, playground]));
+        form.appendChild(actionRow([roll, skip, playground]));
         container.appendChild(form);
 
         if (card.creator && card.creator.source === 'random') {
@@ -495,6 +546,9 @@ const UGCUI = (() => {
         container.appendChild(scriptBlock('Main message', script.main));
         container.appendChild(scriptBlock('Product interaction', script.productInteraction));
         container.appendChild(scriptBlock('Closing / CTA', script.closing));
+        if (script.needsConfirmation) {
+            container.appendChild(el('p', 'ugc-note', 'Some lines were removed because they made claims the product facts do not support. Check the script before approving.'));
+        }
 
         const form = el('div', 'ugc-form');
         form.appendChild(el('div', 'ugc-section-title', 'Edit script'));
@@ -571,6 +625,9 @@ const UGCUI = (() => {
             item.appendChild(labelWrap('Duration (s)', duration));
             item.appendChild(labelWrap('Camera movement', movement));
             item.appendChild(labelWrap('Product visibility', visibility));
+            if (scene.needsConfirmation) {
+                item.appendChild(el('p', 'ugc-note', 'This action uses the product in a way the supplied usage facts do not confirm. Check it before approving.'));
+            }
 
             item.appendChild(actionRow([
                 button('Save', 'check', '', () => {
@@ -618,46 +675,73 @@ const UGCUI = (() => {
 
     function renderReferences(card, container) {
         const refs = Array.isArray(card.references) ? card.references : [];
+        const scenes = Array.isArray(card.scenes) ? card.scenes : [];
+        const byScene = new Map();
+        refs.forEach((r) => { byScene.set(r.sceneId, r); });
         const grid = el('div', 'ugc-refs');
-        refs.forEach((ref) => {
-            const tile = el('div', 'ugc-ref');
+        let hasProblem = false;
+        const items = scenes.length
+            ? scenes.map((s) => ({ sceneId: s.id, order: s.order, ref: byScene.get(s.id) || null }))
+            : refs.map((r) => ({ sceneId: r.sceneId, order: r.order, ref: r }));
+        items.forEach((item) => {
+            const ref = item.ref || {};
+            const tile = el('div', 'ugc-ref ugc-ref--' + (ref.status || 'pending'));
             if (ref.url) {
                 const img = el('img', 'ugc-ref-img');
                 img.src = ref.url;
-                img.alt = 'Scene ' + ref.order;
+                img.alt = 'Scene ' + item.order;
                 img.loading = 'lazy';
                 tile.appendChild(img);
             } else {
-                tile.appendChild(el('div', 'ugc-ref-missing', 'No frame'));
+                tile.appendChild(el('div', 'ugc-ref-missing', ref.status === 'failed' ? 'Failed' : 'No frame'));
             }
-            tile.appendChild(el('span', 'ugc-ref-label', 'Scene ' + ref.order));
-            tile.appendChild(button('Regenerate', 'refresh', '', () => {
-                lock(container.closest('.ugc-card'));
-                send('Regenerate only scene ' + ref.order, { type: 'regenerate_reference', projectId: card.id, sceneId: ref.sceneId });
-            }));
+            tile.appendChild(el('span', 'ugc-ref-label', 'Scene ' + item.order + ' \u00b7 ' + (ref.status || 'pending')));
+            if (ref.status === 'failed' && ref.error) {
+                tile.appendChild(el('span', 'ugc-ref-error', ref.error));
+            }
+            if (ref.status !== 'ready' && ref.status !== 'approved') hasProblem = true;
+            if (item.sceneId) {
+                tile.appendChild(button('Regenerate', 'refresh', '', () => {
+                    lock(container.closest('.ugc-card'));
+                    send('Regenerate only scene ' + item.order, { type: 'regenerate_reference', projectId: card.id, sceneId: item.sceneId });
+                }));
+            }
             grid.appendChild(tile);
         });
         container.appendChild(grid);
 
-        container.appendChild(actionRow([
-            button('Approve All \u2192 Director', 'check', 'primary', () => {
+        const complete = card.referencesComplete === true;
+        const actions = [];
+        if (complete) {
+            actions.push(button('Approve All \u2192 Director', 'check', 'primary', () => {
                 lock(container.closest('.ugc-card'));
                 send('Approve the references and continue in Director Mode', { type: 'approve_references', projectId: card.id });
-            }),
-            button('Regenerate All', 'refresh', '', () => {
+            }));
+        } else {
+            actions.push(button('Approve All (needs every scene)', 'check', '', () => {
+                Dialog.alert({ title: 'Reference frames incomplete', message: 'Every scene needs exactly one current frame before the production can be approved. Retry the failed scenes first.' });
+            }));
+        }
+        if (hasProblem) {
+            actions.push(button('Retry failed', 'refresh', '', () => {
                 lock(container.closest('.ugc-card'));
-                send('Regenerate the references', { type: 'regenerate_references', projectId: card.id });
-            }),
-            button('Edit Direction', 'pencil', '', () => {
-                Dialog.prompt({ title: 'Edit Direction', message: 'Describe the change for the reference frames.', placeholder: 'e.g. make the lighting warmer and move the camera closer', confirmText: 'Apply' })
-                    .then((text) => {
-                        const value = String(text || '').trim();
-                        if (!value) return;
-                        lock(container.closest('.ugc-card'));
-                        send('Edit the direction: ' + value, { type: 'edit_direction', projectId: card.id, direction: value });
-                    });
-            })
-        ]));
+                send('Retry the failed reference frames', { type: 'retry_failed', projectId: card.id });
+            }));
+        }
+        actions.push(button('Regenerate All', 'refresh', '', () => {
+            lock(container.closest('.ugc-card'));
+            send('Regenerate the references', { type: 'regenerate_references', projectId: card.id });
+        }));
+        actions.push(button('Edit Direction', 'pencil', '', () => {
+            Dialog.prompt({ title: 'Edit Direction', message: 'Describe the change for the reference frames.', placeholder: 'e.g. make the lighting warmer and move the camera closer', confirmText: 'Apply' })
+                .then((text) => {
+                    const value = String(text || '').trim();
+                    if (!value) return;
+                    lock(container.closest('.ugc-card'));
+                    send('Edit the direction: ' + value, { type: 'edit_direction', projectId: card.id, direction: value });
+                });
+        }));
+        container.appendChild(actionRow(actions));
     }
 
     function render(contentEl, card) {
@@ -665,6 +749,9 @@ const UGCUI = (() => {
         const el2 = el('div', 'ugc-card ugc-card--' + (card.stage || 'unknown'));
         el2.setAttribute('data-project-id', card.id);
         el2.setAttribute('data-stage', card.stage || '');
+        el2.setAttribute('data-version', String(card.version || 0));
+        // Only the newest card is interactive; it owns the version actions carry.
+        activeVersion = Number(card.version) || 0;
 
         const head = el('div', 'ugc-card-head');
         const icon = el('span', 'ugc-card-icon');
@@ -744,12 +831,34 @@ const UGCUI = (() => {
 
     // --- State / mode bar ---
 
+    // Only the newest card for the project is interactive. Every earlier card
+    // for the same project is marked static and its controls disabled, so a
+    // stale card can never be mistaken for (or act as) the active one.
     function applyState(container, project) {
-        if (!container) return;
-        container.querySelectorAll('.ugc-card').forEach((node) => {
-            const matches = project && node.getAttribute('data-project-id') === project.id;
-            node.classList.toggle('ugc-card--static', !matches);
+        if (!container) return null;
+        const cards = Array.from(container.querySelectorAll('.ugc-card'));
+        let active = null;
+        if (project) {
+            for (let i = cards.length - 1; i >= 0; i--) {
+                if (cards[i].getAttribute('data-project-id') === project.id) { active = cards[i]; break; }
+            }
+        }
+        cards.forEach((node) => {
+            const isActive = node === active;
+            node.classList.toggle('ugc-card--static', !isActive);
+            node.querySelectorAll('button, input, select, textarea').forEach((control) => {
+                control.disabled = !isActive;
+            });
         });
+        return active;
+    }
+
+    // Smoothly bring a card to the top of the chat scroll area (used after a
+    // card action emits the next active card).
+    function scrollToCard(container, card) {
+        if (!container || !card || typeof container.scrollTo !== 'function') return;
+        const offset = card.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop;
+        container.scrollTo({ top: Math.max(0, offset - 12), behavior: 'smooth' });
     }
 
     async function fetchState(conversationId) {
@@ -763,11 +872,13 @@ const UGCUI = (() => {
         }
     }
 
-    async function hydrate(container, conversationId) {
+    async function hydrate(container, conversationId, opts) {
         if (!container) return;
         const data = await fetchState(conversationId);
-        applyState(container, data && data.project ? data.project : null);
+        const active = applyState(container, data && data.project ? data.project : null);
         updateBar(data);
+        if (opts && opts.scroll && active) scrollToCard(container, active);
+        return active;
     }
 
     // The subtle "UGC Studio · Active" indicator above the chat.
@@ -791,18 +902,24 @@ const UGCUI = (() => {
             return;
         }
         barEl.hidden = false;
-        barEl.classList.toggle('ugc-bar--draft', project.status === 'draft');
+        const isDraft = project.status === 'draft';
+        const isComplete = project.status === 'completed';
+        barEl.classList.toggle('ugc-bar--draft', isDraft);
+        barEl.classList.toggle('ugc-bar--complete', isComplete);
         barEl.innerHTML = '';
         const dot = el('span', 'ugc-bar-dot');
         const label = el('span', 'ugc-bar-label',
-            project.status === 'draft' ? 'UGC STUDIO \u00b7 DRAFT' : 'UGC STUDIO \u00b7 ACTIVE');
+            isDraft ? 'UGC STUDIO \u00b7 DRAFT' : (isComplete ? 'UGC STUDIO \u00b7 COMPLETE' : 'UGC STUDIO \u00b7 ACTIVE'));
         const stage = el('span', 'ugc-bar-stage', stageLabel(project.stage));
         barEl.appendChild(dot);
         barEl.appendChild(label);
         barEl.appendChild(stage);
         const actions = el('span', 'ugc-bar-actions');
-        if (project.status === 'draft') {
+        if (isDraft) {
             actions.appendChild(barButton('Resume', () => send('Resume the UGC project', { type: 'resume', projectId: project.id })));
+            actions.appendChild(barButton('Discard', () => send('Discard the UGC project', { type: 'discard', projectId: project.id }), 'danger'));
+        } else if (isComplete) {
+            actions.appendChild(barButton('View brief', () => send('Show the UGC brief', { type: 'view_brief', projectId: project.id })));
             actions.appendChild(barButton('Discard', () => send('Discard the UGC project', { type: 'discard', projectId: project.id }), 'danger'));
         } else {
             actions.appendChild(barButton('View brief', () => send('Show the UGC brief', { type: 'view_brief', projectId: project.id })));

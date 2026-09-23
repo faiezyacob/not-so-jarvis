@@ -24,6 +24,39 @@ function appearanceLabelOf(creator) {
     return key ? (characterGen.appearanceCategoryLabel(key) || '') : '';
 }
 
+// A product-only UGC video has no on-camera person. The studio must never invent
+// one: script, scene and Director prompts all branch on this.
+function isCreatorFree(project) {
+    if (!project) return false;
+    if (project.creatorMode === 'none') return true;
+    if (project.creatorSkipped === true) return true;
+    return !project.creator;
+}
+
+// --- Duration limits ----------------------------------------------------------
+//
+// UGC Studio plans short-form UGC. A brief may be planned up to a minute, but the
+// Director/H3 stage that renders the final video tops out at 15 seconds, so a
+// longer brief is never silently clamped: the handoff explains the ceiling and
+// asks the user to confirm before rendering.
+const DURATION_LIMITS = Object.freeze({
+    min: 1,
+    max: 60,
+    renderMax: 15
+});
+
+// Validate a requested duration. Returns { value, valid, capped, reason }. A
+// value outside [min, max] is rejected (valid:false, value:null); a value above
+// the render ceiling is valid but flagged capped.
+function validateDuration(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n <= 0) return { value: null, valid: false, capped: false, reason: 'not-a-number' };
+    const rounded = Math.round(n);
+    if (rounded < DURATION_LIMITS.min) return { value: null, valid: false, capped: false, reason: 'too-short' };
+    if (rounded > DURATION_LIMITS.max) return { value: null, valid: false, capped: false, reason: 'too-long' };
+    return { value: rounded, valid: true, capped: rounded > DURATION_LIMITS.renderMax, reason: '' };
+}
+
 // --- Brief extraction ---------------------------------------------------------
 
 const BRIEF_SYSTEM_PROMPT =
@@ -174,6 +207,7 @@ function heuristicBrief(message) {
         keyMessage: '',
         callToAction: '',
         environment: catalog.detectEnvironment(raw) || '',
+        dialogueLanguage: detectDialogueLanguage(raw) || '',
         creatorDescription: '',
         additionalInstructions: ''
     };
@@ -229,24 +263,182 @@ function enforceDialogueBudgets(scenes) {
     return scenes;
 }
 
-// Deterministic script fallback built only from supplied facts.
+// --- Facts-only claim validation ----------------------------------------------
+//
+// The studio never invents product claims. An LLM can still slip in a price, a
+// guarantee, a certification or a medical result, so every generated sentence is
+// checked against the facts the user actually supplied. Unsupported sentences
+// are removed deterministically and the item is flagged for confirmation.
+
+const CLAIM_PATTERNS = [
+    { id: 'price', re: /\b(?:only\s+)?(?:\$\s?\d|\d+\s*(?:usd|dollars?|bucks)|\d+\s*%\s*off)\b|\b(?:price|pricing|costs?|discount|on\s+sale|cheap|affordable|free\s+shipping|buy\s+one\s+get|money[\s-]?saving)\b/i },
+    { id: 'guarantee', re: /\b(?:guarantee[ds]?|money[\s-]?back|warranty|refunds?|risk[\s-]?free)\b/i },
+    { id: 'certification', re: /\b(?:certified|fda[\s-]?approved|dermatologist[\s-]?tested|clinically[\s-]?(?:proven|tested)|patent(?:ed)?|award[\s-]?winning|lab[\s-]?tested|organic[\s-]?certified)\b/i },
+    { id: 'medical', re: /\b(?:cures?|treats?|heals?|eliminates?|prevents?|diagnoses?|antibacterial|anti[\s-]?aging|reverses?)\b/i },
+    { id: 'result', re: /\b\d{1,3}\s?%|\bin\s+\d+\s+(?:days?|weeks?|hours?|months?)\b|\b(?:instantly|permanently|overnight)\b/i },
+    { id: 'superlative', re: /\b(?:best|#1|number\s+one|world'?s|fastest|strongest|most\s+effective|unbeatable)\b/i },
+    { id: 'personal_experience', re: /\bI(?:'ve| have)\s+been\s+using\b|\bI\s+noticed\b|\bI\s+tried\b|\bafter\s+(?:a|one|two|three|\d+)\s+(?:days?|weeks?|months?)\b/i }
+];
+
+function factsCorpus(product, brief) {
+    const p = product || {};
+    const b = brief || {};
+    return [
+        p.name, p.brand, p.category, p.description, p.usageInstructions, p.targetAudience,
+        ...(Array.isArray(p.keyBenefits) ? p.keyBenefits : []),
+        ...(Array.isArray(p.keySellingPoints) ? p.keySellingPoints : []),
+        b.keyMessage, b.objective, b.additionalInstructions, b.callToAction, b.tone
+    ].filter(Boolean).join(' ').toLowerCase();
+}
+
+function sentenceList(text) {
+    const value = String(text || '').replace(/\s+/g, ' ').trim();
+    if (!value) return [];
+    return value.match(/[^.!?]+[.!?]*/g) || [value];
+}
+
+// Return the unsupported-claim categories found in `text`. A term that literally
+// appears in the supplied facts is treated as supported; a term the user listed
+// in claimsToAvoid is always unsupported.
+function findUnsupportedClaims(text, product, brief) {
+    const corpus = factsCorpus(product, brief);
+    const forbidden = (product && product.claimsToAvoid) || [];
+    const found = new Set();
+    for (const sentence of sentenceList(text)) {
+        const lower = sentence.toLowerCase();
+        for (const pattern of CLAIM_PATTERNS) {
+            const match = sentence.match(pattern.re);
+            if (!match) continue;
+            const term = String(match[0] || '').toLowerCase().trim();
+            const inFacts = term && corpus.includes(term);
+            const explicitlyForbidden = forbidden.some((f) => f && lower.includes(String(f).toLowerCase()));
+            if (!inFacts || explicitlyForbidden) found.add(pattern.id);
+        }
+    }
+    return Array.from(found);
+}
+
+// Strip every sentence that carries an unsupported claim. Returns the sanitized
+// text, the removed sentences, and the claim categories that were dropped.
+function sanitizeClaimText(text, product, brief) {
+    const value = String(text || '');
+    if (!value.trim()) return { text: value, removed: [], claims: [] };
+    const kept = [];
+    const removed = [];
+    const claims = new Set();
+    for (const sentence of sentenceList(value)) {
+        const unsupported = findUnsupportedClaims(sentence, product, brief);
+        if (unsupported.length) {
+            removed.push(sentence.trim());
+            unsupported.forEach((c) => claims.add(c));
+        } else {
+            kept.push(sentence.trim());
+        }
+    }
+    return { text: kept.join(' ').trim(), removed, claims: Array.from(claims) };
+}
+
+// Validate + sanitize a generated script in place. Sets script.claims and
+// script.needsConfirmation when unsupported content was removed.
+function validateScript(project, script) {
+    if (!script || typeof script !== 'object') return { script, issues: [] };
+    const product = project.product || {};
+    const brief = project.brief || {};
+    const issues = [];
+    const claims = new Set();
+    for (const key of ['hook', 'main', 'productInteraction', 'closing']) {
+        if (!script[key]) continue;
+        const result = sanitizeClaimText(script[key], product, brief);
+        if (result.removed.length) {
+            script[key] = result.text;
+            issues.push({ field: key, removed: result.removed });
+            result.claims.forEach((c) => claims.add(c));
+        }
+    }
+    if (issues.length) {
+        script.fullText = [script.hook, script.main, script.productInteraction, script.closing]
+            .filter(Boolean).join(' ');
+    }
+    script.claims = Array.from(claims);
+    script.needsConfirmation = issues.length > 0;
+    return { script, issues };
+}
+
+// Usage verbs that describe acting on a product. When the product supplies
+// usageInstructions, an action that names a different verb is flagged for
+// confirmation rather than silently approved.
+const USAGE_VERB_RE = /\b(?:apply|spray|rub|massage|pour|shake|mix|take|swallow|wear|insert|attach|plug|charge|clean|wash|open|unbox|press|roll|brush|dab|squeeze)\b/i;
+
+// Validate + repair a generated scene list in place: unique stable IDs, required
+// fields, facts-only action/dialogue, usage-verb confirmation, and dialogue
+// budget. Returns { scenes, issues }.
+function validateScenes(project, scenes) {
+    const product = project.product || {};
+    const brief = project.brief || {};
+    const issues = [];
+    const list = Array.isArray(scenes) ? scenes : [];
+    const seen = new Set();
+    list.forEach((scene, index) => {
+        if (!scene) return;
+        if (!scene.id || seen.has(scene.id)) scene.id = 'scn_' + (index + 1);
+        let suffix = 1;
+        while (seen.has(scene.id)) scene.id = 'scn_' + (index + 1) + '_' + (suffix++);
+        seen.add(scene.id);
+        if (!String(scene.action || '').trim() && !String(scene.objective || '').trim()) {
+            issues.push({ sceneId: scene.id, issue: 'empty_action' });
+        }
+        for (const key of ['action', 'dialogue', 'productVisibility']) {
+            if (!scene[key]) continue;
+            const result = sanitizeClaimText(scene[key], product, brief);
+            if (result.removed.length) {
+                scene[key] = result.text;
+                issues.push({ sceneId: scene.id, field: key, removed: result.removed });
+            }
+        }
+        const instructions = String(product.usageInstructions || '');
+        if (instructions && scene.action) {
+            const actionVerb = scene.action.match(USAGE_VERB_RE);
+            if (actionVerb) {
+                const root = actionVerb[0].toLowerCase().slice(0, 3);
+                if (!instructions.toLowerCase().includes(root)) {
+                    scene.needsConfirmation = true;
+                    issues.push({ sceneId: scene.id, issue: 'usage_unverified', verb: actionVerb[0] });
+                }
+            }
+        }
+        if (scene.dialogue && countWords(scene.dialogue) > dialogueWordBudget(scene.duration)) {
+            scene.dialogue = fitDialogueToBudget(scene.dialogue, scene.duration);
+            issues.push({ sceneId: scene.id, issue: 'dialogue_trimmed' });
+        }
+    });
+    return { scenes: list, issues };
+}
+
+// Deterministic script fallback built only from supplied facts. It never
+// claims personal experience ("I have been using…", "what I noticed"), never
+// invents availability/pricing/results/testimonials, and only uses a call to
+// action the user or the product record supplied.
 function deterministicScript(project) {
     const product = project.product || {};
     const brief = project.brief || {};
     const creator = project.creator || {};
+    const creatorFree = isCreatorFree(project);
     const name = product.name || 'this product';
-    const benefit = (product.keyBenefits && product.keyBenefits[0]) || '';
+    const benefit = (product.keyBenefits && product.keyBenefits[0])
+        || (product.keySellingPoints && product.keySellingPoints[0]) || '';
     const action = product.usageInstructions || (product.description ? product.description.slice(0, 140) : '');
     const message = brief.keyMessage || benefit || '';
-    const cta = brief.callToAction || ('Available now \u2014 ' + name + '.');
-    const hook = 'Okay, so I have been using ' + name +
-        (product.brand ? ' from ' + product.brand : '') + ' and I have to show you this.';
+    // A CTA is only ever the user's own words; the studio never invents
+    // availability or urgency.
+    const cta = brief.callToAction || '';
+    const hook = 'Here is a closer look at ' + name +
+        (product.brand ? ' by ' + product.brand : '') + '.';
     const main = message
         ? message
-        : 'Here is what I noticed: ' + (product.description || name) + '.';
+        : (product.description ? product.description : 'A closer look at ' + name + '.');
     const productInteraction = action
         ? action
-        : 'I am holding ' + name + ' so you can see it up close.';
+        : 'A clear look at ' + name + ' so the details are visible.';
     const closing = cta;
     return {
         hook,
@@ -258,7 +450,7 @@ function deterministicScript(project) {
         hookStyle: 'curiosity',
         approved: false,
         source: 'fallback',
-        creatorName: creator.name || ''
+        creatorName: creatorFree ? '' : (creator.name || '')
     };
 }
 
@@ -276,6 +468,23 @@ const SCENE_TEMPLATES = {
         { objective: 'Introduce the product', action: 'The creator brings the product into the scene and reacts.', productVisibility: 'product visible in hand', camera: { shotType: 'medium shot', movement: 'handheld', framing: 'creator and product' } },
         { objective: 'Make the point', action: 'The creator shares the key message about the product.', productVisibility: 'product visible', camera: { shotType: 'close-up', movement: 'slow push in', framing: 'creator and product' } },
         { objective: 'Call to action', action: 'The creator closes with the call to action.', productVisibility: 'product held up', camera: { shotType: 'medium close-up', movement: 'static', framing: 'creator centered' } }
+    ]
+};
+
+// Product-only templates: no on-camera person is invented. Used when the user
+// skips the creator (creator-free UGC).
+const PRODUCT_ONLY_TEMPLATES = {
+    'product-demo': [
+        { objective: 'Reveal the product', action: 'A clean, well-lit shot of the product resting on a surface.', productVisibility: 'product fills the frame', camera: { shotType: 'close-up', movement: 'slow push in', framing: 'product-focused' } },
+        { objective: 'Show the detail', action: 'The camera glides across the product, revealing texture and details.', productVisibility: 'product in tight detail', camera: { shotType: 'macro', movement: 'slow pan', framing: 'product texture' } },
+        { objective: 'Show it in use', action: 'The product is shown in its intended setting, being used.', productVisibility: 'product in active use', camera: { shotType: 'medium shot', movement: 'handheld', framing: 'product and setting' } },
+        { objective: 'Close on the product', action: 'A final hero shot of the product.', productVisibility: 'product held up', camera: { shotType: 'medium close-up', movement: 'static', framing: 'product centered' } }
+    ],
+    default: [
+        { objective: 'Reveal the product', action: 'The product sits in frame in a natural, well-lit setting.', productVisibility: 'product visible', camera: { shotType: 'close-up', movement: 'slow push in', framing: 'product-focused' } },
+        { objective: 'Show the detail', action: 'A slow move across the product reveals its texture and finish.', productVisibility: 'product in detail', camera: { shotType: 'macro', movement: 'slow pan', framing: 'product detail' } },
+        { objective: 'Show it in context', action: 'The product is shown in the setting it belongs to.', productVisibility: 'product in context', camera: { shotType: 'medium shot', movement: 'handheld', framing: 'product and setting' } },
+        { objective: 'Hero shot', action: 'A final clean shot of the product.', productVisibility: 'product held up', camera: { shotType: 'medium close-up', movement: 'static', framing: 'product centered' } }
     ]
 };
 
@@ -321,7 +530,8 @@ function distributeDialogue(sentences, count) {
 function deterministicScenes(project) {
     const brief = project.brief || {};
     const duration = Number(brief.duration) > 0 ? Number(brief.duration) : 15;
-    const template = SCENE_TEMPLATES[brief.contentType] || SCENE_TEMPLATES.default;
+    const templates = isCreatorFree(project) ? PRODUCT_ONLY_TEMPLATES : SCENE_TEMPLATES;
+    const template = templates[brief.contentType] || templates.default;
     const count = sceneCountFor(duration);
     const durations = splitDuration(duration, count);
     const dialogueLines = project.script && project.script.fullText
@@ -351,23 +561,28 @@ function referenceConcept(project, scene) {
     const environment = project.environment || {};
     const brief = project.brief || {};
     const continuity = project.continuity || {};
+    const creatorFree = isCreatorFree(project);
     const lines = [];
     const appearanceLabel = appearanceLabelOf(creator);
     lines.push('UGC reference frame for scene ' + (scene.order || 1) + ': ' + String(scene.action || scene.objective || '').trim());
-    if (creator.identity) lines.push('Creator: ' + creator.identity + '.');
+    if (!creatorFree && creator.identity) lines.push('Creator: ' + creator.identity + '.');
     // The trait strings alone do not reliably render the demographic, so the
     // appearance category (e.g. "East Asian") is stated explicitly, mirroring
     // the Creative Playground's concept direction.
-    if (appearanceLabel) lines.push('Creator appearance category: ' + appearanceLabel + '.');
-    if (creator.appearance) lines.push('Creator facial appearance: ' + creator.appearance + '.');
-    if (creator.hair) lines.push('Creator hair: ' + creator.hair + '.');
-    if (outfit.outfit) lines.push('Outfit: ' + outfit.outfit + '.');
+    if (!creatorFree && appearanceLabel) lines.push('Creator appearance category: ' + appearanceLabel + '.');
+    if (!creatorFree && creator.appearance) lines.push('Creator facial appearance: ' + creator.appearance + '.');
+    if (!creatorFree && creator.hair) lines.push('Creator hair: ' + creator.hair + '.');
+    if (!creatorFree && outfit.outfit) lines.push('Outfit: ' + outfit.outfit + '.');
     if (environment.description || environment.label) {
         lines.push('Environment: ' + (environment.description || environment.label) + '.');
     }
     const productBits = [product.name, product.brand, product.category].filter(Boolean).join(', ');
     if (productBits) lines.push('Product on camera: ' + productBits + '.');
     if (product.description) lines.push('Product appearance: ' + product.description + '.');
+    const productRefs = Array.isArray(product.referenceImages) ? product.referenceImages : [];
+    if (productRefs.length) {
+        lines.push('Match the exact product appearance shown in the supplied product reference image(s).');
+    }
     const camera = scene.camera || {};
     const cameraText = [camera.shotType, camera.movement, camera.framing].filter(Boolean).join(', ');
     if (cameraText) lines.push('Camera: ' + cameraText + '.');
@@ -378,15 +593,16 @@ function referenceConcept(project, scene) {
     lines.push('Photorealistic, natural UGC phone-camera look, believable and unpolished. ' +
         'One frozen moment, not a collage or storyboard.');
     const constraints = [];
-    if (appearanceLabel) constraints.push('Character demographic appearance: ' + appearanceLabel);
-    if (continuity.creatorIdentity) constraints.push('Keep the exact same creator identity across every scene');
-    if (continuity.outfitState) constraints.push('Keep the exact same outfit across every scene');
+    if (!creatorFree && appearanceLabel) constraints.push('Character demographic appearance: ' + appearanceLabel);
+    if (!creatorFree && continuity.creatorIdentity) constraints.push('Keep the exact same creator identity across every scene');
+    if (!creatorFree && continuity.outfitState) constraints.push('Keep the exact same outfit across every scene');
     if (continuity.environmentState) constraints.push('Keep the same environment across every scene');
-    if (project.creator && project.creator.characterId) {
+    if (!creatorFree && project.creator && project.creator.characterId) {
         constraints.push('Preserve the supplied character identity and facial features');
     }
     if (product.name) constraints.push('Show the exact product "' + product.name + '" as described');
-    return { concept: lines.join(' '), constraints };
+    if (productRefs.length) constraints.push('Match the supplied product reference image exactly');
+    return { concept: lines.join(' '), constraints, productReferences: productRefs.slice() };
 }
 
 // Strip any existing H3 dialogue wrapper / language tag / quotes from a scene's
@@ -446,17 +662,25 @@ function directorBrief(project) {
     const brief = project.brief || {};
     const language = dialogueLanguageFor(project);
     const scenes = Array.isArray(project.scenes) ? project.scenes : [];
+    const creatorFree = isCreatorFree(project);
     const subjectParts = [];
-    if (creator.identity) subjectParts.push(creator.identity);
-    else subjectParts.push('a relatable creator');
-    if (product.name) subjectParts.push('presenting ' + product.name);
+    if (creatorFree) {
+        // Product-only UGC: never invent an on-camera person.
+        subjectParts.push(product.name ? ('a product-focused shot of ' + product.name) : 'a product-focused shot');
+    } else if (creator.identity) {
+        subjectParts.push(creator.identity);
+        if (product.name) subjectParts.push('presenting ' + product.name);
+    } else {
+        subjectParts.push('a relatable creator');
+        if (product.name) subjectParts.push('presenting ' + product.name);
+    }
     const shotList = scenes.map((scene) => {
         const action = String(scene.action || scene.objective || '').trim();
         const camera = scene.camera || {};
         const cam = [camera.shotType, camera.movement].filter(Boolean).join(' ');
         let shot = (action + (cam ? ' (camera: ' + cam + ')' : '')).replace(/\s+$/, '').replace(/\.+$/, '');
         const dialogue = fitDialogueToBudget(normalizeDialogue(scene.dialogue), scene.duration);
-        if (dialogue) {
+        if (dialogue && !creatorFree) {
             // The creator speaks on camera, so the line keeps a stable (S1) ID and
             // an H3 <d> wrapper. The explicit language tag stops H3 from inventing
             // speech in its dominant language. This is what makes H3 render
@@ -470,17 +694,23 @@ function directorBrief(project) {
     }).filter(Boolean);
     const appearanceLabel = appearanceLabelOf(creator);
     const details = [];
-    if (appearanceLabel) details.push('creator appearance category: ' + appearanceLabel);
+    if (!creatorFree && appearanceLabel) details.push('creator appearance category: ' + appearanceLabel);
     if (product.brand) details.push('brand: ' + product.brand);
     if (product.keyBenefits && product.keyBenefits.length) details.push('benefits: ' + product.keyBenefits.join(', '));
-    if (outfit.outfit) details.push('outfit: ' + outfit.outfit);
-    if (shotList.some((shot) => shot.includes('<d>'))) {
+    if (!creatorFree && outfit.outfit) details.push('outfit: ' + outfit.outfit);
+    if (!creatorFree && shotList.some((shot) => shot.includes('<d>'))) {
         details.push('the creator speaks directly to camera in ' + language + ' with natural on-camera lip-sync');
     }
+    if (creatorFree) details.push('no on-camera person; the product is the subject');
     if (brief.callToAction) details.push('call to action: ' + brief.callToAction);
     if (product.claimsToAvoid && product.claimsToAvoid.length) {
         details.push('never claim: ' + product.claimsToAvoid.join(', '));
     }
+    const explicitConstraints = [
+        'This is authentic user-generated content, not a polished advertisement',
+        'Keep the product and environment consistent across every shot'
+    ];
+    if (!creatorFree) explicitConstraints.push('Keep the creator and outfit consistent across every shot');
     return {
         originalRequest: project.request || '',
         subject: subjectParts.join(' '),
@@ -495,10 +725,7 @@ function directorBrief(project) {
         aspectRatio: brief.aspectRatio || '9:16',
         shots: String(shotList.length || 1),
         shotList,
-        explicitConstraints: [
-            'This is authentic user-generated content, not a polished advertisement',
-            'Keep the creator, outfit, product and environment consistent across every shot'
-        ],
+        explicitConstraints,
         details: details.join('; '),
         creativeMode: 'none'
     };
@@ -510,10 +737,13 @@ module.exports = {
     SCENE_SYSTEM_PROMPT,
     EDIT_SYSTEM_PROMPT,
     GENERATION_VERB_RE,
+    DURATION_LIMITS,
+    validateDuration,
     parseDuration,
     parseAspectRatio,
     cleanObjective,
     heuristicBrief,
+    isCreatorFree,
     deterministicScript,
     deterministicScenes,
     scriptSentences,
@@ -528,6 +758,10 @@ module.exports = {
     dialogueWordBudget,
     fitDialogueToBudget,
     enforceDialogueBudgets,
+    findUnsupportedClaims,
+    sanitizeClaimText,
+    validateScript,
+    validateScenes,
     referenceConcept,
     directorBrief
 };

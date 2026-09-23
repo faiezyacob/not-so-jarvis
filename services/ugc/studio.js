@@ -45,9 +45,11 @@ const STAGES = Object.freeze({
 const ACTIONS = Object.freeze({
     SELECT_PRODUCT: 'select_product',
     CREATE_PRODUCT: 'create_product',
+    DELETE_PRODUCT: 'delete_product',
     SELECT_CREATOR: 'select_creator',
     CREATE_CREATOR: 'create_creator',
     RANDOM_CREATOR: 'random_creator',
+    SKIP_CREATOR: 'skip_creator',
     SELECT_OUTFIT: 'select_outfit',
     SELECT_ENVIRONMENT: 'select_environment',
     SELECT_CONTENT_TYPE: 'select_content_type',
@@ -68,9 +70,11 @@ const ACTIONS = Object.freeze({
     GENERATE_REFERENCES: 'generate_references',
     REGENERATE_REFERENCES: 'regenerate_references',
     REGENERATE_REFERENCE: 'regenerate_reference',
+    RETRY_FAILED: 'retry_failed',
     EDIT_DIRECTION: 'edit_direction',
     APPROVE_REFERENCES: 'approve_references',
     CONTINUE_DIRECTOR: 'continue_director',
+    CONFIRM_DURATION: 'confirm_duration',
     SAVE_DRAFT: 'save_draft',
     EXIT: 'exit',
     RESUME: 'resume',
@@ -79,6 +83,134 @@ const ACTIONS = Object.freeze({
 });
 
 const MARKER_RE = /\[\[ugc:(\{[^\n]*?\})\]\]/g;
+
+// The canonical brief schema. Every field here must survive extraction,
+// normalization, save/reload and regeneration — no step may drop one.
+const BRIEF_FIELDS = Object.freeze([
+    'objective', 'productName', 'brand', 'productCategory', 'contentType', 'platform',
+    'duration', 'aspectRatio', 'targetAudience', 'tone', 'keyMessage', 'callToAction',
+    'environment', 'dialogueLanguage', 'creatorDescription', 'additionalInstructions'
+]);
+
+// --- Action / stage validation ------------------------------------------------
+//
+// The server must never trust the UI to enforce workflow order. Every action is
+// validated against the project's current stage (and status) before it runs.
+const SETUP_STAGES = ['product_selection', 'creator_selection', 'creative_direction'];
+const SCRIPT_STAGES = ['script_review'];
+const SCRIPT_OR_SCENE_STAGES = ['script_review', 'scene_review'];
+const SCENE_STAGES = ['scene_review', 'reference_generation', 'reference_approval'];
+const REFERENCE_STAGES = ['reference_generation', 'reference_approval'];
+
+const ACTION_RULES = Object.freeze({
+    [ACTIONS.SELECT_PRODUCT]: { stages: SETUP_STAGES.concat(['brief']) },
+    [ACTIONS.CREATE_PRODUCT]: { stages: SETUP_STAGES.concat(['brief']) },
+    [ACTIONS.DELETE_PRODUCT]: { stages: SETUP_STAGES.concat(['brief']) },
+    [ACTIONS.SELECT_CREATOR]: { stages: SETUP_STAGES.concat(['brief']) },
+    [ACTIONS.CREATE_CREATOR]: { stages: SETUP_STAGES.concat(['brief']) },
+    [ACTIONS.RANDOM_CREATOR]: { stages: SETUP_STAGES.concat(['brief']) },
+    [ACTIONS.SKIP_CREATOR]: { stages: SETUP_STAGES.concat(['brief']) },
+    [ACTIONS.SELECT_OUTFIT]: { stages: SETUP_STAGES.concat(['brief']) },
+    [ACTIONS.SELECT_ENVIRONMENT]: { stages: SETUP_STAGES.concat(['brief']) },
+    [ACTIONS.SELECT_CONTENT_TYPE]: { stages: SETUP_STAGES.concat(['brief']) },
+    [ACTIONS.EDIT_BRIEF]: { stages: ['brief'] },
+    [ACTIONS.REGENERATE_BRIEF]: { stages: ['brief'] },
+    [ACTIONS.APPROVE_BRIEF]: { stages: ['brief'] },
+    [ACTIONS.EDIT_SCRIPT]: { stages: SCRIPT_OR_SCENE_STAGES },
+    [ACTIONS.REGENERATE_SCRIPT]: { stages: SCRIPT_OR_SCENE_STAGES },
+    [ACTIONS.CHANGE_TONE]: { stages: SCRIPT_OR_SCENE_STAGES },
+    [ACTIONS.CHANGE_HOOK]: { stages: SCRIPT_OR_SCENE_STAGES },
+    [ACTIONS.APPROVE_SCRIPT]: { stages: SCRIPT_STAGES },
+    [ACTIONS.EDIT_SCENE]: { stages: SCENE_STAGES },
+    [ACTIONS.ADD_SCENE]: { stages: SCENE_STAGES },
+    [ACTIONS.DELETE_SCENE]: { stages: SCENE_STAGES },
+    [ACTIONS.MOVE_SCENE]: { stages: SCENE_STAGES },
+    [ACTIONS.REGENERATE_SCENE]: { stages: SCENE_STAGES },
+    [ACTIONS.APPROVE_SCENES]: { stages: ['scene_review'] },
+    [ACTIONS.GENERATE_REFERENCES]: { stages: REFERENCE_STAGES },
+    [ACTIONS.REGENERATE_REFERENCES]: { stages: REFERENCE_STAGES },
+    [ACTIONS.REGENERATE_REFERENCE]: { stages: REFERENCE_STAGES },
+    [ACTIONS.RETRY_FAILED]: { stages: REFERENCE_STAGES },
+    [ACTIONS.EDIT_DIRECTION]: { stages: REFERENCE_STAGES },
+    [ACTIONS.APPROVE_REFERENCES]: { stages: ['reference_approval'] },
+    [ACTIONS.CONTINUE_DIRECTOR]: { stages: ['reference_approval'] },
+    [ACTIONS.CONFIRM_DURATION]: { stages: ['reference_approval'] },
+    // Lifecycle actions are always available.
+    [ACTIONS.SAVE_DRAFT]: { stages: '*' },
+    [ACTIONS.EXIT]: { stages: '*' },
+    [ACTIONS.RESUME]: { stages: '*' },
+    [ACTIONS.DISCARD]: { stages: '*' },
+    [ACTIONS.VIEW_BRIEF]: { stages: '*' }
+});
+
+// Whether an action may run against the project's current state. Returns
+// { ok:true } or { ok:false, error }. Lifecycle actions always pass; everything
+// else is rejected on a completed project or a stage the action does not serve.
+function validateAction(project, type) {
+    if (!project) return { ok: false, error: 'There is no active UGC project.' };
+    const rule = ACTION_RULES[type];
+    if (!rule) return { ok: false, error: 'Unknown UGC Studio action.' };
+    if (rule.stages === '*') {
+        if (type === ACTIONS.RESUME && project.status !== STATUS.DRAFT) {
+            return { ok: false, error: 'This project is not a draft.' };
+        }
+        return { ok: true };
+    }
+    if (project.status === STATUS.COMPLETED) {
+        return { ok: false, error: 'This UGC production is already complete.' };
+    }
+    if (!rule.stages.includes(project.stage)) {
+        return {
+            ok: false,
+            error: 'That action is not available at the "' + project.stage + '" stage.'
+        };
+    }
+    return { ok: true };
+}
+
+// --- Reference plan fingerprint -----------------------------------------------
+//
+// Every reference frame is stamped with a fingerprint of the visual plan that
+// produced it. Any visual change (scene, script dialogue, brief duration,
+// product, creator, outfit, environment, direction) changes the fingerprint, so
+// a frame generated for an older plan can never be mixed with a newer one or
+// approved.
+
+function hashString(value) {
+    let hash = 5381;
+    const text = String(value || '');
+    for (let i = 0; i < text.length; i++) {
+        hash = ((hash << 5) + hash) ^ text.charCodeAt(i);
+    }
+    return (hash >>> 0).toString(36);
+}
+
+function currentPlanHash(project) {
+    if (!project) return '';
+    const creator = project.creator || {};
+    const outfit = project.outfit || {};
+    const environment = project.environment || {};
+    const product = project.product || {};
+    const brief = project.brief || {};
+    const parts = [
+        'mode:' + (project.creatorMode || (project.creator ? 'person' : 'none')),
+        'creator:' + [creator.name, creator.identity, creator.appearance, creator.hair].join('|'),
+        'outfit:' + (outfit.outfit || outfit.label || ''),
+        'env:' + (environment.description || environment.label || ''),
+        'product:' + [product.name, product.brand, product.description].join('|'),
+        'aspect:' + (brief.aspectRatio || '9:16'),
+        'duration:' + (brief.duration || '')
+    ];
+    for (const scene of (project.scenes || [])) {
+        const camera = scene.camera || {};
+        parts.push([
+            scene.id, scene.order, scene.duration, scene.action,
+            camera.shotType, camera.movement, camera.framing,
+            scene.productVisibility, scene.environment, scene.outfit
+        ].join('~'));
+    }
+    return hashString(parts.join('\n'));
+}
 
 // --- Intent detection ---------------------------------------------------------
 
@@ -149,17 +281,23 @@ function hasOwn(obj, key) {
 
 function normalizeBrief(input) {
     const src = input && typeof input === 'object' ? input : {};
-    const duration = Number(src.duration);
+    const durationCheck = prompts.validateDuration(src.duration);
     return {
         objective: clean(src.objective),
+        productName: clean(src.productName, 120),
+        brand: clean(src.brand, 120),
+        productCategory: clean(src.productCategory, 120),
         contentType: clean(src.contentType, 60),
         platform: clean(src.platform, 60),
-        duration: Number.isFinite(duration) && duration > 0 ? Math.round(duration) : null,
+        duration: durationCheck.valid ? durationCheck.value : null,
         aspectRatio: clean(src.aspectRatio, 12) || '9:16',
         targetAudience: clean(src.targetAudience),
         tone: clean(src.tone, 200),
         keyMessage: clean(src.keyMessage),
         callToAction: clean(src.callToAction),
+        environment: clean(src.environment, 200),
+        dialogueLanguage: clean(src.dialogueLanguage, 40),
+        creatorDescription: clean(src.creatorDescription, 400),
         additionalInstructions: clean(src.additionalInstructions)
     };
 }
@@ -182,7 +320,9 @@ function normalizeScript(input) {
         hookStyle: clean(input.hookStyle, 60),
         approved: input.approved === true,
         source: clean(input.source, 30) || 'llm',
-        creatorName: clean(input.creatorName, 80)
+        creatorName: clean(input.creatorName, 80),
+        claims: Array.isArray(input.claims) ? input.claims.map((c) => clean(c, 40)).filter(Boolean) : [],
+        needsConfirmation: input.needsConfirmation === true
     };
 }
 
@@ -197,11 +337,11 @@ function normalizeCamera(input) {
 
 function normalizeScene(input, index) {
     const src = input && typeof input === 'object' ? input : {};
-    const duration = Number(src.duration);
+    const durationCheck = prompts.validateDuration(src.duration);
     return {
         id: clean(src.id, 40) || ('scn_' + (index + 1)),
         order: index + 1,
-        duration: Number.isFinite(duration) && duration > 0 ? Math.round(duration) : 3,
+        duration: durationCheck.valid ? durationCheck.value : 3,
         objective: clean(src.objective, 300),
         action: clean(src.action, 600),
         dialogue: clean(src.dialogue, 600),
@@ -211,7 +351,8 @@ function normalizeScene(input, index) {
         productVisibility: clean(src.productVisibility, 200),
         transition: clean(src.transition, 200),
         status: clean(src.status, 30) || 'planned',
-        referenceUrl: clean(src.referenceUrl, 500) || null
+        referenceUrl: clean(src.referenceUrl, 500) || null,
+        needsConfirmation: src.needsConfirmation === true
     };
 }
 
@@ -239,8 +380,11 @@ function normalizeProject(raw) {
         mode: 'ugc',
         status: Object.values(STATUS).includes(raw.status) ? raw.status : STATUS.ACTIVE,
         stage: Object.values(STAGES).includes(raw.stage) ? raw.stage : STAGES.BRIEF,
+        version: Number.isFinite(Number(raw.version)) ? Math.max(0, Math.round(Number(raw.version))) : 0,
         request: clean(raw.request),
         product: raw.product && typeof raw.product === 'object' ? raw.product : null,
+        creatorMode: raw.creatorMode === 'none' ? 'none' : (raw.creatorMode === 'person' ? 'person' : ''),
+        creatorSkipped: raw.creatorSkipped === true,
         creator: normalizeCreator(raw.creator),
         outfit: raw.outfit && typeof raw.outfit === 'object'
             ? {
@@ -277,7 +421,9 @@ function normalizeProject(raw) {
                 url: clean(r && r.url, 500),
                 filename: clean(r && r.filename, 300),
                 prompt: clean(r && r.prompt, 2000),
-                status: clean(r && r.status, 30) || 'ready'
+                status: clean(r && r.status, 30) || 'ready',
+                planHash: clean(r && r.planHash, 40),
+                error: clean(r && r.error, 300)
             }))
             : [],
         approvedReferences: Array.isArray(raw.approvedReferences)
@@ -285,10 +431,17 @@ function normalizeProject(raw) {
                 sceneId: clean(r && r.sceneId, 40),
                 order: Number(r && r.order) || 0,
                 url: clean(r && r.url, 500),
-                filename: clean(r && r.filename, 300)
+                filename: clean(r && r.filename, 300),
+                planHash: clean(r && r.planHash, 40)
             }))
             : [],
+        planHash: clean(raw.planHash, 40),
+        referencesVersion: Number.isFinite(Number(raw.referencesVersion))
+            ? Math.max(0, Math.round(Number(raw.referencesVersion))) : 0,
+        durationConfirmed: raw.durationConfirmed === true,
         directorProductionId: clean(raw.directorProductionId, 60) || null,
+        videoUrl: clean(raw.videoUrl, 500) || null,
+        lastError: clean(raw.lastError, 500),
         suggestedProductName: clean(raw.suggestedProductName, 120),
         createdAt: raw.createdAt || new Date().toISOString(),
         updatedAt: raw.updatedAt || new Date().toISOString()
@@ -300,9 +453,20 @@ function normalizeProject(raw) {
 
 function nextSetupStage(project) {
     if (!project.product || !project.product.name) return STAGES.PRODUCT_SELECTION;
-    if (!project.creator) return STAGES.CREATOR_SELECTION;
+    const creatorSettled = Boolean(project.creator) || project.creatorMode === 'none' || project.creatorSkipped;
+    if (!creatorSettled) return STAGES.CREATOR_SELECTION;
     if (!project.contentType || !project.outfit || !project.environment) return STAGES.CREATIVE_DIRECTION;
     return STAGES.BRIEF;
+}
+
+// Advance the setup stage only while the project is still in setup (or the
+// brief). A selection made mid-workflow (a natural edit of the outfit or
+// environment) must not reset the project back to the brief.
+function advanceSetupStage(project) {
+    if (SETUP_STAGES.includes(project.stage) || project.stage === STAGES.BRIEF) {
+        project.stage = nextSetupStage(project);
+    }
+    return project.stage;
 }
 
 function markActive(project) {
@@ -315,14 +479,16 @@ function isActive(project) {
 }
 
 function isOpen(project) {
-    return Boolean(project && (project.status === STATUS.ACTIVE
+    if (!project || project.status === STATUS.COMPLETED) return false;
+    return Boolean(project.status === STATUS.ACTIVE
         || project.stage === STAGES.REFERENCE_APPROVAL
         || project.stage === STAGES.SCENE_REVIEW
-        || project.stage === STAGES.SCRIPT_REVIEW));
+        || project.stage === STAGES.SCRIPT_REVIEW);
 }
 
 function save(project) {
     if (!project) return null;
+    project.version = (Number(project.version) || 0) + 1;
     if (project.scenes && project.scenes.length) {
         reconcileContinuity(project);
         // Never persist a line that cannot be spoken inside its shot's duration;
@@ -332,6 +498,56 @@ function save(project) {
     project.updatedAt = new Date().toISOString();
     state.setProject(project.conversationId, project);
     return project;
+}
+
+// Whether a card action carries an older project version than the live project
+// (a stale card the user has moved on from). Typed decisions carry no version.
+function isStaleAction(project, action) {
+    if (!project || !action) return false;
+    if (!Number.isFinite(Number(action.projectVersion))) return false;
+    return Number(action.projectVersion) !== Number(project.version);
+}
+
+// --- Reference integrity ------------------------------------------------------
+
+// Every scene's current reference status: pending (never generated), ready
+// (generated for the current plan), stale (generated for an older plan), failed,
+// or approved.
+function referenceStatus(project, ref) {
+    if (!ref) return 'pending';
+    const current = currentPlanHash(project);
+    if (ref.status === 'approved') return 'approved';
+    if (ref.status === 'failed') return 'failed';
+    if (ref.planHash && current && ref.planHash !== current) return 'stale';
+    return ref.status === 'ready' ? 'ready' : (ref.status || 'pending');
+}
+
+// Drop the approval whenever the visual plan changes, and mark every existing
+// frame stale so an old frame can never be approved or mixed with a new one.
+function invalidateReferences(project) {
+    if (!project) return project;
+    project.approvedReferences = [];
+    project.planHash = '';
+    project.referencesVersion = (Number(project.referencesVersion) || 0) + 1;
+    project.references = (project.references || []).map((r) =>
+        Object.assign({}, r, { status: r.status === 'failed' ? 'failed' : 'stale' }));
+    return project;
+}
+
+// True only when every scene has exactly one ready frame generated for the
+// current plan.
+function referencesComplete(project) {
+    const scenes = project.scenes || [];
+    if (!scenes.length) return false;
+    const current = currentPlanHash(project);
+    const byScene = new Map();
+    for (const ref of (project.references || [])) {
+        if (!ref || !ref.filename) continue;
+        if (ref.status !== 'ready' && ref.status !== 'approved') continue;
+        if (ref.planHash !== current) continue;
+        byScene.set(ref.sceneId, (byScene.get(ref.sceneId) || 0) + 1);
+    }
+    return scenes.every((s) => byScene.get(s.id) === 1);
 }
 
 // --- Continuity ---------------------------------------------------------------
@@ -362,13 +578,15 @@ function reconcileContinuity(project) {
 function mergeBrief(fallback, parsed) {
     const out = normalizeBrief(fallback);
     if (!parsed) return out;
-    const textKeys = ['objective', 'targetAudience', 'tone', 'keyMessage', 'callToAction', 'additionalInstructions'];
+    const textKeys = ['objective', 'targetAudience', 'tone', 'keyMessage', 'callToAction',
+        'additionalInstructions', 'productName', 'brand', 'productCategory', 'creatorDescription',
+        'dialogueLanguage'];
     for (const key of textKeys) {
         const value = clean(parsed[key]);
         if (value) out[key] = value;
     }
-    const duration = Number(parsed.duration);
-    if (Number.isFinite(duration) && duration > 0) out.duration = Math.round(duration);
+    const durationCheck = prompts.validateDuration(parsed.duration);
+    if (durationCheck.valid) out.duration = durationCheck.value;
     const aspect = clean(parsed.aspectRatio, 12);
     if (/^(?:9:16|16:9|1:1|4:5|3:4)$/.test(aspect)) out.aspectRatio = aspect;
     const contentType = catalog.getContentType(parsed.contentType);
@@ -381,11 +599,7 @@ function mergeBrief(fallback, parsed) {
     if (platform) out.platform = platform.id;
     const environment = catalog.getEnvironment(parsed.environment);
     if (environment) out.environment = environment.id;
-    // Keep the product name/brand on the returned brief for binding.
-    out.productName = clean(parsed.productName, 120) || out.productName || '';
-    out.brand = clean(parsed.brand, 120);
-    out.productCategory = clean(parsed.productCategory, 120);
-    out.creatorDescription = clean(parsed.creatorDescription, 400);
+    else if (parsed.environment) out.environment = clean(parsed.environment, 200);
     return out;
 }
 
@@ -424,21 +638,24 @@ function contentTypeFromBrief(brief) {
 
 async function createProject({ conversationId, message, provider, model, think }) {
     const brief = await extractBrief(message, { provider, model, think });
-    const existing = products.findByName(brief.productName);
+    // Only an exact product-name match binds automatically; a fuzzy match is
+    // surfaced as a suggestion so the wrong product is never silently selected.
+    const resolved = products.resolveByName(brief.productName);
     const project = normalizeProject({
         id: makeId('ugc'),
         conversationId,
         status: STATUS.ACTIVE,
         stage: STAGES.BRIEF,
         request: message,
-        product: existing ? products.snapshot(existing) : null,
+        product: resolved.product ? products.snapshot(resolved.product) : null,
         environment: environmentFromBrief(brief),
         contentType: contentTypeFromBrief(brief),
         brief: Object.assign({}, brief, { duration: brief.duration || 15 }),
+        suggestedProductName: (!resolved.product && brief.productName) ? brief.productName : '',
         continuity: {},
         createdAt: new Date().toISOString()
     });
-    project.stage = nextSetupStage(project);
+    advanceSetupStage(project);
     save(project);
     return project;
 }
@@ -476,7 +693,9 @@ function selectProduct(project, productId) {
     const product = products.get(productId);
     if (!product) return project;
     project.product = products.snapshot(product);
-    project.stage = nextSetupStage(project);
+    project.suggestedProductName = '';
+    invalidateReferences(project);
+    advanceSetupStage(project);
     return save(project);
 }
 
@@ -486,13 +705,25 @@ function createProduct(project, input) {
     if (!payload.name && project.product && project.product.name) payload.name = project.product.name;
     const product = products.create(payload);
     project.product = products.snapshot(product);
-    project.stage = nextSetupStage(project);
+    project.suggestedProductName = '';
+    invalidateReferences(project);
+    advanceSetupStage(project);
     return save(project);
+}
+
+// Remove a saved product from the library. The project keeps its own snapshot,
+// so a project already using the product is unaffected.
+function deleteProduct(project, productId) {
+    const removed = products.remove(productId);
+    if (!removed) return { ok: false, error: 'That product is no longer in the library.' };
+    return { ok: true, project };
 }
 
 function selectCreator(project, characterId) {
     const preset = characterPresets.get(characterId);
     if (!preset) return project;
+    project.creatorMode = 'person';
+    project.creatorSkipped = false;
     project.creator = {
         characterId: preset.id,
         source: 'character',
@@ -517,13 +748,16 @@ function selectCreator(project, characterId) {
             outfit: preset.outfit
         };
     }
-    project.stage = nextSetupStage(project);
+    invalidateReferences(project);
+    advanceSetupStage(project);
     return save(project);
 }
 
 function randomCreator(project, profile) {
     const normalized = characterGen.normalizeProfile(profile);
     const generated = characterGen.generateUniqueIdentity(Math.random, [], normalized);
+    project.creatorMode = 'person';
+    project.creatorSkipped = false;
     project.creator = {
         characterId: null,
         source: 'random',
@@ -536,7 +770,19 @@ function randomCreator(project, profile) {
         characterProfile: normalized,
         characterSeed: generated.seed
     };
-    project.stage = nextSetupStage(project);
+    invalidateReferences(project);
+    advanceSetupStage(project);
+    return save(project);
+}
+
+// Product-only UGC: the user explicitly skips the on-camera creator. No person
+// is invented later by the script, scene or Director prompts.
+function skipCreator(project) {
+    project.creator = null;
+    project.creatorMode = 'none';
+    project.creatorSkipped = true;
+    invalidateReferences(project);
+    advanceSetupStage(project);
     return save(project);
 }
 
@@ -546,7 +792,8 @@ function selectOutfit(project, packId, customText, rng) {
     const normalized = outfitPacks.normalizePackId(packId);
     if (!normalized) {
         project.outfit = null;
-        project.stage = nextSetupStage(project);
+        invalidateReferences(project);
+        advanceSetupStage(project);
         return save(project);
     }
     const custom = normalized === outfitPacks.CUSTOM_PACK_ID;
@@ -558,7 +805,8 @@ function selectOutfit(project, packId, customText, rng) {
             label: outfitPacks.CUSTOM_PACK_LABEL,
             outfit: text
         };
-        project.stage = nextSetupStage(project);
+        invalidateReferences(project);
+        advanceSetupStage(project);
         return save(project);
     }
     const pack = outfitPacks.getPack(normalized);
@@ -570,7 +818,8 @@ function selectOutfit(project, packId, customText, rng) {
         label: pack.label,
         outfit: composed.outfit || ''
     };
-    project.stage = nextSetupStage(project);
+    invalidateReferences(project);
+    advanceSetupStage(project);
     return save(project);
 }
 
@@ -584,7 +833,8 @@ function selectEnvironment(project, environmentId, customDescription) {
         if (!entry) return project;
         project.environment = { id: entry.id, label: entry.label, description: entry.description };
     }
-    project.stage = nextSetupStage(project);
+    invalidateReferences(project);
+    advanceSetupStage(project);
     return save(project);
 }
 
@@ -593,19 +843,25 @@ function selectContentType(project, id) {
     if (!entry) return project;
     project.contentType = { id: entry.id, label: entry.label };
     project.brief.contentType = entry.id;
-    project.stage = nextSetupStage(project);
+    invalidateReferences(project);
+    advanceSetupStage(project);
     return save(project);
 }
 
 function editBrief(project, patch) {
     const src = patch && typeof patch === 'object' ? patch : {};
     const next = Object.assign({}, project.brief);
-    for (const key of ['objective', 'targetAudience', 'tone', 'keyMessage', 'callToAction', 'additionalInstructions']) {
+    const previousDuration = Number(project.brief && project.brief.duration) || null;
+    const previousAspect = (project.brief && project.brief.aspectRatio) || '';
+    for (const key of ['objective', 'targetAudience', 'tone', 'keyMessage', 'callToAction',
+        'additionalInstructions', 'dialogueLanguage', 'creatorDescription']) {
         if (hasOwn(src, key)) next[key] = clean(src[key]);
     }
+    let durationInvalid = false;
     if (hasOwn(src, 'duration')) {
-        const duration = Number(src.duration);
-        if (Number.isFinite(duration) && duration > 0) next.duration = Math.round(duration);
+        const check = prompts.validateDuration(src.duration);
+        if (check.valid) next.duration = check.value;
+        else if (String(src.duration || '').trim()) durationInvalid = true;
     }
     if (hasOwn(src, 'aspectRatio')) {
         const aspect = clean(src.aspectRatio, 12);
@@ -623,31 +879,73 @@ function editBrief(project, patch) {
         }
     }
     project.brief = normalizeBrief(next);
-    if (project.scenes && project.scenes.length) {
-        fitDurations(project.scenes, project.brief.duration);
+    const nextDuration = Number(project.brief.duration) || null;
+    const durationChanged = Boolean(previousDuration && nextDuration && previousDuration !== nextDuration);
+    const aspectChanged = Boolean(previousAspect && project.brief.aspectRatio && previousAspect !== project.brief.aspectRatio);
+    if (durationChanged && project.scenes && project.scenes.length) {
+        resizeScenesForDuration(project, nextDuration);
     }
-    return save(project);
+    if (durationChanged || aspectChanged) {
+        // A new duration/aspect is a new plan: the previous cap confirmation no
+        // longer applies.
+        project.durationConfirmed = false;
+        invalidateReferences(project);
+    }
+    const result = save(project);
+    result.durationInvalid = durationInvalid;
+    return result;
+}
+
+// Recompute the scene plan when the total duration changes: grow or shrink the
+// scene count toward the size the duration implies, then fit the durations so
+// they always sum to the new total.
+function resizeScenesForDuration(project, duration) {
+    const scenes = project.scenes || [];
+    if (!scenes.length) return scenes;
+    const target = prompts.sceneCountFor(duration);
+    if (scenes.length < target) {
+        const template = prompts.deterministicScenes(project);
+        while (scenes.length < target) {
+            const base = template[Math.min(scenes.length, template.length - 1)];
+            scenes.push(normalizeScene(Object.assign({}, base), scenes.length));
+        }
+    } else if (scenes.length > target) {
+        // Remove from the middle so the hook and the closing shot survive.
+        while (scenes.length > target) scenes.splice(Math.floor(scenes.length / 2), 1);
+    }
+    scenes.forEach((s, i) => {
+        s.order = i + 1;
+        if (!s.id) s.id = 'scn_' + (i + 1);
+    });
+    fitDurations(scenes, duration);
+    project.scenes = scenes;
+    return scenes;
 }
 
 // --- Script -------------------------------------------------------------------
 
 // Re-derive the brief from the original request (used by "Regenerate Brief").
 async function regenerateBrief(project, { provider, model, think }) {
-    const brief = await extractBrief(project.request || '', { provider, model, think });
-    project.brief = normalizeBrief(Object.assign({}, project.brief, brief, {
-        duration: brief.duration || project.brief.duration || 15
-    }));
-    if (brief.productName && !(project.product && project.product.name)) {
-        const existing = products.findByName(brief.productName);
-        if (existing) project.product = products.snapshot(existing);
-        else project.suggestedProductName = brief.productName;
+    const extracted = await extractBrief(project.request || '', { provider, model, think });
+    // Merge over the existing brief so a field the re-extraction leaves empty
+    // (brand, productCategory, dialogueLanguage, ...) is never dropped.
+    project.brief = mergeBrief(
+        Object.assign({}, project.brief, { duration: extracted.duration || project.brief.duration || 15 }),
+        extracted
+    );
+    if (extracted.productName && !(project.product && project.product.name)) {
+        // Only an exact name binds; a fuzzy match is surfaced for confirmation.
+        const resolved = products.resolveByName(extracted.productName);
+        if (resolved.product) project.product = products.snapshot(resolved.product);
+        else project.suggestedProductName = extracted.productName;
     }
-    if (brief.environment && !project.environment) {
-        project.environment = environmentFromBrief(brief);
+    if (extracted.environment && !project.environment) {
+        project.environment = environmentFromBrief(extracted);
     }
-    if (brief.contentType && !project.contentType) {
-        project.contentType = contentTypeFromBrief(brief);
+    if (extracted.contentType && !project.contentType) {
+        project.contentType = contentTypeFromBrief(extracted);
     }
+    invalidateReferences(project);
     return save(project);
 }
 
@@ -678,6 +976,10 @@ async function generateScript(project, { provider, model, think, feedback, field
         if (parsed) {
             script = normalizeScript(parsed);
             script.source = 'llm';
+            // Never approve an unsupported claim: strip unsupported sentences and
+            // flag the script for the user's confirmation.
+            prompts.validateScript(project, script);
+            if (!script.fullText) script = null;
         }
     } catch (err) {
         console.warn('[ugc] script generation failed, using fallback:', err.message);
@@ -696,6 +998,11 @@ async function generateScript(project, { provider, model, think, feedback, field
     script.tone = brief.tone || script.tone || 'natural';
     script.creatorName = creator.name || script.creatorName || '';
     project.script = script;
+    // A new script invalidates any scene approval (the spoken content changed),
+    // but the reference frames themselves are visual and stay usable.
+    if (project.scenes && project.scenes.length) {
+        project.scenes.forEach((s) => { if (s.status === 'approved') s.status = 'planned'; });
+    }
     project.stage = STAGES.SCRIPT_REVIEW;
     return save(project);
 }
@@ -718,6 +1025,11 @@ function editScriptField(project, field, value) {
         project.script.fullText = [project.script.hook, project.script.main,
             project.script.productInteraction, project.script.closing].filter(Boolean).join(' ');
         project.script.approved = false;
+        project.script.needsConfirmation = false;
+        // The script changed, so any scene approval no longer applies.
+        if (project.scenes && project.scenes.length) {
+            project.scenes.forEach((s) => { if (s.status === 'approved') s.status = 'planned'; });
+        }
     }
     return save(project);
 }
@@ -760,6 +1072,9 @@ function fitDurations(scenes, total) {
 function normalizeSceneList(list, project) {
     const scenes = (Array.isArray(list) ? list : []).map(normalizeScene);
     scenes.forEach((scene, index) => { scene.id = scene.id || ('scn_' + (index + 1)); });
+    // Repair malformed/duplicate IDs, empty required fields, unsupported claims
+    // and over-long dialogue deterministically.
+    prompts.validateScenes(project, scenes);
     fitDurations(scenes, project.brief && project.brief.duration);
     return scenes;
 }
@@ -802,6 +1117,7 @@ async function generateScenes(project, { provider, model, think }) {
     }
     scenes.forEach((scene) => { scene.status = 'planned'; });
     project.scenes = scenes;
+    invalidateReferences(project);
     project.stage = STAGES.SCENE_REVIEW;
     return save(project);
 }
@@ -821,12 +1137,13 @@ function editScene(project, sceneId, patch) {
         scene.camera = Object.assign(normalizeCamera(scene.camera), normalizeCamera(src.camera));
     }
     if (hasOwn(src, 'duration')) {
-        const duration = Number(src.duration);
-        if (Number.isFinite(duration) && duration > 0) scene.duration = Math.round(duration);
+        const check = prompts.validateDuration(src.duration);
+        if (check.valid) scene.duration = check.value;
     }
     scene.status = 'planned';
     scene.referenceUrl = null;
     if (project.brief && project.brief.duration) fitDurations(project.scenes, project.brief.duration);
+    invalidateReferences(project);
     return save(project);
 }
 
@@ -839,6 +1156,7 @@ function addScene(project, afterId) {
     scenes.forEach((s, i) => { s.order = i + 1; });
     if (project.brief && project.brief.duration) fitDurations(scenes, project.brief.duration);
     project.scenes = scenes;
+    invalidateReferences(project);
     return save(project);
 }
 
@@ -850,6 +1168,7 @@ function deleteScene(project, sceneId) {
     scenes.forEach((s, i) => { s.order = i + 1; });
     if (project.brief && project.brief.duration) fitDurations(scenes, project.brief.duration);
     project.scenes = scenes;
+    invalidateReferences(project);
     return save(project);
 }
 
@@ -863,12 +1182,14 @@ function moveScene(project, sceneId, direction) {
     scenes.splice(target, 0, scene);
     scenes.forEach((s, i) => { s.order = i + 1; });
     project.scenes = scenes;
+    invalidateReferences(project);
     return save(project);
 }
 
 function approveScenes(project) {
     if (!project.scenes || !project.scenes.length) return project;
     project.scenes.forEach((s) => { s.status = 'approved'; });
+    invalidateReferences(project);
     project.stage = STAGES.REFERENCE_GENERATION;
     return save(project);
 }
@@ -917,21 +1238,75 @@ async function regenerateScene(project, sceneId, { provider, model, think, direc
     scene.transition = replacement.transition || scene.transition;
     scene.status = 'planned';
     scene.referenceUrl = null;
-    project.references = (project.references || []).filter((r) => r.sceneId !== sceneId);
+    prompts.validateScenes(project, [scene]);
+    // The scene's visuals changed, so every frame for the old plan is stale.
+    invalidateReferences(project);
     return save(project);
 }
 
 function setDirectorProduction(project, productionId) {
     if (!project) return null;
     project.directorProductionId = productionId || null;
+    project.lastError = '';
     project.stage = STAGES.VIDEO_GENERATION;
     return save(project);
+}
+
+// Confirm rendering a brief longer than the H3 ceiling at the 15-second maximum
+// instead of silently clamping it.
+function confirmDuration(project) {
+    if (!project) return project;
+    project.durationConfirmed = true;
+    return save(project);
+}
+
+// --- Lifecycle ----------------------------------------------------------------
+
+// The Director production finished: mark the linked UGC project complete.
+function completeProduction(project, detail) {
+    if (!project) return null;
+    project.status = STATUS.COMPLETED;
+    project.stage = STAGES.COMPLETED;
+    project.videoUrl = (detail && detail.url) || project.videoUrl || null;
+    project.lastError = '';
+    return save(project);
+}
+
+// The Director production failed or was cancelled: return the project to the
+// reference-approval checkpoint so the user can retry, keeping the frames.
+function failProduction(project, message) {
+    if (!project) return null;
+    project.lastError = clean(message, 500) || 'The Director production failed.';
+    if (project.stage === STAGES.VIDEO_GENERATION) project.stage = STAGES.REFERENCE_APPROVAL;
+    return save(project);
+}
+
+// Sync the linked UGC project when its Director production reaches a terminal
+// state. Matches by the production id recorded on the project, so no second
+// production system is introduced.
+function syncDirectorOutcome(conversationId, productionId, outcome, detail) {
+    if (!conversationId || !productionId) return null;
+    const project = getProject(conversationId);
+    if (!project || project.directorProductionId !== productionId) return null;
+    if (outcome === 'completed') return completeProduction(project, detail);
+    if (outcome === 'failed' || outcome === 'cancelled') {
+        return failProduction(project, detail && detail.message);
+    }
+    return null;
+}
+
+function findByProductionId(productionId) {
+    const key = String(productionId || '');
+    if (!key) return null;
+    return listProjects().find((p) => p.directorProductionId === key) || null;
 }
 
 // --- Reference images ---------------------------------------------------------
 
 // Build the structured request for one scene's reference frame. The concept is
-// direction only; imageGenerator.buildImagePrompt owns the final prompt.
+// direction only; imageGenerator.buildImagePrompt owns the final prompt. Product
+// reference images travel as `product_references` — a separate channel from the
+// scene frames, so the two can never be confused.
 function buildReferenceRequest(project, scene) {
     reconcileContinuity(project);
     const built = prompts.referenceConcept(project, scene);
@@ -940,7 +1315,8 @@ function buildReferenceRequest(project, scene) {
         user_prompt: built.concept,
         previous_prompt: '',
         creative_mode: 'light',
-        explicit_constraints: built.constraints
+        explicit_constraints: built.constraints,
+        product_references: (built.productReferences || []).slice()
     };
 }
 
@@ -957,7 +1333,31 @@ function recordReference(project, sceneId, result) {
         url: result.url,
         filename: result.filename,
         prompt: result.prompt || '',
-        status: 'ready'
+        status: 'ready',
+        planHash: currentPlanHash(project),
+        error: ''
+    });
+    list.sort((a, b) => a.order - b.order);
+    project.references = list;
+    project.planHash = currentPlanHash(project);
+    return save(project);
+}
+
+// Record a failed frame for one scene. The scene stays identifiable so the UI
+// can show exactly which frames failed and offer a retry-failed-only action.
+function recordReferenceFailure(project, sceneId, message) {
+    const scene = (project.scenes || []).find((s) => s.id === sceneId);
+    if (scene) scene.status = 'reference_failed';
+    const list = (project.references || []).filter((r) => r.sceneId !== sceneId);
+    list.push({
+        sceneId,
+        order: scene ? scene.order : list.length + 1,
+        url: '',
+        filename: '',
+        prompt: '',
+        status: 'failed',
+        planHash: currentPlanHash(project),
+        error: clean(message, 300)
     });
     list.sort((a, b) => a.order - b.order);
     project.references = list;
@@ -969,16 +1369,72 @@ function markReferencesReady(project) {
     return save(project);
 }
 
+// Approve the frames. Requires exactly one ready frame per approved scene,
+// generated for the current plan. Missing, stale, failed or duplicate frames
+// reject the approval with a clear reason.
 function approveReferences(project) {
-    project.approvedReferences = (project.references || []).map((r) => ({
-        sceneId: r.sceneId,
-        order: r.order,
-        url: r.url,
-        filename: r.filename
-    }));
-    project.references = (project.references || []).map((r) => Object.assign({}, r, { status: 'approved' }));
+    const scenes = project.scenes || [];
+    if (!scenes.length) return { ok: false, error: 'There is no approved scene plan.' };
+    const current = currentPlanHash(project);
+    const byScene = new Map();
+    for (const ref of (project.references || [])) {
+        if (!ref || !ref.filename) continue;
+        if (ref.status !== 'ready' && ref.status !== 'approved') continue;
+        if (ref.planHash !== current) continue;
+        if (!byScene.has(ref.sceneId)) byScene.set(ref.sceneId, []);
+        byScene.get(ref.sceneId).push(ref);
+    }
+    const missing = [];
+    const duplicate = [];
+    for (const scene of scenes) {
+        const refs = byScene.get(scene.id) || [];
+        if (refs.length === 0) missing.push(scene.order);
+        else if (refs.length > 1) duplicate.push(scene.order);
+    }
+    if (missing.length || duplicate.length) {
+        const parts = [];
+        if (missing.length) parts.push('missing a ready frame for scene(s) ' + missing.join(', '));
+        if (duplicate.length) parts.push('more than one frame for scene(s) ' + duplicate.join(', '));
+        return {
+            ok: false,
+            error: 'Reference approval needs exactly one current frame per scene (' +
+                parts.join('; ') + '). Regenerate the affected scenes.'
+        };
+    }
+    const approved = [];
+    for (const scene of scenes) {
+        const ref = byScene.get(scene.id)[0];
+        approved.push({
+            sceneId: ref.sceneId,
+            order: ref.order,
+            url: ref.url,
+            filename: ref.filename,
+            planHash: ref.planHash
+        });
+    }
+    approved.sort((a, b) => a.order - b.order);
+    project.approvedReferences = approved;
+    project.planHash = current;
+    const approvedIds = new Set(approved.map((r) => r.sceneId));
+    project.references = (project.references || []).map((r) =>
+        Object.assign({}, r, { status: approvedIds.has(r.sceneId) && r.planHash === current ? 'approved' : r.status }));
     project.stage = STAGES.VIDEO_GENERATION;
-    return save(project);
+    save(project);
+    return { ok: true };
+}
+
+// Scenes whose current frame is missing, failed, stale or otherwise not ready.
+function pendingReferenceSceneIds(project) {
+    const scenes = project.scenes || [];
+    const current = currentPlanHash(project);
+    const ready = new Map();
+    for (const ref of (project.references || [])) {
+        if (ref && ref.filename && (ref.status === 'ready' || ref.status === 'approved')
+            && ref.planHash === current) {
+            ready.set(ref.sceneId, true);
+        }
+    }
+    return scenes.filter((s) => !ready.get(s.id)).map((s) => s.id);
 }
 
 // All approved reference frames in scene order. The Director conditions the
@@ -988,7 +1444,8 @@ function approveReferences(project) {
 function resolveReferenceFrames(project) {
     const approved = project.approvedReferences && project.approvedReferences.length
         ? project.approvedReferences
-        : (project.references || []);
+        : (project.references || []).filter((r) => r && (r.status === 'ready' || r.status === 'approved')
+            && (!r.planHash || r.planHash === currentPlanHash(project)));
     return approved
         .filter((r) => r && r.filename)
         .slice()
@@ -1033,16 +1490,36 @@ const OUTFIT_VERB_RE = /\b(?:put|use|wear|wearing|dress|switch|change)\b/i;
 
 // Classify a typed follow-up for an active project. Conservative: only matches
 // clear approvals, reference/video requests, or edits that name a UGC artifact
-// (so an unrelated generation request still flows to the normal router).
+// (so an unrelated generation request still flows to the normal router). The
+// interpretation is stage-aware: a scene action at the reference stages targets
+// that scene's frame, earlier it targets the scene plan.
 function classifyMessage(message, project) {
     const text = String(message || '').trim();
     if (!text || !project) return null;
+    const stage = project.stage;
 
-    // A targeted scene regenerate and a duration change are edits even though
-    // they can contain "video" — check them before the continue cue.
-    const sceneMatch = text.match(/regenerate\s+(?:only\s+)?scene\s+(\d+)/i);
+    // Confirm rendering a brief longer than the H3 ceiling at 15 seconds.
+    const requested = Number(project.brief && project.brief.duration) || 0;
+    if (requested > prompts.DURATION_LIMITS.renderMax &&
+        /\b(?:continue|render|generate|proceed|do\s+it|go\s+ahead)\b[^.]*\b15\s*(?:seconds?|s)?\b/i.test(text)) {
+        return { action: 'confirm_duration' };
+    }
+
+    // Explicit stage approvals ("approve the scenes" / "approve the script").
+    if (/\bapprove\s+(?:the\s+)?(?:scene\s+plan|scenes?)\b/i.test(text)) return { action: 'approve_scenes' };
+    if (/\bapprove\s+(?:the\s+)?script\b/i.test(text)) return { action: 'approve_script' };
+    if (/\bapprove\s+(?:the\s+)?(?:references?|frames?|refs?)\b/i.test(text)) return { action: 'approve_references' };
+    if (/\bapprove\s+(?:the\s+)?brief\b/i.test(text)) return { action: 'approve_brief' };
+
+    // A targeted scene regenerate is stage-aware: at the reference stages it
+    // means that scene's frame, earlier it means the scene plan itself.
+    const sceneMatch = text.match(/\b(?:regenerate|redo|re-do|rework|rewrite)\s+(?:only\s+)?scene\s+(\d+)\b/i);
     if (sceneMatch) {
-        return { action: 'regenerate_reference', sceneNumber: Number(sceneMatch[1]) };
+        const referenceStage = stage === STAGES.REFERENCE_APPROVAL || stage === STAGES.REFERENCE_GENERATION;
+        return {
+            action: referenceStage ? 'regenerate_reference' : 'regenerate_scene',
+            sceneNumber: Number(sceneMatch[1])
+        };
     }
     if (DURATION_EDIT_RE.test(text)) return { action: 'edit', message: text };
 
@@ -1050,10 +1527,10 @@ function classifyMessage(message, project) {
     if (REFERENCE_REQUEST_RE.test(text)) return { action: 'generate_references' };
 
     if (APPROVE_RE.test(text)) {
-        if (project.stage === STAGES.SCRIPT_REVIEW) return { action: 'approve_script' };
-        if (project.stage === STAGES.SCENE_REVIEW) return { action: 'approve_scenes' };
-        if (project.stage === STAGES.REFERENCE_APPROVAL) return { action: 'approve_references' };
-        if (project.stage === STAGES.BRIEF || project.stage === STAGES.CREATIVE_DIRECTION) {
+        if (stage === STAGES.SCRIPT_REVIEW) return { action: 'approve_script' };
+        if (stage === STAGES.SCENE_REVIEW) return { action: 'approve_scenes' };
+        if (stage === STAGES.REFERENCE_APPROVAL) return { action: 'approve_references' };
+        if (stage === STAGES.BRIEF || stage === STAGES.CREATIVE_DIRECTION) {
             return { action: 'approve_brief' };
         }
         return null;
@@ -1075,14 +1552,18 @@ function classifyMessage(message, project) {
 async function applyNaturalEdit(project, message, { provider, model, think }) {
     const text = String(message || '').trim();
     const changed = [];
-    const lower = text.toLowerCase();
+    let visualChange = false;
 
-    // 1. Duration.
+    // 1. Duration (validated; never silently accepts an impossible value).
     const duration = prompts.parseDuration(text);
     if (duration && /\b(?:make|change|set|shorten|lengthen|video|duration|length|seconds?)\b/i.test(text)) {
-        project.brief.duration = duration;
-        if (project.scenes && project.scenes.length) fitDurations(project.scenes, duration);
-        changed.push('duration');
+        const check = prompts.validateDuration(duration);
+        if (check.valid) {
+            project.brief.duration = check.value;
+            if (project.scenes && project.scenes.length) resizeScenesForDuration(project, check.value);
+            changed.push('duration');
+            visualChange = true;
+        }
     }
 
     // 2. Remove the CTA.
@@ -1094,31 +1575,43 @@ async function applyNaturalEdit(project, message, { provider, model, think }) {
         changed.push('script');
     }
 
-    // 3. "Keep the same outfit in every scene".
+    // 3. "Make the hook shorter" / "shorten the hook".
+    if (/\b(?:shorten|short(?:er)?|trim)\b/i.test(text) && /\bhook\b/i.test(text) && project.script) {
+        project.script.hook = prompts.fitDialogueToBudget(project.script.hook, 3);
+        project.script.fullText = [project.script.hook, project.script.main,
+            project.script.productInteraction, project.script.closing].filter(Boolean).join(' ');
+        project.script.approved = false;
+        changed.push('script');
+    }
+
+    // 4. "Keep the same outfit in every scene".
     if (/\b(?:keep|use)\s+(?:the\s+)?same\s+outfit\b/i.test(text) || /\boutfit\s+in\s+every\s+scene\b/i.test(text)) {
         const outfitText = (project.outfit && project.outfit.outfit) || project.continuity.outfitState || '';
         if (outfitText) {
             project.continuity.outfitState = outfitText;
             (project.scenes || []).forEach((s) => { s.outfit = outfitText; });
             changed.push('continuity');
+            visualChange = true;
         }
     }
 
-    // 4. Outfit change (pack, or "put <name> in <pack>").
+    // 5. Outfit change (pack, or "put <name> in <pack>").
     const packId = outfitPacks.detectOutfitPackFromText(text);
     if (packId && /\b(?:outfit|wear|wearing|put|dress|wardrobe|clothes)\b/i.test(text)) {
         selectOutfit(project, packId, '', Math.random);
         changed.push('outfit');
+        visualChange = true;
     }
 
-    // 5. Environment change.
+    // 6. Environment change.
     const envId = catalog.detectEnvironment(text);
     if (envId) {
         selectEnvironment(project, envId, envId === 'custom' ? text : '');
         changed.push('environment');
+        visualChange = true;
     }
 
-    // 6. Creator change by name ("use Maya as the creator").
+    // 7. Creator change by name ("use Maya as the creator").
     const namedCreator = text.match(/\buse\s+([A-Z][\w'-]{1,30})\s+as\s+(?:the\s+)?creator\b/i)
         || text.match(/\b(?:creator|character)\s+([A-Z][\w'-]{1,30})\b/);
     if (namedCreator) {
@@ -1127,6 +1620,7 @@ async function applyNaturalEdit(project, message, { provider, model, think }) {
         if (preset) {
             selectCreator(project, preset.id);
             changed.push('creator');
+            visualChange = true;
         }
     }
     if (/\b(?:another|different|new)\s+creator\b/i.test(text) || /\bchange\s+(?:the\s+)?creator\b/i.test(text)) {
@@ -1134,7 +1628,7 @@ async function applyNaturalEdit(project, message, { provider, model, think }) {
         changed.push('creator_selection');
     }
 
-    // 7. Explicit scene-targeted camera/action edits.
+    // 8. Explicit scene-targeted camera/action edits.
     const sceneMatch = text.match(/scene\s+(\d+)/i);
     if (sceneMatch && project.scenes && project.scenes.length) {
         const scene = project.scenes.find((s) => s.order === Number(sceneMatch[1]));
@@ -1142,10 +1636,12 @@ async function applyNaturalEdit(project, message, { provider, model, think }) {
             if (/\bclose[\s-]?up\b/i.test(text)) {
                 scene.camera = Object.assign(normalizeCamera(scene.camera), { shotType: 'close-up', framing: 'product-focused' });
                 changed.push('scene');
+                visualChange = true;
             }
             if (/\bproduct\s+(?:shot|focus|close)\b/i.test(text)) {
                 scene.productVisibility = 'product fills the frame';
                 changed.push('scene');
+                visualChange = true;
             }
             if (/\bcamera\s+(?:movement|moves?)\b/i.test(text) && /\bcontinue|same\b/i.test(text)) {
                 const previous = project.scenes.find((s) => s.order === Number(sceneMatch[1]) - 1);
@@ -1154,19 +1650,30 @@ async function applyNaturalEdit(project, message, { provider, model, think }) {
                         movement: previous.camera.movement || 'slow push in'
                     });
                     changed.push('scene');
+                    visualChange = true;
                 }
             }
             scene.status = 'planned';
             scene.referenceUrl = null;
         }
+    } else if (/\bproduct\s+(?:shot|focus|close)\b/i.test(text) && project.scenes && project.scenes.length) {
+        // "Change the product shot" with no scene number: make the product
+        // prominent across the plan.
+        project.scenes.forEach((s) => { s.productVisibility = 'product fills the frame'; s.status = 'planned'; });
+        changed.push('scenes');
+        visualChange = true;
     }
 
-    // 8. LLM fallback for anything else substantial (or a clearer rewrite).
+    // 9. LLM fallback for anything else substantial (or a clearer rewrite).
     if (!changed.length && EDIT_VERB_RE.test(text)) {
         const updated = await llmEditProject(project, text, { provider, model, think });
-        if (updated) changed.push(...updated);
+        if (updated) {
+            changed.push(...updated);
+            if (updated.includes('scenes') || updated.includes('brief')) visualChange = true;
+        }
     }
 
+    if (visualChange) invalidateReferences(project);
     reconcileContinuity(project);
     save(project);
     return { project, changed };
@@ -1201,12 +1708,16 @@ async function llmEditProject(project, message, { provider, model, think }) {
     if (hasOwn(parsed, 'script') && parsed.script) {
         const next = normalizeScript(parsed.script);
         next.approved = false;
+        prompts.validateScript(project, next);
         project.script = next;
         changed.push('script');
     }
     if (hasOwn(parsed, 'scenes') && Array.isArray(parsed.scenes) && parsed.scenes.length) {
         project.scenes = normalizeSceneList(parsed.scenes, project);
         changed.push('scenes');
+    }
+    if (changed.includes('scenes') || changed.includes('brief')) {
+        invalidateReferences(project);
     }
     return changed.length ? changed : null;
 }
@@ -1223,10 +1734,16 @@ function directorProductionInput(project) {
     const requested = Number(project.brief && project.brief.duration) > 0
         ? Number(project.brief.duration)
         : DIRECTOR_MAX_SECONDS;
-    const duration = Math.min(DIRECTOR_MAX_SECONDS, Math.max(5, requested));
+    const check = prompts.validateDuration(requested);
+    // Never silently clamp: the caller must explain the ceiling and ask the user
+    // to confirm before rendering a longer brief at the 15s maximum.
+    const durationCapped = check.valid ? check.capped : false;
+    const duration = Math.min(DIRECTOR_MAX_SECONDS, Math.max(1, requested));
     return {
         brief,
         duration,
+        requestedDuration: requested,
+        durationCapped,
         originalRequest: project.request || '',
         openingFrame: resolveOpeningFrame(project),
         references: resolveReferenceFrames(project)
@@ -1244,10 +1761,13 @@ function buildCard(project) {
         id: project.id,
         stage: project.stage,
         status: project.status,
+        version: project.version || 0,
         title: 'UGC Studio',
         request: project.request,
         product: project.product || null,
         creator: project.creator || null,
+        creatorMode: project.creatorMode || '',
+        creatorSkipped: project.creatorSkipped === true,
         outfit: project.outfit || null,
         environment: project.environment || null,
         contentType: project.contentType || null,
@@ -1266,13 +1786,23 @@ function buildCard(project) {
             productVisibility: s.productVisibility,
             transition: s.transition,
             status: s.status,
-            referenceUrl: s.referenceUrl
+            referenceUrl: s.referenceUrl,
+            needsConfirmation: s.needsConfirmation === true
         })),
         references: (project.references || []).map((r) => ({
-            sceneId: r.sceneId, order: r.order, url: r.url, prompt: r.prompt, status: r.status
+            sceneId: r.sceneId, order: r.order, url: r.url, prompt: r.prompt,
+            status: referenceStatus(project, r), error: r.error || ''
         })),
+        referencesComplete: referencesComplete(project),
         continuity: project.continuity,
         directorProductionId: project.directorProductionId,
+        videoUrl: project.videoUrl || null,
+        lastError: project.lastError || '',
+        durationCapped: (() => {
+            const check = prompts.validateDuration(project.brief && project.brief.duration);
+            return check.valid ? check.capped : false;
+        })(),
+        durationConfirmed: project.durationConfirmed === true,
         // The product name the brief extracted when it is not yet in the library,
         // so the product card can offer a one-click "Create <name>".
         suggestedProductName: project.suggestedProductName || ''
@@ -1335,6 +1865,7 @@ function normalizeAction(value) {
         if (value.script && typeof value.script === 'object') out.script = value.script;
         if (value.direction === 'up' || value.direction === 'down') out.moveDirection = value.direction;
         if (value.sceneNumber !== undefined) out.sceneNumber = Number(value.sceneNumber);
+        if (value.version !== undefined) out.projectVersion = Number(value.version);
         if (value.delete === true) out.delete = true;
     }
     return out;
@@ -1359,10 +1890,12 @@ module.exports = {
     nextSetupStage,
     selectProduct,
     createProduct,
+    deleteProduct,
     exitProject,
     resumeProject,
     selectCreator,
     randomCreator,
+    skipCreator,
     selectOutfit,
     selectEnvironment,
     selectContentType,
@@ -1374,16 +1907,30 @@ module.exports = {
     generateScenes,
     regenerateScene,
     setDirectorProduction,
+    confirmDuration,
+    completeProduction,
+    failProduction,
+    syncDirectorOutcome,
+    findByProductionId,
     editScene,
     addScene,
     deleteScene,
     moveScene,
     approveScenes,
     fitDurations,
+    resizeScenesForDuration,
     buildReferenceRequest,
     recordReference,
+    recordReferenceFailure,
     markReferencesReady,
     approveReferences,
+    referencesComplete,
+    pendingReferenceSceneIds,
+    referenceStatus,
+    currentPlanHash,
+    invalidateReferences,
+    validateAction,
+    isStaleAction,
     resolveOpeningFrame,
     reconcileContinuity,
     classifyMessage,
@@ -1392,6 +1939,9 @@ module.exports = {
     buildCard,
     renderContent,
     normalizeAction,
+    BRIEF_FIELDS,
+    ACTION_RULES,
+    DURATION_LIMITS: prompts.DURATION_LIMITS,
     // catalog re-exports for API/UI
     listContentTypes: () => catalog.CONTENT_TYPES.slice(),
     listEnvironments: () => catalog.ENVIRONMENTS.slice(),

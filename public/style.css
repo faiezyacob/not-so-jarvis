@@ -6339,6 +6339,17 @@ a.modal-btn {
     background: var(--accent-faint);
 }
 
+.ugc-list-row {
+    display: flex;
+    align-items: stretch;
+    gap: 6px;
+}
+
+.ugc-list-row .ugc-list-item {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
 .ugc-list-title {
     font-size: var(--fs-sm);
     font-weight: 600;
@@ -6569,6 +6580,22 @@ a.modal-btn {
     border-color: rgba(255, 92, 92, 0.5);
 }
 
+/* Icon-only delete button in the product list: a centred square that never
+   stretches to the full height of a tall product row. */
+.ugc-list-delete {
+    flex: 0 0 auto;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    gap: 0;
+    justify-content: center;
+    align-self: flex-start;
+}
+
+.ugc-list-delete .ugc-btn-label:empty {
+    display: none;
+}
+
 .ugc-scenes {
     display: flex;
     flex-direction: column;
@@ -6659,3 +6686,23 @@ a.modal-btn {
     height: 28px;
     justify-content: center;
 }
+
+.ugc-ref--failed,
+.ugc-ref--stale {
+    border-color: var(--accent-warn, #b07d3a);
+}
+
+.ugc-ref--pending {
+    opacity: 0.7;
+}
+
+.ugc-ref-error {
+    font-size: var(--fs-xs);
+    color: var(--text-dim);
+    line-height: 1.3;
+}
+
+.ugc-bar--complete .ugc-bar-dot {
+    background: var(--accent-success, #4a9d5f);
+}
+
