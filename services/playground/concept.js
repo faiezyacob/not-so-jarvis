@@ -377,6 +377,82 @@ function assembleConcept(input = {}) {
     return finalize(concept, theme);
 }
 
+// --- Attribute re-rolls -------------------------------------------------------
+//
+// A precise one-field re-roll keeps everything else exactly as it is: the
+// new value is drawn from the same theme pool the scenario was drawn from,
+// never clashing with the concept's theme.
+
+const REROLL_FIELD_POOLS = {
+    activity: 'activities',
+    environment: 'environments',
+    lighting: 'lighting',
+    camera: 'cameras',
+    composition: 'compositions',
+    mood: 'moods',
+    style: 'styles',
+    outfit: 'outfits'
+};
+
+const REROLLABLE_FIELDS = Object.keys(REROLL_FIELD_POOLS).concat(['scene', 'aspectRatio']);
+
+function poolList(theme, key) {
+    const list = theme && Array.isArray(theme[key]) ? theme[key] : [];
+    return list.filter((value) => typeof value === 'string' && value.trim());
+}
+
+// Pick a list entry other than the current one when the pool is big enough so
+// a re-roll is always visible; with one candidate the same value is kept.
+function pickDifferent(current, list, rng) {
+    const options = list.filter((value) => !current || String(value) !== String(current));
+    if (!options.length) return '';
+    const roll = typeof rng === 'function' ? rng() : Math.random();
+    return options[Math.floor(roll * options.length)] || options[0];
+}
+
+function rerollField(concept, theme, field, rng = Math.random) {
+    if (!concept || !theme) return concept;
+    const name = String(field || '').trim().toLowerCase();
+    if (!REROLLABLE_FIELDS.includes(name)) return concept;
+
+    // A user prompt owns the scene; only a locked/explicit outfit survives, so
+    // a scene-field re-roll on a user-prompted concept would contradict the
+    // prompt. Leave it untouched (the UI hides the dice on these rows anyway
+    // because the fields are blank).
+    const sceneField = name !== 'outfit' && name !== 'aspectRatio';
+    if (concept.userPrompt && sceneField) return concept;
+
+    if (name === 'aspectRatio') {
+        concept.aspectRatio = pickAspectRatio(theme, rng);
+        return finalize(concept, theme);
+    }
+    if (name === 'outfit') {
+        // No pack composed this clothing, so draw from the theme's flat outfit
+        // pool (the caller recomposes a pack-based outfit with applyOutfitPack).
+        const next = pickDifferent(concept.outfit, poolList(theme, 'outfits'), rng);
+        if (!next) return concept;
+        concept.outfit = next;
+        concept.outfitSignature = outfitSignature(next);
+        concept.outfitArchetype = '';
+        concept.outfitSilhouette = '';
+        concept.outfitComponents = null;
+        return finalize(concept, theme);
+    }
+    if (name === 'scene') {
+        const activity = pickDifferent(concept.activity, poolList(theme, 'activities'), rng);
+        const environment = pickDifferent(concept.environment, poolList(theme, 'environments'), rng);
+        if (concept.activity && !activity && !environment) return concept;
+        if (activity) concept.activity = activity;
+        if (environment) concept.environment = environment;
+        return finalize(concept, theme);
+    }
+    const poolKey = REROLL_FIELD_POOLS[name];
+    const next = pickDifferent(concept[name], poolList(theme, poolKey), rng);
+    if (!next) return concept;
+    concept[name] = next;
+    return finalize(concept, theme);
+}
+
 // Apply an explicit modification. Explicit fields win even over a lock (the
 // user asked for the change); untouched fields are preserved exactly.
 const CONCEPT_FIELDS = [
@@ -688,6 +764,8 @@ module.exports = {
     assembleConcept,
     applyChanges,
     applyOutfitPack,
+    rerollField,
+    REROLLABLE_FIELDS,
     resolveOutfitPack,
     interpretContextMessage,
     detectChanges,

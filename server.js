@@ -3237,10 +3237,23 @@ async function handlePlaygroundAction(req, res, ctx, action, rawMessage) {
                 res.end();
                 return;
             }
-            const interpreted = playground.classifyMessage(direction, session);
-            const payload = (interpreted && interpreted.action === 'modify')
-                ? interpreted
-                : { locks: {}, changes: { customDirection: direction }, reroll: false };
+            // Structured UI edits are already precise: a field re-roll (the
+            // card's per-attribute dice) or an explicit field change (inline
+            // edit). They bypass the free-text interpretation.
+            const isRerollField = String(action.rerollField || '').trim();
+            const uiChanges = (action.changes && typeof action.changes === 'object'
+                && Object.keys(action.changes).length) ? action.changes : null;
+            let payload;
+            if (isRerollField) {
+                payload = { locks: session.locks || {}, changes: {}, rerollField: isRerollField, reroll: false };
+            } else if (uiChanges) {
+                payload = { locks: session.locks || {}, changes: uiChanges, reroll: false };
+            } else {
+                const interpreted = playground.classifyMessage(direction, session);
+                payload = (interpreted && interpreted.action === 'modify')
+                    ? interpreted
+                    : { locks: {}, changes: { customDirection: direction }, reroll: false };
+            }
             // An explicit pack selection from the popover wins over interpretation.
             if (action.outfitPack !== undefined) payload.outfitPack = action.outfitPack;
             if (action.outfitPackCustom !== undefined) payload.outfitPackCustom = action.outfitPackCustom;

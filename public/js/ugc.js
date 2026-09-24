@@ -23,7 +23,9 @@ const UGCUI = (() => {
         user: '<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle>',
         box: '<path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"></path><polyline points="3.3 7 12 12 20.7 7"></polyline><line x1="12" y1="22" x2="12" y2="12"></line>',
         image: '<rect x="3" y="3" width="18" height="18" rx="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline>',
-        x: '<line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line>'
+        x: '<line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line>',
+        up: '<polyline points="18 15 12 9 6 15"></polyline>',
+        down: '<polyline points="6 9 12 15 18 9"></polyline>'
     };
 
     function iconSvg(name, size) {
@@ -45,6 +47,15 @@ const UGCUI = (() => {
         video_generation: 'Director handoff',
         completed: 'Complete'
     };
+
+    const STAGE_PHASES = [
+        { id: 'setup', label: 'Setup', stages: ['product_selection', 'creator_selection', 'creative_direction'] },
+        { id: 'brief', label: 'Brief', stages: ['brief'] },
+        { id: 'script', label: 'Script', stages: ['script_review'] },
+        { id: 'scenes', label: 'Scenes', stages: ['scene_review'] },
+        { id: 'references', label: 'References', stages: ['reference_generation', 'reference_approval'] },
+        { id: 'handoff', label: 'Render', stages: ['video_generation', 'completed'] }
+    ];
 
     function stageLabel(stage) {
         return STAGE_LABELS[stage] || 'UGC Studio';
@@ -83,6 +94,14 @@ const UGCUI = (() => {
 
     function lock(card) {
         if (!card) return;
+        card.classList.add('ugc-card--pending');
+        card.setAttribute('aria-busy', 'true');
+        if (!card.querySelector('.ugc-card-pending')) {
+            const status = el('div', 'ugc-card-pending', 'Updating your UGC plan...');
+            status.setAttribute('role', 'status');
+            const head = card.querySelector('.ugc-card-head');
+            if (head) head.after(status);
+        }
         card.querySelectorAll('button, input, select, textarea').forEach((b) => { b.disabled = true; });
     }
 
@@ -152,6 +171,25 @@ const UGCUI = (() => {
         const wrap = el('div', 'ugc-card-actions');
         buttons.forEach((b) => wrap.appendChild(b));
         return wrap;
+    }
+
+    function renderProgress(stage, container) {
+        const current = STAGE_PHASES.findIndex((phase) => phase.stages.includes(stage));
+        const progress = el('ol', 'ugc-progress');
+        progress.setAttribute('aria-label', 'UGC workflow progress');
+        STAGE_PHASES.forEach((phase, index) => {
+            const item = el('li', 'ugc-progress-step');
+            const complete = index < current || stage === 'completed';
+            if (complete) item.classList.add('ugc-progress-step--done');
+            if (index === current && stage !== 'completed') {
+                item.classList.add('ugc-progress-step--active');
+                item.setAttribute('aria-current', 'step');
+            }
+            item.appendChild(el('span', 'ugc-progress-marker', complete ? '\u2713' : String(index + 1)));
+            item.appendChild(el('span', 'ugc-progress-label', phase.label));
+            progress.appendChild(item);
+        });
+        container.appendChild(progress);
     }
 
     // --- Stage renderers ---
@@ -228,7 +266,7 @@ const UGCUI = (() => {
         }
 
         // Inline "new product" form.
-        const form = el('div', 'ugc-form');
+        const form = el('div', 'ugc-form ugc-form--product');
         form.appendChild(el('div', 'ugc-section-title', 'New product'));
         const name = input(suggested, 'Product name');
         const brand = input('', 'Brand');
@@ -478,7 +516,7 @@ const UGCUI = (() => {
 
     function renderBrief(card, container) {
         const brief = card.brief || {};
-        const form = el('div', 'ugc-form');
+        const form = el('div', 'ugc-form ugc-form--brief');
         const objective = textarea(brief.objective, 'What this video is for', 2);
         const audience = input(brief.targetAudience, 'Target audience');
         const tone = input(brief.tone, 'Tone (e.g. natural, upbeat)');
@@ -644,11 +682,11 @@ const UGCUI = (() => {
                     lock(container.closest('.ugc-card'));
                     send('Regenerate only scene ' + (index + 1), { type: 'regenerate_scene', projectId: card.id, sceneId: scene.id });
                 }),
-                button('Up', 'refresh', '', () => {
+                button('Up', 'up', '', () => {
                     lock(container.closest('.ugc-card'));
                     send('Move scene ' + (index + 1) + ' up', { type: 'move_scene', projectId: card.id, sceneId: scene.id, direction: 'up' });
                 }),
-                button('Down', 'refresh', '', () => {
+                button('Down', 'down', '', () => {
                     lock(container.closest('.ugc-card'));
                     send('Move scene ' + (index + 1) + ' down', { type: 'move_scene', projectId: card.id, sceneId: scene.id, direction: 'down' });
                 }),
@@ -691,7 +729,13 @@ const UGCUI = (() => {
                 img.src = ref.url;
                 img.alt = 'Scene ' + item.order;
                 img.loading = 'lazy';
-                tile.appendChild(img);
+                const preview = el('a', 'ugc-ref-preview');
+                preview.href = ref.url;
+                preview.target = '_blank';
+                preview.rel = 'noopener';
+                preview.title = 'Open reference image';
+                preview.appendChild(img);
+                tile.appendChild(preview);
             } else {
                 tile.appendChild(el('div', 'ugc-ref-missing', ref.status === 'failed' ? 'Failed' : 'No frame'));
             }
@@ -762,6 +806,8 @@ const UGCUI = (() => {
         head.appendChild(title);
         head.appendChild(stage);
         el2.appendChild(head);
+
+        renderProgress(card.stage, el2);
 
         renderSummary(card, el2);
 

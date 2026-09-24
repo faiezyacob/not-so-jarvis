@@ -2002,6 +2002,11 @@ em {
     box-shadow: var(--glow-focus);
 }
 
+.chat-input--playground-modify {
+    border-color: var(--border-focus);
+    box-shadow: var(--glow-focus);
+}
+
 .chat-send {
     width: 40px;
     height: 40px;
@@ -5588,8 +5593,10 @@ a.modal-btn {
     position: absolute;
     right: 24px;
     bottom: 70px;
-    width: 320px;
+    width: 360px;
     max-width: calc(100% - 48px);
+    max-height: min(720px, calc(100% - 84px));
+    overflow-y: auto;
     z-index: 41;
     padding: 12px;
     display: flex;
@@ -5612,6 +5619,45 @@ a.modal-btn {
     justify-content: space-between;
     gap: 8px;
     min-height: 18px;
+}
+
+.chat-playground-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 26px;
+    height: 26px;
+    margin: -4px -4px -4px 0;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--text-dim);
+    font-size: 20px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.chat-playground-close:hover {
+    border-color: var(--border-color);
+    background: var(--accent-faint);
+    color: var(--text-primary);
+}
+
+.playground-popup-status {
+    padding: 6px 8px;
+    border: 1px solid rgba(108, 255, 154, 0.2);
+    border-radius: 5px;
+    background: rgba(108, 255, 154, 0.06);
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    line-height: 1.35;
+}
+
+.playground-popup--loading .playground-submit {
+    opacity: 0.65;
 }
 
 .chat-playground-title {
@@ -5765,20 +5811,23 @@ a.modal-btn {
 }
 
 .playground-profile-grid {
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 6px;
 }
 
 .playground-profile-field {
     display: flex;
-    align-items: center;
-    gap: 8px;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 3px;
 }
 
 .playground-profile-field > span {
-    flex: 0 0 74px;
-    font-size: var(--fs-sm);
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
     color: var(--text-secondary);
 }
 
@@ -5788,10 +5837,10 @@ a.modal-btn {
 }
 
 .playground-outfit-packs {
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 4px;
-    max-height: 148px;
+    max-height: 190px;
     overflow-y: auto;
     padding-right: 2px;
 }
@@ -5950,6 +5999,21 @@ a.modal-btn {
     border-color: var(--border-color);
 }
 
+.playground-card--pending {
+    border-color: rgba(108, 255, 154, 0.38);
+}
+
+.playground-card-pending {
+    padding: 7px 9px;
+    border: 1px solid rgba(108, 255, 154, 0.2);
+    border-radius: 5px;
+    background: rgba(108, 255, 154, 0.06);
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    letter-spacing: 0.4px;
+}
+
 .playground-card-head {
     display: flex;
     align-items: center;
@@ -6022,6 +6086,11 @@ a.modal-btn {
     display: block;
 }
 
+.playground-face-img:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+}
+
 .playground-face-caption {
     font-size: var(--fs-xs, 0.72rem);
     color: var(--text-secondary);
@@ -6053,6 +6122,44 @@ a.modal-btn {
 .playground-detail-value {
     flex: 1 1 auto;
     color: var(--text-secondary);
+}
+
+.playground-detail-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+}
+
+.playground-detail:hover .playground-detail-actions,
+.playground-detail:focus-within .playground-detail-actions {
+    opacity: 1;
+}
+
+.playground-detail-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    border: none;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+.playground-detail-btn:hover {
+    background: var(--bg-hover, rgba(255, 255, 255, 0.08));
+    color: var(--text-primary);
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+.playground-detail-btn:focus-visible {
+    outline: 1px solid var(--border-color);
 }
 
 .playground-locks {
@@ -6255,6 +6362,21 @@ a.modal-btn {
     opacity: 0.66;
 }
 
+.ugc-card--pending {
+    border-color: rgba(108, 255, 154, 0.38);
+}
+
+.ugc-card-pending {
+    padding: 7px 9px;
+    border: 1px solid rgba(108, 255, 154, 0.2);
+    border-radius: 5px;
+    background: rgba(108, 255, 154, 0.06);
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    letter-spacing: 0.4px;
+}
+
 .ugc-card-head {
     display: flex;
     align-items: center;
@@ -6283,6 +6405,63 @@ a.modal-btn {
     letter-spacing: 0.5px;
     text-transform: uppercase;
     color: var(--text-dim);
+}
+
+.ugc-progress {
+    display: flex;
+    align-items: flex-start;
+    gap: 0;
+    margin: 0;
+    padding: 2px 0 6px;
+    list-style: none;
+    overflow-x: auto;
+}
+
+.ugc-progress-step {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 82px;
+    color: var(--text-dim);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    white-space: nowrap;
+}
+
+.ugc-progress-step:not(:last-child)::after {
+    content: '';
+    width: 18px;
+    height: 1px;
+    margin: 0 7px;
+    background: var(--border-color);
+}
+
+.ugc-progress-marker {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    border: 1px solid var(--border-color);
+    border-radius: 50%;
+    color: var(--text-dim);
+    font-size: 9px;
+}
+
+.ugc-progress-step--active {
+    color: var(--accent);
+}
+
+.ugc-progress-step--active .ugc-progress-marker,
+.ugc-progress-step--done .ugc-progress-marker {
+    border-color: rgba(108, 255, 154, 0.45);
+    background: rgba(108, 255, 154, 0.1);
+    color: var(--accent);
+}
+
+.ugc-progress-step--done {
+    color: var(--text-secondary);
 }
 
 .ugc-summary {
@@ -6394,6 +6573,24 @@ a.modal-btn {
     border: 1px solid var(--border-color);
     border-radius: 6px;
     background: rgba(0, 0, 0, 0.12);
+}
+
+.ugc-form--product,
+.ugc-form--brief {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.ugc-form--product > .ugc-section-title,
+.ugc-form--product > .ugc-card-actions,
+.ugc-form--product > .ugc-ref-uploads,
+.ugc-form--product > .ugc-field:nth-child(5),
+.ugc-form--product > .ugc-field:nth-child(6),
+.ugc-form--product > .ugc-field:nth-child(12),
+.ugc-form--brief > .ugc-field:nth-child(1),
+.ugc-form--brief > .ugc-field:nth-child(7),
+.ugc-form--brief > .ugc-card-actions {
+    grid-column: 1 / -1;
 }
 
 .ugc-field {
@@ -6685,6 +6882,16 @@ a.modal-btn {
     background: var(--bg-input);
 }
 
+.ugc-ref-preview {
+    display: block;
+    border-radius: 4px;
+    outline: none;
+}
+
+.ugc-ref-preview:focus-visible {
+    box-shadow: 0 0 0 2px var(--accent);
+}
+
 .ugc-ref-missing {
     width: 100%;
     aspect-ratio: 9 / 16;
@@ -6727,4 +6934,150 @@ a.modal-btn {
 
 .ugc-bar--complete .ugc-bar-dot {
     background: var(--accent-success, #4a9d5f);
+}
+
+@media (max-width: 700px) {
+    .chat-playground-popup {
+        left: 12px;
+        right: 12px;
+        bottom: 64px;
+        width: auto;
+        max-width: none;
+        max-height: calc(100% - 76px);
+        padding: 11px;
+    }
+
+    .chat-playground-head {
+        align-items: center;
+    }
+
+    .chat-playground-sub {
+        display: none;
+    }
+
+    .playground-profile-grid {
+        gap: 5px;
+    }
+
+    .playground-outfit-packs {
+        max-height: 170px;
+    }
+
+    .playground-locks-grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 6px 4px;
+    }
+
+    .playground-lock {
+        font-size: var(--fs-xs);
+    }
+
+    .playground-card-actions {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    }
+
+    .playground-card-actions .playground-btn {
+        justify-content: center;
+        min-height: 36px;
+    }
+
+    .playground-detail {
+        align-items: flex-start;
+    }
+
+    .playground-detail-label {
+        flex-basis: 82px;
+    }
+
+    .ugc-bar {
+        align-items: flex-start;
+        flex-wrap: wrap;
+        padding: 8px 12px;
+    }
+
+    .ugc-bar-stage {
+        width: 100%;
+        margin-left: 17px;
+        order: 3;
+    }
+
+    .ugc-bar-actions {
+        width: 100%;
+        margin-left: 17px;
+        overflow-x: auto;
+        padding-bottom: 2px;
+    }
+
+    .ugc-bar-btn,
+    .ugc-btn {
+        min-height: 36px;
+    }
+
+    .ugc-card {
+        padding: 11px;
+    }
+
+    .ugc-card-head {
+        align-items: flex-start;
+    }
+
+    .ugc-card-stage {
+        max-width: 46%;
+        text-align: right;
+        line-height: 1.3;
+    }
+
+    .ugc-progress-step {
+        min-width: 74px;
+    }
+
+    .ugc-progress-step:not(:last-child)::after {
+        width: 9px;
+        margin: 0 4px;
+    }
+
+    .ugc-form--product,
+    .ugc-form--brief {
+        grid-template-columns: 1fr;
+    }
+
+    .ugc-form--product > .ugc-section-title,
+    .ugc-form--product > .ugc-card-actions,
+    .ugc-form--product > .ugc-ref-uploads,
+    .ugc-form--product > .ugc-field:nth-child(5),
+    .ugc-form--product > .ugc-field:nth-child(6),
+    .ugc-form--product > .ugc-field:nth-child(12),
+    .ugc-form--brief > .ugc-field:nth-child(1),
+    .ugc-form--brief > .ugc-field:nth-child(7),
+    .ugc-form--brief > .ugc-card-actions {
+        grid-column: auto;
+    }
+
+    .ugc-card-actions {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(135px, 1fr));
+    }
+
+    .ugc-card-actions .ugc-btn {
+        justify-content: center;
+    }
+
+    .ugc-scenes {
+        gap: 8px;
+    }
+
+    .ugc-scene-head {
+        flex-wrap: wrap;
+        gap: 5px 8px;
+    }
+
+    .ugc-scene-obj {
+        flex-basis: 100%;
+        order: 3;
+    }
+
+    .ugc-refs {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
 }

@@ -370,6 +370,9 @@ function modify(session, action = {}) {
 
     const theme = themes.getTheme(session.themeId);
     const character = resolveCharacter(session.characterId);
+    // A precise one-field re-roll never re-runs the scenario roll; it is a
+    // surgical change to the current concept only.
+    const fieldReroll = String(action.rerollField || '').trim().toLowerCase();
     const reroll = Boolean(action.reroll || category || themeChanged || profileChanged);
     let concept;
     if (reroll) {
@@ -398,7 +401,9 @@ function modify(session, action = {}) {
     }
     // Recompose only when the pack actually changed or the scenario was
     // re-rolled — a scene-only tweak keeps the exact outfit (applyChanges).
-    if (effectivePack && (packProvided || reroll)) {
+    // An Outfit field re-roll recomposes from the same pack (never appends to
+    // the previous look); a locked outfit still wins.
+    if (effectivePack && (packProvided || reroll || fieldReroll === 'outfit')) {
         concept = conceptEngine.applyOutfitPack(concept, {
             packId: effectivePack,
             customText: effectiveCustom,
@@ -418,6 +423,16 @@ function modify(session, action = {}) {
         concept.outfitPack = '';
         concept.outfitPackLabel = '';
         concept.outfitPackCustom = '';
+    }
+    // A surgical field re-roll draws the new value from the same theme pool the
+    // scenario was drawn from. An Outfit re-roll with no pack falls through to
+    // the theme's flat outfit pool; other fields reroll directly.
+    if (fieldReroll && fieldReroll !== 'outfit' && !reroll) {
+        concept = conceptEngine.rerollField(concept, theme, fieldReroll, action.rng);
+    } else if (fieldReroll === 'outfit' && !effectivePack && !reroll && concept.outfit) {
+        // A user prompt owns the clothing too — never invent some when the
+        // prompt blanked it (rerollField is guarded downstream by this check).
+        concept = conceptEngine.rerollField(concept, theme, 'outfit', action.rng);
     }
     rememberOutfit(session, concept);
     session.locks = locks;
@@ -653,6 +668,8 @@ function normalizeAction(value) {
         if (value.locks) out.locks = value.locks;
         if (value.changes) out.changes = value.changes;
         if (value.reroll) out.reroll = true;
+        // A precise one-field re-roll (the concept card's per-attribute dice).
+        if (value.rerollField) out.rerollField = String(value.rerollField);
         // Outfit Pack selection (a pack id, or `custom` with a text override).
         if (typeof value.outfitPack === 'string') out.outfitPack = value.outfitPack;
         if (typeof value.outfitPackCustom === 'string') out.outfitPackCustom = value.outfitPackCustom;

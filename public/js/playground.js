@@ -65,6 +65,14 @@ const PlaygroundUI = (() => {
     }
 
     function detailRow(label, value) {
+        return buildDetailRow(label, value, null);
+    }
+
+    // Per-attribute controls: a dice re-rolls just this attribute (the new value
+    // is drawn from the same theme pool — no full re-roll gamble) and a pencil
+    // sets an explicit value. Both act on the concept card with the existing
+    // modify action, so the identity and the other locks are untouched.
+    function buildDetailRow(label, value, actions) {
         if (!value) return null;
         const row = document.createElement('div');
         row.className = 'playground-detail';
@@ -76,8 +84,41 @@ const PlaygroundUI = (() => {
         val.textContent = value;
         row.appendChild(key);
         row.appendChild(val);
+        if (actions) {
+            const wrap = document.createElement('span');
+            wrap.className = 'playground-detail-actions';
+            if (actions.rerollField) {
+                const dice = document.createElement('button');
+                dice.type = 'button';
+                dice.className = 'playground-detail-btn';
+                dice.title = 'Re-roll ' + label.toLowerCase();
+                dice.setAttribute('aria-label', 'Re-roll ' + label.toLowerCase());
+                dice.innerHTML = iconSvg('refresh', 12);
+                dice.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    onAction(dice, actions.card, 'attr_reroll', { field: actions.rerollField, label, value });
+                });
+                wrap.appendChild(dice);
+            }
+            if (actions.editField) {
+                const edit = document.createElement('button');
+                edit.type = 'button';
+                edit.className = 'playground-detail-btn';
+                edit.title = 'Set ' + label.toLowerCase() + '\u2026';
+                edit.setAttribute('aria-label', 'Set ' + label.toLowerCase());
+                edit.innerHTML = iconSvg('pencil', 12);
+                edit.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    onAction(edit, actions.card, 'attr_edit', { field: actions.editField || actions.rerollField, label, value });
+                });
+                wrap.appendChild(edit);
+            }
+            row.appendChild(wrap);
+        }
         return row;
     }
+
+    const EDITABLE_FIELDS = ['activity', 'environment', 'outfit', 'lighting', 'camera', 'composition', 'mood', 'style'];
 
     function lockChips(card) {
         const locks = card.locks || {};
@@ -148,6 +189,15 @@ const PlaygroundUI = (() => {
                     window.Gallery.openFromUrl(card.characterImage.url);
                 }
             });
+            img.tabIndex = 0;
+            img.setAttribute('role', 'button');
+            img.setAttribute('aria-label', 'Open character portrait');
+            img.addEventListener('keydown', (event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    img.click();
+                }
+            });
             figure.appendChild(img);
             const caption = document.createElement('figcaption');
             caption.className = 'playground-face-caption';
@@ -164,9 +214,13 @@ const PlaygroundUI = (() => {
         el.appendChild(section);
         const details = document.createElement('div');
         details.className = 'playground-details';
+        const bothScene = Boolean(c.activity && c.environment);
+        const outfitRerollable = Boolean(c.outfitPack && c.outfitPack !== 'custom');
         const rows = [
             detailRow('Prompt', c.userPrompt),
-            detailRow('Scene', c.activity && c.environment ? c.activity + ' — ' + c.environment : (c.activity || c.environment)),
+            buildDetailRow('Scene', bothScene ? (c.activity + ' \u2014 ' + c.environment) : '', { rerollField: 'scene', card })
+                || buildDetailRow('Activity', c.activity, { rerollField: 'activity', editField: 'activity', card })
+                || buildDetailRow('Environment', c.environment, { rerollField: 'environment', editField: 'environment', card }),
             detailRow('Character', card.character
                 ? card.character.name
                 : (card.characterName
@@ -174,15 +228,17 @@ const PlaygroundUI = (() => {
                     : (c.subject || 'No character'))),
             detailRow('Appearance', c.appearanceCategoryLabel),
             detailRow('Category', c.category),
-            detailRow('Activity', c.activity),
-            detailRow('Outfit', c.outfit),
             detailRow('Outfit pack', c.outfitPackLabel),
-            detailRow('Environment', c.environment),
-            detailRow('Lighting', c.lighting),
-            detailRow('Camera', c.camera),
-            detailRow('Composition', c.composition),
-            detailRow('Mood', c.mood),
-            detailRow('Style', c.style),
+            buildDetailRow('Outfit', c.outfit, {
+                rerollField: outfitRerollable ? 'outfit' : '',
+                editField: EDITABLE_FIELDS.includes('outfit') ? 'outfit' : '',
+                card
+            }),
+            buildDetailRow('Lighting', c.lighting, { rerollField: 'lighting', editField: 'lighting', card }),
+            buildDetailRow('Camera', c.camera, { rerollField: 'camera', editField: 'camera', card }),
+            buildDetailRow('Composition', c.composition, { rerollField: 'composition', editField: 'composition', card }),
+            buildDetailRow('Mood', c.mood, { rerollField: 'mood', editField: 'mood', card }),
+            buildDetailRow('Style', c.style, { rerollField: 'style', editField: 'style', card }),
             detailRow('Aspect ratio', c.aspectRatio)
         ].filter(Boolean);
         rows.forEach((row) => details.appendChild(row));
@@ -209,19 +265,66 @@ const PlaygroundUI = (() => {
         contentEl.appendChild(el);
     }
 
-    function onAction(button, card, type) {
-        const cardEl = button.closest('.playground-card');
+    function onAction(button, card, type, meta) {
+        const cardEl = button ? button.closest('.playground-card') : null;
         if (type === 'modify') {
+            // The composer is the editor: a typed follow-up to an open concept
+            // is classified by the server and routed back into the modify
+            // handler, so the user writes the direction where they can still
+            // read the concept — no modal breaks the flow.
+            const input = document.getElementById('chatInput');
+            if (input && !input.disabled) {
+                input.focus();
+                input.placeholder = 'Describe how the concept should change\u2026';
+                input.classList.add('chat-input--playground-modify');
+                if (typeof window !== 'undefined' && typeof window.scrollTo === 'function') {
+                    try { window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }); } catch (e) { window.scrollTo(0, document.body.scrollHeight); }
+                }
+                // The placeholder hint clears itself once the user has answered
+                // the prompt or after a pause, and asks again on the next click.
+                setTimeout(() => {
+                    const live = document.getElementById('chatInput');
+                    if (!live || live !== input || input.value.trim()) return;
+                    input.placeholder = 'Enter a command...';
+                    input.classList.remove('chat-input--playground-modify');
+                }, 12000);
+            }
+            return;
+        }
+        if (type === 'attr_reroll') {
+            const field = (meta && meta.field) || '';
+            const direction = 'Regenerate the ' + String(meta && meta.label || field).toLowerCase();
+            lock(cardEl);
+            send(direction, {
+                type: 'modify',
+                conceptId: card.id,
+                expectedRevision: card.revision,
+                rerollField: field,
+                direction
+            });
+            return;
+        }
+        if (type === 'attr_edit') {
+            const field = (meta && meta.field) || '';
+            const label = String(meta && meta.label || field).toLowerCase();
             Dialog.prompt({
-                title: 'Modify Concept',
-                message: 'Describe how the concept should change.',
-                placeholder: 'e.g. Keep the outfit but make it a beach scene.',
+                title: 'Set ' + label,
+                message: 'Replaces ' + label + ' on the concept. Everything else stays exactly as it is.',
+                value: meta && meta.value ? meta.value : '',
                 confirmText: 'Update Concept'
             }).then((text) => {
-                const direction = String(text === null || text === undefined ? '' : text).trim();
-                if (!direction) return;
+                const value = String(text === null || text === undefined ? '' : text).trim();
+                if (!value) return;
+                const changes = {};
+                changes[field] = value;
                 lock(cardEl);
-                send('Modify the creative concept', { type: 'modify', conceptId: card.id, direction });
+                send('Set the ' + label + ' to: ' + value, {
+                    type: 'modify',
+                    conceptId: card.id,
+                    expectedRevision: card.revision,
+                    changes,
+                    direction: 'Set the ' + label + ' to: ' + value
+                });
             });
             return;
         }
@@ -230,6 +333,7 @@ const PlaygroundUI = (() => {
             return;
         }
         lock(cardEl);
+        button.setAttribute('aria-label', 'Working: ' + button.textContent.trim());
         const labels = {
             generate: 'Generate an image from this concept',
             again: 'Surprise me again',
@@ -297,6 +401,16 @@ const PlaygroundUI = (() => {
 
     function lock(cardEl) {
         if (!cardEl) return;
+        cardEl.classList.add('playground-card--pending');
+        cardEl.setAttribute('aria-busy', 'true');
+        if (!cardEl.querySelector('.playground-card-pending')) {
+            const status = document.createElement('div');
+            status.className = 'playground-card-pending';
+            status.setAttribute('role', 'status');
+            status.textContent = 'Updating your concept...';
+            const head = cardEl.querySelector('.playground-card-head');
+            if (head) head.after(status);
+        }
         cardEl.querySelectorAll('button').forEach((b) => { b.disabled = true; });
     }
 
@@ -352,6 +466,8 @@ const PlaygroundUI = (() => {
     // attribute, so the popover tracks it alongside the character controls.
     let outfitPackChoice = '';
     let outfitCustomText = '';
+    let popupStatusEl = null;
+    let closeButtonEl = null;
 
     const SWATCHES = {
         white: '#f4f4f2', cream: '#f0e6d2', beige: '#e3d5bd', sand: '#e6d3a7',
@@ -646,18 +762,36 @@ const PlaygroundUI = (() => {
 
     async function refreshPopover() {
         if (!popupEl) return;
-        const themes = await loadThemes();
-        fillSelect(themeSelect, themes.map((t) => ({ value: t.id, label: t.label })), '');
-        await loadCharacters(true);
-        renderCharacterMenu();
-        const options = await loadProfileOptions();
-        fillSelect(appearanceSelect, options.appearance, '');
-        fillSelect(ageSelect, options.age, '');
-        fillSelect(genderSelect, options.gender, '');
-        await loadOutfitPacks();
-        renderOutfitPacks();
-        applyActiveConcept(await loadActiveConcept());
-        updateLockAvailability();
+        setPopupBusy(true, 'Loading options...');
+        try {
+            const themes = await loadThemes();
+            fillSelect(themeSelect, themes.map((t) => ({ value: t.id, label: t.label })), '');
+            await loadCharacters(true);
+            renderCharacterMenu();
+            const options = await loadProfileOptions();
+            fillSelect(appearanceSelect, options.appearance, '');
+            fillSelect(ageSelect, options.age, '');
+            fillSelect(genderSelect, options.gender, '');
+            await loadOutfitPacks();
+            renderOutfitPacks();
+            applyActiveConcept(await loadActiveConcept());
+            updateLockAvailability();
+            setPopupBusy(false);
+        } catch (e) {
+            setPopupBusy(false, 'Some options could not be loaded. You can still use the defaults.');
+        }
+    }
+
+    function setPopupBusy(busy, message) {
+        if (!popupEl) return;
+        popupEl.classList.toggle('playground-popup--loading', busy);
+        popupEl.setAttribute('aria-busy', busy ? 'true' : 'false');
+        const submitButton = document.getElementById('playgroundSurprise');
+        if (submitButton) submitButton.disabled = busy;
+        if (popupStatusEl) {
+            popupStatusEl.hidden = !message;
+            popupStatusEl.textContent = message || '';
+        }
     }
 
     async function loadActiveConcept() {
@@ -837,6 +971,8 @@ const PlaygroundUI = (() => {
         characterTrigger = document.getElementById('playgroundCharacterTrigger');
         characterValueEl = document.getElementById('playgroundCharacterValue');
         characterMenuEl = document.getElementById('playgroundCharacterMenu');
+        closeButtonEl = document.getElementById('playgroundClose');
+        popupStatusEl = document.getElementById('playgroundPopupStatus');
         appearanceSelect = document.getElementById('playgroundAppearance');
         ageSelect = document.getElementById('playgroundAge');
         genderSelect = document.getElementById('playgroundGender');
@@ -854,6 +990,7 @@ const PlaygroundUI = (() => {
             if (characterWrap && !characterWrap.contains(e.target)) closeCharacterMenu();
         });
         if (submitBtn) submitBtn.addEventListener('click', submit);
+        if (closeButtonEl) closeButtonEl.addEventListener('click', close);
         if (characterTrigger) characterTrigger.addEventListener('click', (e) => {
             e.stopPropagation();
             toggleCharacterMenu();

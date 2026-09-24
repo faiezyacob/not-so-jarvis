@@ -863,11 +863,13 @@
                 </div>
                 <div class="chat-lora-hint">Applies to every IMAGE / VIDEO generation, the same as the Settings stacks. Adding only works while ComfyUI is reachable.</div>
             </div>
-            <div class="chat-playground-popup" id="chatPlaygroundPopup" hidden>
+            <div class="chat-playground-popup" id="chatPlaygroundPopup" role="dialog" aria-modal="false" aria-labelledby="playgroundPopupTitle" aria-describedby="playgroundPopupHint" hidden>
                 <div class="chat-playground-head">
-                    <span class="chat-playground-title">CREATIVE PLAYGROUND</span>
+                    <span class="chat-playground-title" id="playgroundPopupTitle">CREATIVE PLAYGROUND</span>
                     <span class="chat-playground-sub">CHARACTER · SCENE · PROMPT</span>
+                    <button class="chat-playground-close" id="playgroundClose" type="button" aria-label="Close Creative Playground" title="Close">&times;</button>
                 </div>
+                <div class="playground-popup-status" id="playgroundPopupStatus" role="status" hidden>Loading options...</div>
                 <label class="settings-field-label" for="playgroundTheme">Theme</label>
                 <select class="settings-select" id="playgroundTheme"></select>
                 <div class="settings-field-label">Character</div>
@@ -927,7 +929,7 @@
                     </svg>
                     <span class="playground-submit-label">Surprise Me</span>
                 </button>
-                <div class="chat-playground-hint">Picks a character, theme and locked attributes, then proposes a concept. Pick a saved character and type your own prompt to render that character into your scene — nothing generates until you choose.</div>
+                <div class="chat-playground-hint" id="playgroundPopupHint">Picks a character, theme and locked attributes, then proposes a concept. Pick a saved character and type your own prompt to render that character into your scene. Nothing generates until you choose.</div>
             </div>
             <div class="chat-input-bar">
                 <input

@@ -747,6 +747,50 @@ test('modify applies a change while preserving locked attributes', () => {
     assert.equal(session.locks.environment, true);
 });
 
+test('rerollField draws a new value from the same theme pool, deterministically', () => {
+    const theme = themes.getTheme('cinematic-storytelling');
+    assert.ok(concept.REROLLABLE_FIELDS.includes('lighting'));
+    const conceptObj = concept.assembleConcept({ themeId: 'cinematic-storytelling', mode: 'none', rng: () => 0.1 });
+    const before = Object.assign({}, conceptObj);
+    const out = concept.rerollField(conceptObj, theme, 'lighting', () => 0);
+    assert.ok(out.lighting && out.lighting !== before.lighting);
+    // Everything else is untouched.
+    assert.equal(out.activity, before.activity);
+    assert.equal(out.environment, before.environment);
+    assert.equal(out.camera, before.camera);
+    assert.equal(out.mood, before.mood);
+    assert.equal(out.style, before.style);
+    // Same draw = same result.
+    const again = concept.rerollField(Object.assign({}, before), theme, 'lighting', () => 0);
+    assert.equal(again.lighting, out.lighting);
+});
+
+test('rerollField is surgical: unknown fields and one-option pools are no-ops', () => {
+    const theme = themes.getTheme('cinematic-storytelling');
+    const conceptObj = concept.assembleConcept({ themeId: 'cinematic-storytelling', rng: first });
+    assert.equal(concept.rerollField(conceptObj, theme, 'not-a-field', () => 0), conceptObj);
+    assert.equal(concept.rerollField(null, theme, 'lighting'), null);
+    // aspectRatio is always in the rerollable set and stays a valid ratio.
+    concept.rerollField(conceptObj, theme, 'aspectRatio', () => 0);
+    assert.ok(/^[0-9.]+:[0-9.]+$/.test(conceptObj.aspectRatio));
+});
+
+test('modify honours a per-field re-roll without re-rolling the scenario', () => {
+    const id = conversationId('field-reroll');
+    const session = playground.start({ conversationId: id, themeId: 'lifestyle-candid', mode: 'none', rng: first });
+    const before = session.concept;
+    const oldOutfit = before.outfit;
+    playground.modify(session, { rerollField: 'scene', rng: first });
+    assert.notEqual(session.revision, 1);
+    // The outfit is untouched by a scene re-roll, and the identity keeps its line.
+    assert.equal(session.concept.outfit, oldOutfit);
+    assert.equal(session.concept.subject, before.subject);
+    // Physics: the same centre-back reroll changes lighting only, never identity.
+    playground.modify(session, { rerollField: 'mood', rng: first });
+    assert.equal(session.concept.subject, before.subject);
+    assert.equal(session.concept.outfit, oldOutfit);
+});
+
 test('buildImageRequest feeds the existing prompt builder with direction and constraints', () => {
     const id = conversationId('request');
     const preset = characterPresets.create({ name: 'Iris', identity: 'a botanist with round glasses' });
