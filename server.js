@@ -3205,6 +3205,16 @@ async function dispatchUGCAction(req, res, ctx, project, action) {
             res.end();
             return;
         }
+        if (action.type === UGC_ACTION.NEW_PROJECT) {
+            // Clearing a finished project so a fresh one can start. The generated
+            // video stays in the gallery; only the studio project record is removed.
+            ugcStudio.removeProject(conversationId);
+            const text = 'UGC Studio \u2014 ready for a new project. Tell me the product and the kind of video you want to make.';
+            sseWrite(res, { chunk: text });
+            sseWrite(res, { done: true, fullReply: text });
+            res.end();
+            return;
+        }
 
         sseWrite(res, { error: 'Unknown UGC Studio action.' });
         res.end();

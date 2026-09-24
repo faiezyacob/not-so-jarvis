@@ -950,6 +950,10 @@ const UGCUI = (() => {
         barEl.hidden = false;
         const isDraft = project.status === 'draft';
         const isComplete = project.status === 'completed';
+        // The bar always reflects the live project, so its actions must carry the
+        // live version (a completed production advances the version after the last
+        // UGC card was rendered, which would otherwise look stale).
+        activeVersion = Number(project.version) || 0;
         barEl.classList.toggle('ugc-bar--draft', isDraft);
         barEl.classList.toggle('ugc-bar--complete', isComplete);
         barEl.innerHTML = '';
@@ -965,8 +969,15 @@ const UGCUI = (() => {
             actions.appendChild(barButton('Resume', () => send('Resume the UGC project', { type: 'resume', projectId: project.id })));
             actions.appendChild(barButton('Discard', () => send('Discard the UGC project', { type: 'discard', projectId: project.id }), 'danger'));
         } else if (isComplete) {
+            if (project.videoUrl) {
+                actions.appendChild(barButton('View video', () => {
+                    if (window.Gallery && typeof window.Gallery.openFromUrl === 'function') {
+                        window.Gallery.openFromUrl(project.videoUrl);
+                    }
+                }));
+            }
             actions.appendChild(barButton('View brief', () => send('Show the UGC brief', { type: 'view_brief', projectId: project.id })));
-            actions.appendChild(barButton('Discard', () => send('Discard the UGC project', { type: 'discard', projectId: project.id }), 'danger'));
+            actions.appendChild(barButton('New project', () => send('Start a new UGC project', { type: 'new_project', projectId: project.id })));
         } else {
             actions.appendChild(barButton('View brief', () => send('Show the UGC brief', { type: 'view_brief', projectId: project.id })));
             actions.appendChild(barButton('Save draft', () => send('Save the UGC project as a draft', { type: 'save_draft', projectId: project.id })));

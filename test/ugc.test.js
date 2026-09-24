@@ -723,6 +723,7 @@ test('validateAction rejects out-of-order and completed-stage actions', () => {
     project.status = studio.STATUS.COMPLETED;
     assert.equal(studio.validateAction(project, studio.ACTIONS.APPROVE_BRIEF).ok, false);
     assert.equal(studio.validateAction(project, studio.ACTIONS.DISCARD).ok, true);
+    assert.equal(studio.validateAction(project, studio.ACTIONS.NEW_PROJECT).ok, true);
     assert.equal(studio.validateAction(project, studio.ACTIONS.VIEW_BRIEF).ok, true);
 });
 

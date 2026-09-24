@@ -80,6 +80,7 @@ const ACTIONS = Object.freeze({
     EXIT: 'exit',
     RESUME: 'resume',
     DISCARD: 'discard',
+    NEW_PROJECT: 'new_project',
     VIEW_BRIEF: 'view_brief'
 });
 
@@ -141,6 +142,7 @@ const ACTION_RULES = Object.freeze({
     [ACTIONS.EXIT]: { stages: '*' },
     [ACTIONS.RESUME]: { stages: '*' },
     [ACTIONS.DISCARD]: { stages: '*' },
+    [ACTIONS.NEW_PROJECT]: { stages: '*' },
     [ACTIONS.VIEW_BRIEF]: { stages: '*' }
 });
 
