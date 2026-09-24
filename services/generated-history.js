@@ -146,7 +146,9 @@ function list() {
 function listPublic(sessionId) {
     ensureLoaded();
     const privateIds = new Set(conversationService.getPrivateConversationIds());
-    let rows = history;
+    // Internal/system media (e.g. character identity references) is kept out of
+    // the shared gallery; it belongs to its character package, not the user.
+    let rows = history.filter((e) => e.hidden !== true);
     if (sessionId) {
         rows = rows.filter((e) => e.sessionId === sessionId);
     }
@@ -160,7 +162,8 @@ function listPublic(sessionId) {
 function listRecent(limit, sessionId) {
     ensureLoaded();
     const count = typeof limit === 'number' ? limit : history.length;
-    const rows = sessionId ? history.filter((e) => e.sessionId === sessionId) : history;
+    let rows = history.filter((e) => e.hidden !== true);
+    if (sessionId) rows = rows.filter((e) => e.sessionId === sessionId);
     return rows.slice(0, count).map(publicMeta);
 }
 
@@ -259,6 +262,9 @@ function add(meta) {
         loras: Array.isArray(meta.loras) ? meta.loras : [],
         upscale: meta.upscale || null,
         video: meta.video || null,
+        // Internal media (character identity references) is excluded from the
+        // public gallery and the activity feed but still tracked for cleanup.
+        hidden: meta.hidden === true,
         createdAt
     };
     // Replace an existing entry with the same id (idempotent re-add).
@@ -266,7 +272,7 @@ function add(meta) {
     history.unshift(entry);
     saveHistory(history);
     thumbnail.schedule(entry.rawFilename);
-    recordActivity(entry);
+    if (!entry.hidden) recordActivity(entry);
     return publicMeta(entry);
 }
 
@@ -299,6 +305,31 @@ function lastPathSegment(str) {
     return idx === -1 ? decoded : decoded.slice(idx + 1);
 }
 
+// Delete generated media by raw filename (the base image + identity references
+// of a character). Removes the metadata record and the file. Unlike remove()
+// this is keyed by filename, for callers that store filenames rather than
+// history ids. Returns the number of entries removed.
+function removeByFilename(filename, sessionId) {
+    ensureLoaded();
+    const raw = path.basename(String(filename || '').split('?')[0]);
+    if (!raw) return 0;
+    let count = 0;
+    history = history.filter((entry) => {
+        const entryRaw = entry.rawFilename || lastPathSegment(entry.file);
+        if (!entryRaw || path.basename(entryRaw) !== raw) return true;
+        if (sessionId && entry.sessionId && entry.sessionId !== sessionId) return true;
+        thumbnail.remove(raw);
+        const abs = path.join(GENERATED_DIR, raw);
+        if (abs.startsWith(GENERATED_DIR) && fs.existsSync(abs)) {
+            try { fs.unlinkSync(abs); } catch (err) { /* ignore — record dropped below */ }
+        }
+        count += 1;
+        return false;
+    });
+    if (count) saveHistory(history);
+    return count;
+}
+
 module.exports = {
     GENERATED_DIR,
     HISTORY_PATH,
@@ -308,5 +339,6 @@ module.exports = {
     adoptLegacy,
     add,
     remove,
+    removeByFilename,
     makeId
 };

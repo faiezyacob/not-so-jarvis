@@ -33,7 +33,10 @@ const ACTIONS = {
     IDENTITY_START: 'identity_start',
     IDENTITY_REGENERATE: 'identity_regenerate',
     IDENTITY_APPROVE: 'identity_approve',
-    IDENTITY_SHEET_REGENERATE: 'identity_sheet_regenerate'
+    IDENTITY_SHEET_REGENERATE: 'identity_sheet_regenerate',
+    // Save the concept as a named character AND create its identity sheet in
+    // the same turn (the character preview becomes the approved base).
+    SAVE_CHARACTER: 'save_character'
 };
 
 const STATUS = {
@@ -718,6 +721,8 @@ function normalizeAction(value) {
         if (value.themeId) out.themeId = String(value.themeId);
         if (value.category) out.category = String(value.category);
         if (value.characterId) out.characterId = String(value.characterId);
+        // The character name supplied when saving a concept as a character.
+        if (typeof value.name === 'string' && value.name.trim()) out.name = value.name.trim();
         if (value.mode) out.mode = String(value.mode);
         if (value.locks) out.locks = value.locks;
         if (value.changes) out.changes = value.changes;

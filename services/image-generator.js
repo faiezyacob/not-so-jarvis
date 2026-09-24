@@ -2058,6 +2058,9 @@ async function generateImage(prompt, options = {}) {
             seed,
             width,
             height,
+            // A character identity reference is internal media: it is tracked
+            // for cleanup but never shown in the public gallery.
+            hidden: options.hidden === true,
             generationMs: Date.now() - startedAt
         });
 
@@ -2431,6 +2434,9 @@ async function editImage(sourceAbsPath, instruction, options = {}) {
             loras: activeLoras,
             width: width || dims.width,
             height: height || dims.height,
+            // A character identity reference is internal media: it is tracked
+            // for cleanup but never shown in the public gallery.
+            hidden: options.hidden === true,
             generationMs: Date.now() - startedAt,
             edit: {
                 source: path.basename(abs),

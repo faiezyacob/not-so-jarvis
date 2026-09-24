@@ -102,6 +102,46 @@ test('a session cannot delete another session\'s media', () => {
     assert.equal(generatedHistory.listPublic('sess-a').some((x) => x.id === target.id), false);
 });
 
+test('removeByFilename deletes media records and their files by filename', () => {
+    makeFile('char_base.png');
+    makeFile('char_ref.png');
+    generatedHistory.add({ file: '/generated/char_base.png', rawFilename: 'char_base.png', prompt: 'base' });
+    generatedHistory.add({ file: '/generated/char_ref.png', rawFilename: 'char_ref.png', prompt: 'ref' });
+
+    assert.equal(generatedHistory.removeByFilename('char_base.png'), 1);
+    assert.equal(generatedHistory.removeByFilename('char_ref.png'), 1);
+    // Unknown / already-removed filenames are a no-op.
+    assert.equal(generatedHistory.removeByFilename('char_base.png'), 0);
+    assert.equal(generatedHistory.removeByFilename(''), 0);
+    assert.equal(fs.existsSync(path.join(process.env.GENERATED_DIR, 'char_base.png')), false);
+    assert.equal(fs.existsSync(path.join(process.env.GENERATED_DIR, 'char_ref.png')), false);
+});
+
+test('hidden media is excluded from the public gallery but still tracked', () => {
+    makeFile('identity_ref.png');
+    const added = generatedHistory.add({
+        file: '/generated/identity_ref.png',
+        rawFilename: 'identity_ref.png',
+        prompt: 'identity reference',
+        hidden: true
+    });
+    assert.ok(added);
+    // Hidden from the gallery and the activity feed.
+    assert.equal(generatedHistory.listPublic().some((x) => x.prompt === 'identity reference'), false);
+    assert.equal(generatedHistory.listRecent(50).some((x) => x.prompt === 'identity reference'), false);
+    assert.equal(activityLog.list(50).some((e) => e.detail === 'identity reference'), false);
+    // Still tracked internally so it can be cleaned up by filename.
+    assert.equal(generatedHistory.list().some((x) => x.rawFilename === 'identity_ref.png'), true);
+    assert.equal(generatedHistory.removeByFilename('identity_ref.png'), 1);
+});
+
+test('removeByFilename respects an owning session', () => {
+    makeFile('owned.png');
+    generatedHistory.add({ file: '/generated/owned.png', rawFilename: 'owned.png', prompt: 'owned', sessionId: 'sess-a' });
+    assert.equal(generatedHistory.removeByFilename('owned.png', 'sess-b'), 0);
+    assert.equal(generatedHistory.removeByFilename('owned.png', 'sess-a'), 1);
+});
+
 test('activity entries carry their conversation id', () => {
     activityLog.record({ type: 'image', title: 'Image generated', conversationId: sessionA.id, file: '/generated/a1.png' });
     activityLog.record({ type: 'system', title: 'Server started' });

@@ -39,7 +39,7 @@ const H3_IMAGE_SIZES = H3_SIZE_SCALES;
 
 // --- Default H3 Video Settings ------------------------------------------------
 
-const H3_DEFAULT_STEPS = Number(process.env.H3_STEPS) || 20;
+const H3_DEFAULT_STEPS = Number(process.env.H3_STEPS) || 25;
 // H3 runs unguided (cfg 1) by default, which lets the graph use the lighter
 // BasicGuider. Raising it adds a negative-conditioning pass (CFGGuider).
 const H3_DEFAULT_CFG = Number(process.env.H3_CFG) || 1;

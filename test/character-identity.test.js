@@ -352,6 +352,31 @@ test('the preset store round-trips the identity sheet', () => {
     assert.equal(characterPresets.remove(character.id), true);
 });
 
+test('mediaFilenames lists the approved base image and every reference', () => {
+    const character = makeCharacter();
+    let sheet = identity.createSheet({
+        baseImage: { url: '/generated/base.png', filename: 'base.png' },
+        character
+    });
+    sheet = identity.recordReference(sheet, 'face_front', identity.CATEGORY.FACE, {
+        role: 'face_front', imageUrl: '/generated/f.png', imagePath: 'f.png'
+    });
+    sheet = identity.recordReference(sheet, 'full_body_front', identity.CATEGORY.FULL_BODY, {
+        role: 'full_body_front', imageUrl: '/generated/fb.png', imagePath: 'fb.png'
+    });
+    const names = identity.mediaFilenames(sheet);
+    assert.deepEqual(names.sort(), ['base.png', 'f.png', 'fb.png'].sort());
+});
+
+test('mediaFilenames de-duplicates a reference reused as the base', () => {
+    const character = makeCharacter();
+    let sheet = identity.createSheet({ baseImage: { filename: 'same.png' }, character });
+    sheet = identity.recordReference(sheet, 'face_front', identity.CATEGORY.FACE, {
+        role: 'face_front', imageUrl: '/generated/same.png', imagePath: 'same.png'
+    });
+    assert.deepEqual(identity.mediaFilenames(sheet), ['same.png']);
+});
+
 test('buildCard exposes the identity state without leaking paths', () => {
     const character = makeCharacter();
     let sheet = identity.createSheet({
@@ -369,6 +394,49 @@ test('buildCard exposes the identity state without leaking paths', () => {
     assert.equal(card.referenceCount, 1);
     assert.ok(!JSON.stringify(card).includes('tmp'), 'card must not leak absolute paths');
     assert.equal(card.metadata.eyeColor, 'hazel');
+});
+
+test('saving as a character creates the preset and its identity package', async () => {
+    resetCalls();
+    // A saved character created from a card preview: the preview becomes the
+    // approved base and the sheet is generated in the same flow.
+    const character = characterPresets.create({
+        name: 'Saved Character',
+        identityText: 'a 29-year-old woman',
+        identity: makeCharacter().identity,
+        provenance: { type: 'playground-identity' }
+    });
+    const preview = { url: '/generated/preview.png', filename: 'preview.png', width: 512, height: 512 };
+    let sheet = identity.createSheet({ baseImage: preview, character });
+    sheet = identity.applyBaseImage(sheet, {}, { approved: true });
+    sheet.status = identity.STATUS.APPROVED;
+    characterPresets.setIdentitySheet(character.id, sheet);
+    characterPresets.setPortrait(character.id, preview);
+
+    const result = await identity.generateSheet({
+        character,
+        sheet: characterPresets.getIdentitySheet(character.id),
+        generate: fakeGenerate,
+        resolveAbs: (n) => n
+    });
+    characterPresets.setIdentitySheet(character.id, result);
+
+    const stored = characterPresets.get(character.id);
+    assert.equal(stored.name, 'Saved Character');
+    assert.equal(characterPresets.getIdentitySheet(character.id).status, identity.STATUS.READY);
+    assert.ok(identity.allReferences(characterPresets.getIdentitySheet(character.id)).length >= 7);
+    // The approved base stays the card preview.
+    assert.equal(characterPresets.getIdentitySheet(character.id).baseImage.filename, 'preview.png');
+    assert.equal(characterPresets.getIdentitySheet(character.id).baseImage.approved, true);
+    characterPresets.remove(character.id);
+});
+
+test('save_character carries the chosen name through action normalization', () => {
+    const action = playground.normalizeAction({
+        type: 'save_character', conceptId: 'pg_x', expectedRevision: 2, name: '  Maya  '
+    });
+    assert.equal(action.type, 'save_character');
+    assert.equal(action.name, 'Maya');
 });
 
 test('playground concept cards carry an identity summary for a saved character', () => {

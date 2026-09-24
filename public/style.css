@@ -5601,7 +5601,6 @@ a.modal-btn {
     bottom: 70px;
     width: 360px;
     max-width: calc(100% - 48px);
-    max-height: min(720px, calc(100% - 84px));
     overflow-y: auto;
     z-index: 41;
     padding: 12px;
@@ -5620,14 +5619,19 @@ a.modal-btn {
 }
 
 .chat-playground-head {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 8px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+        "title close"
+        "sub close";
+    align-items: center;
+    column-gap: 8px;
+    row-gap: 2px;
     min-height: 18px;
 }
 
 .chat-playground-close {
+    grid-area: close;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -5667,18 +5671,29 @@ a.modal-btn {
 }
 
 .chat-playground-title {
+    grid-area: title;
+    min-width: 0;
     font-family: var(--font-mono);
     font-size: var(--fs-xs);
     font-weight: 600;
+    line-height: 1.3;
     letter-spacing: 2px;
     text-transform: uppercase;
     color: var(--accent);
 }
 
 .chat-playground-sub {
+    grid-area: sub;
+    min-width: 0;
     font-family: var(--font-mono);
     font-size: var(--fs-xs);
+    line-height: 1.3;
     color: var(--text-dim);
+    overflow-wrap: anywhere;
+}
+
+.chat-playground-popup .settings-select {
+    height: 34px;
 }
 
 .playground-character-select {
@@ -5691,7 +5706,8 @@ a.modal-btn {
     justify-content: space-between;
     gap: 8px;
     width: 100%;
-    padding: 7px 10px;
+    height: 34px;
+    padding: 0 10px;
     background: var(--bg-input);
     border: 1px solid var(--border-color);
     border-radius: 6px;
@@ -5906,6 +5922,7 @@ a.modal-btn {
 
 .playground-outfit-custom {
     width: 100%;
+    height: 34px;
 }
 
 .playground-prompt-input {
@@ -5972,13 +5989,6 @@ a.modal-btn {
 
 .playground-submit:active {
     transform: scale(0.98);
-}
-
-.chat-playground-hint {
-    font-family: var(--font-mono);
-    font-size: var(--fs-xs);
-    line-height: 1.4;
-    color: var(--text-dim);
 }
 
 .playground-card {
@@ -7131,6 +7141,30 @@ a.modal-btn {
 .identity-dot--ready { background: var(--accent); }
 .identity-dot--failed { background: #ff5c5c; }
 .identity-dot--pending { background: #ffc832; }
+
+.identity-info {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding: 10px 12px;
+    border: 1px solid rgba(108, 255, 154, 0.18);
+    border-radius: 6px;
+    background: rgba(108, 255, 154, 0.05);
+}
+
+.identity-info-title {
+    font-family: var(--font-mono);
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    letter-spacing: .4px;
+    color: var(--accent);
+}
+
+.identity-info-desc {
+    font-size: var(--fs-sm);
+    line-height: 1.45;
+    color: var(--text-secondary);
+}
 
 .identity-gate {
     display: flex;

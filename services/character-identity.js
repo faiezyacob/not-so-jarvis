@@ -445,6 +445,19 @@ function allReferences(sheet) {
     return Object.values(refs).reduce((acc, list) => acc.concat(list), []);
 }
 
+// Every generated media filename the package owns (the approved base image plus
+// every reference), de-duplicated. Used to clean up the character's files when
+// the character or its identity sheet is deleted.
+function mediaFilenames(sheet) {
+    const s = normalizeSheet(sheet);
+    const names = [];
+    if (s.baseImage && s.baseImage.filename) names.push(s.baseImage.filename);
+    for (const ref of allReferences(s)) {
+        if (ref.imagePath) names.push(ref.imagePath);
+    }
+    return Array.from(new Set(names.filter(Boolean).map((n) => String(n))));
+}
+
 // --- Reference selection for generation ---------------------------------------
 //
 // Pick the strongest relevant references for a request instead of attaching the
@@ -596,7 +609,10 @@ async function generateSheet(options = {}) {
                 references: dependencyPaths,
                 conversationId: options.conversationId,
                 label: 'identity reference',
-                kind: 'image_edit'
+                kind: 'image_edit',
+                // Identity references belong to the character package, not the
+                // shared gallery, so they are recorded as hidden media.
+                hidden: true
             });
             const filename = String(result.filename || basenameOf(result.url) || '');
             const ref = {
@@ -776,6 +792,7 @@ module.exports = {
     markReferenceProgress,
     completeSheet,
     allReferences,
+    mediaFilenames,
     // reference selection / prompts
     selectReferencesForRequest,
     inferRequestKind,

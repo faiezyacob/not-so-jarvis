@@ -241,35 +241,46 @@ const PlaygroundUI = (() => {
             return panel;
         }
 
-        // No identity yet: create one. The character preview already shown on
-        // the card becomes the approved base image, so this goes straight to
-        // generating the identity sheet (no redundant second step).
-        const createWrap = document.createElement('div');
-        createWrap.className = 'identity-actions';
-        const create = identityButton('Create Character Identity', 'identity_start', 'primary');
-        create.addEventListener('click', async () => {
-            const ok = typeof Dialog !== 'undefined' && Dialog.confirm
-                ? await Dialog.confirm({
-                    title: 'Create Character Identity',
-                    message: 'This character image becomes the approved base, and a reference sheet is generated for consistent reuse in future generations.',
-                    confirmText: 'Create Identity'
-                })
-                : true;
-            if (ok) sendIdentity(card, 'identity_start');
-        });
-        createWrap.appendChild(create);
+        // A legacy character that already has an identity sheet can rebuild it.
         if (identity && identity.hasLegacyBase) {
+            const createWrap = document.createElement('div');
+            createWrap.className = 'identity-actions';
+            const rebuild = identityButton('Rebuild Identity Sheet', 'identity_start', 'primary');
+            rebuild.addEventListener('click', async () => {
+                const ok = typeof Dialog !== 'undefined' && Dialog.confirm
+                    ? await Dialog.confirm({
+                        title: 'Rebuild Identity Sheet',
+                        message: 'This character has no identity sheet. Its existing image becomes the approved base and a reference sheet is generated.',
+                        confirmText: 'Rebuild'
+                    })
+                    : true;
+                if (ok) sendIdentity(card, 'identity_start');
+            });
+            createWrap.appendChild(rebuild);
             const note = document.createElement('span');
             note.className = 'identity-legacy-note';
             note.textContent = 'Basic Reference \u2014 built from the existing character image.';
             createWrap.appendChild(note);
-        } else {
-            const note = document.createElement('span');
-            note.className = 'identity-legacy-note';
-            note.textContent = 'Uses this character image as the approved base, then generates a reference sheet for consistent reuse.';
-            createWrap.appendChild(note);
+            panel.appendChild(createWrap);
+            return panel;
         }
-        panel.appendChild(createWrap);
+
+        // No identity yet: explain that saving as a character creates it. Saving
+        // the character runs the identity flow automatically, so there is no
+        // separate "create identity" step here.
+        const info = document.createElement('div');
+        info.className = 'identity-info';
+        const infoTitle = document.createElement('div');
+        infoTitle.className = 'identity-info-title';
+        infoTitle.textContent = 'Character Identity';
+        const infoDesc = document.createElement('div');
+        infoDesc.className = 'identity-info-desc';
+        infoDesc.textContent = 'Save this character to automatically create its identity reference sheet \u2014 multiple '
+            + 'consistent reference images (full body, face and detail views) used to keep this person recognizable in '
+            + 'future images and videos.';
+        info.appendChild(infoTitle);
+        info.appendChild(infoDesc);
+        panel.appendChild(info);
         return panel;
     }
 
@@ -499,53 +510,29 @@ const PlaygroundUI = (() => {
         send(labels[type] || type, { type, conceptId: card.id, expectedRevision: card.revision });
     }
 
+    // Saving a character now also creates its identity sheet: the character
+    // preview on the card becomes the approved base, and the reference sheet is
+    // generated in the same turn. The name is asked first, then the whole flow
+    // runs over the chat stream so progress is visible.
     async function saveAsCharacter(button, card) {
-        const c = card.concept || {};
         const suggested = card.characterName || card.title || 'Character';
         Dialog.prompt({
             title: 'Save as Character',
-            message: 'Name this character so it can be reused in future concepts.',
+            message: 'Name this character. On save, its identity reference sheet is created automatically from this image.',
             value: suggested,
-            confirmText: 'Save Character'
-        }).then(async (name) => {
+            confirmText: 'Save & Create Identity'
+        }).then((name) => {
             const clean = String(name === null || name === undefined ? '' : name).trim();
             if (!clean) return;
-            button.disabled = true;
-            try {
-                const res = await fetch('/api/characters', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        name: clean,
-                        identity: c.identity || c.subject || '',
-                        identityText: c.subject || '',
-                        identitySignature: c.identitySignature || '',
-                        characterIdentity: c.identity || null,
-                        appearance: c.appearance || '',
-                        hair: c.hair || '',
-                        outfit: c.outfit || '',
-                        style: c.style || '',
-                        appearanceCategory: c.appearanceCategory || '',
-                        appearanceCategoryLabel: c.appearanceCategoryLabel || '',
-                        // A character's wardrobe personality is saved with the
-                        // identity so the pack can be reused (and re-composed)
-                        // without regenerating the person.
-                        outfitPack: c.outfitPack || '',
-                        outfitPackCustom: c.outfitPackCustom || ''
-                    })
-                });
-                if (!res.ok) throw new Error('request failed');
-                if (typeof Dialog !== 'undefined' && Dialog.alert) {
-                    Dialog.alert({ title: 'Character saved', message: '"' + clean + '" is now available in the Surprise Me picker.' });
-                }
-                characterCache = null;
-            } catch (e) {
-                if (typeof Dialog !== 'undefined' && Dialog.alert) {
-                    Dialog.alert({ title: 'Could not save character', message: 'Please try again.' });
-                }
-            } finally {
-                button.disabled = false;
-            }
+            characterCache = null;
+            const cardEl = button ? button.closest('.playground-card') : null;
+            if (cardEl) lock(cardEl);
+            send('Save this character as "' + clean + '" and create its identity sheet', {
+                type: 'save_character',
+                conceptId: card.id,
+                expectedRevision: card.revision,
+                name: clean
+            });
         });
     }
 
@@ -893,7 +880,7 @@ const PlaygroundUI = (() => {
         if (typeof Dialog !== 'undefined' && Dialog.confirm) {
             confirmed = await Dialog.confirm({
                 title: 'Delete Character',
-                message: 'Delete "' + label + '" from your saved characters?',
+                message: 'Delete "' + label + '" from your saved characters? Its identity sheet and reference images are deleted too.',
                 confirmText: 'Delete',
                 danger: true
             });

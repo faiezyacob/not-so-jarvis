@@ -1044,8 +1044,24 @@ async function handleAPI(req, res, urlPath) {
         return true;
     }
     if (characterIdentityMatch && req.method === 'DELETE') {
-        const character = characterPresets.clearIdentitySheet(decodeURIComponent(characterIdentityMatch[1]));
-        json(res, character ? 200 : 404, character ? { ok: true } : { error: 'Character not found' });
+        const id = decodeURIComponent(characterIdentityMatch[1]);
+        const existing = characterPresets.get(id);
+        if (!existing) {
+            json(res, 404, { error: 'Character not found' });
+            return true;
+        }
+        // Remove the identity sheet's generated media (references). The approved
+        // base image and the character itself are kept — only the sheet is
+        // deleted, matching the "Delete Identity Sheet" wording in the UI.
+        const sheet = characterPresets.getIdentitySheet(id);
+        const media = sheet ? characterIdentity.mediaFilenames(sheet) : [];
+        const baseName = sheet && sheet.baseImage ? sheet.baseImage.filename : '';
+        characterPresets.clearIdentitySheet(id);
+        for (const name of media) {
+            if (baseName && name === baseName) continue;
+            generatedHistory.removeByFilename(name);
+        }
+        json(res, 200, { ok: true });
         return true;
     }
 
@@ -1095,11 +1111,29 @@ async function handleAPI(req, res, urlPath) {
         return true;
     }
 
-    // DELETE /api/characters/:id — remove a saved character preset.
+    // DELETE /api/characters/:id — remove a saved character preset and every
+    // file its Character Identity package owns (approved base + references).
     const characterDeleteMatch = urlPath.match(/^\/api\/characters\/([^/]+)$/);
     if (characterDeleteMatch && req.method === 'DELETE') {
         const id = decodeURIComponent(characterDeleteMatch[1]);
+        const character = characterPresets.get(id);
+        if (!character) {
+            json(res, 404, { ok: false });
+            return true;
+        }
+        // Collect the identity media before the preset is removed.
+        const sheet = characterPresets.getIdentitySheet(id);
+        const media = sheet ? characterIdentity.mediaFilenames(sheet) : [];
+        // The stored portrait is media too when it is not already the base image.
+        if (character.portraitReference && character.portraitReference.filename) {
+            media.push(character.portraitReference.filename);
+        }
         const removed = characterPresets.remove(id);
+        if (removed) {
+            for (const name of Array.from(new Set(media))) {
+                generatedHistory.removeByFilename(name);
+            }
+        }
         json(res, removed ? 200 : 404, { ok: removed });
         return true;
     }
@@ -3443,16 +3477,18 @@ function resolveRequestCharacter(message, conversationId, explicitId) {
 // A saved session character wins; otherwise the concept is materialized into a
 // candidate preset so the identity package has a durable home. Returns the
 // character record or null when the concept has no identity to save.
-function materializeIdentityCharacter(session) {
+function materializeIdentityCharacter(session, options = {}) {
     const saved = playground.resolveCharacter(session.characterId)
         || playground.identityCharacterSource(session, null);
-    if (saved) return saved;
+    // An explicitly named save always creates a fresh preset (the user is
+    // saving this concept as a new character), even if a character is bound.
+    if (saved && !options.name) return saved;
     const concept = session.concept || {};
     const snapshot = session.characterSnapshot || {};
     const identity = concept.identity || snapshot.identity || null;
     if (!identity && !concept.subject && !snapshot.identityText) return null;
     const character = characterPresets.create({
-        name: concept.name || snapshot.name || 'Character',
+        name: options.name || concept.name || snapshot.name || 'Character',
         identity,
         identityText: concept.subject || snapshot.identityText || '',
         identitySignature: concept.identitySignature || snapshot.identitySignature || '',
@@ -3520,7 +3556,10 @@ async function generateIdentityBaseImage(req, res, ctx, request) {
         provider, model, conversationId,
         width: IDENTITY_BASE_SIZE,
         height: IDENTITY_BASE_SIZE,
-        label: 'character identity base', kind: 'image_generation'
+        label: 'character identity base', kind: 'image_generation',
+        // The identity base image is internal media for the character package,
+        // not a gallery item.
+        hidden: true
     });
     return {
         url: result.url,
@@ -3594,9 +3633,10 @@ function emitPlaygroundCard(res, session) {
     res.end();
 }
 
-// The face preview is a thumbnail, not the final artwork, so it overrides the
-// global IMAGE settings with a fixed 1:1 256x256 render.
-const PLAYGROUND_FACE_SIZE = 256;
+// The character preview overrides the global IMAGE settings with a fixed 1:1
+// render at the identity base size: this preview becomes the approved base image
+// for the character identity sheet, so it is a full render, not a thumbnail.
+const PLAYGROUND_FACE_SIZE = IDENTITY_BASE_SIZE;
 
 // Pre-render the face of a freshly cast random character so the user sees who
 // the concept is about before the full scene. Fail-open: a failure leaves the
@@ -3619,7 +3659,10 @@ async function runPlaygroundFaceStage(req, res, ctx, session) {
             provider, model, conversationId,
             width: PLAYGROUND_FACE_SIZE,
             height: PLAYGROUND_FACE_SIZE,
-            label: 'playground character', kind: 'image_generation'
+            label: 'playground character', kind: 'image_generation',
+            // The character preview is shown on the concept card (and becomes
+            // the approved identity base), not in the shared gallery.
+            hidden: true
         });
         playground.setCharacterImage(session, {
             url: result.url,
@@ -3864,6 +3907,74 @@ async function handlePlaygroundAction(req, res, ctx, action, rawMessage) {
             payload.direction = direction;
             session = playground.modify(session, payload);
             await runPlaygroundFaceStage(req, res, ctx, session);
+            emitPlaygroundCard(res, session);
+            return;
+        }
+
+        // Save the concept as a named character AND create its identity sheet in
+        // one turn. The character preview already on the card becomes the
+        // approved base, so the user gets a reusable, identity-ready character
+        // without a second step.
+        if (action.type === playground.ACTIONS.SAVE_CHARACTER) {
+            const character = materializeIdentityCharacter(session, { name: action.name });
+            if (!character) {
+                sseWrite(res, { error: 'Creative Playground \u2014 This concept has no character to save.' });
+                res.end();
+                return;
+            }
+            // Persist the concept record too, so the saved scene is available.
+            try { session = playground.save(session, character); } catch (err) { /* saving the concept is best-effort */ }
+            playground.setIdentityCharacter(session, character.id);
+
+            let base = baseImageFromSession(session);
+            if (!base || !base.filename) {
+                const request = playground.buildPortraitRequest(session)
+                    || characterStudio.generatePortraitRequest(character);
+                if (!request) {
+                    sseWrite(res, { error: 'Creative Playground \u2014 This concept has no character details to render.' });
+                    res.end();
+                    return;
+                }
+                sseWrite(res, { generating: 'Creating the character\u2026' });
+                base = await generateIdentityBaseImage(req, res, ctx, request);
+                if (base.url) {
+                    session.characterImage = {
+                        url: base.url, filename: base.filename,
+                        width: base.width, height: base.height, seed: base.seed
+                    };
+                }
+            }
+            if (base.url) {
+                session.characterImage = session.characterImage || {
+                    url: base.url, filename: base.filename,
+                    width: base.width, height: base.height, seed: base.seed
+                };
+            }
+            let sheet = characterIdentity.createSheet({
+                baseImage: base,
+                character,
+                configuration: {
+                    themeId: session.themeId,
+                    mode: session.mode,
+                    profile: session.characterProfile || null,
+                    locks: session.locks || {}
+                },
+                originalPrompt: base.prompt || ''
+            });
+            sheet = characterIdentity.applyBaseImage(sheet, {}, { approved: true });
+            sheet.status = characterIdentity.STATUS.APPROVED;
+            characterPresets.setIdentitySheet(character.id, sheet);
+            characterPresets.setPortrait(character.id, {
+                url: base.url, filename: base.filename, prompt: base.prompt,
+                seed: base.seed, width: base.width, height: base.height
+            });
+            activityLog.record({
+                type: 'generation',
+                title: 'Character saved',
+                detail: character.name || 'Character',
+                conversationId
+            });
+            await runIdentitySheetStream(req, res, character, ctx);
             emitPlaygroundCard(res, session);
             return;
         }
