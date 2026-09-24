@@ -845,6 +845,7 @@ const Chat = (() => {
 
     let activeStreamAbort = null;
     let activeQueueId = null;
+    let activeTurnId = null;
     let activeQueueActive = false;
     let activeMessageEl = null;
     let activeMessageConversationId = null;
@@ -859,6 +860,14 @@ const Chat = (() => {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ queueId: activeQueueId, active: activeQueueActive })
+                });
+            } catch (e) {}
+        } else if (activeTurnId) {
+            try {
+                await fetch('/api/queue/cancel', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ turnId: activeTurnId })
                 });
             } catch (e) {}
         }
@@ -949,6 +958,7 @@ const Chat = (() => {
 
         activeStreamAbort = new AbortController();
         activeQueueId = null;
+        activeTurnId = null;
         activeQueueActive = false;
 
         try {
@@ -1049,6 +1059,7 @@ const Chat = (() => {
                             generatingEl.textContent = data.generating;
                             setProgressTitle(data.generating);
                             activeQueueActive = true;
+                            activeTurnId = null;
                             scrollActiveStream(aiMessageEl);
                         }
                         if (data.queued) {
@@ -1058,10 +1069,13 @@ const Chat = (() => {
                                 contentEl.appendChild(generatingEl);
                             }
                             activeQueueId = data.queued.queueId || null;
+                            activeTurnId = data.queued.turnId || null;
                             activeQueueActive = false;
                             const pos = data.queued.position || 1;
-                            generatingEl.textContent = 'Queued #' + pos + ' — waiting for current generation… (press send to cancel)';
-                            setProgressTitle('Queued #' + pos);
+                            generatingEl.textContent = activeTurnId
+                                ? 'Waiting for another device… (# ' + pos + ', press send to cancel)'
+                                : 'Queued #' + pos + ' — waiting for current generation… (press send to cancel)';
+                            setProgressTitle(activeTurnId ? 'Waiting for another device' : 'Queued #' + pos);
                             scrollActiveStream(aiMessageEl);
                         }
                         if (data.progress && generatingEl) {
@@ -1234,6 +1248,7 @@ const Chat = (() => {
             cancelStreamRender();
             activeStreamAbort = null;
             activeQueueId = null;
+            activeTurnId = null;
             activeQueueActive = false;
             activeMessageEl = null;
             activeMessageConversationId = null;

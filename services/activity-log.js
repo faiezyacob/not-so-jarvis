@@ -12,7 +12,7 @@ const fs = require('fs');
 const path = require('path');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
-const LOG_PATH = path.join(DATA_DIR, 'activity-log.json');
+const LOG_PATH = process.env.ACTIVITY_LOG_PATH || path.join(DATA_DIR, 'activity-log.json');
 const MAX_ENTRIES = 100;
 
 const VALID_TYPES = ['image', 'video', 'edit', 'upscale', 'unload', 'system'];
@@ -33,7 +33,8 @@ function loadEntries() {
 
 function saveEntries() {
     try {
-        if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+        const dir = path.dirname(LOG_PATH);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
         const payload = { updatedAt: new Date().toISOString(), entries };
         fs.writeFileSync(LOG_PATH, JSON.stringify(payload, null, 2), 'utf-8');
     } catch (err) {
@@ -66,6 +67,9 @@ function record(input) {
         title,
         detail: String(data.detail || '').trim(),
         file: data.file || null,
+        // Conversation this event belongs to, so the feed can be scoped to the
+        // owning device session. System/VRAM events leave it null.
+        conversationId: data.conversationId || null,
         timestamp: data.timestamp || new Date().toISOString()
     };
 

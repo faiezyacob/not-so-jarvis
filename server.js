@@ -1,6 +1,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const crypto = require('crypto');
 
 // Minimal .env loader (no external dependencies). Reads KEY=VALUE lines from
@@ -29,6 +30,9 @@ const crypto = require('crypto');
 })();
 
 const PORT = process.env.PORT || 3001;
+// Bind to every interface by default so other devices on the same WiFi can
+// reach the dashboard. Set HOST=127.0.0.1 to keep it local-only.
+const HOST = process.env.HOST || '0.0.0.0';
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
 // Exit code used to signal the start.bat wrapper to restart in the same terminal.
@@ -86,6 +90,7 @@ const news = require('./services/news');
 const taskRouter = require('./services/task-router');
 const taskState = require('./services/task-state');
 const generationQueue = require('./services/generation-queue');
+const turnQueue = require('./services/turn-queue');
 const director = require('./services/director/director');
 const longVideoDirector = require('./services/long-video/director');
 const playground = require('./services/playground/playground');
@@ -107,6 +112,58 @@ const CHAT_IMAGES_MAX = 3;
 // rest become Qwen edit references; cap the total so a prompt can't wire an
 // unbounded chain of LoadImage nodes.
 const REFERENCE_IMAGES_MAX = 4;
+
+// --- Device sessions ---
+// Each browser gets a long-lived session cookie so its conversations, gallery
+// and activity feed stay private to that device (a second device on the same
+// WiFi is a different session). The cookie is set on the first response —
+// including the HTML document, so it exists before any API call runs.
+const SESSION_COOKIE = 'jarvis_session';
+const SESSION_MAX_AGE = 60 * 60 * 24 * 365; // one year
+const SESSION_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function parseCookies(header) {
+    const out = {};
+    if (!header) return out;
+    for (const part of String(header).split(';')) {
+        const idx = part.indexOf('=');
+        if (idx === -1) continue;
+        const key = part.slice(0, idx).trim();
+        if (!key) continue;
+        let value = part.slice(idx + 1).trim();
+        try { value = decodeURIComponent(value); } catch (err) { /* keep raw */ }
+        out[key] = value;
+    }
+    return out;
+}
+
+// Resolve this request's device session, minting and setting a cookie when it
+// is missing or malformed. Returns the session id.
+function resolveSession(req, res) {
+    const cookies = parseCookies(req.headers && req.headers.cookie);
+    const existing = cookies[SESSION_COOKIE];
+    if (existing && SESSION_RE.test(existing)) return existing;
+    const id = crypto.randomUUID();
+    res.setHeader('Set-Cookie',
+        SESSION_COOKIE + '=' + id + '; Path=/; HttpOnly; SameSite=Lax; Max-Age=' + SESSION_MAX_AGE);
+    return id;
+}
+
+// Hand pre-session conversations and generated media to the first device that
+// asks, so an upgrade keeps the existing history on that device.
+function adoptLegacyState(sessionId) {
+    conversationService.adoptLegacyConversations(sessionId);
+    generatedHistory.adoptLegacy(sessionId);
+}
+
+// Guard a conversation-scoped request: writes 404 and returns false when the
+// current session does not own the conversation.
+function requireConversationAccess(req, res, conversationId) {
+    if (conversationService.canAccessConversation(conversationId, req.jarvisSession)) return true;
+    json(res, 404, { error: 'Conversation not found' });
+    return false;
+}
+
 
 // Share the single-generation lock between image and video pipelines.
 videoGenerator.registerGenerationLock(imageGenerator);
@@ -729,10 +786,12 @@ async function handleAPI(req, res, urlPath) {
         return true;
     }
 
-    // GET /api/generated — all generated image metadata (newest first),
-    // excluding media produced in private (locked) conversations.
+    // GET /api/generated — all generated image metadata (newest first) owned by
+    // this device session, excluding media produced in private (locked)
+    // conversations.
     if (urlPath === '/api/generated' && req.method === 'GET') {
-        json(res, 200, { images: generatedHistory.listPublic() });
+        adoptLegacyState(req.jarvisSession);
+        json(res, 200, { images: generatedHistory.listPublic(req.jarvisSession) });
         return true;
     }
 
@@ -741,7 +800,9 @@ async function handleAPI(req, res, urlPath) {
     if (urlPath === '/api/director/state' && req.method === 'GET') {
         const query = new URL(req.url, 'http://localhost').searchParams;
         const conversationId = query.get('conversationId') || '';
-        const production = director.getProduction(conversationId);
+        const production = conversationService.canAccessConversation(conversationId, req.jarvisSession)
+            ? director.getProduction(conversationId)
+            : null;
         json(res, 200, {
             production: production ? {
                 id: production.id,
@@ -761,7 +822,9 @@ async function handleAPI(req, res, urlPath) {
     if (urlPath === '/api/longvideo/state' && req.method === 'GET') {
         const query = new URL(req.url, 'http://localhost').searchParams;
         const conversationId = query.get('conversationId') || '';
-        const plan = longVideoDirector.getPlan(conversationId);
+        const plan = conversationService.canAccessConversation(conversationId, req.jarvisSession)
+            ? longVideoDirector.getPlan(conversationId)
+            : null;
         json(res, 200, { plan: plan || null });
         return true;
     }
@@ -802,7 +865,9 @@ async function handleAPI(req, res, urlPath) {
     if (urlPath === '/api/playground/state' && req.method === 'GET') {
         const query = new URL(req.url, 'http://localhost').searchParams;
         const conversationId = query.get('conversationId') || '';
-        const session = playground.getSession(conversationId);
+        const session = conversationService.canAccessConversation(conversationId, req.jarvisSession)
+            ? playground.getSession(conversationId)
+            : null;
         json(res, 200, {
             concept: session
                 ? playground.buildCard(session, playground.resolveCharacter(session.characterId))
@@ -816,10 +881,12 @@ async function handleAPI(req, res, urlPath) {
     if (urlPath === '/api/ugc/state' && req.method === 'GET') {
         const query = new URL(req.url, 'http://localhost').searchParams;
         const conversationId = query.get('conversationId') || '';
-        const project = ugcStudio.getProject(conversationId);
+        const canAccess = conversationService.canAccessConversation(conversationId, req.jarvisSession);
+        const project = canAccess ? ugcStudio.getProject(conversationId) : null;
         json(res, 200, {
             project: project ? ugcStudio.buildCard(project) : null,
-            drafts: ugcStudio.listProjects().filter((p) => p.status === ugcStudio.STATUS.DRAFT)
+            drafts: ugcStudio.listProjects().filter((p) => p.status === ugcStudio.STATUS.DRAFT &&
+                conversationService.canAccessConversation(p.conversationId, req.jarvisSession))
                 .map((p) => ({ id: p.id, stage: p.stage, updatedAt: p.updatedAt, product: p.product ? p.product.name : '' }))
         });
         return true;
@@ -969,10 +1036,17 @@ async function handleAPI(req, res, urlPath) {
         return true;
     }
 
-    // GET /api/activity — recent activity feed for the dashboard widget
+    // GET /api/activity — recent activity feed for the dashboard widget,
+    // scoped to this device session. Generation events carry a conversationId
+    // and are hidden from other devices; system/VRAM events stay shared.
     if (urlPath === '/api/activity' && req.method === 'GET') {
+        adoptLegacyState(req.jarvisSession);
+        const entries = activityLog.list(30).filter((entry) => {
+            if (!entry.conversationId) return true;
+            return conversationService.canAccessConversation(entry.conversationId, req.jarvisSession);
+        });
         json(res, 200, {
-            entries: activityLog.list(30),
+            entries,
             uptime: process.uptime(),
             startedAt: serverStartedAt
         });
@@ -983,7 +1057,7 @@ async function handleAPI(req, res, urlPath) {
     const genDeleteMatch = urlPath.match(/^\/api\/generated\/([^/]+)$/);
     if (genDeleteMatch && req.method === 'DELETE') {
         const id = decodeURIComponent(genDeleteMatch[1]);
-        const removed = generatedHistory.remove(id);
+        const removed = generatedHistory.remove(id, req.jarvisSession);
         if (!removed) {
             json(res, 404, { error: 'Image not found' });
             return true;
@@ -999,11 +1073,21 @@ async function handleAPI(req, res, urlPath) {
     if (urlPath === '/api/upscale' && req.method === 'POST') {
         try {
             const body = await readBody(req);
+            if (body.conversationId && !conversationService.canAccessConversation(body.conversationId, req.jarvisSession)) {
+                json(res, 404, { error: 'Conversation not found' });
+                return true;
+            }
             const source = resolveUpscaleSource(body.conversationId, body.filename);
             if (!source) {
                 json(res, 404, { error: 'No generated image found to upscale. Generate an image first, then upscale it.' });
                 return true;
             }
+            if (source.meta && source.meta.sessionId && source.meta.sessionId !== req.jarvisSession) {
+                json(res, 404, { error: 'Image not found' });
+                return true;
+            }
+            const turn = await acquireTurn(res, { label: 'image upscale', conversationId: body.conversationId });
+            if (!turn) return true;
             await vramManager.freeVRAMBeforeImage();
             const result = await imageGenerator.upscaleImage(source.rawFilename, {
                 engine: body.engine,
@@ -1014,7 +1098,7 @@ async function handleAPI(req, res, urlPath) {
                 multiplier: body.multiplier,
                 preScale: body.preScale,
                 prompt: body.prompt,
-                conversationId: body.conversationId || null,
+                conversationId: body.conversationId || (source.meta && source.meta.conversationId) || null,
                 label: 'image upscale', kind: 'image_upscale'
             });
             json(res, 200, { ok: true, image: result });
@@ -1032,11 +1116,21 @@ async function handleAPI(req, res, urlPath) {
     if (urlPath === '/api/video/upscale' && req.method === 'POST') {
         try {
             const body = await readBody(req);
+            if (body.conversationId && !conversationService.canAccessConversation(body.conversationId, req.jarvisSession)) {
+                json(res, 404, { error: 'Conversation not found' });
+                return true;
+            }
             const source = resolveVideoUpscaleSource(body.conversationId, body.filename);
             if (!source) {
                 json(res, 404, { error: 'No generated video found to upscale. Generate a video first, then upscale it.' });
                 return true;
             }
+            if (source.meta && source.meta.sessionId && source.meta.sessionId !== req.jarvisSession) {
+                json(res, 404, { error: 'Video not found' });
+                return true;
+            }
+            const turn = await acquireTurn(res, { label: 'video upscale', conversationId: body.conversationId });
+            if (!turn) return true;
             await vramManager.freeVRAMBeforeImage();
             const result = await videoGenerator.upscaleVideo(source.rawFilename, {
                 engine: body.engine,
@@ -1047,7 +1141,7 @@ async function handleAPI(req, res, urlPath) {
                 scale: body.scale,
                 quality: body.quality,
                 fps: body.fps,
-                conversationId: body.conversationId || null,
+                conversationId: body.conversationId || (source.meta && source.meta.conversationId) || null,
                 label: 'video upscale', kind: 'video_upscale'
             });
             json(res, 200, { ok: true, video: result });
@@ -1171,15 +1265,20 @@ async function handleAPI(req, res, urlPath) {
 
     // GET /api/queue — shared generation queue status (active + pending)
     if (urlPath === '/api/queue' && req.method === 'GET') {
-        json(res, 200, generationQueue.getStatus());
+        json(res, 200, Object.assign(generationQueue.getStatus(), { turn: turnQueue.getStatus() }));
         return true;
     }
 
-    // POST /api/queue/cancel — cancel a queued job ({ queueId }), or the
-    // active job ({ queueId, active: true } aborts via ComfyUI /interrupt).
+    // POST /api/queue/cancel — cancel a turn waiting for the single turn slot
+    // ({ turnId }), a queued generation ({ queueId }), or the active job
+    // ({ queueId, active: true } aborts via ComfyUI /interrupt).
     if (urlPath === '/api/queue/cancel' && req.method === 'POST') {
         try {
             const body = await readBody(req);
+            if (body.turnId !== undefined && turnQueue.cancelQueued(body.turnId)) {
+                json(res, 200, { ok: true, cancelled: Number(body.turnId), turn: true });
+                return true;
+            }
             const queueId = Number(body.queueId);
             if (!Number.isFinite(queueId)) {
                 json(res, 400, { error: 'queueId is required' });
@@ -1238,7 +1337,8 @@ async function handleAPI(req, res, urlPath) {
 
     // GET /api/conversations
     if (urlPath === '/api/conversations' && req.method === 'GET') {
-        json(res, 200, { conversations: conversationService.getAllConversations() });
+        adoptLegacyState(req.jarvisSession);
+        json(res, 200, { conversations: conversationService.getAllConversations(req.jarvisSession) });
         return true;
     }
 
@@ -1460,7 +1560,7 @@ function referenceVisionImages(referenceImage) {
 async function handleCreateConversation(req, res) {
     try {
         const body = await readBody(req);
-        const conversation = conversationService.createConversation(body);
+        const conversation = conversationService.createConversation(body, req.jarvisSession);
         json(res, 201, conversation);
     } catch (err) {
         json(res, 500, { error: err.message });
@@ -1468,6 +1568,7 @@ async function handleCreateConversation(req, res) {
 }
 
 function handleGetConversation(req, res, id) {
+    if (!requireConversationAccess(req, res, id)) return;
     const conversation = conversationService.getConversation(id);
     if (!conversation) {
         json(res, 404, { error: 'Conversation not found' });
@@ -1478,6 +1579,7 @@ function handleGetConversation(req, res, id) {
 
 async function handleUpdateConversation(req, res, id) {
     try {
+        if (!requireConversationAccess(req, res, id)) return;
         const body = await readBody(req);
         let conversation = conversationService.getConversation(id);
         if (!conversation) {
@@ -1497,6 +1599,7 @@ async function handleUpdateConversation(req, res, id) {
 }
 
 function handleDeleteConversation(req, res, id) {
+    if (!requireConversationAccess(req, res, id)) return;
     const messages = conversationService.getMessages(id);
     const removed = conversationService.deleteConversation(id);
     if (!removed) {
@@ -1574,6 +1677,7 @@ function removeConversationImages(messages, conversationId) {
 }
 
 function handleGetMessages(req, res, id) {
+    if (!requireConversationAccess(req, res, id)) return;
     if (!conversationService.getConversation(id)) {
         json(res, 404, { error: 'Conversation not found' });
         return;
@@ -1583,6 +1687,7 @@ function handleGetMessages(req, res, id) {
 
 async function handleAddMessage(req, res, id) {
     try {
+        if (!requireConversationAccess(req, res, id)) return;
         const body = await readBody(req);
         if (!body.content || !body.role) {
             json(res, 400, { error: 'role and content are required' });
@@ -1601,6 +1706,7 @@ async function handleAddMessage(req, res, id) {
 
 async function handleSummarize(req, res, id) {
     try {
+        if (!requireConversationAccess(req, res, id)) return;
         const body = await readBody(req);
         const provider = body.provider || 'ollama';
         const model = body.model || '';
@@ -1642,6 +1748,49 @@ async function buildEnvironmentContext(message) {
     return parts.join('\n\n');
 }
 
+// --- Turn serialization ---
+// Every GPU-touching turn (chat, image/video/upscale, Director, UGC, Long
+// Video, Playground) acquires the single turn slot so several clients on the
+// same WiFi can never swap the Ollama/ComfyUI model sets out from under each
+// other. The slot is released when the response finishes or the client
+// disconnects. Control endpoints (cancel/free/status) deliberately bypass this.
+// Returns a handle ({ id, release }) or null when the turn could not start
+// (queue full or cancelled while waiting), in which case the response is
+// already settled.
+async function acquireTurn(res, opts) {
+    let handle;
+    try {
+        handle = await turnQueue.acquire(opts);
+    } catch (err) {
+        if (err && err.code === 'turn_cancelled') {
+            if (res.headersSent && !res.writableEnded) {
+                sseWrite(res, { error: 'Cancelled while waiting for another request.' });
+                sseWrite(res, { done: true, fullReply: '' });
+                res.end();
+            } else if (!res.writableEnded) {
+                json(res, 499, { error: 'Cancelled while waiting.' });
+            }
+            return null;
+        }
+        if (res.headersSent && !res.writableEnded) {
+            sseWrite(res, { error: err.message });
+            res.end();
+        } else if (!res.writableEnded) {
+            json(res, 503, { error: err.message });
+        }
+        return null;
+    }
+    let released = false;
+    const release = () => {
+        if (released) return;
+        released = true;
+        handle.release();
+    };
+    res.on('finish', release);
+    res.on('close', release);
+    return { id: handle.id, release };
+}
+
 async function handleChat(req, res) {
     try {
         const body = await readBody(req);
@@ -1667,10 +1816,13 @@ async function handleChat(req, res) {
             return;
         }
 
-        if (!conversationService.getConversation(conversationId)) {
+        if (!conversationService.canAccessConversation(conversationId, req.jarvisSession)) {
             json(res, 404, { error: 'Conversation not found' });
             return;
         }
+
+        const turn = await acquireTurn(res, { label: 'chat', conversationId });
+        if (!turn) return;
 
         vramManager.rememberChatModel(provider, model);
         await vramManager.freeVRAMBeforeChat();
@@ -1728,7 +1880,7 @@ async function handleChatStream(req, res) {
             return;
         }
 
-        if (!conversationService.getConversation(conversationId)) {
+        if (!conversationService.canAccessConversation(conversationId, req.jarvisSession)) {
             json(res, 404, { error: 'Conversation not found' });
             return;
         }
@@ -1745,6 +1897,16 @@ async function handleChatStream(req, res) {
             'Connection': 'keep-alive',
             'X-Accel-Buffering': 'no'
         });
+
+        // One turn at a time across every connected client. A turn that arrives
+        // while another device is running waits its turn (FIFO) and is told so
+        // over SSE; the slot is freed when this response ends.
+        const turn = await acquireTurn(res, {
+            label: 'chat',
+            conversationId,
+            onQueued: (position, id) => sseWrite(res, { queued: { position, turnId: id } })
+        });
+        if (!turn) return;
 
         // Deterministic "start ComfyUI" command. Handled before the router so a
         // small chat model can never downgrade it to a chat reply.
@@ -5063,12 +5225,29 @@ function sendMediaFile(req, res, fullPath) {
 
 // --- Server ---
 
+// IPv4 addresses this machine exposes on the local network, used to print the
+// LAN URL(s) at startup so other devices on the same WiFi can reach JARVIS.
+function lanIPv4Addresses() {
+    const addresses = [];
+    const nets = os.networkInterfaces();
+    for (const name of Object.keys(nets)) {
+        for (const net of nets[name] || []) {
+            if (net && net.family === 'IPv4' && !net.internal) addresses.push(net.address);
+        }
+    }
+    return addresses;
+}
+
 systemMonitor.init();
 systemMonitor.start(2000);
 
 const server = http.createServer(async (req, res) => {
     const parsedUrl = new URL(req.url, `http://localhost:${PORT}`);
     const urlPath = parsedUrl.pathname;
+
+    // Resolve (and if needed set) the per-device session cookie before any
+    // routing so handlers can scope data to this device.
+    req.jarvisSession = resolveSession(req, res);
 
     // API routes take precedence
     if (await handleAPI(req, res, urlPath)) return;
@@ -5077,13 +5256,22 @@ const server = http.createServer(async (req, res) => {
     serveStatic(req, res, urlPath);
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, HOST, () => {
     console.log(`JARVIS server running at http://localhost:${PORT}`);
+    const localOnly = HOST === '127.0.0.1' || HOST === 'localhost';
+    const lan = localOnly ? [] : lanIPv4Addresses();
+    if (!localOnly) {
+        if (lan.length) {
+            console.log('On your network (same WiFi): ' + lan.map((ip) => `http://${ip}:${PORT}`).join(', '));
+        } else {
+            console.log('On your network: no external IPv4 interface detected.');
+        }
+    }
     thumbnail.warm();
     activityLog.record({
         type: 'system',
         title: 'Server started',
-        detail: 'http://localhost:' + PORT
+        detail: 'http://localhost:' + PORT + (lan.length ? ' \u00B7 LAN ' + lan.map((ip) => `http://${ip}:${PORT}`).join(', ') : '')
     });
     vramManager.reconcileOnStartup().catch((err) => {
         console.warn('[vram-manager] Startup reconcile failed:', err.message);

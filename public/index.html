@@ -333,9 +333,21 @@
                                 <option value="S">S (0.75MP)</option>
                                 <option value="M">M (1MP)</option>
                                 <option value="L">L (1.75MP)</option>
+                                <option value="CUSTOM">Custom…</option>
                             </select>
                         </div>
                             </div>
+                            <div class="settings-field-row" id="imageCustomDimensions" style="display: none;">
+                                <div class="settings-field">
+                                    <label class="settings-field-label" for="imageWidth">Width</label>
+                                    <input type="number" class="settings-input" id="imageWidth" min="64" max="4096" step="32" value="1024">
+                                </div>
+                                <div class="settings-field">
+                                    <label class="settings-field-label" for="imageHeight">Height</label>
+                                    <input type="number" class="settings-input" id="imageHeight" min="64" max="4096" step="32" value="1024">
+                                </div>
+                            </div>
+                            <span class="settings-hint" id="imageCustomHint" style="display: none;">Custom dimensions are snapped to multiples of 32 and override the aspect ratio.</span>
                         </div>
                         <div class="settings-card" data-search="sampling steps cfg guidance classifier free diffusion quality">
                             <div class="settings-card-title">SAMPLING</div>

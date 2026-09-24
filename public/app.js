@@ -1251,9 +1251,9 @@ function initImageGenSettings() {
         });
     }
 
-    // Aspect Ratio + Size are the only user-facing resolution controls. They
-    // map to Krea2 latent dimensions server-side, so no pixel values appear
-    // in the UI.
+    // Aspect Ratio + Size (S/M/L) map to Krea2 latent dimensions server-side.
+    // Selecting the "Custom" size reveals explicit Width/Height inputs, which
+    // override the aspect ratio with exact pixel dimensions.
     const persistSelect = async (key, select) => {
         setStatus('Saving...');
         try {
@@ -1276,8 +1276,18 @@ function initImageGenSettings() {
 
     const aspectSelect = document.getElementById('imageAspectRatio');
     const sizeSelect = document.getElementById('imageSize');
+    const customRow = document.getElementById('imageCustomDimensions');
+    const customHint = document.getElementById('imageCustomHint');
+    const widthInput = document.getElementById('imageWidth');
+    const heightInput = document.getElementById('imageHeight');
+    const syncCustomDimensions = () => {
+        const isCustom = !!sizeSelect && sizeSelect.value === 'CUSTOM';
+        if (customRow) customRow.style.display = isCustom ? '' : 'none';
+        if (customHint) customHint.style.display = isCustom ? '' : 'none';
+        if (aspectSelect) aspectSelect.disabled = isCustom;
+    };
     if (aspectSelect) aspectSelect.addEventListener('change', () => persistSelect('aspectRatio', aspectSelect));
-    if (sizeSelect) sizeSelect.addEventListener('change', () => persistSelect('imageSize', sizeSelect));
+    if (sizeSelect) sizeSelect.addEventListener('change', () => { syncCustomDimensions(); persistSelect('imageSize', sizeSelect); });
 
     // Seed lock + variation count: numeric/select settings that are persisted
     // the same way as the dropdowns above.
@@ -1309,6 +1319,16 @@ function initImageGenSettings() {
     if (variationsSelect) variationsSelect.addEventListener('change', () => persistValue('variations', Number(variationsSelect.value), variationsSelect.value));
     if (seedModeSelect) seedModeSelect.addEventListener('change', () => { syncSeedDisabled(); persistValue('seedMode', seedModeSelect.value, seedModeSelect.value); });
     if (seedInput) seedInput.addEventListener('change', () => persistValue('seed', Math.max(0, Math.floor(Number(seedInput.value) || 0)), seedInput.value));
+
+    // Custom width/height (only shown when Size = Custom). Values are clamped
+    // to the supported range; the server snaps them to multiples of 32.
+    const persistDimension = (key, input) => {
+        const value = Math.max(64, Math.min(4096, Math.round(Number(input.value) || 0)));
+        input.value = value;
+        persistValue(key, value, String(value));
+    };
+    if (widthInput) widthInput.addEventListener('change', () => persistDimension('width', widthInput));
+    if (heightInput) heightInput.addEventListener('change', () => persistDimension('height', heightInput));
 
     // Steps / CFG persist under the active model's keys. The snapshot is
     // updated too so switching the image model away and back keeps the value.
@@ -1371,9 +1391,13 @@ function initImageGenSettings() {
             })) : [];
             renderLoraStack(loraState);
 
-            // Restore the saved Aspect Ratio + Size (fall back to defaults).
+            // Restore the saved Aspect Ratio + Size (fall back to defaults),
+            // plus the custom width/height when Size is "Custom".
             if (aspectSelect) aspectSelect.value = settings.aspectRatio || defaults.aspectRatio || '4:5';
             if (sizeSelect) sizeSelect.value = settings.imageSize || defaults.imageSize || 'M';
+            if (widthInput) widthInput.value = settings.width || defaults.width || 1024;
+            if (heightInput) heightInput.value = settings.height || defaults.height || 1024;
+            syncCustomDimensions();
 
             // Restore seed lock + variations.
             if (variationsSelect) variationsSelect.value = String(settings.variations || defaults.variations || 1);

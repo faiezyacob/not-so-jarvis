@@ -4344,6 +4344,12 @@ a.modal-btn {
 
 /* --- App Dialog (prompt/confirm/alert) --- */
 
+/* Always sits above the gallery (400) and compare (600) overlays so a
+   delete/confirm prompt opened from inside those is never obscured. */
+#appDialogOverlay {
+    z-index: 1000;
+}
+
 .dialog-message {
     font-size: var(--fs-md);
     line-height: 1.55;

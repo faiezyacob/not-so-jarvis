@@ -280,7 +280,7 @@
     function openRawPreview(src) {
         const video = /\.(mp4|webm|mov)$/i.test(src);
         const { container, body, closeBtn } = buildModalShell(video ? 'GENERATED VIDEO' : 'GENERATED IMAGE');
-        const modal = openModal(container);
+        const modal = openModal(container, () => document.removeEventListener('keydown', onPreviewKey));
 
         const imgWrap = document.createElement('div');
         imgWrap.className = 'gallery-preview-image';
@@ -340,6 +340,7 @@
         }
 
         const onPreviewKey = (e) => {
+            if (!modal.overlay.isConnected) return;
             const openOverlays = document.querySelectorAll('.modal-overlay.open');
             if (openOverlays.length && openOverlays[openOverlays.length - 1] !== modal.overlay) return;
             if (zoomApi) {
@@ -1146,7 +1147,7 @@
         const video = isVideo(img);
 
         const { container, body, closeBtn } = buildModalShell(video ? 'GENERATED VIDEO' : 'GENERATED IMAGE');
-        const modal = openModal(container);
+        const modal = openModal(container, () => document.removeEventListener('keydown', onPreviewKey));
 
         const imgWrap = document.createElement('div');
         imgWrap.className = 'gallery-preview-image';
@@ -1184,6 +1185,7 @@
         }
 
         const onPreviewKey = (e) => {
+            if (!modal.overlay.isConnected) return;
             const openOverlays = document.querySelectorAll('.modal-overlay.open');
             if (openOverlays.length && openOverlays[openOverlays.length - 1] !== modal.overlay) return;
             if (zoomApi) {

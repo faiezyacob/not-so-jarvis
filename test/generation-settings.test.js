@@ -78,6 +78,30 @@ test('sanitizeSettings: model is validated, unknown values are dropped', () => {
     assert.deepEqual(imageGenerator.sanitizeSettings({ model: 'krea2' }), { model: 'krea2' });
 });
 
+test('resolveDimensions: CUSTOM size pins exact width/height snapped to the grid', () => {
+    const custom = imageGenerator.resolveDimensions({ imageSize: 'CUSTOM', width: 1000, height: 1500 });
+    assert.equal(custom.imageSize, 'CUSTOM');
+    assert.equal(custom.width, 992);
+    assert.equal(custom.height, 1504);
+
+    // Out-of-range custom edges are clamped to the supported window.
+    const clamped = imageGenerator.resolveDimensions({ imageSize: 'CUSTOM', width: 99999, height: 1 });
+    assert.equal(clamped.width, 4096);
+    assert.equal(clamped.height, 64);
+});
+
+test('resolveDimensions: ratio + size still derive dimensions for S/M/L', () => {
+    const dims = imageGenerator.resolveDimensions({ imageSize: 'M', aspectRatio: '1:1' });
+    assert.equal(dims.width, 992);
+    assert.equal(dims.height, 992);
+});
+
+test('sanitizeSettings: custom imageSize + width/height are validated and clamped', () => {
+    assert.deepEqual(imageGenerator.sanitizeSettings({ imageSize: 'custom' }), { imageSize: 'CUSTOM' });
+    assert.deepEqual(imageGenerator.sanitizeSettings({ width: 5000, height: 10 }), { width: 4096, height: 64 });
+    assert.deepEqual(imageGenerator.sanitizeSettings({ width: 'abc' }), {});
+});
+
 test('resolveBaseModels: returns krea2 slots by default and qwen slots when selected', () => {
     const defaults = imageGenerator.getDefaults();
     const krea = imageGenerator.resolveBaseModels(defaults);

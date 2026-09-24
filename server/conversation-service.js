@@ -10,7 +10,7 @@ const path = require('path');
 const crypto = require('crypto');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
-const DATA_FILE = path.join(DATA_DIR, 'conversations.json');
+const DATA_FILE = process.env.CONVERSATIONS_PATH || path.join(DATA_DIR, 'conversations.json');
 
 const CONFIG = {
     MAX_CONTEXT_MESSAGES: 50,
@@ -39,8 +39,9 @@ let store = loadStore();
 
 function saveStore() {
     try {
-        if (!fs.existsSync(DATA_DIR)) {
-            fs.mkdirSync(DATA_DIR, { recursive: true });
+        const dir = path.dirname(DATA_FILE);
+        if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
         }
         fs.writeFileSync(DATA_FILE, JSON.stringify(store, null, 2), 'utf8');
     } catch (e) {
@@ -60,13 +61,16 @@ function sortMessages(list) {
 
 // --- Conversation CRUD ---
 
-function createConversation(data) {
+function createConversation(data, sessionId) {
     const now = Date.now();
     const conversation = {
         id: uuid(),
         title: (data && data.title) || 'New Conversation',
         summary: '',
         private: Boolean(data && data.private),
+        // Owning device session. Conversations are private to the session that
+        // created them; a missing value marks a pre-session (legacy) record.
+        sessionId: sessionId || null,
         createdAt: now,
         updatedAt: now
     };
@@ -79,8 +83,36 @@ function getConversation(id) {
     return store.conversations.find((c) => c.id === id) || null;
 }
 
-function getAllConversations() {
-    return sortConversations(store.conversations);
+// Every conversation, or only the given session's when a session id is passed.
+// Called without a session it returns the full list (internal/legacy callers).
+function getAllConversations(sessionId) {
+    if (!sessionId) return sortConversations(store.conversations);
+    return sortConversations(store.conversations.filter((c) => c.sessionId === sessionId));
+}
+
+// True when the session may read/write this conversation. A legacy record with
+// no session yet is accessible until it is adopted (see adoptLegacyConversations).
+function canAccessConversation(id, sessionId) {
+    const conv = getConversation(id);
+    if (!conv) return false;
+    if (!conv.sessionId) return true;
+    return conv.sessionId === sessionId;
+}
+
+// Hand every pre-session (legacy) conversation to the first session that asks,
+// so upgrading users keep their history. Idempotent: once adopted there is
+// nothing left to claim. Returns the number of conversations adopted.
+function adoptLegacyConversations(sessionId) {
+    if (!sessionId) return 0;
+    let adopted = 0;
+    store.conversations.forEach((c) => {
+        if (!c.sessionId) {
+            c.sessionId = sessionId;
+            adopted += 1;
+        }
+    });
+    if (adopted) saveStore();
+    return adopted;
 }
 
 function renameConversation(id, title) {
@@ -190,6 +222,8 @@ module.exports = {
     createConversation,
     getConversation,
     getAllConversations,
+    canAccessConversation,
+    adoptLegacyConversations,
     renameConversation,
     setConversationPrivate,
     isPrivateConversation,

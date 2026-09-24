@@ -140,6 +140,14 @@ Or use the launcher for your platform, which installs **Node.js LTS** for you if
 
 Then open **http://localhost:3001**.
 
+### Use it from other devices on the same WiFi
+
+JARVIS binds to every interface by default, so other devices on your local network can open the same dashboard at **`http://<this-machine-ip>:3001`** — the LAN URL is printed in the terminal at startup (look for `On your network (same WiFi): …`). Set `HOST=127.0.0.1` in `.env` to keep it local-only.
+
+On Windows, allow Node.js through the firewall the first time it asks, or add an inbound rule for TCP port `3001`. Requests from every device are serialized: only one chat/generation turn runs at a time (`services/turn-queue.js`), so two devices can never swap the Ollama/ComfyUI models out from under each other — later turns wait their turn and are told so in the chat.
+
+**Each device is its own session.** The browser gets a long-lived session cookie, and conversations, the generated-image gallery and the activity feed are private to that device. A second device on the same WiFi starts with its own empty history and never sees the first device's chats or images. When you upgrade an existing install, the first device to open the dashboard adopts the conversations and media that were stored before sessions existed.
+
 ## First-run setup
 
 If image or video features report missing pieces, open **Settings > Setup**:

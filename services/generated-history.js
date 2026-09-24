@@ -15,8 +15,8 @@ const activityLog = require('./activity-log');
 const thumbnail = require('./thumbnail');
 const conversationService = require('../server/conversation-service');
 
-const GENERATED_DIR = path.join(__dirname, '..', 'data', 'generated');
-const HISTORY_PATH = path.join(__dirname, '..', 'data', 'generated-history.json');
+const GENERATED_DIR = process.env.GENERATED_DIR || path.join(__dirname, '..', 'data', 'generated');
+const HISTORY_PATH = process.env.GENERATED_HISTORY_PATH || path.join(__dirname, '..', 'data', 'generated-history.json');
 
 let history = null;      // cached array of metadata records (newest first)
 let loadedOnce = false;
@@ -140,22 +140,48 @@ function list() {
 }
 
 // Public gallery view: public-shaped metadata, excluding media produced in
-// private (locked) conversations. Internal lookups (upscale source pairing,
-// deletes) keep using list() so private media can still be managed.
-function listPublic() {
+// private (locked) conversations. When a session id is passed, only media owned
+// by that device session is returned (entries are stamped with the owning
+// session of their conversation at add time, or by adoptLegacy()).
+function listPublic(sessionId) {
     ensureLoaded();
     const privateIds = new Set(conversationService.getPrivateConversationIds());
-    if (!privateIds.size) return history.map(publicMeta);
-    return history
-        .filter((e) => !(e.conversationId && privateIds.has(e.conversationId)))
-        .map(publicMeta);
+    let rows = history;
+    if (sessionId) {
+        rows = rows.filter((e) => e.sessionId === sessionId);
+    }
+    if (privateIds.size) {
+        rows = rows.filter((e) => !(e.conversationId && privateIds.has(e.conversationId)));
+    }
+    return rows.map(publicMeta);
 }
 
-// Limit to the most recent N entries (public shape).
-function listRecent(limit) {
+// Limit to the most recent N entries (public shape), optionally session-scoped.
+function listRecent(limit, sessionId) {
     ensureLoaded();
     const count = typeof limit === 'number' ? limit : history.length;
-    return history.slice(0, count).map(publicMeta);
+    const rows = sessionId ? history.filter((e) => e.sessionId === sessionId) : history;
+    return rows.slice(0, count).map(publicMeta);
+}
+
+// Stamp pre-session (legacy) media with the first session that asks, mirroring
+// conversation adoption. Media tied to a conversation inherits that
+// conversation's session; unlinked legacy files go to the adopting session.
+// Idempotent. Returns the number of entries adopted.
+function adoptLegacy(sessionId) {
+    if (!sessionId) return 0;
+    ensureLoaded();
+    let adopted = 0;
+    let changed = false;
+    history.forEach((entry) => {
+        if (entry.sessionId) return;
+        const conv = entry.conversationId ? conversationService.getConversation(entry.conversationId) : null;
+        entry.sessionId = (conv && conv.sessionId) || sessionId;
+        adopted += 1;
+        changed = true;
+    });
+    if (changed) saveHistory(history);
+    return adopted;
 }
 
 function publicMeta(entry) {
@@ -203,7 +229,8 @@ function recordActivity(entry) {
             type,
             title,
             detail: detail || (entry.model || ''),
-            file: entry.file
+            file: entry.file,
+            conversationId: entry.conversationId || null
         });
     } catch (err) {
         console.warn('[generated-history] Activity record failed:', err.message);
@@ -214,11 +241,15 @@ function recordActivity(entry) {
 function add(meta) {
     ensureLoaded();
     const createdAt = meta.createdAt || new Date().toISOString().replace(/\.\d+Z$/, '');
+    // The owning device session is inherited from the conversation the media
+    // was produced in, so the gallery stays private to that device.
+    const conversation = meta.conversationId ? conversationService.getConversation(meta.conversationId) : null;
     const entry = {
         id: meta.id || makeId(createdAt),
         file: meta.file,
         rawFilename: meta.rawFilename || meta.filename || null,
         conversationId: meta.conversationId || null,
+        sessionId: meta.sessionId || (conversation && conversation.sessionId) || null,
         prompt: meta.prompt || '',
         model: meta.model || 'Krea2',
         width: meta.width || null,
@@ -241,11 +272,12 @@ function add(meta) {
 
 // Delete a generated image by id: removes the metadata record and, when the
 // rawFilename is known, the image file from disk. Returns the removed entry,
-// or null if no matching record was found.
-function remove(id) {
+// or null if no matching record was found (or it belongs to another session).
+function remove(id, sessionId) {
     ensureLoaded();
     const index = history.findIndex((e) => e.id === id);
     if (index === -1) return null;
+    if (sessionId && history[index].sessionId !== sessionId) return null;
     const [entry] = history.splice(index, 1);
     saveHistory(history);
 
@@ -273,6 +305,7 @@ module.exports = {
     list,
     listRecent,
     listPublic,
+    adoptLegacy,
     add,
     remove,
     makeId

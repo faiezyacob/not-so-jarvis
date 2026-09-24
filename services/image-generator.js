@@ -865,6 +865,7 @@ function normalizeAspectRatio(value) {
 
 function normalizeImageSize(value) {
     const v = String(value || '').trim().toUpperCase();
+    if (v === 'CUSTOM') return 'CUSTOM';
     return Object.prototype.hasOwnProperty.call(IMAGE_MEGAPIXELS, v) ? v : null;
 }
 
@@ -874,11 +875,22 @@ function snapToLatentGrid(pixels) {
 }
 
 // Map aspectRatio + imageSize to concrete Krea2 latent dimensions. Invalid
-// inputs fall back to the 4:5 / M defaults.
+// inputs fall back to the 4:5 / M defaults. In 'CUSTOM' size mode the user
+// pins exact pixel width/height; both edges are clamped to the supported range
+// and snapped to the latent grid, and the stored aspect ratio is kept for
+// metadata but no longer derives the dimensions.
 function resolveDimensions(settings) {
     const source = settings || {};
     const ratio = normalizeAspectRatio(source.aspectRatio) || '4:5';
     const size = normalizeImageSize(source.imageSize) || 'M';
+    if (size === 'CUSTOM') {
+        return {
+            width: snapToLatentGrid(clampToInt(source.width, 64, 4096, 1024)),
+            height: snapToLatentGrid(clampToInt(source.height, 64, 4096, 1024)),
+            aspectRatio: ratio,
+            imageSize: size
+        };
+    }
     const [ratioWidth, ratioHeight] = ratio.split(':').map(Number);
     const shape = Math.min(10, Math.max(0.1, (ratioWidth / ratioHeight) || 1));
     const targetPixels = (IMAGE_MEGAPIXELS[size] || IMAGE_MEGAPIXELS.M) * 1e6;
@@ -947,10 +959,11 @@ const DEFAULT_SETTINGS = {
     // Krea 2 reads `steps`/`cfg`, Qwen reads `qwenSteps`/`qwenCfg`.
     qwenSteps: DEFAULT_QWEN_STEPS,
     qwenCfg: DEFAULT_QWEN_CFG,
-    // User-facing resolution controls. The UI exposes only these two
-    // dropdowns — never raw pixels. Width/height below are always derived
-    // from them via resolveDimensions(), so stored or env-provided pixel
-    // values never reach the Krea2 graph directly.
+    // User-facing resolution controls. The UI exposes an aspect-ratio
+    // dropdown plus a size dropdown (S/M/L) — or 'CUSTOM', which reveals
+    // explicit width/height inputs. Width/height below are otherwise derived
+    // from aspectRatio + imageSize via resolveDimensions(), so stored or
+    // env-provided pixel values never reach the Krea2 graph directly.
     aspectRatio: normalizeAspectRatio(process.env.KREA2_ASPECT_RATIO) || '4:5',
     imageSize: normalizeImageSize(process.env.KREA2_IMAGE_SIZE) || 'M',
     width: Number(process.env.KREA2_WIDTH) || 1024,
@@ -1127,7 +1140,10 @@ function sanitizeSettings(patch) {
         } else if (key === 'imageSize') {
             const v = normalizeImageSize(value);
             if (v) out[key] = v;
-        } else if (key === 'width' || key === 'height' || key === 'steps' || key === 'qwenSteps') {
+        } else if (key === 'width' || key === 'height') {
+            const n = Math.round(Number(value));
+            if (Number.isFinite(n) && n > 0) out[key] = Math.max(64, Math.min(4096, n));
+        } else if (key === 'steps' || key === 'qwenSteps') {
             const n = Math.round(Number(value));
             if (Number.isFinite(n) && n > 0) out[key] = n;
         } else if (key === 'cfg' || key === 'qwenCfg') {
