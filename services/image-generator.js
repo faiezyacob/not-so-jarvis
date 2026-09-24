@@ -2291,9 +2291,10 @@ function buildQwenImage21EditGraph(instruction, loadName, options = {}) {
 }
 
 // Extra references beyond the base image (image_1). The Qwen encoder accepts
-// up to image_16, but 3 extra references (4 images total) already covers the
-// person + object + scene combinations the @ picker produces.
-const MAX_EDIT_REFERENCES = 3;
+// up to image_16, but 5 extra references (6 images total) covers the
+// person + character identity + object + scene combinations the @ picker
+// produces while staying well within the encoder's limit.
+const MAX_EDIT_REFERENCES = 5;
 
 // Edit a local image file (data/images upload or data/generated output) from
 // a plain-language instruction. Shares the single-generation queue. Returns

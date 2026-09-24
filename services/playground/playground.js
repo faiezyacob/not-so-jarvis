@@ -34,8 +34,10 @@ const ACTIONS = {
     IDENTITY_REGENERATE: 'identity_regenerate',
     IDENTITY_APPROVE: 'identity_approve',
     IDENTITY_SHEET_REGENERATE: 'identity_sheet_regenerate',
-    // Save the concept as a named character AND create its identity sheet in
-    // the same turn (the character preview becomes the approved base).
+    // Bind the character as the conversation's active character.
+    USE_CHARACTER: 'use_character',
+    // Save the concept as a named character (creates a CANDIDATE image only; the
+    // identity sheet is generated after the user approves it).
     SAVE_CHARACTER: 'save_character'
 };
 
@@ -97,23 +99,26 @@ function characterIdentityKey(session) {
 
 // Compact identity summary for the concept card. The full identity package is
 // fetched through GET /api/characters/:id/identity by the viewer, so the marker
-// stays small. Null until the character has an identity sheet attached.
+// stays small. One approved base image + one consolidated identity sheet — never
+// a reference array.
 function identitySummary(session, character) {
     const record = character || resolveCharacter(session && session.characterId);
     if (!record) return null;
-    const sheet = characterPresets.getIdentitySheet(record.id);
-    if (!sheet) return null;
+    const pkg = characterPresets.getIdentityPackage(record.id);
+    if (!pkg) return null;
+    if (!pkg.approvedBaseImage && !pkg.identitySheet) return null;
+    const image = characterIdentity.selectIdentityImage(pkg);
     return {
         characterId: record.id,
         name: record.name || 'Character',
-        status: sheet.status,
-        identityStatus: sheet.identity.status,
-        referenceCount: characterIdentity.allReferences(sheet).length,
-        requiredTotal: characterIdentity.planReferences(record).filter((e) => e.required !== false).length,
-        baseImageUrl: characterIdentity.effectiveBaseImage(record, sheet)
-            ? characterIdentity.effectiveBaseImage(record, sheet).url
-            : '',
-        hasLegacyBase: characterIdentity.hasLegacyBase(record, sheet)
+        status: pkg.status,
+        sheetStatus: pkg.identitySheet ? pkg.identitySheet.status : characterIdentity.SHEET_STATUS.NOT_STARTED,
+        hasApprovedBase: Boolean(pkg.approvedBaseImage && pkg.approvedBaseImage.approvedAt),
+        hasSheet: Boolean(pkg.identitySheet && pkg.identitySheet.status === characterIdentity.SHEET_STATUS.READY),
+        identityImageUrl: image ? image.url : '',
+        baseImageUrl: pkg.approvedBaseImage ? pkg.approvedBaseImage.url : '',
+        sheetImageUrl: pkg.identitySheet ? pkg.identitySheet.imageUrl : '',
+        version: pkg.identitySheet ? pkg.identitySheet.version : 0
     };
 }
 
@@ -664,7 +669,6 @@ function setCharacterImage(session, image) {
     };
     session.characterImage = portrait;
     if (session.characterSnapshot) session.characterSnapshot.portraitReference = Object.assign({}, portrait);
-    if (session.characterId) characterPresets.setPortrait(session.characterId, portrait);
     session.composition = createCompositionSnapshot(session);
     session.updatedAt = new Date().toISOString();
     state.setSession(session.conversationId, session);

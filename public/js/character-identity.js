@@ -1,12 +1,13 @@
 /* ============================================
    JARVIS — Character Identity Viewer
    The dedicated read-only view of a saved
-   character's identity package: approved base
-   image, identity-sheet status and progress, the
-   full-body / face / accessory reference categories,
-   the derived identity metadata, and regeneration
-   controls. Reuses the shared modal + playground
-   visual language; never invents a second system.
+   character's identity package: the ONE approved
+   base image, the ONE consolidated Character
+   Identity Sheet (a single composite image holding
+   multiple reference panels), structured identity
+   metadata, and regeneration / use controls.
+   Reuses the shared modal + playground visual
+   language; never invents a second system.
    ============================================ */
 
 const CharacterIdentityUI = (() => {
@@ -20,17 +21,9 @@ const CharacterIdentityUI = (() => {
     let currentCard = null;
     let pollTimer = null;
 
-    const CATEGORY_LABELS = [
-        { key: 'fullBody', title: 'Full-Body References' },
-        { key: 'face', title: 'Face References' },
-        { key: 'profile', title: 'Profile References' },
-        { key: 'accessories', title: 'Accessories' },
-        { key: 'distinctiveFeatures', title: 'Distinctive Features' }
-    ];
-
     const STATUS_LABELS = {
         candidate: 'Awaiting approval',
-        approved: 'Approved — generating references',
+        approved: 'Approved \u2014 ready to create the identity sheet',
         generating_identity: 'Creating identity sheet',
         ready: 'Identity Ready',
         failed: 'Identity sheet failed'
@@ -49,44 +42,46 @@ const CharacterIdentityUI = (() => {
     }
 
     const REFRESH_ICON = '<polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>';
+    const USER_ICON = '<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle>';
 
     function openImage(url) {
-        if (window.Gallery && typeof window.Gallery.openFromUrl === 'function') {
+        if (url && window.Gallery && typeof window.Gallery.openFromUrl === 'function') {
             window.Gallery.openFromUrl(url);
         }
     }
 
-    function referenceTile(ref) {
-        const tile = el('figure', 'identity-ref');
-        const img = el('img', 'identity-ref-img');
-        img.src = ref.url;
-        img.alt = ref.label || ref.role;
-        img.loading = 'lazy';
+    function imageFigure(url, label, className) {
+        const figure = el('figure', className || 'identity-base');
+        const img = el('img', (className || 'identity-base') + '-img');
+        img.src = url;
+        img.alt = label || 'Character';
         img.tabIndex = 0;
         img.setAttribute('role', 'button');
-        img.addEventListener('click', () => openImage(ref.url));
+        img.addEventListener('click', () => openImage(url));
         img.addEventListener('keydown', (e) => {
             if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); img.click(); }
         });
-        tile.appendChild(img);
-        const cap = el('figcaption', 'identity-ref-label', ref.label || ref.role);
-        tile.appendChild(cap);
-        return tile;
+        figure.appendChild(img);
+        figure.appendChild(el('figcaption', 'identity-base-note', label || ''));
+        return figure;
     }
 
     function renderMetadata(metadata) {
         const box = el('div', 'identity-metadata');
         const m = metadata || {};
         const rows = [];
-        if (m.ageRange) rows.push(['Age', m.ageRange]);
-        if (m.genderPresentation) rows.push(['Gender presentation', m.genderPresentation]);
-        if (m.skinTone) rows.push(['Skin tone', m.skinTone]);
-        if (m.faceShape) rows.push(['Face shape', m.faceShape]);
-        if (m.eyeColor) rows.push(['Eyes', m.eyeColor]);
+        const face = m.face || {};
         const hair = m.hair || {};
-        const hairText = [hair.length, hair.style, hair.color].filter(Boolean).join(' · ');
+        const skin = m.skin || {};
+        const body = m.body || {};
+        if (face.shape) rows.push(['Face', [face.shape, face.eyes].filter(Boolean).join(' \u00b7 ')]);
+        if (face.nose) rows.push(['Nose', face.nose]);
+        if (face.lips) rows.push(['Lips', face.lips]);
+        const hairText = [hair.length, hair.style, hair.texture, hair.color].filter(Boolean).join(' \u00b7 ');
         if (hairText) rows.push(['Hair', hairText]);
-        if (m.bodyProportions) rows.push(['Build', m.bodyProportions]);
+        if (skin.tone) rows.push(['Skin', [skin.tone, skin.undertone].filter(Boolean).join(' \u00b7 ')]);
+        const bodyText = [body.heightDescription, body.build, body.proportions].filter(Boolean).join(' \u00b7 ');
+        if (bodyText) rows.push(['Build', bodyText]);
         if (m.distinctiveFeatures && m.distinctiveFeatures.length) rows.push(['Distinctive features', m.distinctiveFeatures.join(', ')]);
         if (m.signatureAccessories && m.signatureAccessories.length) rows.push(['Signature accessories', m.signatureAccessories.join(', ')]);
         if (!rows.length) return null;
@@ -99,16 +94,13 @@ const CharacterIdentityUI = (() => {
         return box;
     }
 
-    function renderProgress(card) {
+    function renderProgress() {
         const box = el('div', 'identity-progress');
-        const total = (card.progress && card.progress.total) || card.requiredTotal || 0;
-        const done = (card.progress && card.progress.done) || 0;
-        box.appendChild(el('span', 'identity-progress-title', 'Creating Character Identity Sheet…'));
-        box.appendChild(el('span', 'identity-progress-sub',
-            'Generating multiple reference images' + (total ? ' (' + done + '/' + total + ')' : '') + '…'));
+        box.setAttribute('role', 'status');
+        box.appendChild(el('span', 'identity-progress-title', 'Creating Character Identity Sheet\u2026'));
+        box.appendChild(el('span', 'identity-progress-sub', 'Rendering the consolidated reference sheet\u2026'));
         const bar = el('div', 'identity-progress-bar');
-        const fill = el('div', 'identity-progress-fill');
-        fill.style.width = (total ? Math.round((done / total) * 100) : 4) + '%';
+        const fill = el('div', 'identity-progress-fill identity-progress-fill--indeterminate');
         bar.appendChild(fill);
         box.appendChild(bar);
         return box;
@@ -125,65 +117,50 @@ const CharacterIdentityUI = (() => {
         bodyEl.appendChild(status);
 
         if (card.status === 'generating_identity') {
-            bodyEl.appendChild(renderProgress(card));
+            bodyEl.appendChild(renderProgress());
         }
 
         if (card.error) {
-            const err = el('div', 'identity-error');
-            err.textContent = card.error;
-            bodyEl.appendChild(err);
+            bodyEl.appendChild(el('div', 'identity-error', card.error));
         }
 
         // Approved base image
         const baseSection = el('section', 'identity-section');
-        baseSection.appendChild(el('h4', 'identity-section-title', 'Approved Base Image'));
-        if (card.baseImage && card.baseImage.url) {
-            const wrap = el('figure', 'identity-base');
-            const img = el('img', 'identity-base-img');
-            img.src = card.baseImage.url;
-            img.alt = (card.name || 'Character') + ' — approved base image';
-            img.tabIndex = 0;
-            img.setAttribute('role', 'button');
-            img.addEventListener('click', () => openImage(card.baseImage.url));
-            img.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); img.click(); }
-            });
-            wrap.appendChild(img);
-            if (!card.baseImage.approved) {
-                wrap.appendChild(el('figcaption', 'identity-base-note',
-                    card.hasLegacyBase ? 'Basic Reference (legacy character image)' : 'Approved base image'));
-            } else {
-                wrap.appendChild(el('figcaption', 'identity-base-note', 'Locked as the approved base image'));
-            }
-            baseSection.appendChild(wrap);
+        baseSection.appendChild(el('h4', 'identity-section-title', 'Approved Character'));
+        if (card.approvedBaseImage && card.approvedBaseImage.url) {
+            baseSection.appendChild(imageFigure(
+                card.approvedBaseImage.url,
+                card.approvedBaseImage.approved ? 'Approved base image' : 'Candidate \u2014 awaiting approval',
+                'identity-base'
+            ));
         } else {
             baseSection.appendChild(el('div', 'identity-empty', 'No base image yet.'));
         }
         bodyEl.appendChild(baseSection);
 
-        // Reference categories
-        const cats = card.categories || {};
-        CATEGORY_LABELS.forEach(({ key, title }) => {
-            const refs = Array.isArray(cats[key]) ? cats[key] : [];
-            if (!refs.length) return;
-            const section = el('section', 'identity-section');
-            section.appendChild(el('h4', 'identity-section-title', title));
-            const grid = el('div', 'identity-ref-grid');
-            refs.forEach((ref) => grid.appendChild(referenceTile(ref)));
-            section.appendChild(grid);
-            bodyEl.appendChild(section);
-        });
-
-        const totalRefs = Number(card.referenceCount) || 0;
-        if (!totalRefs && card.status !== 'generating_identity') {
-            bodyEl.appendChild(el('div', 'identity-empty',
-                card.hasLegacyBase
-                    ? 'No identity sheet yet. An identity sheet can be generated from the existing character image.'
-                    : 'No identity sheet yet. Generate one to create consistent character references.'));
+        // The single consolidated identity sheet
+        const sheetSection = el('section', 'identity-section');
+        sheetSection.appendChild(el('h4', 'identity-section-title', 'Character Identity Sheet'));
+        if (card.identitySheet && card.identitySheet.url) {
+            sheetSection.appendChild(imageFigure(
+                card.identitySheet.url,
+                'Composite reference sheet \u00b7 v' + (card.identitySheet.version || 1) +
+                (card.identitySheet.status === 'ready' ? '' : ' \u00b7 ' + card.identitySheet.status),
+                'identity-sheet'
+            ));
+            sheetSection.appendChild(el('p', 'identity-sheet-note',
+                'One image containing the full-body front, three-quarter, side profile, face close-up and any ' +
+                'necessary detail panels. This single sheet is the character\'s visual identity reference.'));
+        } else {
+            sheetSection.appendChild(el('div', 'identity-empty',
+                card.status === 'generating_identity'
+                    ? 'The identity sheet is being generated\u2026'
+                    : 'No identity sheet yet. Approve the character, then create its sheet.'));
         }
+        bodyEl.appendChild(sheetSection);
 
         // Metadata
-        const meta = renderMetadata(card.metadata);
+        const meta = renderMetadata(card.identityMetadata);
         if (meta) {
             const section = el('section', 'identity-section');
             section.appendChild(el('h4', 'identity-section-title', 'Identity Metadata'));
@@ -191,12 +168,10 @@ const CharacterIdentityUI = (() => {
             bodyEl.appendChild(section);
         }
 
-        if (card.consistencyNotes && card.consistencyNotes.length) {
+        if (card.identityPreservationInstructions) {
             const section = el('section', 'identity-section');
-            section.appendChild(el('h4', 'identity-section-title', 'Consistency Notes'));
-            const notes = el('ul', 'identity-notes');
-            card.consistencyNotes.forEach((note) => notes.appendChild(el('li', null, note)));
-            section.appendChild(notes);
+            section.appendChild(el('h4', 'identity-section-title', 'Identity Preservation'));
+            section.appendChild(el('p', 'identity-preservation', card.identityPreservationInstructions));
             bodyEl.appendChild(section);
         }
     }
@@ -204,22 +179,98 @@ const CharacterIdentityUI = (() => {
     function renderFooter(card) {
         footerEl.innerHTML = '';
         const busy = card.status === 'generating_identity';
-        if (!busy) {
-            const regen = el('button', 'modal-btn modal-btn-primary identity-sheet-regenerate');
+        if (busy) {
+            footerEl.appendChild(el('span', 'identity-footer-note', 'Generation is running \u2014 this view updates automatically.'));
+            return;
+        }
+
+        if (card.approvedBaseImage && !card.approvedBaseImage.approved) {
+            const approve = el('button', 'modal-btn modal-btn-primary');
+            approve.type = 'button';
+            approve.innerHTML = iconSvg(USER_ICON, 14) + '<span> Approve Character</span>';
+            approve.addEventListener('click', approveCharacter);
+            footerEl.appendChild(approve);
+            const regen = el('button', 'modal-btn modal-btn-cancel');
             regen.type = 'button';
-            regen.innerHTML = iconSvg(REFRESH_ICON, 14) + '<span> Regenerate Identity Sheet</span>';
+            regen.innerHTML = iconSvg(REFRESH_ICON, 14) + '<span> Regenerate Character</span>';
+            regen.addEventListener('click', regenerateCharacter);
+            footerEl.appendChild(regen);
+            return;
+        }
+
+        if (card.status === 'ready' || card.status === 'failed' || card.status === 'approved') {
+            const label = card.identitySheet ? 'Regenerate Identity Sheet' : 'Create Identity Sheet';
+            const regen = el('button', 'modal-btn modal-btn-cancel');
+            regen.type = 'button';
+            regen.innerHTML = iconSvg(REFRESH_ICON, 14) + '<span> ' + label + '</span>';
             regen.addEventListener('click', regenerateSheet);
             footerEl.appendChild(regen);
-        } else {
-            footerEl.appendChild(el('span', 'identity-footer-note', 'Generation is running — this view updates automatically.'));
         }
-        if (card.referenceCount) {
+
+        if (card.status === 'ready') {
+            const use = el('button', 'modal-btn modal-btn-cancel');
+            use.type = 'button';
+            use.innerHTML = iconSvg(USER_ICON, 14) + '<span> Use Character</span>';
+            use.addEventListener('click', useCharacter);
+            footerEl.appendChild(use);
+        }
+
+        if (card.identitySheet) {
             const del = el('button', 'modal-btn modal-btn-danger');
             del.type = 'button';
             del.textContent = 'Delete Identity Sheet';
             del.addEventListener('click', deleteSheet);
             footerEl.appendChild(del);
         }
+    }
+
+    // Use the character in the conversation: insert an @Name mention into the
+    // composer so the existing mention system remains the single entry point.
+    function useCharacter() {
+        const name = (currentCard && currentCard.name) || 'Character';
+        const input = document.getElementById('chatInput');
+        if (input && !input.disabled) {
+            const token = '@' + name + ' ';
+            const start = input.selectionStart === null ? input.value.length : input.selectionStart;
+            const end = input.selectionEnd === null ? input.value.length : input.selectionEnd;
+            input.value = input.value.slice(0, start) + token + input.value.slice(end);
+            input.selectionStart = input.selectionEnd = start + token.length;
+            input.focus();
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        close();
+    }
+
+    async function approveCharacter() {
+        if (!currentId) return;
+        setBusy('Approving and creating the identity sheet\u2026');
+        try {
+            const res = await fetch('/api/characters/' + encodeURIComponent(currentId) + '/identity/approve', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ provider: providerName(), model: modelName() })
+            });
+            await consumeStream(res);
+        } catch (e) {
+            showError('Could not approve the character. Please try again.');
+        }
+    }
+
+    async function regenerateCharacter() {
+        if (!currentId) return;
+        let confirmed = true;
+        if (typeof Dialog !== 'undefined' && Dialog.confirm) {
+            confirmed = await Dialog.confirm({
+                title: 'Regenerate Character',
+                message: 'Discard this candidate and generate a new one? The approved base image (if any) is not changed.',
+                confirmText: 'Regenerate'
+            });
+        }
+        if (!confirmed) return;
+        // Character regeneration runs through the Creative Playground card so the
+        // new candidate is shown and approved there (the viewer has no concept
+        // context to rebuild the character from).
+        close();
     }
 
     async function regenerateSheet() {
@@ -233,7 +284,7 @@ const CharacterIdentityUI = (() => {
             });
         }
         if (!confirmed) return;
-        setBusy('Regenerating identity sheet…');
+        setBusy('Regenerating identity sheet\u2026');
         try {
             const res = await fetch('/api/characters/' + encodeURIComponent(currentId) + '/identity/sheet', {
                 method: 'POST',
@@ -252,7 +303,7 @@ const CharacterIdentityUI = (() => {
         if (typeof Dialog !== 'undefined' && Dialog.confirm) {
             confirmed = await Dialog.confirm({
                 title: 'Delete Identity Sheet',
-                message: 'Delete this character\'s identity references? The character and its base image stay saved.',
+                message: 'Delete this character\'s consolidated identity sheet? The character and its approved base image stay saved.',
                 confirmText: 'Delete',
                 danger: true
             });
@@ -269,7 +320,7 @@ const CharacterIdentityUI = (() => {
     function setBusy(message) {
         if (!footerEl) return;
         footerEl.innerHTML = '';
-        footerEl.appendChild(el('span', 'identity-footer-note', message || 'Working…'));
+        footerEl.appendChild(el('span', 'identity-footer-note', message || 'Working\u2026'));
     }
 
     function showError(message) {
@@ -278,11 +329,16 @@ const CharacterIdentityUI = (() => {
         bodyEl.insertBefore(err, bodyEl.firstChild);
     }
 
-    // Read the standalone identity-sheet SSE stream (the same shape the chat
-    // stream uses) and refresh the view as progress arrives.
+    // Read the standalone identity-sheet SSE stream and refresh the view as
+    // progress arrives.
     async function consumeStream(res) {
         if (!res.ok || !res.body) {
-            showError('Identity-sheet generation failed to start.');
+            let message = 'Identity-sheet generation failed to start.';
+            try {
+                const data = await res.json();
+                if (data && data.error) message = data.error;
+            } catch (e) { /* keep default */ }
+            showError(message);
             return;
         }
         const reader = res.body.getReader();
@@ -303,13 +359,9 @@ const CharacterIdentityUI = (() => {
                 if (data.identityProgress) {
                     if (currentCard) {
                         currentCard.status = 'generating_identity';
-                        currentCard.identityStatus = data.identityProgress.status;
-                        currentCard.progress = {
-                            done: data.identityProgress.done,
-                            total: data.identityProgress.total,
-                            current: data.identityProgress.current
-                        };
                         renderBody(currentCard);
+                    } else if (bodyEl) {
+                        renderBody({ status: 'generating_identity' });
                     }
                 }
                 if (data.identity && data.identity.card) card = data.identity.card;
@@ -346,7 +398,7 @@ const CharacterIdentityUI = (() => {
 
     async function load(id) {
         if (!bodyEl) return;
-        setBusy('Loading identity…');
+        setBusy('Loading identity\u2026');
         try {
             const res = await fetch('/api/characters/' + encodeURIComponent(id) + '/identity');
             if (!res.ok) {
@@ -355,7 +407,7 @@ const CharacterIdentityUI = (() => {
             }
             const data = await res.json();
             currentCard = data.card;
-            if (titleEl) titleEl.textContent = (data.card && data.card.name ? data.card.name : 'Character') + ' — Identity';
+            if (titleEl) titleEl.textContent = (data.card && data.card.name ? data.card.name : 'Character') + ' \u2014 Identity';
             renderBody(currentCard);
             renderFooter(currentCard);
             schedulePoll();
@@ -406,8 +458,6 @@ const CharacterIdentityUI = (() => {
         if (!currentId || progress.characterId !== currentId) return;
         if (currentCard) {
             currentCard.status = 'generating_identity';
-            currentCard.identityStatus = progress.status;
-            currentCard.progress = { done: progress.done, total: progress.total, current: progress.current };
             renderBody(currentCard);
         }
     }

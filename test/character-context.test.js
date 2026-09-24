@@ -35,30 +35,6 @@ function makeCharacter(overrides = {}) {
     }, overrides));
 }
 
-function readySheet(baseFilename = 'base.png') {
-    return identity.normalizeSheet({
-        status: identity.STATUS.READY,
-        baseImage: { filename: baseFilename, url: '/generated/' + baseFilename, approved: true },
-        identity: {
-            status: identity.SHEET_STATUS.READY,
-            references: {
-                fullBody: [
-                    { role: 'full_body_front', imagePath: 'fb_front.png', imageUrl: '/generated/fb_front.png' },
-                    { role: 'full_body_three_quarter', imagePath: 'fb_34.png', imageUrl: '/generated/fb_34.png' }
-                ],
-                face: [
-                    { role: 'face_front', imagePath: 'face_front.png', imageUrl: '/generated/face_front.png' }
-                ],
-                profile: [
-                    { role: 'face_profile', imagePath: 'face_profile.png', imageUrl: '/generated/face_profile.png' }
-                ],
-                accessories: [],
-                distinctiveFeatures: []
-            }
-        }
-    });
-}
-
 test('@mentions resolve to known characters and are stripped from the prompt', () => {
     const maya = makeCharacter();
     const parsed = context.parseMentions('generate image: @Maya wearing a red dress in a cafe', [maya]);
@@ -165,61 +141,154 @@ test('switching characters replaces the active one', () => {
     assert.ok(sarah.id && maya.id);
 });
 
-test('the picker options carry the identity status and primary image', () => {
-    const ready = makeCharacter({ name: 'Ready' });
-    characterPresets.setIdentitySheet(ready.id, readySheet());
-    const legacy = characterPresets.create({
-        name: 'Legacy',
-        identityText: 'a legacy character',
-        portraitReference: { url: '/generated/portrait.png', filename: 'portrait.png' }
+function readyPackage(baseFilename = 'base.png', sheetFilename = 'sheet.png') {
+    return identity.normalizePackage({
+        approvedBaseImage: {
+            filename: baseFilename,
+            url: '/generated/' + baseFilename,
+            approvedAt: new Date().toISOString()
+        },
+        identitySheet: {
+            filename: sheetFilename,
+            imageUrl: '/generated/' + sheetFilename,
+            status: 'ready',
+            version: 1
+        }
     });
+}
+
+function basicPackage(baseFilename = 'base.png') {
+    return identity.normalizePackage({
+        approvedBaseImage: {
+            filename: baseFilename,
+            url: '/generated/' + baseFilename,
+            approvedAt: new Date().toISOString()
+        }
+    });
+}
+
+test('the picker options carry the identity status and the single primary image', () => {
+    const ready = makeCharacter({ name: 'Ready' });
+    characterPresets.setIdentityPackage(ready.id, readyPackage('ready-base.png', 'ready-sheet.png'));
+    const basic = makeCharacter({ name: 'Basic' });
+    characterPresets.setIdentityPackage(basic.id, basicPackage('basic-base.png'));
+    const none = makeCharacter({ name: 'None' });
     const options = context.listCharacterOptions();
     const readyOption = options.find((o) => o.id === ready.id);
-    const legacyOption = options.find((o) => o.id === legacy.id);
+    const basicOption = options.find((o) => o.id === basic.id);
+    const noneOption = options.find((o) => o.id === none.id);
     assert.equal(readyOption.identityStatus, context.IDENTITY_STATUS.READY);
     assert.equal(readyOption.hasIdentity, true);
-    assert.equal(legacyOption.identityStatus, context.IDENTITY_STATUS.BASIC);
-    assert.equal(legacyOption.hasIdentity, false);
+    assert.equal(readyOption.imageUrl, '/generated/ready-sheet.png');
+    assert.equal(basicOption.identityStatus, context.IDENTITY_STATUS.BASIC);
+    assert.equal(basicOption.hasIdentity, false);
+    assert.equal(basicOption.imageUrl, '/generated/basic-base.png');
+    assert.equal(noneOption.identityStatus, context.IDENTITY_STATUS.NONE);
 });
 
-test('conditioning selects scene-relevant references from the identity sheet', () => {
+test('one character contributes exactly ONE identity image', () => {
     const maya = makeCharacter();
-    characterPresets.setIdentitySheet(maya.id, readySheet('maya_base.png'));
-
-    const fullBody = context.buildConditioning([maya], 'a full-body fashion shot');
-    assert.equal(fullBody.sourceFilename, 'maya_base.png');
-    assert.ok(fullBody.referenceFilenames.includes('fb_front.png'));
-    assert.ok(fullBody.referenceFilenames.includes('fb_34.png'));
-
-    const portrait = context.buildConditioning([maya], 'a close-up portrait headshot');
-    assert.equal(portrait.sourceFilename, 'maya_base.png');
-    assert.ok(portrait.referenceFilenames.includes('face_front.png'));
-    assert.match(portrait.instruction, /IDENTITY:/);
-    assert.match(portrait.instruction, /SCENE \(change only this\):/);
+    characterPresets.setIdentityPackage(maya.id, readyPackage('maya-base.png', 'maya-sheet.png'));
+    const conditioning = context.buildConditioning([maya], 'a full-body fashion shot');
+    assert.equal(conditioning.sourceFilename, 'maya-sheet.png', 'the consolidated sheet is the reference');
+    assert.deepEqual(conditioning.referenceFilenames, [], 'no per-angle reference array');
+    assert.match(conditioning.instruction, /IDENTITY:/);
+    assert.match(conditioning.instruction, /SCENE \(change only this\):/);
 });
 
-test('a legacy character conditions through its portrait (basic reference)', () => {
-    const legacy = characterPresets.create({
-        name: 'Legacy Basic',
-        identityText: 'a legacy character',
-        portraitReference: { url: '/generated/portrait.png', filename: 'portrait.png' }
-    });
-    const conditioning = context.buildConditioning([legacy], 'standing in a park');
-    assert.equal(conditioning.sourceFilename, 'portrait.png');
+test('a character without a sheet conditions through the approved base image', () => {
+    const maya = makeCharacter();
+    characterPresets.setIdentityPackage(maya.id, basicPackage('maya-base.png'));
+    const conditioning = context.buildConditioning([maya], 'standing in a park');
+    assert.equal(conditioning.sourceFilename, 'maya-base.png');
     assert.deepEqual(conditioning.referenceFilenames, []);
-    assert.match(conditioning.instruction, /image 1/);
 });
 
-test('multiple characters contribute a combined conditioning', () => {
+test('two characters contribute exactly two identity images', () => {
     const maya = makeCharacter({ name: 'Maya' });
+    const quinn = makeCharacter({ name: 'Quinn' });
+    characterPresets.setIdentityPackage(maya.id, readyPackage('maya-base.png', 'maya-sheet.png'));
+    characterPresets.setIdentityPackage(quinn.id, readyPackage('quinn-base.png', 'quinn-sheet.png'));
+    const conditioning = context.buildConditioning([maya, quinn], 'standing next to each other in front of a cafe');
+    assert.equal(conditioning.sourceFilename, 'maya-sheet.png');
+    assert.deepEqual(conditioning.referenceFilenames, ['quinn-sheet.png']);
+    assert.match(conditioning.instruction, /CHARACTER 1/);
+    assert.match(conditioning.instruction, /CHARACTER 2/);
+    assert.match(conditioning.instruction, /CHARACTER SEPARATION/);
+    assert.match(conditioning.instruction, /Do not merge, swap, or blend/);
+    assert.match(conditioning.instruction, /ONE new standalone scene image/i);
+    assert.match(conditioning.instruction, /Never return an identity sheet/i);
+});
+
+test('three characters contribute exactly three identity images', () => {
+    const maya = makeCharacter({ name: 'Maya' });
+    const quinn = makeCharacter({ name: 'Quinn' });
     const sarah = makeCharacter({ name: 'Sarah' });
-    characterPresets.setIdentitySheet(maya.id, readySheet('maya.png'));
-    characterPresets.setIdentitySheet(sarah.id, readySheet('sarah.png'));
-    const conditioning = context.buildConditioning([maya, sarah], 'talking in a cafe');
-    assert.equal(conditioning.sourceFilename, 'maya.png');
-    assert.ok(conditioning.referenceFilenames.includes('sarah.png'), 'the second base image is a reference');
-    assert.match(conditioning.instruction, /image 1 is Maya/);
-    assert.match(conditioning.instruction, /image 2 is Sarah/);
+    characterPresets.setIdentityPackage(maya.id, readyPackage('maya.png', 'maya-sheet.png'));
+    characterPresets.setIdentityPackage(quinn.id, readyPackage('quinn.png', 'quinn-sheet.png'));
+    characterPresets.setIdentityPackage(sarah.id, readyPackage('sarah.png', 'sarah-sheet.png'));
+    const conditioning = context.buildConditioning([maya, quinn, sarah], 'at a party');
+    const images = [conditioning.sourceFilename].concat(conditioning.referenceFilenames);
+    assert.deepEqual(images, ['maya-sheet.png', 'quinn-sheet.png', 'sarah-sheet.png']);
+});
+
+test('user @image references ride along after the character identity images', () => {
+    const maya = makeCharacter();
+    characterPresets.setIdentityPackage(maya.id, readyPackage('maya-base.png', 'maya-sheet.png'));
+    const conditioning = context.buildConditioning([maya], 'a close-up portrait');
+    const combined = context.combineReferenceFilenames(conditioning, { userReferences: ['prop.png'] });
+    assert.equal(combined.base, 'maya-sheet.png');
+    assert.deepEqual(combined.references, ['prop.png']);
+    assert.deepEqual(combined.userIndexes, [1]);
+});
+
+test('an @image that is already the character identity image is not duplicated', () => {
+    const maya = makeCharacter();
+    characterPresets.setIdentityPackage(maya.id, readyPackage('maya-base.png', 'maya-sheet.png'));
+    const conditioning = context.buildConditioning([maya], 'a scene');
+    const combined = context.combineReferenceFilenames(conditioning, { userReferences: ['maya-sheet.png', 'prop.png'] });
+    assert.deepEqual(combined.references, ['prop.png']);
+    assert.deepEqual(combined.userIndexes, [1]);
+});
+
+test('characterMediaFilenames covers the approved base and the identity sheet', () => {
+    const maya = makeCharacter({ name: 'Maya' });
+    characterPresets.setIdentityPackage(maya.id, readyPackage('maya-base.png', 'maya-sheet.png'));
+    const media = context.characterMediaFilenames();
+    assert.ok(media.has('maya-base.png'), 'approved base protected');
+    assert.ok(media.has('maya-sheet.png'), 'identity sheet protected');
+});
+
+test('a conversation delete must not remove character-owned media', () => {
+    const maya = makeCharacter({ name: 'Maya' });
+    characterPresets.setIdentityPackage(maya.id, readyPackage('maya-base.png', 'maya-sheet.png'));
+    const protectedNames = context.characterMediaFilenames();
+    const entries = ['maya-base.png', 'maya-sheet.png', 'chat_image.png'];
+    const toDelete = entries.filter((name) => !protectedNames.has(name));
+    assert.deepEqual(toDelete, ['chat_image.png']);
+});
+
+test('getCharactersForGeneration returns the structured single-image package', () => {
+    const maya = makeCharacter();
+    characterPresets.setIdentityPackage(maya.id, readyPackage('maya-base.png', 'maya-sheet.png'));
+    const [entry] = context.getCharactersForGeneration([maya]);
+    assert.equal(entry.id, maya.id);
+    assert.equal(entry.approvedBaseImage, 'maya-base.png');
+    assert.equal(entry.identitySheetImage, 'maya-sheet.png');
+    assert.equal(entry.identityImage, 'maya-sheet.png');
+    assert.ok(entry.identityMetadata);
+    assert.match(entry.identityPreservationInstructions, /facial identity/i);
+});
+
+test('the spec-facing aliases resolve mentions and identity context', () => {
+    const maya = makeCharacter();
+    characterPresets.setIdentityPackage(maya.id, readyPackage('maya-base.png', 'maya-sheet.png'));
+    const mentions = context.resolveCharacterMentions('@Maya in a cafe', { characters: [maya] });
+    assert.equal(mentions.characters[0].id, maya.id);
+    assert.equal(context.getCharacter(maya.id).name, 'Maya');
+    assert.equal(context.getCharacterIdentity(maya.id).identitySheet.filename, 'maya-sheet.png');
+    const built = context.buildCharacterIdentityContext([maya], 'in a cafe');
+    assert.equal(built.sourceFilename, 'maya-sheet.png');
 });
 
 test('the active store survives a reload from disk', () => {

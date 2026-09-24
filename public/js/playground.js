@@ -138,9 +138,9 @@ const PlaygroundUI = (() => {
 
     // --- Character Identity System card UI -----------------------------------
     //
-    // The approval gate lives on the concept card: an initial character image
-    // must be explicitly approved before the identity sheet is generated. The
-    // full identity package is inspected in the Character Identity viewer.
+    // Saving a concept as a character creates the ONE consolidated identity
+    // sheet immediately from the character preview (no approval step). The full
+    // package is inspected in the Character Identity viewer.
 
     const IDENTITY_STATUS_LABELS = {
         candidate: 'Awaiting approval',
@@ -150,11 +150,11 @@ const PlaygroundUI = (() => {
         failed: 'Generation failed'
     };
 
-    function identityButton(label, type, variant) {
+    function identityButton(label, type, variant, iconName) {
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'playground-btn identity-btn' + (variant ? ' playground-btn--' + variant : '');
-        const icon = (type === 'identity_start' || type === 'identity_approve') ? 'user' : 'refresh';
+        const icon = iconName || ((type === 'identity_approve' || type === 'identity_start' || type === 'save_character') ? 'user' : 'refresh');
         btn.innerHTML = iconSvg(icon, 14) +
             '<span class="playground-btn-label">' + label + '</span>';
         return btn;
@@ -162,6 +162,39 @@ const PlaygroundUI = (() => {
 
     function sendIdentity(card, type, direction) {
         send(direction || type, { type, conceptId: card.id, expectedRevision: card.revision });
+    }
+
+    function openImage(url) {
+        if (url && window.Gallery && typeof window.Gallery.openFromUrl === 'function') {
+            window.Gallery.openFromUrl(url);
+        }
+    }
+
+    function identityPreview(label, url) {
+        if (!url) return null;
+        const figure = document.createElement('figure');
+        figure.className = 'identity-preview';
+        const img = document.createElement('img');
+        img.className = 'identity-preview-img';
+        img.src = url;
+        img.alt = label || 'Character';
+        img.loading = 'lazy';
+        img.tabIndex = 0;
+        img.setAttribute('role', 'button');
+        img.addEventListener('click', () => openImage(url));
+        img.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); img.click(); }
+        });
+        figure.appendChild(img);
+        figure.appendChild(el('figcaption', 'identity-preview-label', label || ''));
+        return figure;
+    }
+
+    function el(tag, className, text) {
+        const node = document.createElement(tag);
+        if (className) node.className = className;
+        if (text !== undefined && text !== null) node.textContent = text;
+        return node;
     }
 
     function renderIdentityPanel(card) {
@@ -173,115 +206,106 @@ const PlaygroundUI = (() => {
         const panel = document.createElement('div');
         panel.className = 'identity-panel';
         const status = identity ? identity.status : '';
+        const sheetStatus = identity ? identity.sheetStatus : '';
 
-        if (identity && (status === 'generating_identity' || (identity.identityStatus === 'generating'))) {
-            const progress = identity.progress || {};
-            const total = progress.total || identity.requiredTotal || 0;
-            const done = progress.done || 0;
+        // Generating the single identity sheet.
+        if (status === 'generating_identity' || sheetStatus === 'generating') {
             const box = document.createElement('div');
             box.className = 'identity-progress';
             box.setAttribute('role', 'status');
             box.innerHTML = '<span class="identity-progress-title">Creating Character Identity Sheet\u2026</span>' +
-                '<span class="identity-progress-sub">Generating multiple reference images' +
-                (total ? ' (' + done + '/' + total + ')' : '') + '\u2026</span>';
+                '<span class="identity-progress-sub">Rendering the consolidated reference sheet\u2026</span>';
             const bar = document.createElement('div');
             bar.className = 'identity-progress-bar';
             const fill = document.createElement('div');
-            fill.className = 'identity-progress-fill';
-            fill.style.width = (total ? Math.round((done / total) * 100) : 4) + '%';
+            fill.className = 'identity-progress-fill identity-progress-fill--indeterminate';
             bar.appendChild(fill);
             box.appendChild(bar);
             panel.appendChild(box);
             return panel;
         }
 
-        // A ready or failed identity provides the inspector entry point.
-        if (identity && (status === 'ready' || status === 'failed')) {
+        // Ready: approved base + the one consolidated identity sheet.
+        if (status === 'ready') {
             const head = document.createElement('div');
             head.className = 'identity-line';
-            head.innerHTML = '<span class="identity-dot identity-dot--' + (status === 'ready' ? 'ready' : 'failed') + '"></span>' +
-                '<span class="identity-line-label">' + (status === 'ready' ? 'Identity ready' : 'Identity sheet failed') + '</span>' +
-                '<span class="identity-line-meta">' +
-                (identity.referenceCount || 0) + ' reference' + ((identity.referenceCount || 0) === 1 ? '' : 's') +
-                '</span>';
+            head.innerHTML = '<span class="identity-dot identity-dot--ready"></span>' +
+                '<span class="identity-line-label">Identity ready</span>' +
+                '<span class="identity-line-meta">Sheet v' + (identity.version || 1) + '</span>';
             panel.appendChild(head);
+            const basePrev = identityPreview(card.characterName || 'Character', identity.baseImageUrl);
+            if (basePrev) panel.appendChild(basePrev);
+            const sheetPrev = identityPreview('Character Identity Sheet (one composite reference image)', identity.sheetImageUrl);
+            if (sheetPrev) panel.appendChild(sheetPrev);
             const actions = document.createElement('div');
             actions.className = 'identity-actions';
-            const view = identityButton('View Identity', 'view_identity');
+            const view = identityButton('View Identity', 'view_identity', '', 'user');
             view.addEventListener('click', () => openViewer(identity.characterId));
             actions.appendChild(view);
-            const regen = identityButton('Regenerate Identity Sheet', 'identity_sheet_regenerate');
-            regen.addEventListener('click', async () => {
-                const ok = typeof Dialog !== 'undefined' && Dialog.confirm
-                    ? await Dialog.confirm({
-                        title: 'Regenerate Identity Sheet',
-                        message: "Regenerate this character's identity sheet? The approved base image will remain unchanged, and the current sheet is kept until the new one is ready.",
-                        confirmText: 'Regenerate'
-                    })
-                    : true;
-                if (ok) sendIdentity(card, 'identity_sheet_regenerate');
-            });
+            const regen = identityButton('Regenerate Identity Sheet', 'identity_sheet_regenerate', '', 'refresh');
+            regen.addEventListener('click', () => confirmThen(card, 'identity_sheet_regenerate',
+                'Regenerate Identity Sheet',
+                "Regenerate this character's identity sheet? The approved base image will remain unchanged, and the current sheet is kept until the new one is ready."));
             actions.appendChild(regen);
             panel.appendChild(actions);
             return panel;
         }
 
-        // A failed sheet can be retried directly from the card.
-        // (A `candidate` sheet no longer reaches the UI: creating an identity
-        // uses the character preview already on the card and goes straight to
-        // sheet generation, so there is no separate approval step.)
-        if (identity && (status === 'candidate' || status === 'approved')) {
-            const busy = document.createElement('div');
-            busy.className = 'identity-progress';
-            const busyTitle = document.createElement('span');
-            busyTitle.className = 'identity-progress-title';
-            busyTitle.textContent = 'Creating Character Identity Sheet\u2026';
-            busy.appendChild(busyTitle);
-            panel.appendChild(busy);
+        // Defensive fallback: saving a character generates the sheet in the same
+        // turn, so a card is rarely observed mid-generation. Show progress.
+        if (status === 'candidate') {
+            const box = document.createElement('div');
+            box.className = 'identity-progress';
+            box.setAttribute('role', 'status');
+            box.innerHTML = '<span class="identity-progress-title">Creating Character Identity Sheet\u2026</span>' +
+                '<span class="identity-progress-sub">Rendering the consolidated reference sheet\u2026</span>';
+            panel.appendChild(box);
             return panel;
         }
 
-        // A legacy character that already has an identity sheet can rebuild it.
-        if (identity && identity.hasLegacyBase) {
-            const createWrap = document.createElement('div');
-            createWrap.className = 'identity-actions';
-            const rebuild = identityButton('Rebuild Identity Sheet', 'identity_start', 'primary');
-            rebuild.addEventListener('click', async () => {
-                const ok = typeof Dialog !== 'undefined' && Dialog.confirm
-                    ? await Dialog.confirm({
-                        title: 'Rebuild Identity Sheet',
-                        message: 'This character has no identity sheet. Its existing image becomes the approved base and a reference sheet is generated.',
-                        confirmText: 'Rebuild'
-                    })
-                    : true;
-                if (ok) sendIdentity(card, 'identity_start');
+        // Approved with no sheet yet, or a failed sheet.
+        if (identity && (status === 'approved' || status === 'failed')) {
+            const head = document.createElement('div');
+            head.className = 'identity-line';
+            const failed = status === 'failed';
+            head.innerHTML = '<span class="identity-dot identity-dot--' + (failed ? 'failed' : 'pending') + '"></span>' +
+                '<span class="identity-line-label">' + (failed ? 'Identity sheet generation failed' : 'Approved \u2014 ready to create the identity sheet') + '</span>';
+            panel.appendChild(head);
+            if (identity.error) panel.appendChild(el('div', 'identity-error', identity.error));
+            const basePrev = identityPreview(card.characterName || 'Character', identity.baseImageUrl);
+            if (basePrev) panel.appendChild(basePrev);
+            const actions = document.createElement('div');
+            actions.className = 'identity-actions';
+            const create = identityButton('Create Identity Sheet', 'identity_sheet_regenerate', 'primary', 'refresh');
+            create.addEventListener('click', () => {
+                lock(cardElOf(panel));
+                sendIdentity(card, 'identity_sheet_regenerate', 'Create the identity sheet');
             });
-            createWrap.appendChild(rebuild);
-            const note = document.createElement('span');
-            note.className = 'identity-legacy-note';
-            note.textContent = 'Basic Reference \u2014 built from the existing character image.';
-            createWrap.appendChild(note);
-            panel.appendChild(createWrap);
+            actions.appendChild(create);
+            panel.appendChild(actions);
             return panel;
         }
 
-        // No identity yet: explain that saving as a character creates it. Saving
-        // the character runs the identity flow automatically, so there is no
-        // separate "create identity" step here.
+        // No identity package yet: saving the character creates the sheet.
         const info = document.createElement('div');
         info.className = 'identity-info';
-        const infoTitle = document.createElement('div');
-        infoTitle.className = 'identity-info-title';
-        infoTitle.textContent = 'Character Identity';
-        const infoDesc = document.createElement('div');
-        infoDesc.className = 'identity-info-desc';
-        infoDesc.textContent = 'Save this character to automatically create its identity reference sheet \u2014 multiple '
-            + 'consistent reference images (full body, face and detail views) used to keep this person recognizable in '
-            + 'future images and videos.';
-        info.appendChild(infoTitle);
-        info.appendChild(infoDesc);
+        info.appendChild(el('div', 'identity-info-title', 'Character Identity'));
+        info.appendChild(el('div', 'identity-info-desc',
+            'Save this character to create a single consolidated identity sheet (one image with multiple reference ' +
+            'panels) that keeps this person recognizable in future images and videos.'));
         panel.appendChild(info);
         return panel;
+    }
+
+    function cardElOf(node) {
+        return node ? node.closest('.playground-card') : null;
+    }
+
+    async function confirmThen(card, type, title, message) {
+        const ok = typeof Dialog !== 'undefined' && Dialog.confirm
+            ? await Dialog.confirm({ title, message, confirmText: 'Continue' })
+            : true;
+        if (ok) sendIdentity(card, type);
     }
 
     function openViewer(characterId) {
@@ -494,7 +518,7 @@ const PlaygroundUI = (() => {
             return;
         }
         if (type === 'identity_start' || type === 'identity_approve' || type === 'identity_regenerate'
-            || type === 'identity_sheet_regenerate') {
+            || type === 'identity_sheet_regenerate' || type === 'use_character') {
             lock(cardEl);
             sendIdentity(card, type);
             return;
@@ -510,15 +534,14 @@ const PlaygroundUI = (() => {
         send(labels[type] || type, { type, conceptId: card.id, expectedRevision: card.revision });
     }
 
-    // Saving a character now also creates its identity sheet: the character
-    // preview on the card becomes the approved base, and the reference sheet is
-    // generated in the same turn. The name is asked first, then the whole flow
-    // runs over the chat stream so progress is visible.
+    // Saving a character creates the preset and its consolidated identity sheet
+    // in the same turn. The name is asked first, then the whole flow runs over
+    // the chat stream so progress is visible.
     async function saveAsCharacter(button, card) {
         const suggested = card.characterName || card.title || 'Character';
         Dialog.prompt({
             title: 'Save as Character',
-            message: 'Name this character. On save, its identity reference sheet is created automatically from this image.',
+            message: 'Name this character. On save, its consolidated identity sheet is created automatically from this image.',
             value: suggested,
             confirmText: 'Save & Create Identity'
         }).then((name) => {
@@ -880,7 +903,7 @@ const PlaygroundUI = (() => {
         if (typeof Dialog !== 'undefined' && Dialog.confirm) {
             confirmed = await Dialog.confirm({
                 title: 'Delete Character',
-                message: 'Delete "' + label + '" from your saved characters? Its identity sheet and reference images are deleted too.',
+                message: 'Delete "' + label + '" from your saved characters? Its approved base image and consolidated identity sheet are deleted too.',
                 confirmText: 'Delete',
                 danger: true
             });

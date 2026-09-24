@@ -873,7 +873,7 @@ test('normalizeAction accepts strings and objects and rejects unknown types', ()
     assert.equal(playground.normalizeAction(null), null);
 });
 
-test('canonical generated characters round-trip with identity and portrait ownership', () => {
+test('canonical generated characters round-trip with identity and base image ownership', () => {
     const identity = characterGen.generateRandomIdentity(90210, {
         appearance: 'south_asian', age: 'adult', gender: 'woman'
     });
@@ -882,13 +882,16 @@ test('canonical generated characters round-trip with identity and portrait owner
         identitySignature: identity.signature, provenance: { type: 'generated' }
     });
     const loaded = characterPresets.get(saved.id);
-    assert.equal(loaded.schemaVersion, 1);
+    assert.equal(loaded.schemaVersion, 2);
     assert.equal(loaded.identity.identitySignature, identity.signature);
     assert.equal(loaded.identity.ageGroup, identity.ageGroup);
     assert.equal(loaded.identity.appearanceCategory, 'south_asian');
     assert.equal(loaded.identity.gender, 'woman');
-    characterPresets.setPortrait(saved.id, { url: '/generated/portrait.png' });
-    assert.equal(characterPresets.get(saved.id).portraitReference.identitySignature, identity.signature);
+    characterPresets.setCandidateBaseImage(saved.id, { url: '/generated/portrait.png', filename: 'portrait.png' });
+    assert.equal(characterPresets.get(saved.id).approvedBaseImage.filename, 'portrait.png');
+    assert.equal(characterPresets.get(saved.id).approvedBaseImage.approvedAt, null);
+    characterPresets.approveBaseImage(saved.id);
+    assert.ok(characterPresets.get(saved.id).approvedBaseImage.approvedAt);
     assert.equal(characterStudio.resolveCharacter(saved.id).identity.hair.color, identity.hairColor);
 });
 

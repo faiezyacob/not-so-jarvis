@@ -1,14 +1,12 @@
 /* ============================================
    JARVIS — Character Identity System tests
-   Covers the identity package lifecycle (candidate
-   -> approved -> ready), the deterministic reference
-   plan (full body + face + conditional details), the
-   reference selection for generation, the
-   prompt-layer identity/scene separation, partial
-   failure handling, regeneration safety, legacy
-   characters and the preset persistence. The state
-   stores are pointed at temp files so nothing in
-   data/ is touched.
+   Covers the single-sheet identity package
+   lifecycle (candidate -> approved -> ready), the
+   structured metadata, the consolidated sheet
+   prompt, regeneration safety, the preset
+   persistence and the UI card. The state stores are
+   pointed at temp files so nothing in data/ is
+   touched.
    Run with: npm test
    ============================================ */
 
@@ -57,17 +55,23 @@ function makeCharacter(overrides = {}) {
         identityText: 'a 29-year-old woman with medium golden skin, an oval face, hazel almond-shaped eyes, long wavy dark brown hair',
         identitySignature: 'sig-123',
         appearanceCategory: 'mixed_diverse',
-        portraitReference: { url: '/generated/portrait.png', filename: 'portrait.png', width: 256, height: 256 }
+        approvedBaseImage: {
+            url: '/generated/base.png',
+            filename: 'base.png',
+            width: 1024,
+            height: 1024,
+            approvedAt: new Date().toISOString()
+        }
     }, overrides);
 }
 
 // A deterministic fake generator: every call succeeds with a stable filename.
 function fakeGenerate(_source, instruction, options) {
     const calls = fakeGenerate.calls;
-    calls.push({ instruction, references: (options && options.references) || [] });
+    calls.push({ source: _source, instruction, references: (options && options.references) || [] });
     return {
-        url: '/generated/ref_' + calls.length + '.png',
-        filename: 'ref_' + calls.length + '.png',
+        url: '/generated/identity_sheet.png',
+        filename: 'identity_sheet.png',
         width: 1024,
         height: 1024
     };
@@ -76,359 +80,220 @@ fakeGenerate.calls = [];
 
 function resetCalls() { fakeGenerate.calls = []; }
 
-test('the reference plan always includes full-body and face views', () => {
-    const character = makeCharacter();
-    const plan = identity.planReferences(character);
-    const roles = plan.map((e) => e.role);
-    for (const role of ['full_body_front', 'full_body_three_quarter', 'full_body_side', 'full_body_back',
-        'face_front', 'face_three_quarter', 'face_profile']) {
-        assert.ok(roles.includes(role), 'missing required role ' + role);
-    }
-});
-
-test('the reference plan is deterministic for the same character', () => {
-    const character = makeCharacter();
-    assert.deepEqual(identity.planReferences(character), identity.planReferences(character));
-});
-
-test('a plain character never adds accessory references', () => {
-    const character = makeCharacter({
-        identity: Object.assign({}, makeCharacter().identity, { distinctiveFeature: '', distinctiveFeatures: [] })
-    });
-    const roles = identity.planReferences(character).map((e) => e.role);
-    assert.ok(!roles.includes('accessory_detail'));
-    assert.ok(!roles.includes('distinctive_feature_detail'));
-});
-
-test('a character with glasses and a tattoo adds conditional references', () => {
-    const character = makeCharacter({
-        identity: Object.assign({}, makeCharacter().identity, {
-            distinctiveFeature: 'wears round glasses and has a small tattoo on the wrist'
-        })
-    });
-    const roles = identity.planReferences(character).map((e) => e.role);
-    assert.ok(roles.includes('accessory_detail'), 'expected accessory_detail for glasses');
-    assert.ok(roles.includes('distinctive_feature_detail'), 'expected a distinctive-feature detail');
-});
-
 test('identity metadata is derived from the structured identity', () => {
-    const meta = identity.deriveMetadata(makeCharacter().identity);
-    assert.equal(meta.ageRange, '29-year-old');
-    assert.equal(meta.genderPresentation, 'woman');
-    assert.equal(meta.skinTone, 'medium golden skin');
-    assert.equal(meta.eyeColor, 'hazel');
+    const meta = identity.deriveMetadata(makeCharacter());
+    assert.equal(meta.face.shape, 'an oval face');
+    assert.equal(meta.face.eyes, 'hazel almond-shaped eyes');
     assert.equal(meta.hair.color, 'dark brown');
     assert.equal(meta.hair.style, 'long');
-    assert.equal(meta.bodyProportions, 'a slim build');
+    assert.equal(meta.hair.texture, 'wavy');
+    assert.equal(meta.skin.tone, 'medium golden skin');
+    assert.equal(meta.body.build, 'a slim build');
     assert.deepEqual(meta.distinctiveFeatures, ['a small beauty mark beneath one eye']);
+    assert.match(meta.identityPreservationInstructions, /facial identity/i);
 });
 
-test('a candidate sheet starts unapproved with no references', () => {
-    const sheet = identity.createSheet({
+test('a candidate package is unapproved with no sheet', () => {
+    const pkg = identity.createPackage({
         baseImage: { url: '/generated/base.png', filename: 'base.png' },
         character: makeCharacter()
     });
-    assert.equal(sheet.status, identity.STATUS.CANDIDATE);
-    assert.equal(sheet.baseImage.approved, false);
-    assert.equal(sheet.identity.status, identity.SHEET_STATUS.NOT_STARTED);
-    assert.equal(identity.allReferences(sheet).length, 0);
+    assert.equal(pkg.status, identity.STATUS.CANDIDATE);
+    assert.equal(pkg.approvedBaseImage.approvedAt, null);
+    assert.equal(pkg.identitySheet, null);
 });
 
-test('generateSheet only produces references when a base image exists', async () => {
-    resetCalls();
-    const character = makeCharacter();
-    const sheet = identity.createSheet({ baseImage: {}, character });
-    const result = await identity.generateSheet({
-        character,
-        sheet,
-        generate: fakeGenerate,
-        resolveAbs: (n) => n
+test('approving the base moves the package to approved', () => {
+    let pkg = identity.createPackage({
+        baseImage: { url: '/generated/base.png', filename: 'base.png' },
+        character: makeCharacter()
     });
-    assert.equal(result.status, identity.STATUS.FAILED);
-    assert.equal(fakeGenerate.calls.length, 0, 'must not generate without a base image');
+    pkg = identity.approveBase(pkg);
+    assert.equal(pkg.status, identity.STATUS.APPROVED);
+    assert.ok(pkg.approvedBaseImage.approvedAt);
 });
 
-test('approve + generateSheet produces a ready package with role-tagged references', async () => {
+test('generateSheet produces exactly ONE consolidated identity sheet', async () => {
     resetCalls();
     const character = makeCharacter();
-    let sheet = identity.createSheet({
+    let pkg = identity.createPackage({
         baseImage: { url: '/generated/base.png', filename: 'base.png' },
         character
     });
-    sheet = identity.applyBaseImage(sheet, {}, { approved: true });
+    pkg = identity.approveBase(pkg);
     const result = await identity.generateSheet({
         character,
-        sheet,
+        package: pkg,
         generate: fakeGenerate,
         resolveAbs: (n) => n
     });
+    assert.equal(fakeGenerate.calls.length, 1, 'exactly one image is generated');
     assert.equal(result.status, identity.STATUS.READY);
-    assert.equal(result.identity.status, identity.SHEET_STATUS.READY);
-    const roles = identity.allReferences(result).map((r) => r.role);
-    assert.ok(roles.includes('full_body_front'));
-    assert.ok(roles.includes('face_front'));
-    assert.ok(roles.includes('face_profile'));
-    // Every reference carries role metadata and points at the approved base.
-    for (const ref of identity.allReferences(result)) {
-        assert.ok(ref.imagePath, 'reference has an image path');
-        assert.ok(ref.imageUrl.startsWith('/generated/'), 'reference has a public url');
-        assert.ok(ref.imagePath !== 'base.png');
-        assert.equal(ref.sourceBaseImage, 'base.png');
-    }
+    assert.equal(result.identitySheet.status, identity.SHEET_STATUS.READY);
+    assert.equal(result.identitySheet.filename, 'identity_sheet.png');
+    assert.equal(result.identitySheet.version, 1);
+    // The approved base image is untouched.
+    assert.equal(result.approvedBaseImage.filename, 'base.png');
+    assert.ok(result.approvedBaseImage.approvedAt);
 });
 
-test('later views are conditioned on the earlier ones (image references)', async () => {
+test('generateSheet refuses to run without an approved base image', async () => {
     resetCalls();
     const character = makeCharacter();
-    let sheet = identity.createSheet({
-        baseImage: { url: '/generated/base.png', filename: 'base.png' },
-        character
-    });
-    sheet = identity.applyBaseImage(sheet, {}, { approved: true });
-    await identity.generateSheet({ character, sheet, generate: fakeGenerate, resolveAbs: (n) => n });
-    const threeQuarter = fakeGenerate.calls.find((c) => /full-body three-quarter view/.test(c.instruction));
-    assert.ok(threeQuarter, 'three-quarter call exists');
-    assert.ok(threeQuarter.references.includes('ref_1.png'), 'depends on the front view');
-});
-
-test('a partial failure is recorded and does not discard successful references', async () => {
-    const character = makeCharacter();
-    let sheet = identity.createSheet({
-        baseImage: { url: '/generated/base.png', filename: 'base.png' },
-        character
-    });
-    sheet = identity.applyBaseImage(sheet, {}, { approved: true });
-    let n = 0;
-    const flaky = () => {
-        n += 1;
-        if (n === 1) return { url: '/generated/ok_1.png', filename: 'ok_1.png' };
-        if (n === 3) throw new Error('ComfyUI OOM');
-        return { url: '/generated/ok_' + n + '.png', filename: 'ok_' + n + '.png' };
-    };
-    const result = await identity.generateSheet({
-        character,
-        sheet,
-        generate: flaky,
-        resolveAbs: (x) => x,
-        logger: { warn: () => {} }
-    });
-    // The failed reference leaves the sheet not-ready, but the successes remain.
+    const pkg = identity.createPackage({ baseImage: {}, character });
+    const result = await identity.generateSheet({ character, package: pkg, generate: fakeGenerate, resolveAbs: (n) => n });
+    assert.equal(fakeGenerate.calls.length, 0);
     assert.equal(result.status, identity.STATUS.FAILED);
-    assert.ok(identity.allReferences(result).length >= 5, 'successful references were kept');
-    assert.ok(result.identity.consistencyNotes.some((note) => /Could not generate/.test(note)));
 });
 
-test('regeneration keeps the previous working references when the new sheet fails', async () => {
+test('a failed regeneration keeps the previous valid sheet', async () => {
     resetCalls();
     const character = makeCharacter();
-    let sheet = identity.createSheet({
+    let pkg = identity.approveBase(identity.createPackage({
         baseImage: { url: '/generated/base.png', filename: 'base.png' },
         character
-    });
-    sheet = identity.applyBaseImage(sheet, {}, { approved: true });
-    const previous = await identity.generateSheet({ character, sheet, generate: fakeGenerate, resolveAbs: (n) => n });
-    assert.equal(previous.status, identity.STATUS.READY);
-    // Every call now fails.
+    }));
+    const ready = await identity.generateSheet({ character, package: pkg, generate: fakeGenerate, resolveAbs: (n) => n });
+    assert.equal(ready.status, identity.STATUS.READY);
     const failing = () => { throw new Error('ComfyUI unavailable'); };
     const result = await identity.generateSheet({
         character,
-        sheet: identity.markGenerating(previous, { plan: identity.planReferences(character) }),
-        previousSheet: previous,
+        package: ready,
+        previousSheet: ready,
         generate: failing,
         resolveAbs: (n) => n,
         logger: { warn: () => {} }
     });
-    // The previous package's references are restored and it stays ready.
-    assert.equal(result.status, identity.STATUS.READY);
-    assert.ok(identity.allReferences(result).length >= 7);
+    assert.equal(result.status, identity.STATUS.READY, 'previous sheet is preserved');
+    assert.equal(result.identitySheet.filename, 'identity_sheet.png');
+    assert.match(result.error, /previous sheet was kept/i);
 });
 
-test('reference selection picks views relevant to the request', () => {
+test('a failed first generation marks the package failed', async () => {
     const character = makeCharacter();
-    const refs = identity.normalizeSheet({
-        baseImage: { filename: 'base.png', approved: true },
-        identity: { references: {
-            fullBody: [{ role: 'full_body_front', imagePath: 'fb_front.png' }, { role: 'full_body_three_quarter', imagePath: 'fb_34.png' }],
-            face: [{ role: 'face_front', imagePath: 'face_front.png' }],
-            profile: [{ role: 'face_profile', imagePath: 'face_profile.png' }],
-            accessories: [],
-            distinctiveFeatures: []
-        } }
+    const pkg = identity.approveBase(identity.createPackage({
+        baseImage: { url: '/generated/base.png', filename: 'base.png' },
+        character
+    }));
+    const failing = () => { throw new Error('ComfyUI OOM'); };
+    const result = await identity.generateSheet({
+        character, package: pkg, generate: failing, resolveAbs: (n) => n, logger: { warn: () => {} }
     });
-    const portrait = identity.selectReferencesForRequest(refs, { kind: 'portrait' });
-    assert.equal(portrait.source, 'base.png');
-    assert.deepEqual(portrait.references, ['face_front.png']);
-
-    const fullBody = identity.selectReferencesForRequest(refs, { kind: 'full_body' });
-    assert.deepEqual(fullBody.references, ['fb_front.png', 'fb_34.png']);
-
-    const profile = identity.selectReferencesForRequest(refs, { kind: 'profile' });
-    assert.ok(profile.references.includes('face_profile.png'));
+    assert.equal(result.status, identity.STATUS.FAILED);
+    assert.match(result.error, /ComfyUI OOM/);
 });
 
-test('request wording infers a reference kind', () => {
-    assert.equal(identity.inferRequestKind({ text: 'a full-body fashion photo' }), 'full_body');
-    assert.equal(identity.inferRequestKind({ text: 'a close-up portrait, headshot' }), 'portrait');
-    assert.equal(identity.inferRequestKind({ text: 'wearing her signature earrings' }), 'accessory');
+test('selectIdentityImage prefers the sheet and falls back to the base image', () => {
+    const character = makeCharacter();
+    const baseOnly = identity.normalizePackage(character);
+    const baseImage = identity.selectIdentityImage(baseOnly);
+    assert.equal(baseImage.kind, 'approved_base');
+    assert.equal(baseImage.filename, 'base.png');
+
+    const withSheet = identity.normalizePackage(Object.assign({}, character, {
+        identitySheet: { imageUrl: '/generated/sheet.png', filename: 'sheet.png', status: 'ready', version: 1 }
+    }));
+    const sheetImage = identity.selectIdentityImage(withSheet);
+    assert.equal(sheetImage.kind, 'identity_sheet');
+    assert.equal(sheetImage.filename, 'sheet.png');
+});
+
+test('the identity-sheet prompt is a neutral multi-panel reference document', () => {
+    const prompt = identity.buildIdentitySheetPrompt(makeCharacter());
+    assert.match(prompt, /single character identity reference sheet/i);
+    assert.match(prompt, /full-body front view/i);
+    assert.match(prompt, /three-quarter view/i);
+    assert.match(prompt, /side profile/i);
+    assert.match(prompt, /close-up head-and-shoulders/i);
+    assert.match(prompt, /not a creative scene/i);
+    assert.match(prompt, /neutral light-grey/i);
+});
+
+test('accessory and distinctive details are only requested when relevant', () => {
+    const plain = identity.buildIdentitySheetPrompt(makeCharacter({
+        identity: Object.assign({}, makeCharacter().identity, { distinctiveFeature: '' })
+    }));
+    assert.doesNotMatch(plain, /signature accessory/i);
+    const accessorized = identity.buildIdentitySheetPrompt(makeCharacter({
+        identity: Object.assign({}, makeCharacter().identity, {
+            distinctiveFeature: 'wears round glasses and has a small tattoo on the wrist'
+        })
+    }));
+    assert.match(accessorized, /signature accessory/i);
+    assert.match(accessorized, /distinctive feature/i);
 });
 
 test('the scene edit instruction separates identity from changeable scene', () => {
-    const character = makeCharacter();
-    const sheet = identity.createSheet({
-        baseImage: { url: '/generated/base.png', filename: 'base.png' },
-        character
-    });
-    const instruction = identity.buildSceneEditInstruction(sheet, 'a bedroom mirror selfie in a white tank top');
+    const pkg = identity.normalizePackage(makeCharacter());
+    const instruction = identity.buildSceneEditInstruction(pkg, 'a bedroom mirror selfie in a white tank top', 'Maya');
     assert.match(instruction, /IDENTITY:/);
     assert.match(instruction, /SCENE \(change only this\):/);
     assert.match(instruction, /DO NOT:/);
     assert.match(instruction, /bedroom mirror selfie/);
-    // Outfit/environment belong to the scene; identity instructions stay identity-only.
+    assert.match(instruction, /OUTPUT:/);
+    assert.match(instruction, /ONE new standalone scene image/i);
+    assert.match(instruction, /Never return the identity reference itself/i);
+    assert.match(instruction, /contact sheet|character turnaround/i);
     const identityPart = instruction.slice(0, instruction.indexOf('SCENE'));
     assert.ok(!/tank top|bedroom/i.test(identityPart), 'the identity clause must not carry the scene');
 });
 
 test('identity is never lost when only the outfit/environment changes', () => {
-    const character = makeCharacter();
-    const sheet = identity.createSheet({
-        baseImage: { url: '/generated/base.png', filename: 'base.png' },
-        character
-    });
-    const constraints = identity.buildIdentityConstraints(sheet);
-    const all = constraints.join(' ');
+    const pkg = identity.normalizePackage(makeCharacter());
+    const all = identity.buildIdentityConstraints(pkg).join(' ');
     assert.match(all, /facial identity/i);
     assert.match(all, /hairstyle/i);
     assert.ok(!/tank top|bedroom/i.test(all), 'identity constraints must not name a scene');
 });
 
-test('creating an identity from the card preview uses it as the approved base', () => {
-    // The card already shows a character preview; creating an identity must
-    // lock that preview as the approved base and go straight to the sheet,
-    // with no separate candidate base-image generation.
-    const character = makeCharacter({ identitySheet: null });
-    const preview = { url: '/generated/preview.png', filename: 'preview.png', width: 256, height: 256, seed: 7 };
-    let sheet = identity.createSheet({ baseImage: preview, character });
-    sheet = identity.applyBaseImage(sheet, {}, { approved: true });
-    sheet.status = identity.STATUS.APPROVED;
-    assert.equal(sheet.baseImage.filename, 'preview.png');
-    assert.equal(sheet.baseImage.approved, true);
-    assert.equal(sheet.baseImage.approvedAt !== undefined, true);
-    // A candidate sheet never generates; the approved one is what the sheet step consumes.
-    assert.equal(sheet.status, identity.STATUS.APPROVED);
+test('mediaFilenames lists the approved base image and the single sheet', () => {
+    const pkg = identity.normalizePackage(Object.assign({}, makeCharacter(), {
+        identitySheet: { imageUrl: '/generated/sheet.png', filename: 'sheet.png', status: 'ready', version: 1 }
+    }));
+    assert.deepEqual(identity.mediaFilenames(pkg).sort(), ['base.png', 'sheet.png']);
 });
 
-test('a legacy character with only a portrait can build a base image', () => {
-    const character = makeCharacter({ identitySheet: null });
-    const sheet = characterPresets.getIdentitySheet(character.id);
-    assert.equal(sheet, null);
-    const base = identity.effectiveBaseImage(character, null);
-    assert.equal(base.filename, 'portrait.png');
-    assert.equal(identity.hasLegacyBase(character, null), true);
+test('buildCard exposes the identity state without leaking paths', () => {
+    const pkg = identity.normalizePackage(Object.assign({}, makeCharacter(), {
+        identitySheet: { imageUrl: '/generated/sheet.png', filename: 'sheet.png', status: 'ready', version: 2 }
+    }));
+    const card = identity.buildCard(Object.assign({}, makeCharacter(), pkg));
+    assert.equal(card.name, 'Maya');
+    assert.equal(card.status, identity.STATUS.READY);
+    assert.equal(card.approvedBaseImage.url, '/generated/base.png');
+    assert.equal(card.identitySheet.filename, 'sheet.png');
+    assert.equal(card.identitySheet.version, 2);
+    assert.equal(card.identityMetadata.face.shape, 'an oval face');
+    assert.ok(!JSON.stringify(card).includes('tmp'), 'card must not leak absolute paths');
 });
 
-test('the preset store round-trips the identity sheet', () => {
+test('the preset store round-trips the single-sheet identity package', () => {
     const character = characterPresets.create({
         name: 'Identity Roundtrip',
         identityText: 'a person',
         identity: makeCharacter().identity,
         provenance: { type: 'generated' }
     });
-    assert.equal(characterPresets.getIdentitySheet(character.id), null);
-    let sheet = identity.createSheet({
+    assert.equal(characterPresets.getIdentityPackage(character.id).approvedBaseImage, null);
+
+    let pkg = identity.approveBase(identity.createPackage({
         baseImage: { url: '/generated/base.png', filename: 'base.png' },
         character
-    });
-    sheet = identity.applyBaseImage(sheet, {}, { approved: true });
-    characterPresets.setIdentitySheet(character.id, sheet);
+    }));
+    pkg = identity.applySheet(pkg, { url: '/generated/sheet.png', filename: 'sheet.png' });
+    characterPresets.setIdentityPackage(character.id, pkg);
 
-    const reloaded = characterPresets.get(character.id);
-    assert.ok(reloaded.identitySheet, 'identitySheet persisted');
-    const stored = characterPresets.getIdentitySheet(character.id);
-    assert.equal(stored.baseImage.filename, 'base.png');
-    assert.equal(stored.baseImage.approved, true);
+    const stored = characterPresets.getIdentityPackage(character.id);
+    assert.equal(stored.approvedBaseImage.filename, 'base.png');
+    assert.ok(stored.approvedBaseImage.approvedAt);
+    assert.equal(stored.identitySheet.filename, 'sheet.png');
+    assert.equal(stored.identitySheet.status, 'ready');
 
     characterPresets.clearIdentitySheet(character.id);
-    assert.equal(characterPresets.getIdentitySheet(character.id), null);
+    const cleared = characterPresets.getIdentityPackage(character.id);
+    assert.equal(cleared.identitySheet, null);
+    assert.equal(cleared.approvedBaseImage.filename, 'base.png');
     assert.equal(characterPresets.remove(character.id), true);
-});
-
-test('mediaFilenames lists the approved base image and every reference', () => {
-    const character = makeCharacter();
-    let sheet = identity.createSheet({
-        baseImage: { url: '/generated/base.png', filename: 'base.png' },
-        character
-    });
-    sheet = identity.recordReference(sheet, 'face_front', identity.CATEGORY.FACE, {
-        role: 'face_front', imageUrl: '/generated/f.png', imagePath: 'f.png'
-    });
-    sheet = identity.recordReference(sheet, 'full_body_front', identity.CATEGORY.FULL_BODY, {
-        role: 'full_body_front', imageUrl: '/generated/fb.png', imagePath: 'fb.png'
-    });
-    const names = identity.mediaFilenames(sheet);
-    assert.deepEqual(names.sort(), ['base.png', 'f.png', 'fb.png'].sort());
-});
-
-test('mediaFilenames de-duplicates a reference reused as the base', () => {
-    const character = makeCharacter();
-    let sheet = identity.createSheet({ baseImage: { filename: 'same.png' }, character });
-    sheet = identity.recordReference(sheet, 'face_front', identity.CATEGORY.FACE, {
-        role: 'face_front', imageUrl: '/generated/same.png', imagePath: 'same.png'
-    });
-    assert.deepEqual(identity.mediaFilenames(sheet), ['same.png']);
-});
-
-test('buildCard exposes the identity state without leaking paths', () => {
-    const character = makeCharacter();
-    let sheet = identity.createSheet({
-        baseImage: { url: '/generated/base.png', filename: 'base.png' },
-        character
-    });
-    sheet = identity.applyBaseImage(sheet, {}, { approved: true });
-    sheet = identity.recordReference(sheet, 'face_front', identity.CATEGORY.FACE, {
-        role: 'face_front', label: 'Face — front', imageUrl: '/generated/f.png', imagePath: 'f.png'
-    });
-    const card = identity.buildCard(character, sheet);
-    assert.equal(card.name, 'Maya');
-    assert.equal(card.baseImage.url, '/generated/base.png');
-    assert.equal(card.categories.face.length, 1);
-    assert.equal(card.referenceCount, 1);
-    assert.ok(!JSON.stringify(card).includes('tmp'), 'card must not leak absolute paths');
-    assert.equal(card.metadata.eyeColor, 'hazel');
-});
-
-test('saving as a character creates the preset and its identity package', async () => {
-    resetCalls();
-    // A saved character created from a card preview: the preview becomes the
-    // approved base and the sheet is generated in the same flow.
-    const character = characterPresets.create({
-        name: 'Saved Character',
-        identityText: 'a 29-year-old woman',
-        identity: makeCharacter().identity,
-        provenance: { type: 'playground-identity' }
-    });
-    const preview = { url: '/generated/preview.png', filename: 'preview.png', width: 512, height: 512 };
-    let sheet = identity.createSheet({ baseImage: preview, character });
-    sheet = identity.applyBaseImage(sheet, {}, { approved: true });
-    sheet.status = identity.STATUS.APPROVED;
-    characterPresets.setIdentitySheet(character.id, sheet);
-    characterPresets.setPortrait(character.id, preview);
-
-    const result = await identity.generateSheet({
-        character,
-        sheet: characterPresets.getIdentitySheet(character.id),
-        generate: fakeGenerate,
-        resolveAbs: (n) => n
-    });
-    characterPresets.setIdentitySheet(character.id, result);
-
-    const stored = characterPresets.get(character.id);
-    assert.equal(stored.name, 'Saved Character');
-    assert.equal(characterPresets.getIdentitySheet(character.id).status, identity.STATUS.READY);
-    assert.ok(identity.allReferences(characterPresets.getIdentitySheet(character.id)).length >= 7);
-    // The approved base stays the card preview.
-    assert.equal(characterPresets.getIdentitySheet(character.id).baseImage.filename, 'preview.png');
-    assert.equal(characterPresets.getIdentitySheet(character.id).baseImage.approved, true);
-    characterPresets.remove(character.id);
 });
 
 test('save_character carries the chosen name through action normalization', () => {
@@ -439,19 +304,14 @@ test('save_character carries the chosen name through action normalization', () =
     assert.equal(action.name, 'Maya');
 });
 
-test('playground concept cards carry an identity summary for a saved character', () => {
+test('playground concept cards carry a single-image identity summary', () => {
     const character = characterPresets.create({
         name: 'Card Character',
         identityText: 'a person',
         identity: makeCharacter().identity,
         provenance: { type: 'generated' }
     });
-    const sheet = identity.createSheet({
-        baseImage: { url: '/generated/base.png', filename: 'base.png' },
-        character
-    });
-    characterPresets.setIdentitySheet(character.id, sheet);
-
+    characterPresets.setCandidateBaseImage(character.id, { url: '/generated/cand.png', filename: 'cand.png' });
     const session = playground.start({
         conversationId: 'identity-card-' + Date.now(),
         themeId: 'lifestyle-candid',
@@ -463,5 +323,6 @@ test('playground concept cards carry an identity summary for a saved character',
     assert.ok(card.identity, 'identity summary present');
     assert.equal(card.identity.characterId, character.id);
     assert.equal(card.identity.status, identity.STATUS.CANDIDATE);
+    assert.equal(card.identity.hasApprovedBase, false);
     characterPresets.remove(character.id);
 });

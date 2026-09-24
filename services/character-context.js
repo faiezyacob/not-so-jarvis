@@ -5,21 +5,14 @@
    treated as ordinary prompt text: it is resolved
    to a saved Character Identity Package, the active
    character is scoped to the conversation's
-   generation flow, and the media pipelines receive
-   the resolved conditioning (approved base image +
-   relevant identity references) instead of parsing
-   mentions themselves.
+   generation flow, and every media pipeline receives
+   the same conditioning (one consolidated identity
+   sheet per character + structured metadata)
+   instead of parsing mentions itself.
 
-   This module owns:
-     - mention parsing (only known characters; never
-       emails or unrelated "@")
-     - bare-name resolution ("bring Maya back")
-     - the per-conversation active character store
-     - reference selection for a scene
-     - the identity-vs-scene edit instruction
-
-   It is filesystem-agnostic: it returns filenames,
-   and the caller resolves them to absolute paths.
+   One character contributes exactly ONE identity
+   image. A scene with three characters passes three
+   images, never fifteen.
    SPDX-License-Identifier: MIT
    Copyright (c) 2026 not-so-jarvis.
    ============================================ */
@@ -33,8 +26,8 @@ const DATA_DIR = path.join(__dirname, '..', 'data');
 // An explicit path keeps the tests hermetic (they never touch data/).
 const CONTEXT_PATH = process.env.CHARACTER_CONTEXT_PATH || path.join(DATA_DIR, 'character-context.json');
 
-// Identity status the picker / chat surface. `basic` is the legacy state: the
-// character has a portrait but no identity sheet yet.
+// Identity status the picker / chat surface. `basic` means the character has an
+// approved base image but no consolidated identity sheet yet.
 const IDENTITY_STATUS = {
     READY: 'ready',
     GENERATING: 'generating',
@@ -96,35 +89,51 @@ function getCharacter(id) {
 function getCharacterIdentity(id) {
     const character = getCharacter(id);
     if (!character) return null;
-    return characterPresets.getIdentitySheet(character.id);
+    return characterPresets.getIdentityPackage(character.id);
 }
 
-// Every saved character's identity status + primary image, for the @ picker.
-// Never exposes filesystem paths.
+// Every saved character's identity status + its single primary image, for the
+// @ picker. Never exposes filesystem paths.
 function listCharacterOptions() {
     return characterPresets.list().map((character) => {
-        const sheet = characterPresets.getIdentitySheet(character.id);
-        const base = characterIdentity.effectiveBaseImage(character, sheet);
+        const pkg = characterPresets.getIdentityPackage(character.id);
+        const image = pkg ? characterIdentity.selectIdentityImage(pkg) : null;
         return {
             id: character.id,
             name: character.name || 'Character',
-            identityStatus: identityStatusOf(character, sheet),
-            hasIdentity: Boolean(sheet && sheet.status === characterIdentity.STATUS.READY),
-            referenceCount: sheet ? characterIdentity.allReferences(sheet).length : 0,
-            imageUrl: base && base.url ? base.url : ''
+            identityStatus: identityStatusOf(character, pkg),
+            hasIdentity: Boolean(pkg && pkg.identitySheet && pkg.identitySheet.status === characterIdentity.SHEET_STATUS.READY),
+            imageUrl: image && image.url ? image.url : ''
         };
     });
 }
 
-function identityStatusOf(character, sheet) {
-    const s = sheet || (character && character.identitySheet) || null;
-    if (s) {
-        if (s.status === characterIdentity.STATUS.READY) return IDENTITY_STATUS.READY;
-        if (s.status === characterIdentity.STATUS.GENERATING) return IDENTITY_STATUS.GENERATING;
-        if (s.status === characterIdentity.STATUS.FAILED) return IDENTITY_STATUS.FAILED;
+// Every generated-media filename owned by a saved character's identity package
+// (the approved base image plus the single identity sheet). These files are
+// hidden and never linked from chat messages, so a conversation delete must
+// never remove them — the character preset still points at them. Returns a Set
+// of basenames.
+function characterMediaFilenames() {
+    const names = new Set();
+    for (const character of characterPresets.list()) {
+        const pkg = characterPresets.getIdentityPackage(character.id);
+        if (!pkg) continue;
+        for (const name of characterIdentity.mediaFilenames(pkg)) {
+            if (name) names.add(path.basename(String(name)));
+        }
     }
-    const base = characterIdentity.effectiveBaseImage(character, s);
-    return base && (base.filename || base.url) ? IDENTITY_STATUS.BASIC : IDENTITY_STATUS.NONE;
+    return names;
+}
+
+function identityStatusOf(character, pkg) {
+    const p = pkg || (character ? characterPresets.getIdentityPackage(character.id) : null);
+    if (p) {
+        if (p.identitySheet && p.identitySheet.status === characterIdentity.SHEET_STATUS.READY) return IDENTITY_STATUS.READY;
+        if (p.identitySheet && p.identitySheet.status === characterIdentity.SHEET_STATUS.GENERATING) return IDENTITY_STATUS.GENERATING;
+        if (p.identitySheet && p.identitySheet.status === characterIdentity.SHEET_STATUS.FAILED) return IDENTITY_STATUS.FAILED;
+        if (p.approvedBaseImage && (p.approvedBaseImage.filename || p.approvedBaseImage.url)) return IDENTITY_STATUS.BASIC;
+    }
+    return IDENTITY_STATUS.NONE;
 }
 
 function toRef(character) {
@@ -181,9 +190,7 @@ function parseMentions(text, characters) {
 }
 
 // Bare-name resolution ("bring Maya back"). Conservative: a whole word, not
-// inside an email or an @mention. Names are NOT stripped from the prompt — the
-// reference-guided conditioning preserves the identity, and keeping the wording
-// avoids mangling ordinary sentences.
+// inside an email or an @mention. Names are NOT stripped from the prompt.
 function matchNames(text, characters) {
     const original = String(text || '');
     const known = (Array.isArray(characters) ? characters : characterPresets.list())
@@ -222,6 +229,11 @@ function parseCharacterMessage(message, options = {}) {
         characters: uniqueRefs(mentioned.characters.concat(explicit, named)),
         prompt: mentioned.prompt
     };
+}
+
+// Spec-facing alias.
+function resolveCharacterMentions(message, options = {}) {
+    return parseCharacterMessage(message, options);
 }
 
 // --- Active character store ---------------------------------------------------
@@ -299,94 +311,122 @@ function resolveCharacterContext(options = {}) {
 
 // --- Reference selection / conditioning ---------------------------------------
 
-function getIdentityReferences(character, options = {}) {
+// The single image a character contributes to generation: the consolidated
+// identity sheet when ready, otherwise the approved base image.
+function getIdentityReferences(character) {
     const record = typeof character === 'string' ? getCharacter(character) : character;
     if (!record) return null;
-    const sheet = characterPresets.getIdentitySheet(record.id);
-    const base = characterIdentity.effectiveBaseImage(record, sheet);
-    if (!base || (!base.filename && !base.url)) return null;
-    const source = base.filename || '';
-    let references = [];
-    if (sheet && sheet.status === characterIdentity.STATUS.READY) {
-        const picked = characterIdentity.selectReferencesForRequest(sheet, {
-            text: options.text || options.scenePrompt || '',
-            kind: options.kind
-        });
-        references = picked.references.filter((name) => name && name !== source);
-    }
-    return { source, references };
+    const pkg = characterPresets.getIdentityPackage(record.id);
+    const image = characterIdentity.selectIdentityImage(pkg);
+    if (!image || !image.filename) return null;
+    return { source: image.filename, references: [], kind: image.kind };
 }
 
-function selectRelevantReferences(character, options = {}) {
-    return getIdentityReferences(character, options);
+function selectRelevantReferences(character) {
+    return getIdentityReferences(character);
 }
 
-// Build the multi-character identity-vs-scene instruction. Uses the identity
-// system's own single-character instruction for the primary (so the wording
-// stays canonical) and names the additional people so the editor can tell the
-// positional references apart.
+// Every character's structured identity context, or an empty array.
+function getCharactersForGeneration(characters) {
+    const list = (Array.isArray(characters) ? characters : (characters ? [characters] : []))
+        .map((c) => (typeof c === 'string' ? getCharacter(c) : c))
+        .filter(Boolean);
+    return list.map((c) => characterIdentity.buildCharacterContextEntry(c)).filter(Boolean);
+}
+
+// The structured, multi-character identity-vs-scene instruction. It names every
+// character, maps each to its positional reference image and keeps identity
+// separate from the scene. Identities are explicitly not blended.
 function buildSceneInstruction(characters, scenePrompt) {
-    const list = characters.filter(Boolean);
+    const list = (characters || []).filter(Boolean);
     if (!list.length) return String(scenePrompt || '').trim();
-    const primary = list[0];
-    const sheet = characterPresets.getIdentitySheet(primary.id);
-    let instruction;
-    if (sheet && sheet.status === characterIdentity.STATUS.READY) {
-        instruction = characterIdentity.buildSceneEditInstruction(sheet, scenePrompt);
-    } else {
-        instruction = 'IDENTITY: Keep the exact same approved person shown in image 1. ' +
-            'Preserve their facial identity, hairstyle, skin tone, body proportions and distinctive features. ' +
-            'SCENE (change only this): ' + String(scenePrompt || '').trim() + ' ' +
-            'DO NOT: redesign the character, change facial structure, change the hairstyle unnecessarily, ' +
-            'or introduce new accessories unless the scene explicitly asks for them.';
+    const scene = String(scenePrompt || '').trim();
+    if (list.length === 1) {
+        const pkg = characterPresets.getIdentityPackage(list[0].id);
+        return characterIdentity.buildSceneEditInstruction(pkg, scene, list[0].name || 'the character');
     }
-    if (list.length > 1) {
-        const names = list.map((c, i) => 'image ' + (i + 1) + ' is ' + (c.name || 'the character')).join('; ');
-        instruction += ' Keep every supplied reference person consistent: ' + names +
-            '. Do not merge or swap their identities.';
-    }
-    return instruction;
+    const blocks = list.map((c, i) => {
+        const pkg = characterPresets.getIdentityPackage(c.id);
+        const image = characterIdentity.selectIdentityImage(pkg);
+        const kind = image && image.kind === 'identity_sheet' ? 'identity sheet' : 'approved character image';
+        const meta = pkg ? characterIdentity.summary(pkg.identityMetadata) : '';
+        return 'CHARACTER ' + (i + 1) + ' \u2014 ' + String(c.name || 'Character').toUpperCase() +
+            ' (reference image ' + (i + 1) + ')\n' +
+            'Use ' + (c.name || 'this character') + '\'s ' + kind + ' to preserve their facial identity, hair, ' +
+            'skin tone, body proportions, and distinctive features' + (meta ? ' (' + meta + ')' : '') + '.';
+    });
+    const output = 'OUTPUT: Generate ONE new standalone scene image containing the characters above. ' +
+        'Each reference image is an identity reference, never the requested output and never a scene to copy. ' +
+        'Never return an identity sheet or base image, a modified or recreated version of it, a collage, a ' +
+        'contact sheet, a multi-panel reference sheet, a character turnaround, or a collection of character ' +
+        'views. Do not copy any reference\'s panel layout, camera angle, framing, background, pose, lighting, ' +
+        'composition, text, borders or labels into the new image. Unless the user explicitly asks for a ' +
+        'character sheet or turnaround, the output is a single conventional frame.';
+    const separation = 'CHARACTER SEPARATION\nDo not merge, swap, or blend the identities of ' +
+        list.map((c) => c.name || 'Character').join(', ') + '. Each supplied reference image is a different person.';
+    return blocks.join('\n\n') + '\n\nSCENE\n' + scene + '\n\n' + output + '\n\n' + separation;
 }
 
 // The structured conditioning for a set of characters. Returns filenames; the
 // caller resolves them to absolute paths. Returns null when no character has a
-// usable base image (identity is optional — a characterless request never
-// reaches here).
+// usable identity image. Exactly one image per character.
 function buildConditioning(characters, scenePrompt, options = {}) {
-    const list = uniqueRefs(characters).map((ref) => getCharacter(ref.id)).filter(Boolean);
-    if (!list.length) return null;
-    const sourceNames = [];
-    const referenceFilenames = [];
+    const records = uniqueRefs(characters)
+        .map((ref) => (typeof ref === 'string' ? getCharacter(ref) : ref))
+        .map((ref) => (ref && ref.identity ? ref : getCharacter(ref && ref.id)))
+        .filter(Boolean);
+    const entries = records.map((c) => characterIdentity.buildCharacterContextEntry(c)).filter(Boolean);
+    if (!entries.length) return null;
     const constraints = [];
-    const used = [];
-    for (const character of list) {
-        const refs = getIdentityReferences(character, { text: scenePrompt, kind: options.kind });
-        if (!refs || !refs.source) continue;
-        used.push(character);
-        sourceNames.push(refs.source);
-        if (!options.maxReferences || referenceFilenames.length < options.maxReferences) {
-            for (const name of refs.references) {
-                if (name && !sourceNames.includes(name) && !referenceFilenames.includes(name)) {
-                    referenceFilenames.push(name);
-                }
-            }
-        }
-        const sheet = characterPresets.getIdentitySheet(character.id);
-        if (sheet && sheet.status === characterIdentity.STATUS.READY) {
-            for (const constraint of characterIdentity.buildIdentityConstraints(sheet)) {
-                if (!constraints.includes(constraint)) constraints.push(constraint);
-            }
+    for (const character of records) {
+        const pkg = characterPresets.getIdentityPackage(character.id);
+        if (!pkg) continue;
+        for (const constraint of characterIdentity.buildIdentityConstraints(pkg)) {
+            if (!constraints.includes(constraint)) constraints.push(constraint);
         }
     }
-    if (!sourceNames.length) return null;
+    const sourceFilename = entries[0].identityImage;
+    const referenceFilenames = entries.slice(1).map((e) => e.identityImage)
+        .filter((name) => name && name !== sourceFilename);
     return {
-        characters: used.map(toRef),
-        names: used.map((c) => c.name || 'character').join(' and '),
-        sourceFilename: sourceNames[0],
-        // Extra base images (2nd+ characters) are positional references too.
-        referenceFilenames: sourceNames.slice(1).concat(referenceFilenames),
-        instruction: buildSceneInstruction(used, scenePrompt),
+        characters: records.map(toRef),
+        names: records.map((c) => c.name || 'character').join(' and '),
+        entries,
+        sourceFilename,
+        referenceFilenames,
+        instruction: buildSceneInstruction(records, scenePrompt),
         constraints
+    };
+}
+
+// Spec-facing alias.
+function buildCharacterIdentityContext(characters, scenePrompt, options = {}) {
+    return buildConditioning(characters, scenePrompt, options);
+}
+
+// Compose the ordered reference filenames for a character conditioning plus the
+// user's @-picker image references. The first character's identity image stays
+// the edit source (image_1); other characters' identity images and the user's
+// references are positional references that follow.
+function combineReferenceFilenames(conditioning, options = {}) {
+    if (!conditioning) return { base: '', references: [], userIndexes: [] };
+    const base = conditioning.sourceFilename || '';
+    const userReferences = (Array.isArray(options.userReferences) ? options.userReferences : [])
+        .map((n) => String(n || '').trim())
+        .filter((n) => n && n !== base);
+    const sourceImages = (Array.isArray(options.sourceImages) ? options.sourceImages : [])
+        .map((n) => String(n || '').trim())
+        .filter((n) => n && n !== base && !userReferences.includes(n));
+    const identityReferences = Array.isArray(conditioning.referenceFilenames)
+        ? conditioning.referenceFilenames
+        : [];
+    const ordered = sourceImages.concat(userReferences, identityReferences)
+        .filter((name, index, arr) => name && arr.indexOf(name) === index);
+    const all = [base].concat(sourceImages, userReferences, identityReferences);
+    return {
+        base,
+        references: ordered,
+        userIndexes: userReferences.map((name) => all.indexOf(name))
     };
 }
 
@@ -395,20 +435,25 @@ module.exports = {
     CONTEXT_PATH,
     REMOVE_RE,
     CONTINUE_RE,
+    combineReferenceFilenames,
     getCharacter,
     getCharacterIdentity,
     listCharacterOptions,
+    characterMediaFilenames,
     identityStatusOf,
     parseMentions,
     matchNames,
     parseCharacterMessage,
+    resolveCharacterMentions,
     getActiveCharacter,
     setActiveCharacter,
     clearActiveCharacter,
     resolveActiveCharacters,
     resolveCharacterContext,
     getIdentityReferences,
+    getCharactersForGeneration,
     selectRelevantReferences,
     buildSceneInstruction,
-    buildConditioning
+    buildConditioning,
+    buildCharacterIdentityContext
 };

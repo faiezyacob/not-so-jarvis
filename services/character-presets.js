@@ -1,11 +1,16 @@
 /* ============================================
    JARVIS — Character Presets
-   Small JSON store for reusable character
-   identities used by the Creative Playground.
-   A preset is the canonical identity data
-   ({ identity, appearance, hair, outfit, style })
-   so playground concepts never duplicate a
-   character's attributes in their own records.
+   JSON store for reusable characters used by the
+   Creative Playground and the Character Identity
+   System. A preset is the canonical character
+   record: the structured identity that generated
+   the person, the one approved base image, the one
+   consolidated identity-sheet image and structured
+   identity metadata.
+
+   One character = one approved base image + one
+   identity sheet. There is no per-angle reference
+   array.
    SPDX-License-Identifier: MIT
    Copyright (c) 2026 not-so-jarvis.
    ============================================ */
@@ -19,18 +24,13 @@ const DATA_DIR = path.join(__dirname, '..', 'data');
 // An explicit path keeps the tests hermetic (they never touch data/).
 const PRESETS_PATH = process.env.CHARACTER_PRESETS_PATH || path.join(DATA_DIR, 'character-presets.json');
 
-// Identity fields a preset carries. These map 1:1 onto the playground's
-// lockable attribute groups, so locking reuses the same values verbatim.
-// `appearanceCategory`/`appearanceCategoryLabel` preserve the demographic
-// appearance the person was drawn from so reusing the preset renders them.
-// `outfitPack`/`outfitPackCustom` preserve the character's wardrobe
-// personality (an Outfit Pack id, or the custom outfit text) so a saved
-// character keeps its wardrobe independently of its identity.
+const CHARACTER_SCHEMA_VERSION = 2;
+
+// Fields that live on the character record in addition to the identity package.
 const CHARACTER_FIELDS = [
-    'identityText', 'identitySignature', 'appearance', 'hair', 'outfit', 'style',
+    'identityText', 'identitySignature', 'appearance', 'hair', 'style',
     'appearanceCategory', 'appearanceCategoryLabel',
-    'outfitPack', 'outfitPackCustom', 'referenceImages', 'portraitReference',
-    'wardrobePreference', 'visualPreferences', 'provenance'
+    'outfitPack', 'outfitPackCustom', 'provenance'
 ];
 
 const MAX_FIELD_LENGTH = 600;
@@ -61,32 +61,40 @@ function clean(value) {
     return String(value === undefined || value === null ? '' : value).trim().slice(0, MAX_FIELD_LENGTH);
 }
 
+// Coerce any stored/legacy value into the canonical character record. Backward
+// compatibility is intentionally not preserved: a record that predates the
+// single-sheet model simply has no identity package.
 function migratePreset(value) {
     const src = value && typeof value === 'object' ? value : {};
     const structured = characterModel.canonicalIdentity(src.identity, src);
     const normalized = characterModel.normalizeCharacter(src);
+    const pkg = characterIdentity.normalizePackage(src, { characterId: src.id });
     const out = Object.assign({}, src, normalized, {
         id: String(src.id || ''),
         name: clean(src.name).slice(0, MAX_NAME_LENGTH),
-        schemaVersion: characterModel.CHARACTER_SCHEMA_VERSION,
+        schemaVersion: CHARACTER_SCHEMA_VERSION,
+        description: clean(src.description),
         identity: structured || (typeof src.identity === 'string' ? clean(src.identity) : null),
         identityText: clean(src.identityText || (typeof src.identity === 'string' ? src.identity : normalized.identityText)),
         identitySignature: clean(src.identitySignature || (structured && structured.identitySignature) || ''),
         appearance: clean(src.appearance),
         hair: clean(src.hair),
-        outfit: clean(src.outfit),
         style: clean(src.style || (normalized.visualPreferences && normalized.visualPreferences.preferredStyle)),
         appearanceCategory: clean(src.appearanceCategory || (structured && structured.appearanceCategory)),
         appearanceCategoryLabel: clean(src.appearanceCategoryLabel || (structured && structured.appearanceCategoryLabel)),
         outfitPack: clean(src.outfitPack || (normalized.wardrobePreference && normalized.wardrobePreference.packId)),
         outfitPackCustom: clean(src.outfitPackCustom || (normalized.wardrobePreference && normalized.wardrobePreference.customText)),
-        // The Character Identity System package (base image + identity sheet).
-        // Stored on the preset so identity data is never duplicated elsewhere.
-        // A legacy preset has no sheet and is surfaced as "Basic Reference".
-        identitySheet: src.identitySheet ? characterIdentity.normalizeSheet(src.identitySheet, { characterId: src.id }) : null,
-        revision: Number(src.revision) > 0 ? Number(src.revision) : 1
+        // The single-sheet Character Identity package (one base image, one sheet).
+        approvedBaseImage: pkg.approvedBaseImage,
+        identitySheet: pkg.identitySheet,
+        identityMetadata: pkg.identityMetadata,
+        identityPreservationInstructions: pkg.identityPreservationInstructions,
+        provenance: src.provenance && typeof src.provenance === 'object' ? Object.assign({}, src.provenance) : null,
+        revision: Number(src.revision) > 0 ? Number(src.revision) : 1,
+        createdAt: src.createdAt || null,
+        updatedAt: src.updatedAt || null
     });
-    if (!structured) out.warning = 'Legacy character has no structured identity data; create a new character to enable identity locking.';
+    if (!structured) out.warning = 'This character has no structured identity data; create a new character to enable identity locking.';
     return out;
 }
 
@@ -153,42 +161,53 @@ function remove(id) {
 function duplicate(id, patch = {}) {
     const source = get(id);
     if (!source) return null;
-    return create(Object.assign({}, source, patch, { id: undefined, name: patch.name || source.name + ' Copy' }));
+    const copy = Object.assign({}, source, patch, { id: undefined, name: patch.name || source.name + ' Copy' });
+    return create(copy);
 }
 
-function setPortrait(id, portrait) {
+// --- Identity package ---------------------------------------------------------
+
+// The canonical identity package (approved base image + single identity sheet +
+// metadata) for a preset, normalized.
+function getIdentityPackage(id) {
     const preset = get(id);
     if (!preset) return null;
-    preset.portraitReference = portrait && typeof portrait === 'object'
-        ? Object.assign({}, portrait, { identitySignature: preset.identitySignature, characterRevision: preset.revision })
-        : null;
+    return characterIdentity.normalizePackage(preset, { characterId: preset.id });
+}
+
+// Persist the identity package fields onto a preset. Never touches the
+// identity/wardrobe/name fields.
+function setIdentityPackage(id, pkg) {
+    const preset = get(id);
+    if (!preset) return null;
+    const next = characterIdentity.normalizePackage(pkg, { characterId: preset.id });
+    preset.approvedBaseImage = next.approvedBaseImage;
+    preset.identitySheet = next.identitySheet;
+    preset.identityMetadata = next.identityMetadata;
+    preset.identityPreservationInstructions = next.identityPreservationInstructions;
     preset.updatedAt = new Date().toISOString();
     savePresets();
     return preset;
 }
 
-// The stored Character Identity package for a preset, normalized. Returns the
-// canonical (empty) shape even when the preset never had a sheet.
-function getIdentitySheet(id) {
+// Set/replace just the candidate base image (never approves it).
+function setCandidateBaseImage(id, image) {
     const preset = get(id);
     if (!preset) return null;
-    if (!preset.identitySheet) return null;
-    return characterIdentity.normalizeSheet(preset.identitySheet, { characterId: preset.id });
+    const pkg = characterIdentity.setCandidateBase(getIdentityPackage(id), image);
+    return setIdentityPackage(id, pkg);
 }
 
-// Persist an updated Character Identity package on a preset without touching
-// the identity/wardrobe fields. Always bumped and saved.
-function setIdentitySheet(id, sheet) {
+// Approve the current candidate base image.
+function approveBaseImage(id) {
     const preset = get(id);
     if (!preset) return null;
-    preset.identitySheet = characterIdentity.normalizeSheet(sheet, { characterId: preset.id });
-    preset.updatedAt = new Date().toISOString();
-    savePresets();
-    return preset;
+    const pkg = characterIdentity.approveBase(getIdentityPackage(id));
+    return setIdentityPackage(id, pkg);
 }
 
-// Remove the Character Identity package from a preset (the character itself is
-// kept). Used by the viewer's "Delete identity" action.
+// Remove the identity sheet only (the approved base image and the character are
+// kept). Used by the viewer's "Delete Identity Sheet" action.
 function clearIdentitySheet(id) {
     const preset = get(id);
     if (!preset) return null;
@@ -199,6 +218,7 @@ function clearIdentitySheet(id) {
 }
 
 module.exports = {
+    CHARACTER_SCHEMA_VERSION,
     CHARACTER_FIELDS,
     sanitizePreset,
     list,
@@ -206,9 +226,10 @@ module.exports = {
     create,
     update,
     duplicate,
-    setPortrait,
-    getIdentitySheet,
-    setIdentitySheet,
-    clearIdentitySheet,
-    remove
+    remove,
+    getIdentityPackage,
+    setIdentityPackage,
+    setCandidateBaseImage,
+    approveBaseImage,
+    clearIdentitySheet
 };

@@ -726,11 +726,9 @@ function selectCreator(project, characterId) {
     const preset = characterPresets.get(characterId);
     if (!preset) return project;
     // The approved Character Identity package (when present) conditions the
-    // creator's frames/video through its reference images.
-    const identitySheet = characterPresets.getIdentitySheet(preset.id);
-    const identityReferences = identitySheet
-        ? characterIdentity.selectReferencesForRequest(identitySheet, { kind: 'complex' })
-        : null;
+    // creator's frames/video through its single consolidated identity image.
+    const identityPackage = characterPresets.getIdentityPackage(preset.id);
+    const identityImage = identityPackage ? characterIdentity.selectIdentityImage(identityPackage) : null;
     project.creatorMode = 'person';
     project.creatorSkipped = false;
     project.creator = {
@@ -748,10 +746,12 @@ function selectCreator(project, characterId) {
             || (preset.appearanceCategory ? characterGen.appearanceCategoryLabel(preset.appearanceCategory) : ''),
         outfitPack: preset.outfitPack || '',
         outfitPackCustom: preset.outfitPackCustom || '',
-        // The strongest identity references (for reference-guided conditioning)
-        // and the approved base image, when the character has an identity sheet.
-        identityReferences: identityReferences ? identityReferences.references.slice(0, 4) : [],
-        identityBaseImage: identityReferences ? identityReferences.source : ''
+        // The ONE consolidated identity image (identity sheet when ready, else
+        // the approved base image) and the structured identity package.
+        identityReferences: identityImage && identityImage.filename ? [identityImage.filename] : [],
+        identityBaseImage: identityPackage && identityPackage.approvedBaseImage ? identityPackage.approvedBaseImage.filename : '',
+        identityMetadata: identityPackage ? identityPackage.identityMetadata : null,
+        identityPreservationInstructions: identityPackage ? identityPackage.identityPreservationInstructions : ''
     };
     // The creator's saved wardrobe personality seeds the outfit when the user
     // has not chosen one yet (a saved character keeps its wardrobe).

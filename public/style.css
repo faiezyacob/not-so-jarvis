@@ -4371,6 +4371,15 @@ em {
     cursor: pointer;
     transition: all 0.2s ease;
     text-transform: uppercase;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    white-space: nowrap;
+}
+
+.modal-btn svg {
+    flex: 0 0 auto;
 }
 
 a.modal-btn {
@@ -7453,6 +7462,65 @@ a.modal-btn {
 .identity-base-note {
     font-size: var(--fs-xs);
     color: var(--text-dim);
+}
+
+.identity-preview {
+    margin: 0 0 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.identity-preview-img {
+    width: 100%;
+    max-width: 340px;
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+    cursor: pointer;
+    display: block;
+}
+
+.identity-preview-img:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+.identity-preview-label {
+    font-size: var(--fs-xs);
+    color: var(--text-dim);
+}
+
+.identity-sheet-img {
+    width: 100%;
+    max-width: 460px;
+    border-radius: 8px;
+    border: 1px solid var(--accent);
+    cursor: pointer;
+    display: block;
+}
+
+.identity-sheet-img:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+.identity-sheet-note,
+.identity-preservation {
+    margin: 6px 0 0;
+    font-size: var(--fs-sm);
+    color: var(--text-dim);
+    line-height: 1.5;
+}
+
+.identity-progress-fill--indeterminate {
+    width: 40%;
+    animation: identity-indeterminate 1.2s ease-in-out infinite;
+}
+
+@keyframes identity-indeterminate {
+    0% { margin-left: 0; }
+    50% { margin-left: 60%; }
+    100% { margin-left: 0; }
 }
 
 .identity-ref-grid {

@@ -651,8 +651,11 @@ const Chat = (() => {
         const token = item.kind === 'character'
             ? '@' + item.name
             : '@image' + (pendingReferences.length + 1);
-        chatInput.value = before + token + after;
-        const pos = before.length + token.length;
+        // Follow the inserted mention with a space so the user can keep typing,
+        // unless the text already starts with whitespace.
+        const spacer = after && /^\s/.test(after) ? '' : ' ';
+        chatInput.value = before + token + spacer + after;
+        const pos = before.length + token.length + spacer.length;
         if (typeof chatInput.setSelectionRange === 'function') chatInput.setSelectionRange(pos, pos);
         autoGrowInput();
         if (item.kind === 'character') addCharacter(item);
@@ -1321,16 +1324,14 @@ const Chat = (() => {
                             }
                         }
                         if (data.identityProgress) {
-                            // Identity-sheet generation runs several reference
-                            // images; if the viewer is open for this character,
+                            // The consolidated identity sheet is a single
+                            // image; if the viewer is open for this character,
                             // let it refresh its progress live.
                             if (window.CharacterIdentityUI && typeof window.CharacterIdentityUI.onProgress === 'function') {
                                 window.CharacterIdentityUI.onProgress(data.identityProgress);
                             }
                             if (generatingEl) {
-                                const p = data.identityProgress;
-                                generatingEl.textContent = 'Creating Character Identity Sheet\u2026' +
-                                    (p.total ? ' (' + (p.done || 0) + '/' + p.total + ')' : '');
+                                generatingEl.textContent = 'Creating Character Identity Sheet\u2026 Rendering the reference sheet.';
                             }
                         }
                         if (data.identity) {
