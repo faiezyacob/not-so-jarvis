@@ -1157,6 +1157,29 @@ const Chat = (() => {
                                 window.PlaygroundUI.hydrate(chatMessagesEl, conversationId);
                             }
                         }
+                        if (data.identityProgress) {
+                            // Identity-sheet generation runs several reference
+                            // images; if the viewer is open for this character,
+                            // let it refresh its progress live.
+                            if (window.CharacterIdentityUI && typeof window.CharacterIdentityUI.onProgress === 'function') {
+                                window.CharacterIdentityUI.onProgress(data.identityProgress);
+                            }
+                            if (generatingEl) {
+                                const p = data.identityProgress;
+                                generatingEl.textContent = 'Creating Character Identity Sheet\u2026' +
+                                    (p.total ? ' (' + (p.done || 0) + '/' + p.total + ')' : '');
+                            }
+                        }
+                        if (data.identity) {
+                            // The standalone identity-sheet endpoint emits the
+                            // finished card instead of a chat bubble.
+                            cancelStreamRender();
+                            if (generatingEl) generatingEl.remove();
+                            setProgressTitle('');
+                            if (window.CharacterIdentityUI && typeof window.CharacterIdentityUI.onCard === 'function') {
+                                window.CharacterIdentityUI.onCard(data.identity.card);
+                            }
+                        }
                         if (data.ugc) {
                             cancelStreamRender();
                             fullReply = data.ugc.content;

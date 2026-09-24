@@ -7087,3 +7087,334 @@ a.modal-btn {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 }
+
+/* --- Character Identity System --- */
+
+.identity-panel {
+    margin-top: 12px;
+    padding: 12px 14px;
+    border: 1px solid rgba(180, 170, 150, .2);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, .015);
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+}
+
+.identity-line {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--font-mono);
+    font-size: var(--fs-sm);
+}
+
+.identity-line-label {
+    color: var(--text-primary);
+    letter-spacing: .3px;
+}
+
+.identity-line-meta {
+    margin-left: auto;
+    color: var(--text-dim);
+    font-size: var(--fs-xs);
+}
+
+.identity-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex: 0 0 auto;
+    background: var(--text-dim);
+}
+
+.identity-dot--ready { background: var(--accent); }
+.identity-dot--failed { background: #ff5c5c; }
+.identity-dot--pending { background: #ffc832; }
+
+.identity-gate {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.identity-gate-title {
+    font-family: var(--font-mono);
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    letter-spacing: .5px;
+    color: var(--text-primary);
+}
+
+.identity-gate-desc {
+    font-size: var(--fs-sm);
+    line-height: 1.45;
+    color: var(--text-secondary);
+}
+
+.identity-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
+.identity-btn {
+    gap: 6px;
+}
+
+.identity-legacy-note {
+    font-size: var(--fs-xs);
+    color: var(--text-dim);
+    line-height: 1.4;
+}
+
+.identity-progress {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.identity-progress-title {
+    font-family: var(--font-mono);
+    font-size: var(--fs-sm);
+    color: var(--accent);
+    letter-spacing: .3px;
+}
+
+.identity-progress-sub {
+    font-size: var(--fs-xs);
+    color: var(--text-secondary);
+}
+
+.identity-progress-bar {
+    height: 5px;
+    border-radius: 3px;
+    background: rgba(255, 255, 255, .07);
+    overflow: hidden;
+}
+
+.identity-progress-fill {
+    height: 100%;
+    background: var(--accent);
+    transition: width .3s ease;
+}
+
+/* --- Identity viewer modal --- */
+
+.identity-modal {
+    width: min(920px, 94vw);
+    max-height: 88vh;
+    display: flex;
+    flex-direction: column;
+}
+
+.identity-modal .modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.identity-modal-title {
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.identity-modal-close {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    margin: -4px -4px -4px 0;
+    border-radius: 6px;
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--text-secondary);
+    font-size: 22px;
+    line-height: 1;
+    cursor: pointer;
+    transition: all 0.18s ease;
+}
+
+.identity-modal-close:hover {
+    color: var(--text-primary);
+    background: var(--accent-faint);
+    border-color: var(--border-focus);
+}
+
+.identity-modal-body {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+.identity-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--font-mono);
+    font-size: var(--fs-sm);
+}
+
+.identity-status-label { color: var(--text-primary); letter-spacing: .3px; }
+
+.identity-status-meta {
+    margin-left: auto;
+    color: var(--text-dim);
+    font-size: var(--fs-xs);
+}
+
+.identity-error {
+    padding: 8px 10px;
+    border: 1px solid rgba(255, 92, 92, .3);
+    border-radius: 6px;
+    background: rgba(255, 92, 92, .08);
+    color: #ff9b9b;
+    font-size: var(--fs-sm);
+}
+
+.identity-section {
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+}
+
+.identity-section-title {
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--accent);
+}
+
+.identity-base {
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.identity-base-img {
+    width: 100%;
+    max-width: 340px;
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+    cursor: pointer;
+    display: block;
+}
+
+.identity-base-img:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+.identity-base-note {
+    font-size: var(--fs-xs);
+    color: var(--text-dim);
+}
+
+.identity-ref-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+    gap: 10px;
+}
+
+.identity-ref {
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.identity-ref-img {
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    object-fit: cover;
+    border-radius: 6px;
+    border: 1px solid var(--border-color);
+    cursor: pointer;
+    display: block;
+}
+
+.identity-ref-img:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+.identity-ref-label {
+    font-size: 10px;
+    color: var(--text-dim);
+    text-align: center;
+}
+
+.identity-metadata {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 4px 18px;
+}
+
+.identity-meta-row {
+    display: flex;
+    gap: 8px;
+    font-size: var(--fs-sm);
+    line-height: 1.4;
+}
+
+.identity-meta-label {
+    color: var(--text-dim);
+    min-width: 130px;
+    flex: 0 0 auto;
+}
+
+.identity-meta-value { color: var(--text-secondary); }
+
+.identity-notes {
+    margin: 0;
+    padding-left: 18px;
+    color: var(--text-secondary);
+    font-size: var(--fs-sm);
+    line-height: 1.5;
+}
+
+.identity-empty {
+    font-size: var(--fs-sm);
+    color: var(--text-dim);
+    line-height: 1.45;
+}
+
+.identity-modal-footer {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    align-items: center;
+    flex-wrap: wrap;
+    flex: 0 0 auto;
+    padding-top: 14px;
+    border-top: 1px solid var(--border-color);
+}
+
+.identity-footer-note {
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    color: var(--text-dim);
+}
+
+@media (max-width: 640px) {
+    .identity-ref-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}

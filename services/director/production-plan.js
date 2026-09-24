@@ -160,6 +160,10 @@ function create({ conversationId, brief, video, sourceImage, originalRequest }) 
         },
         image: null,
         sourceImage: sourceImage || null,
+        // Optional approved-character identity references carried across every
+        // Director shot (filenames in data/generated). Empty for a production
+        // with no selected character.
+        identityReferences: [],
         briefModified: false,
         videoPrompt: '',
         videoUrl: null,

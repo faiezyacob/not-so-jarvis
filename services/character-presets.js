@@ -13,6 +13,7 @@
 const fs = require('fs');
 const path = require('path');
 const characterModel = require('./playground/character');
+const characterIdentity = require('./character-identity');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 // An explicit path keeps the tests hermetic (they never touch data/).
@@ -79,6 +80,10 @@ function migratePreset(value) {
         appearanceCategoryLabel: clean(src.appearanceCategoryLabel || (structured && structured.appearanceCategoryLabel)),
         outfitPack: clean(src.outfitPack || (normalized.wardrobePreference && normalized.wardrobePreference.packId)),
         outfitPackCustom: clean(src.outfitPackCustom || (normalized.wardrobePreference && normalized.wardrobePreference.customText)),
+        // The Character Identity System package (base image + identity sheet).
+        // Stored on the preset so identity data is never duplicated elsewhere.
+        // A legacy preset has no sheet and is surfaced as "Basic Reference".
+        identitySheet: src.identitySheet ? characterIdentity.normalizeSheet(src.identitySheet, { characterId: src.id }) : null,
         revision: Number(src.revision) > 0 ? Number(src.revision) : 1
     });
     if (!structured) out.warning = 'Legacy character has no structured identity data; create a new character to enable identity locking.';
@@ -162,6 +167,37 @@ function setPortrait(id, portrait) {
     return preset;
 }
 
+// The stored Character Identity package for a preset, normalized. Returns the
+// canonical (empty) shape even when the preset never had a sheet.
+function getIdentitySheet(id) {
+    const preset = get(id);
+    if (!preset) return null;
+    if (!preset.identitySheet) return null;
+    return characterIdentity.normalizeSheet(preset.identitySheet, { characterId: preset.id });
+}
+
+// Persist an updated Character Identity package on a preset without touching
+// the identity/wardrobe fields. Always bumped and saved.
+function setIdentitySheet(id, sheet) {
+    const preset = get(id);
+    if (!preset) return null;
+    preset.identitySheet = characterIdentity.normalizeSheet(sheet, { characterId: preset.id });
+    preset.updatedAt = new Date().toISOString();
+    savePresets();
+    return preset;
+}
+
+// Remove the Character Identity package from a preset (the character itself is
+// kept). Used by the viewer's "Delete identity" action.
+function clearIdentitySheet(id) {
+    const preset = get(id);
+    if (!preset) return null;
+    preset.identitySheet = null;
+    preset.updatedAt = new Date().toISOString();
+    savePresets();
+    return preset;
+}
+
 module.exports = {
     CHARACTER_FIELDS,
     sanitizePreset,
@@ -171,5 +207,8 @@ module.exports = {
     update,
     duplicate,
     setPortrait,
+    getIdentitySheet,
+    setIdentitySheet,
+    clearIdentitySheet,
     remove
 };

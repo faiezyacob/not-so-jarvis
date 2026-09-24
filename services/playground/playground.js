@@ -13,6 +13,7 @@
 
 const characterPresets = require('../character-presets');
 const characterGen = require('./character');
+const characterIdentity = require('../character-identity');
 const state = require('./state');
 const themes = require('./themes');
 const conceptEngine = require('./concept');
@@ -26,7 +27,13 @@ const ACTIONS = {
     GENERATE: 'generate',
     SAVE: 'save',
     USE_CONTEXT: 'use_context',
-    RETRY_PORTRAIT: 'retry_portrait'
+    RETRY_PORTRAIT: 'retry_portrait',
+    // Character Identity System actions. A candidate base image must be
+    // explicitly approved before an identity sheet is generated.
+    IDENTITY_START: 'identity_start',
+    IDENTITY_REGENERATE: 'identity_regenerate',
+    IDENTITY_APPROVE: 'identity_approve',
+    IDENTITY_SHEET_REGENERATE: 'identity_sheet_regenerate'
 };
 
 const STATUS = {
@@ -85,6 +92,28 @@ function characterIdentityKey(session) {
     return concept.identitySignature || concept.subject || '';
 }
 
+// Compact identity summary for the concept card. The full identity package is
+// fetched through GET /api/characters/:id/identity by the viewer, so the marker
+// stays small. Null until the character has an identity sheet attached.
+function identitySummary(session, character) {
+    const record = character || resolveCharacter(session && session.characterId);
+    if (!record) return null;
+    const sheet = characterPresets.getIdentitySheet(record.id);
+    if (!sheet) return null;
+    return {
+        characterId: record.id,
+        name: record.name || 'Character',
+        status: sheet.status,
+        identityStatus: sheet.identity.status,
+        referenceCount: characterIdentity.allReferences(sheet).length,
+        requiredTotal: characterIdentity.planReferences(record).filter((e) => e.required !== false).length,
+        baseImageUrl: characterIdentity.effectiveBaseImage(record, sheet)
+            ? characterIdentity.effectiveBaseImage(record, sheet).url
+            : '',
+        hasLegacyBase: characterIdentity.hasLegacyBase(record, sheet)
+    };
+}
+
 function buildCard(session, character) {
     const concept = session.concept || {};
     return {
@@ -113,6 +142,10 @@ function buildCard(session, character) {
                 seed: session.characterImage.seed
             }
             : null,
+        // Character Identity System: the approved/identity-sheet state for the
+        // selected (or session-created) character, so the card can show the
+        // approval gate and a "View Identity" entry point.
+        identity: identitySummary(session, character),
         // The active Outfit Pack (wardrobe personality) and any custom outfit, so
         // the Surprise Me popover can reflect the open concept's wardrobe.
         outfitPack: concept.outfitPack || '',
@@ -638,6 +671,27 @@ function setCharacterImage(session, image) {
 // A concept is "open" only while it is an untouched preview. Once it is saved
 // or used, typed follow-ups flow to the normal router so an active image task
 // is never shadowed by a parked concept. Explicit card actions still work.
+// Attach the Character Identity package to the open session. A candidate
+// character created by the identity flow is bound to the session so the card
+// (and later actions) can resolve it.
+function setIdentityCharacter(session, characterId) {
+    if (!session) return session;
+    session.identityCharacterId = characterId || null;
+    session.updatedAt = new Date().toISOString();
+    state.setSession(session.conversationId, session);
+    return session;
+}
+
+// Resolve the character record the identity flow operates on: an explicit
+// session character (saved preset or identity candidate), or a fresh snapshot
+// of a random concept that can be materialized into a candidate preset.
+function identityCharacterSource(session, explicitCharacter) {
+    if (explicitCharacter) return explicitCharacter;
+    const bound = session && session.identityCharacterId ? resolveCharacter(session.identityCharacterId) : null;
+    if (bound) return bound;
+    return null;
+}
+
 function isOpen(session) {
     return Boolean(session && session.status === STATUS.PREVIEW);
 }
@@ -740,6 +794,8 @@ module.exports = {
     buildPortraitRequest,
     needsCharacterImage,
     setCharacterImage,
+    setIdentityCharacter,
+    identityCharacterSource,
     classifyMessage,
     normalizeAction,
     resolveCharacter,

@@ -211,7 +211,7 @@ function resolveExistingSource(conversationId, message, referenceImage) {
 
 // Create the production plan for a fresh request. The brief is canonical from
 // here on; later stages are rebuilt from it, never from the raw message.
-async function createProduction({ conversationId, message, provider, model, think, referenceImage }) {
+async function createProduction({ conversationId, message, provider, model, think, referenceImage, character }) {
     const parsedDuration = typeof videoGenerator.parseRequestedVideoDuration === 'function'
         ? videoGenerator.parseRequestedVideoDuration(message)
         : null;
@@ -219,6 +219,11 @@ async function createProduction({ conversationId, message, provider, model, thin
         ? parsedDuration
         : defaultVideoDuration();
     const brief = await buildBrief({ message, provider, model, think });
+    // An approved character's identity references travel with the production so
+    // every shot inherits the same person (see buildVideoStageRequest).
+    if (character && Array.isArray(character.identityReferences)) {
+        brief.characterReferences = character.identityReferences.slice(0, 9);
+    }
     const sourceImage = resolveExistingSource(conversationId, message, referenceImage);
     const production = productionPlan.create({
         conversationId,
@@ -227,6 +232,9 @@ async function createProduction({ conversationId, message, provider, model, thin
         sourceImage,
         originalRequest: message
     });
+    if (character && Array.isArray(character.identityReferences)) {
+        production.identityReferences = character.identityReferences.slice(0, 9);
+    }
     if (sourceImage) {
         // Starting from an existing image: record it as the opening frame and
         // treat it as approved so the Director goes straight to the video stage.
@@ -249,7 +257,7 @@ async function createProduction({ conversationId, message, provider, model, thin
 // the caller owns the canonical brief and the approved opening frame, so the
 // production starts at the approval checkpoint with the frame in place. The
 // brief's shotList (built from the UGC scene plan) drives the H3 cut sequence.
-function createUgcProduction({ conversationId, brief, duration, openingFrame, originalRequest, references }) {
+function createUgcProduction({ conversationId, brief, duration, openingFrame, originalRequest, references, identityReferences }) {
     const production = productionPlan.create({
         conversationId,
         brief,
@@ -268,6 +276,12 @@ function createUgcProduction({ conversationId, brief, duration, openingFrame, or
             url: r.url || ('/generated/' + encodeURIComponent(r.filename)),
             filename: r.filename
         }));
+    // The creator's approved identity references travel alongside the scene
+    // frames so the H3 stage conditions on the same person across every shot.
+    production.identityReferences = (Array.isArray(identityReferences) ? identityReferences : [])
+        .map((name) => String(name || '').trim())
+        .filter(Boolean)
+        .slice(0, 9);
     if (openingFrame && openingFrame.filename) {
         production.image = {
             url: openingFrame.url || ('/generated/' + encodeURIComponent(openingFrame.filename)),
@@ -446,6 +460,18 @@ async function buildVideoStageRequest(production, { provider, model, think }) {
         ? production.image.rawFilename
         : null;
     const referenceImages = references.map((r) => r.filename);
+    // Identity continuity: an approved character's identity references are
+    // appended after any scene frames so every Director shot inherits the same
+    // person. The approved base image doubles as <Picture 1> when no explicit
+    // scene frame exists. User refs are preserved first; identity refs fill the
+    // remaining reference slots.
+    const identityRefs = Array.isArray(production.identityReferences)
+        ? production.identityReferences
+        : [];
+    for (const name of identityRefs) {
+        if (!name || referenceImages.includes(name) || referenceImages.length >= 9) continue;
+        referenceImages.push(name);
+    }
     if (upscaledFrame && referenceImages.length) referenceImages[0] = upscaledFrame;
     const useRefs = referenceImages.length > 0;
     const sourceImageRawFilename = useRefs

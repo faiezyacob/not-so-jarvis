@@ -98,6 +98,7 @@ const ugcStudio = require('./services/ugc/studio');
 const ugcProducts = require('./services/ugc/products');
 const characterPresets = require('./services/character-presets');
 const characterStudio = require('./services/character-studio');
+const characterIdentity = require('./services/character-identity');
 const GENERATED_DIR = path.join(__dirname, 'data', 'generated');
 const IMAGES_DIR = path.join(__dirname, 'data', 'images');
 const UPLOAD_MIME_TO_EXT = {
@@ -1024,6 +1025,73 @@ async function handleAPI(req, res, urlPath) {
         const body = await readBody(req);
         const character = characterPresets.setPortrait(decodeURIComponent(characterPortraitMatch[1]), body && (body.portrait || body));
         json(res, character ? 200 : 404, character ? { ok: true, character } : { error: 'Character not found' });
+        return true;
+    }
+
+    // --- Character Identity System -------------------------------------------
+    // GET /api/characters/:id/identity — the identity package card (base image,
+    // reference categories, metadata, status, progress). Never exposes paths.
+    const characterIdentityMatch = urlPath.match(/^\/api\/characters\/([^/]+)\/identity$/);
+    if (characterIdentityMatch && req.method === 'GET') {
+        const character = characterPresets.get(decodeURIComponent(characterIdentityMatch[1]));
+        if (!character) {
+            json(res, 404, { error: 'Character not found' });
+            return true;
+        }
+        json(res, 200, {
+            card: characterIdentity.buildCard(character, characterPresets.getIdentitySheet(character.id))
+        });
+        return true;
+    }
+    if (characterIdentityMatch && req.method === 'DELETE') {
+        const character = characterPresets.clearIdentitySheet(decodeURIComponent(characterIdentityMatch[1]));
+        json(res, character ? 200 : 404, character ? { ok: true } : { error: 'Character not found' });
+        return true;
+    }
+
+    // POST /api/characters/:id/identity/sheet — (re)generate the identity sheet
+    // from the approved base image (or the character's existing portrait). SSE
+    // stream: `generating` / `identityProgress` events, then an `identity` card.
+    const characterIdentitySheetMatch = urlPath.match(/^\/api\/characters\/([^/]+)\/identity\/sheet$/);
+    if (characterIdentitySheetMatch && req.method === 'POST') {
+        let body = {};
+        try { body = await readBody(req); } catch (err) { body = {}; }
+        const character = characterPresets.get(decodeURIComponent(characterIdentitySheetMatch[1]));
+        if (!character) {
+            json(res, 404, { error: 'Character not found' });
+            return true;
+        }
+        const turn = await acquireTurn(res, { label: 'character identity', conversationId: null });
+        if (!turn) return true;
+        const stopProgress = forwardComfyProgress(res);
+        try {
+            let sheet = characterPresets.getIdentitySheet(character.id);
+            const base = characterIdentity.effectiveBaseImage(character, sheet);
+            if (!base || !base.filename) {
+                sseWrite(res, { error: 'This character has no image to build an identity sheet from. Generate a character image first.' });
+                res.end();
+                return true;
+            }
+            // The existing portrait becomes the approved base for a legacy
+            // character; an approved base is left untouched.
+            if (!sheet || !sheet.baseImage || !sheet.baseImage.filename || !sheet.baseImage.approved) {
+                sheet = characterIdentity.applyBaseImage(sheet || {}, base, { approved: true });
+                sheet.status = characterIdentity.STATUS.APPROVED;
+                characterPresets.setIdentitySheet(character.id, sheet);
+            }
+            await runIdentitySheetStream(req, res, character, {
+                conversationId: null,
+                provider: body.provider || 'ollama',
+                model: body.model || ''
+            });
+            emitIdentityCardEvent(res, character.id);
+        } catch (err) {
+            console.error('[character-identity] sheet generation failed:', err.message);
+            sseWrite(res, { error: friendlyImageError(err) });
+            res.end();
+        } finally {
+            stopProgress();
+        }
         return true;
     }
 
@@ -2297,6 +2365,13 @@ async function handleChatStream(req, res) {
             // generation (new seed variation), not a modification.
             const action = (isNew || isBareRegen) ? 'generate' : 'modify';
 
+            // A saved character named in the request (or bound to the task)
+            // conditions the generation through its approved identity sheet.
+            const identityCharacter = action === 'generate'
+                ? resolveRequestCharacter(message, conversationId, body.characterId)
+                : null;
+            const identity = resolveIdentityConditioning(identityCharacter, imagePrompt);
+
             // Track the task as running, then free VRAM and execute.
             const ctxPreviousPrompt = activeTask.prompt || null;
             taskState.setTask(conversationId, {
@@ -2312,7 +2387,8 @@ async function handleChatStream(req, res) {
                     parameters: Object.assign({}, taskState.getTask(conversationId).parameters, {
                         creative_mode: structuredRequest ? structuredRequest.creative_mode : 'none',
                         explicit_constraints: structuredRequest ? structuredRequest.explicit_constraints : [],
-                        attributes: attributes || null
+                        attributes: attributes || null,
+                        characterId: identityCharacter ? identityCharacter.id : null
                     })
                 });
             } else if (attributes) {
@@ -2329,6 +2405,7 @@ async function handleChatStream(req, res) {
                 imagePrompt,
                 action,
                 previousPrompt: ctxPreviousPrompt,
+                identity,
                 think
             });
             return;
@@ -2492,6 +2569,21 @@ async function handleChatStream(req, res) {
                 };
             }
 
+            // A saved character named in a fresh video request conditions the
+            // H3 render on its approved identity references (reference-to-video)
+            // so identity persists. Continuations keep their existing mode.
+            let identityReferences;
+            if (action === 'generate') {
+                const identityCharacter = resolveRequestCharacter(message, conversationId, body.characterId);
+                const conditioning = resolveIdentityConditioning(identityCharacter, message);
+                if (conditioning) {
+                    identityReferences = conditioning.references.map((p) => path.basename(p));
+                    const baseName = path.basename(conditioning.sourceAbs);
+                    if (baseName && !identityReferences.includes(baseName)) identityReferences.unshift(baseName);
+                    identityReferences = identityReferences.slice(0, 9);
+                }
+            }
+
             // Set ActiveTask to running, then free VRAM for ComfyUI.
             const ctxPreviousPrompt = activeTask.prompt || null;
             taskState.setTask(conversationId, {
@@ -2533,6 +2625,11 @@ async function handleChatStream(req, res) {
                 previousPrompt: ctxPreviousPrompt,
                 videoMode,
                 sourceImageRawFilename,
+                // Reference-to-video: the character's approved identity frames
+                // condition every shot (identity continuity across the clip).
+                referenceImages: identityReferences && identityReferences.length
+                    ? identityReferences
+                    : undefined,
                 duration: directorDimensions ? directorDimensions.duration : undefined,
                 width: directorDimensions ? directorDimensions.width : undefined,
                 height: directorDimensions ? directorDimensions.height : undefined,
@@ -3285,10 +3382,207 @@ async function handleUGCDirectorHandoff(req, res, ctx, project) {
 // prompt is still produced by imageGenerator.buildImagePrompt, so the concept is
 // creative direction, never a competing prompt builder.
 
+// --- Character Identity System ------------------------------------------------
+//
+// The identity package lives on the character preset. An initial character
+// image is generated as a candidate, shown for approval, and only after the
+// user approves it does the Character Identity Sheet get generated (reusing the
+// Qwen edit pipeline with the approved base image as the source).
+
+// The approved base image / identity references are full renders, not the 256px
+// playground face thumbnail, so they are generated at a fixed square size.
+const IDENTITY_BASE_SIZE = 1024;
+
+function identityCard(characterId) {
+    const character = characterPresets.get(characterId);
+    if (!character) return null;
+    return characterIdentity.buildCard(character, characterPresets.getIdentitySheet(characterId));
+}
+
+function emitIdentityCardEvent(res, characterId) {
+    const card = identityCard(characterId);
+    if (!card) {
+        sseWrite(res, { error: 'That character no longer exists.' });
+        res.end();
+        return;
+    }
+    sseWrite(res, { identity: { card } });
+    res.end();
+}
+
+// Find the saved character an image request refers to: an explicit selection
+// stored on the active task (playground / UGC / Director), an explicit request
+// field, or a saved character named in the message. Conservative — a match
+// requires the whole name as a word.
+function resolveRequestCharacter(message, conversationId, explicitId) {
+    if (explicitId) {
+        const explicit = characterPresets.get(explicitId);
+        if (explicit) return explicit;
+    }
+    const task = conversationId ? taskState.getTask(conversationId) : null;
+    const boundId = task && task.parameters && task.parameters.characterId;
+    if (boundId) {
+        const bound = characterPresets.get(boundId);
+        if (bound) return bound;
+    }
+    const text = String(message || '');
+    if (!text) return null;
+    let best = null;
+    for (const candidate of characterPresets.list()) {
+        const name = String(candidate.name || '').trim();
+        if (name.length < 3) continue;
+        const pattern = '\\b' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b';
+        if (new RegExp(pattern, 'i').test(text) && (!best || name.length > String(best.name).length)) {
+            best = candidate;
+        }
+    }
+    return best;
+}
+
+// Resolve (or create) the character a playground identity action operates on.
+// A saved session character wins; otherwise the concept is materialized into a
+// candidate preset so the identity package has a durable home. Returns the
+// character record or null when the concept has no identity to save.
+function materializeIdentityCharacter(session) {
+    const saved = playground.resolveCharacter(session.characterId)
+        || playground.identityCharacterSource(session, null);
+    if (saved) return saved;
+    const concept = session.concept || {};
+    const snapshot = session.characterSnapshot || {};
+    const identity = concept.identity || snapshot.identity || null;
+    if (!identity && !concept.subject && !snapshot.identityText) return null;
+    const character = characterPresets.create({
+        name: concept.name || snapshot.name || 'Character',
+        identity,
+        identityText: concept.subject || snapshot.identityText || '',
+        identitySignature: concept.identitySignature || snapshot.identitySignature || '',
+        appearance: concept.appearance || '',
+        hair: concept.hair || '',
+        appearanceCategory: concept.appearanceCategory || '',
+        appearanceCategoryLabel: concept.appearanceCategoryLabel || '',
+        outfitPack: concept.outfitPack || '',
+        outfitPackCustom: concept.outfitPackCustom || '',
+        provenance: { type: 'playground-identity', seed: concept.characterSeed || null }
+    });
+    playground.setIdentityCharacter(session, character.id);
+    return character;
+}
+
+// Build the reference-guided edit conditioning for an approved character, or
+// null when the character has no ready identity sheet / usable base image. The
+// selected references are chosen from the request wording (portrait vs full
+// body vs profile vs accessory).
+function resolveIdentityConditioning(character, scenePrompt) {
+    if (!character) return null;
+    const sheet = characterPresets.getIdentitySheet(character.id);
+    if (!sheet || sheet.status !== characterIdentity.STATUS.READY) return null;
+    const base = sheet.baseImage;
+    if (!base || !base.filename) return null;
+    const sourceAbs = path.join(GENERATED_DIR, path.basename(base.filename));
+    if (!fs.existsSync(sourceAbs)) return null;
+    const picked = characterIdentity.selectReferencesForRequest(sheet, { text: scenePrompt });
+    const references = picked.references
+        .map((name) => path.join(GENERATED_DIR, path.basename(name)))
+        .filter((abs) => fs.existsSync(abs));
+    return {
+        characterId: character.id,
+        characterName: character.name || 'character',
+        sourceAbs,
+        references,
+        instruction: characterIdentity.buildSceneEditInstruction(sheet, scenePrompt),
+        constraints: characterIdentity.buildIdentityConstraints(sheet)
+    };
+}
+
+// The character's existing preview image, used as the approved base when the
+// user creates an identity straight from the concept card. Prefers the preview
+// already shown on the card (session.characterImage), then a saved character's
+// stored portrait.
+function baseImageFromSession(session) {
+    const preview = session && session.characterImage;
+    if (preview && preview.url) return preview;
+    const character = session && session.characterId ? characterPresets.get(session.characterId) : null;
+    const portrait = character && character.portraitReference;
+    if (portrait && portrait.url) return portrait;
+    return null;
+}
+
+// Generate the candidate base image for a character from a portrait request.
+// Same one-side-resident dance as the playground face stage, but at full size.
+async function generateIdentityBaseImage(req, res, ctx, request) {
+    const { conversationId, provider, model, think } = ctx;
+    vramManager.rememberChatModel(provider, model);
+    await vramManager.freeVRAMBeforeChat();
+    const enhanced = await imageGenerator.buildImagePrompt(request, providers, provider, model, think);
+    const imagePrompt = enhanced ? enhanced.prompt : request.user_prompt;
+    await vramManager.freeVRAMBeforeImage();
+    const result = await imageGenerator.generateImage(imagePrompt, {
+        provider, model, conversationId,
+        width: IDENTITY_BASE_SIZE,
+        height: IDENTITY_BASE_SIZE,
+        label: 'character identity base', kind: 'image_generation'
+    });
+    return {
+        url: result.url,
+        filename: result.filename,
+        prompt: imagePrompt,
+        seed: result.seed,
+        width: result.width,
+        height: result.height,
+        generationId: (result.meta && result.meta.id) || ''
+    };
+}
+
+// Run identity-sheet generation over SSE, persisting progress to the character
+// preset after each reference so a reload (or the viewer polling) sees live
+// progress. Partial failures are recorded and never destroy the approved data.
+async function runIdentitySheetStream(req, res, character, ctx) {
+    const characterId = character.id;
+    const { conversationId, provider, model } = ctx;
+    const sheet = characterPresets.getIdentitySheet(characterId);
+    const previous = JSON.parse(JSON.stringify(sheet));
+    sseWrite(res, { generating: 'Creating Character Identity Sheet\u2026 Generating multiple reference images.' });
+    vramManager.rememberChatModel(provider, model);
+    await vramManager.freeVRAMBeforeImage();
+    const result = await characterIdentity.generateSheet({
+        character,
+        characterId,
+        sheet,
+        previousSheet: previous,
+        conversationId,
+        plan: characterIdentity.planReferences(character),
+        generate: (abs, instruction, options) => imageGenerator.editImage(abs, instruction, options),
+        resolveAbs: (name) => path.join(GENERATED_DIR, path.basename(name)),
+        onProgress: (progressSheet) => {
+            characterPresets.setIdentitySheet(characterId, progressSheet);
+            sseWrite(res, {
+                identityProgress: {
+                    characterId,
+                    done: progressSheet.progress.done,
+                    total: progressSheet.progress.total,
+                    current: progressSheet.progress.current,
+                    status: progressSheet.identity.status
+                }
+            });
+        },
+        logger: console
+    });
+    characterPresets.setIdentitySheet(characterId, result);
+    activityLog.record({
+        type: 'generation',
+        title: 'Character Identity Sheet',
+        detail: (character.name || 'Character') + ' \u2014 ' + result.identity.status,
+        conversationId
+    });
+    await vramManager.freeComfyModels('character identity sheet');
+    return result;
+}
+
 // Stream the persisted concept card and end the turn. `fullReply` carries the
 // marker so the client saves it and the card survives a reload.
 function emitPlaygroundCard(res, session) {
-    const character = playground.resolveCharacter(session.characterId);
+    const character = playground.resolveCharacter(session.characterId)
+        || playground.identityCharacterSource(session, null);
     const content = playground.renderContent(session, character);
     sseWrite(res, {
         playground: {
@@ -3392,6 +3686,154 @@ async function handlePlaygroundAction(req, res, ctx, action, rawMessage) {
             return;
         }
 
+        // --- Character Identity System ---------------------------------------
+        // Create the identity directly from the character image already shown on
+        // the card: lock it as the approved base, then generate the sheet.
+        if (action.type === playground.ACTIONS.IDENTITY_START) {
+            const character = materializeIdentityCharacter(session);
+            if (!character) {
+                sseWrite(res, { error: 'Creative Playground \u2014 This concept has no character to build an identity from.' });
+                res.end();
+                return;
+            }
+            // The card already shows the character preview, so that preview is
+            // the approved base image: creating an identity goes straight to the
+            // sheet (no redundant "generate a candidate" step). The preview is
+            // preferred; a saved character with a stored portrait falls back to
+            // it, and only when neither exists is a fresh base rendered.
+            let base = baseImageFromSession(session);
+            if (!base || !base.filename) {
+                const request = playground.buildPortraitRequest(session)
+                    || characterStudio.generatePortraitRequest(character);
+                if (!request) {
+                    sseWrite(res, { error: 'Creative Playground \u2014 This concept has no character details to render.' });
+                    res.end();
+                    return;
+                }
+                sseWrite(res, { generating: 'Creating the character\u2026' });
+                base = await generateIdentityBaseImage(req, res, ctx, request);
+            }
+            let sheet = characterIdentity.createSheet({
+                baseImage: base,
+                character,
+                configuration: {
+                    themeId: session.themeId,
+                    mode: session.mode,
+                    profile: session.characterProfile || null,
+                    locks: session.locks || {}
+                },
+                originalPrompt: base.prompt || ''
+            });
+            sheet = characterIdentity.applyBaseImage(sheet, {}, { approved: true });
+            sheet.status = characterIdentity.STATUS.APPROVED;
+            characterPresets.setIdentitySheet(character.id, sheet);
+            characterPresets.setPortrait(character.id, {
+                url: base.url, filename: base.filename, prompt: base.prompt,
+                seed: base.seed, width: base.width, height: base.height
+            });
+            if (base.url) {
+                session.characterImage = {
+                    url: base.url, filename: base.filename,
+                    width: base.width, height: base.height, seed: base.seed
+                };
+            }
+            playground.setIdentityCharacter(session, character.id);
+            await runIdentitySheetStream(req, res, character, ctx);
+            emitPlaygroundCard(res, session);
+            return;
+        }
+
+        // Discard the candidate and generate another initial character. Never
+        // creates an identity sheet.
+        if (action.type === playground.ACTIONS.IDENTITY_REGENERATE) {
+            const character = playground.identityCharacterSource(session, null);
+            if (!character) {
+                sseWrite(res, { error: 'Creative Playground \u2014 There is no candidate character to regenerate.' });
+                res.end();
+                return;
+            }
+            const sheet = characterPresets.getIdentitySheet(character.id);
+            if (sheet && (sheet.status === characterIdentity.STATUS.READY || sheet.status === characterIdentity.STATUS.GENERATING)) {
+                sseWrite(res, { error: 'Creative Playground \u2014 This character already has an identity sheet. Use "Regenerate Identity Sheet" instead.' });
+                res.end();
+                return;
+            }
+            const request = playground.buildPortraitRequest(session)
+                || characterStudio.generatePortraitRequest(character);
+            if (!request) {
+                sseWrite(res, { error: 'Creative Playground \u2014 This concept has no character details to render.' });
+                res.end();
+                return;
+            }
+            sseWrite(res, { generating: 'Regenerating the character\u2026' });
+            const base = await generateIdentityBaseImage(req, res, ctx, request);
+            const next = characterIdentity.createSheet({
+                baseImage: base,
+                character,
+                configuration: sheet ? sheet.source.configuration : {},
+                originalPrompt: request.user_prompt || ''
+            });
+            characterPresets.setIdentitySheet(character.id, next);
+            characterPresets.setPortrait(character.id, {
+                url: base.url, filename: base.filename, prompt: base.prompt,
+                seed: base.seed, width: base.width, height: base.height
+            });
+            session.characterImage = {
+                url: base.url, filename: base.filename,
+                width: base.width, height: base.height, seed: base.seed
+            };
+            emitPlaygroundCard(res, session);
+            return;
+        }
+
+        // Legacy alias for an already-approved candidate (an older persisted
+        // card may still send it). Behaves like creating the identity directly.
+        if (action.type === playground.ACTIONS.IDENTITY_APPROVE) {
+            const character = playground.identityCharacterSource(session, null);
+            if (!character) {
+                sseWrite(res, { error: 'Creative Playground \u2014 There is no character to approve.' });
+                res.end();
+                return;
+            }
+            let sheet = characterPresets.getIdentitySheet(character.id);
+            if (!sheet || !sheet.baseImage || !sheet.baseImage.filename) {
+                sseWrite(res, { error: 'Creative Playground \u2014 Generate the initial character image before approving.' });
+                res.end();
+                return;
+            }
+            if (sheet.baseImage.approved && sheet.status === characterIdentity.STATUS.READY) {
+                sseWrite(res, { error: 'Creative Playground \u2014 This character identity is already created.' });
+                res.end();
+                return;
+            }
+            sheet = characterIdentity.applyBaseImage(sheet, {}, { approved: true });
+            sheet.status = characterIdentity.STATUS.APPROVED;
+            characterPresets.setIdentitySheet(character.id, sheet);
+            await runIdentitySheetStream(req, res, character, ctx);
+            emitPlaygroundCard(res, session);
+            return;
+        }
+
+        // Regenerate the identity sheet, preserving the approved base image. The
+        // previous package is kept until the new one is proven (see generateSheet).
+        if (action.type === playground.ACTIONS.IDENTITY_SHEET_REGENERATE) {
+            const character = playground.identityCharacterSource(session, null);
+            if (!character) {
+                sseWrite(res, { error: 'Creative Playground \u2014 There is no character to regenerate.' });
+                res.end();
+                return;
+            }
+            const sheet = characterPresets.getIdentitySheet(character.id);
+            if (!sheet || !sheet.baseImage || !sheet.baseImage.filename) {
+                sseWrite(res, { error: 'Creative Playground \u2014 Approve a character image before regenerating its identity sheet.' });
+                res.end();
+                return;
+            }
+            await runIdentitySheetStream(req, res, character, ctx);
+            emitPlaygroundCard(res, session);
+            return;
+        }
+
         if (action.type === playground.ACTIONS.MODIFY) {
             const direction = String(action.direction || rawMessage || '').trim();
             if (!direction) {
@@ -3467,6 +3909,10 @@ async function handlePlaygroundAction(req, res, ctx, action, rawMessage) {
                 generatedPrompt: session.generatedPrompt,
                 updatedAt: new Date().toISOString()
             });
+            // An approved character conditions the scene as a reference-guided
+            // edit (identity preserved, scene/setting changed).
+            const identityCharacter = playground.identityCharacterSource(session, null);
+            const identity = resolveIdentityConditioning(identityCharacter, imagePrompt);
             taskState.setTask(conversationId, {
                 type: 'image',
                 operation: 'generate',
@@ -3478,7 +3924,8 @@ async function handlePlaygroundAction(req, res, ctx, action, rawMessage) {
                     creative_mode: request.creative_mode,
                     explicit_constraints: request.explicit_constraints,
                     attributes: attributes || null,
-                    playgroundId: session.id
+                    playgroundId: session.id,
+                    characterId: identityCharacter ? identityCharacter.id : null
                 })
             });
             playground.markUsed(session);
@@ -3494,6 +3941,7 @@ async function handlePlaygroundAction(req, res, ctx, action, rawMessage) {
                 imagePrompt,
                 action: 'generate',
                 previousPrompt: null,
+                identity,
                 think
             });
             return;
@@ -3538,8 +3986,13 @@ async function handleDirectorStart(req, res, ctx) {
     sseWrite(res, { generating: 'Director \u2014 Planning production\u2026' });
     try {
         await prepareDirectorLlm(provider, model);
+        // A named character (or one bound to the active task) contributes its
+        // approved identity package so identity persists across shots.
+        const chosenCharacter = resolveRequestCharacter(message, conversationId, null);
+        const identity = resolveIdentityConditioning(chosenCharacter, message);
         const production = await director.createProduction({
-            conversationId, message, provider, model, think, referenceImage
+            conversationId, message, provider, model, think, referenceImage,
+            character: identity ? { identityReferences: [identity.sourceAbs && path.basename(identity.sourceAbs)].concat(identity.references.map((p) => path.basename(p))) } : null
         });
         activityLog.record({
             type: 'generation',
@@ -4109,9 +4562,11 @@ async function handleImageGenerationStream(req, res, opts) {
     try {
         // Variations: generate 1-4 images in one turn. A fixed seed gives a
         // reproducible set (seed, seed+1, ...); random mode picks a fresh base.
-        // A Director frame is always a single image from one seed.
+        // A Director frame is always a single image from one seed. An
+        // identity-guided generation is always a single reference-guided edit.
+        const identity = opts.identity && opts.identity.sourceAbs ? opts.identity : null;
         const genSettings = imageGenerator.effectiveSettings();
-        const variations = opts.director
+        const variations = (opts.director || identity)
             ? 1
             : Math.max(1, Math.min(4, Number(genSettings.variations) || 1));
         const baseSeed = imageGenerator.resolveSeed(
@@ -4119,16 +4574,30 @@ async function handleImageGenerationStream(req, res, opts) {
             opts.director ? opts.seed : null
         );
 
-        sseWrite(res, { generating: variations > 1 ? 'Generating ' + variations + ' images...' : 'Generating image...' });
+        sseWrite(res, {
+            generating: identity
+                ? 'Generating image of ' + identity.characterName + '...'
+                : (variations > 1 ? 'Generating ' + variations + ' images...' : 'Generating image...')
+        });
 
         const results = [];
         for (let i = 0; i < variations; i++) {
             if (i > 0) sseWrite(res, { generating: 'Generating image ' + (i + 1) + ' of ' + variations + '...' });
-            const promise = imageGenerator.generateImage(imagePrompt, {
-                provider, model, conversationId, onQueued, onStart,
-                seed: baseSeed + i,
-                label: 'image generation', kind: 'image_generation'
-            });
+            // Reference-guided generation: the approved base image is the edit
+            // source and the selected identity references condition the result,
+            // so the character's identity is preserved while the scene changes.
+            const promise = identity
+                ? imageGenerator.editImage(identity.sourceAbs, identity.instruction, {
+                    references: identity.references,
+                    provider, model, conversationId, onQueued, onStart,
+                    seed: baseSeed + i,
+                    label: 'identity image generation', kind: 'image_generation'
+                })
+                : imageGenerator.generateImage(imagePrompt, {
+                    provider, model, conversationId, onQueued, onStart,
+                    seed: baseSeed + i,
+                    label: 'image generation', kind: 'image_generation'
+                });
             queueId = promise.queueId || null;
             results.push(await promise);
         }

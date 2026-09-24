@@ -20,6 +20,7 @@ const providers = require('../../server/providers');
 const imageGenerator = require('../image-generator');
 const characterPresets = require('../character-presets');
 const characterGen = require('../playground/character');
+const characterIdentity = require('../character-identity');
 const outfitPacks = require('../playground/outfit-packs');
 const state = require('./state');
 const products = require('./products');
@@ -722,6 +723,12 @@ function deleteProduct(project, productId) {
 function selectCreator(project, characterId) {
     const preset = characterPresets.get(characterId);
     if (!preset) return project;
+    // The approved Character Identity package (when present) conditions the
+    // creator's frames/video through its reference images.
+    const identitySheet = characterPresets.getIdentitySheet(preset.id);
+    const identityReferences = identitySheet
+        ? characterIdentity.selectReferencesForRequest(identitySheet, { kind: 'complex' })
+        : null;
     project.creatorMode = 'person';
     project.creatorSkipped = false;
     project.creator = {
@@ -738,7 +745,11 @@ function selectCreator(project, characterId) {
         appearanceCategoryLabel: preset.appearanceCategoryLabel
             || (preset.appearanceCategory ? characterGen.appearanceCategoryLabel(preset.appearanceCategory) : ''),
         outfitPack: preset.outfitPack || '',
-        outfitPackCustom: preset.outfitPackCustom || ''
+        outfitPackCustom: preset.outfitPackCustom || '',
+        // The strongest identity references (for reference-guided conditioning)
+        // and the approved base image, when the character has an identity sheet.
+        identityReferences: identityReferences ? identityReferences.references.slice(0, 4) : [],
+        identityBaseImage: identityReferences ? identityReferences.source : ''
     };
     // The creator's saved wardrobe personality seeds the outfit when the user
     // has not chosen one yet (a saved character keeps its wardrobe).
@@ -1747,7 +1758,12 @@ function directorProductionInput(project) {
         durationCapped,
         originalRequest: project.request || '',
         openingFrame: resolveOpeningFrame(project),
-        references: resolveReferenceFrames(project)
+        references: resolveReferenceFrames(project),
+        // The approved creator's identity references (when they have an identity
+        // sheet) condition every Director shot so the same person persists.
+        identityReferences: (project.creator && Array.isArray(project.creator.identityReferences))
+            ? project.creator.identityReferences.slice(0, 4)
+            : []
     };
 }
 
