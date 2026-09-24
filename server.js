@@ -99,6 +99,7 @@ const ugcProducts = require('./services/ugc/products');
 const characterPresets = require('./services/character-presets');
 const characterStudio = require('./services/character-studio');
 const characterIdentity = require('./services/character-identity');
+const characterContext = require('./services/character-context');
 const GENERATED_DIR = path.join(__dirname, 'data', 'generated');
 const IMAGES_DIR = path.join(__dirname, 'data', 'images');
 const UPLOAD_MIME_TO_EXT = {
@@ -942,6 +943,14 @@ async function handleAPI(req, res, urlPath) {
     // GET /api/characters — saved character presets for the playground picker.
     if (urlPath === '/api/characters' && req.method === 'GET') {
         json(res, 200, { characters: characterPresets.list() });
+        return true;
+    }
+
+    // GET /api/characters/options — lightweight character list for the chat @
+    // picker: name, identity status and primary image only (never paths). This
+    // must stay ahead of the /api/characters/:id route below.
+    if (urlPath === '/api/characters/options' && req.method === 'GET') {
+        json(res, 200, { characters: characterContext.listCharacterOptions() });
         return true;
     }
 
@@ -1970,6 +1979,17 @@ async function handleChatStream(req, res) {
             if (referenceImages.length > REFERENCE_IMAGES_MAX) referenceImages.length = REFERENCE_IMAGES_MAX;
         }
         const referenceImage = referenceImages[0] || null;
+        // Character context is parsed once, here, and passed structured to every
+        // media pipeline — no subsystem parses `@Maya` itself. `@Name` mentions
+        // are stripped from the working message (the persisted user message keeps
+        // them) so the prompt builder receives scene direction, not the token.
+        const explicitCharacterIds = sanitizeCharacterIds(
+            Array.isArray(body.characters) && body.characters.length ? body.characters : body.characterId
+        );
+        const parsedCharacters = characterContext.parseCharacterMessage(message, { explicitIds: explicitCharacterIds });
+        const routingMessage = parsedCharacters.prompt && parsedCharacters.prompt.trim()
+            ? parsedCharacters.prompt
+            : message;
         // Composer "Director Mode" toggle: pre-selects the Director workflow so
         // a fresh video request skips the Direct-vs-Director question.
         const forceDirector = body.forceDirector === true;
@@ -2023,7 +2043,7 @@ async function handleChatStream(req, res) {
         // router — so a UGC brief never becomes a normal image/video generation
         // (and a >15s UGC request is not captured by the Long Video Director).
         // Unrelated turns fall through to the gates below.
-        const ugcCtx = { conversationId, message, provider, model, think };
+        const ugcCtx = { conversationId, message: routingMessage, provider, model, think, characters: parsedCharacters.characters };
         const requestedUgcAction = ugcStudio.normalizeAction(body.ugcAction);
         let activeUgcProject = ugcStudio.getProject(conversationId);
         if (requestedUgcAction) {
@@ -2031,14 +2051,14 @@ async function handleChatStream(req, res) {
             return;
         }
         if (activeUgcProject && ugcStudio.isActive(activeUgcProject)) {
-            const ugcDecision = ugcStudio.classifyMessage(message, activeUgcProject);
+            const ugcDecision = ugcStudio.classifyMessage(routingMessage, activeUgcProject);
             if (ugcDecision) {
                 await handleUGCAction(req, res, ugcCtx, activeUgcProject, ugcDecision);
                 return;
             }
             // A fresh explicit UGC request while a project is open restarts the
             // workflow with the new request (the previous project is replaced).
-            if (ugcStudio.detectUgcIntent(message)) {
+            if (ugcStudio.detectUgcIntent(routingMessage)) {
                 activeUgcProject = null;
             }
         }
@@ -2049,11 +2069,11 @@ async function handleChatStream(req, res) {
         }
         // Resume a saved draft (never auto-discarded).
         if (activeUgcProject && activeUgcProject.status === ugcStudio.STATUS.DRAFT &&
-            /\b(?:resume|continue|reopen)\b/i.test(message) && /\bugc\b/i.test(message)) {
+            /\b(?:resume|continue|reopen)\b/i.test(routingMessage) && /\bugc\b/i.test(routingMessage)) {
             await handleUGCAction(req, res, ugcCtx, activeUgcProject, { type: UGC_ACTION.RESUME });
             return;
         }
-        if (!activeUgcProject && ugcStudio.detectUgcIntent(message)) {
+        if (!activeUgcProject && ugcStudio.detectUgcIntent(routingMessage)) {
             await handleUGCStart(req, res, ugcCtx);
             return;
         }
@@ -2064,7 +2084,7 @@ async function handleChatStream(req, res) {
         // LongVideos node renders it and chains the beats internally. Requests
         // at or below 15 seconds never reach this branch — the existing H3
         // workflow is untouched.
-        const longVideoCtx = { conversationId, message, provider, model, think, referenceImage };
+        const longVideoCtx = { conversationId, message: routingMessage, provider, model, think, referenceImage, characters: parsedCharacters.characters };
         const requestedLongVideoAction = longVideoDirector.normalizeAction(body.longVideoAction);
         const activeLongPlan = longVideoDirector.getPlan(conversationId);
         if (requestedLongVideoAction) {
@@ -2079,7 +2099,7 @@ async function handleChatStream(req, res) {
             return;
         }
         if (activeLongPlan && longVideoDirector.isOpen(activeLongPlan)) {
-            const classified = longVideoDirector.classifyMessage(message, activeLongPlan);
+            const classified = longVideoDirector.classifyMessage(routingMessage, activeLongPlan);
             if (classified) {
                 await handleLongVideoAction(req, res, longVideoCtx, activeLongPlan, classified);
                 return;
@@ -2094,11 +2114,11 @@ async function handleChatStream(req, res) {
         // >15s request with the toggle on goes to the Director, not the Long
         // Video Director. Explicit "just generate the video" and an actively
         // rendering long video are still left alone.
-        const forceDirectorOverLongVideo = director.shouldForceDirectorOverLongVideo(message, {
+        const forceDirectorOverLongVideo = director.shouldForceDirectorOverLongVideo(routingMessage, {
             forceDirector,
             longVideoBusy
         });
-        if (!forceDirectorOverLongVideo && !longVideoBusy && longVideoDirector.isLongVideoRequest(message)) {
+        if (!forceDirectorOverLongVideo && !longVideoBusy && longVideoDirector.isLongVideoRequest(routingMessage)) {
             if (activeLongPlan) longVideoDirector.removePlan(conversationId);
             await handleLongVideoStart(req, res, longVideoCtx);
             return;
@@ -2107,7 +2127,7 @@ async function handleChatStream(req, res) {
         // Director Mode. The Director owns multi-stage productions before the
         // generic router so an approval card action or a brief change is never
         // misread as chat. Ordinary requests fall through untouched.
-        const directorCtx = { conversationId, message, provider, model, think, referenceImage };
+        const directorCtx = { conversationId, message: routingMessage, provider, model, think, referenceImage, characters: parsedCharacters.characters };
         const requestedDirectorAction = director.normalizeAction(body.directorAction);
         let activeProduction = director.getProduction(conversationId);
         if (requestedDirectorAction) {
@@ -2122,7 +2142,7 @@ async function handleChatStream(req, res) {
             return;
         }
         if (activeProduction && director.isOpen(activeProduction)) {
-            const classified = director.classifyMessage(message, activeProduction);
+            const classified = director.classifyMessage(routingMessage, activeProduction);
             if (classified) {
                 await handleDirectorAction(req, res, directorCtx, activeProduction, classified);
                 return;
@@ -2134,7 +2154,7 @@ async function handleChatStream(req, res) {
             // whether the turn continues, supersedes, or is unrelated chat — so
             // a parked request is never silently lost.
             if (!director.isActive(activeProduction)) {
-                if (director.wantsDirectorMode(message)) {
+                if (director.wantsDirectorMode(routingMessage)) {
                     director.removeProduction(conversationId);
                     // A rendering long video owns its plan; only a parked one is
                     // superseded so its approval can't capture the production.
@@ -2142,14 +2162,14 @@ async function handleChatStream(req, res) {
                     await handleDirectorStart(req, res, directorCtx);
                     return;
                 }
-                if (director.wantsDirectMode(message)) {
+                if (director.wantsDirectMode(routingMessage)) {
                     director.removeProduction(conversationId);
                     activeProduction = null;
                 }
             }
         }
         if ((!activeProduction || !director.isOpen(activeProduction)) &&
-            director.wantsDirectorMode(message)) {
+            director.wantsDirectorMode(routingMessage)) {
             if (!longVideoBusy) longVideoDirector.removePlan(conversationId);
             await handleDirectorStart(req, res, directorCtx);
             return;
@@ -2162,12 +2182,12 @@ async function handleChatStream(req, res) {
         // image pipeline below.
         const requestedPlaygroundAction = playground.normalizeAction(body.playgroundAction);
         if (requestedPlaygroundAction) {
-            await handlePlaygroundAction(req, res, { conversationId, provider, model, think }, requestedPlaygroundAction, message);
+            await handlePlaygroundAction(req, res, { conversationId, provider, model, think }, requestedPlaygroundAction, routingMessage);
             return;
         }
         const activePlayground = playground.getSession(conversationId);
         if (activePlayground && playground.isOpen(activePlayground)) {
-            const playgroundDecision = playground.classifyMessage(message, activePlayground);
+            const playgroundDecision = playground.classifyMessage(routingMessage, activePlayground);
             if (playgroundDecision) {
                 await handlePlaygroundAction(req, res, { conversationId, provider, model, think }, {
                     type: playgroundDecision.action,
@@ -2175,7 +2195,7 @@ async function handleChatStream(req, res) {
                     changes: playgroundDecision.changes,
                     reroll: playgroundDecision.reroll,
                     conceptId: activePlayground.id
-                }, message);
+                }, routingMessage);
                 return;
             }
         }
@@ -2193,7 +2213,7 @@ async function handleChatStream(req, res) {
         // is just unrelated conversation. The LLM's natural-language reply never
         // decides whether a tool executes — that decision lives here.
         const decision = await taskRouter.routeMessage({
-            message,
+            message: routingMessage,
             provider,
             model,
             conversationId,
@@ -2203,12 +2223,23 @@ async function handleChatStream(req, res) {
             think
         });
 
+        // Character context for this turn, now that the action is known. An
+        // explicit mention/picker selection switches the active character; a
+        // continuation ("make her …") inherits it; a fresh characterless
+        // generation does not.
+        const requestCharacters = resolveRequestCharacters(
+            message,
+            conversationId,
+            explicitCharacterIds,
+            decision.intent
+        );
+
         // Composer "Director Mode" toggle. A fresh video request runs through
         // the Director instead of the normal H3 pipeline. Explicit "just
         // generate the video" still wins, and tweaks of an active video task
         // keep their normal pipeline. A stage that is actively rendering is
         // never clobbered.
-        if (forceDirector && director.shouldForceDirector(message, decision) &&
+        if (forceDirector && director.shouldForceDirector(routingMessage, decision) &&
             !(activeProduction && director.isActive(activeProduction))) {
             if (activeProduction) director.removeProduction(conversationId);
             // The toggle superseded the duration router above; drop a parked
@@ -2399,12 +2430,11 @@ async function handleChatStream(req, res) {
             // generation (new seed variation), not a modification.
             const action = (isNew || isBareRegen) ? 'generate' : 'modify';
 
-            // A saved character named in the request (or bound to the task)
-            // conditions the generation through its approved identity sheet.
-            const identityCharacter = action === 'generate'
-                ? resolveRequestCharacter(message, conversationId, body.characterId)
-                : null;
-            const identity = resolveIdentityConditioning(identityCharacter, imagePrompt);
+            // A named / mentioned / active character conditions the generation
+            // through its approved identity package (reference-guided edit, not
+            // a text-only "same character" hint). Characterless requests leave
+            // the pipeline completely untouched.
+            const identity = resolveIdentityConditioning(requestCharacters, imagePrompt);
 
             // Track the task as running, then free VRAM and execute.
             const ctxPreviousPrompt = activeTask.prompt || null;
@@ -2422,7 +2452,8 @@ async function handleChatStream(req, res) {
                         creative_mode: structuredRequest ? structuredRequest.creative_mode : 'none',
                         explicit_constraints: structuredRequest ? structuredRequest.explicit_constraints : [],
                         attributes: attributes || null,
-                        characterId: identityCharacter ? identityCharacter.id : null
+                        characterId: requestCharacters[0] ? requestCharacters[0].id : null,
+                        characterIds: requestCharacters.map((c) => c.id)
                     })
                 });
             } else if (attributes) {
@@ -2603,13 +2634,15 @@ async function handleChatStream(req, res) {
                 };
             }
 
-            // A saved character named in a fresh video request conditions the
-            // H3 render on its approved identity references (reference-to-video)
-            // so identity persists. Continuations keep their existing mode.
+            // A character (mentioned, picked, or inherited by a continuation)
+            // conditions the H3 render on its approved identity references
+            // (reference-to-video) so identity persists across the clip. A
+            // user-provided starting frame is never replaced: when the request
+            // already has an I2VA source, that frame stays the first frame and
+            // identity is not forced into ref2va.
             let identityReferences;
-            if (action === 'generate') {
-                const identityCharacter = resolveRequestCharacter(message, conversationId, body.characterId);
-                const conditioning = resolveIdentityConditioning(identityCharacter, message);
+            if (requestCharacters.length && videoMode !== 'i2va') {
+                const conditioning = resolveIdentityConditioning(requestCharacters, message);
                 if (conditioning) {
                     identityReferences = conditioning.references.map((p) => path.basename(p));
                     const baseName = path.basename(conditioning.sourceAbs);
@@ -2635,6 +2668,8 @@ async function handleChatStream(req, res) {
                     parameters: Object.assign({}, taskState.getTask(conversationId).parameters, parameters, {
                         videoMode,
                         sourceImage: sourceImageRawFilename,
+                        characterId: requestCharacters[0] ? requestCharacters[0].id : null,
+                        characterIds: requestCharacters.map((c) => c.id),
                         duration: directorDimensions ? directorDimensions.duration : undefined,
                         width: directorDimensions ? directorDimensions.width : undefined,
                         height: directorDimensions ? directorDimensions.height : undefined
@@ -2846,7 +2881,15 @@ async function handleUGCStart(req, res, ctx) {
     try {
         vramManager.rememberChatModel(provider, model);
         await vramManager.freeVRAMBeforeChat();
-        const project = await ugcStudio.createProject({ conversationId, message, provider, model, think });
+        let project = await ugcStudio.createProject({ conversationId, message, provider, model, think });
+        // A character mentioned in the brief (`@Maya`) becomes the UGC creator
+        // through the same Character Identity Package the image/video pipelines
+        // use — never a separate UGC character system.
+        const mentioned = Array.isArray(ctx.characters) ? ctx.characters : [];
+        if (mentioned.length) {
+            project = ugcStudio.selectCreator(project, mentioned[0].id) || project;
+            characterContext.setActiveCharacter(conversationId, [{ id: mentioned[0].id, name: mentioned[0].name }]);
+        }
         activityLog.record({
             type: 'generation',
             title: 'UGC project started',
@@ -3454,33 +3497,33 @@ function emitIdentityCardEvent(res, characterId) {
     res.end();
 }
 
-// Find the saved character an image request refers to: an explicit selection
-// stored on the active task (playground / UGC / Director), an explicit request
-// field, or a saved character named in the message. Conservative — a match
-// requires the whole name as a word.
-function resolveRequestCharacter(message, conversationId, explicitId) {
-    if (explicitId) {
-        const explicit = characterPresets.get(explicitId);
-        if (explicit) return explicit;
+// Normalize the ordered character ids a request carries (the @ picker sends
+// `body.characters`; older callers may send a single `body.characterId`).
+function sanitizeCharacterIds(value) {
+    const list = Array.isArray(value) ? value : (value ? [value] : []);
+    const out = [];
+    for (const item of list) {
+        const id = String((item && typeof item === 'object' ? (item.id || item.characterId) : item) || '').trim();
+        if (!id || out.includes(id)) continue;
+        if (characterPresets.get(id)) out.push(id);
     }
-    const task = conversationId ? taskState.getTask(conversationId) : null;
-    const boundId = task && task.parameters && task.parameters.characterId;
-    if (boundId) {
-        const bound = characterPresets.get(boundId);
-        if (bound) return bound;
-    }
-    const text = String(message || '');
-    if (!text) return null;
-    let best = null;
-    for (const candidate of characterPresets.list()) {
-        const name = String(candidate.name || '').trim();
-        if (name.length < 3) continue;
-        const pattern = '\\b' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b';
-        if (new RegExp(pattern, 'i').test(text) && (!best || name.length > String(best.name).length)) {
-            best = candidate;
-        }
-    }
-    return best;
+    return out;
+}
+
+// Find the saved characters an image/video request refers to: an explicit
+// picker selection, a `@Name` mention, a bare character name, or (for a
+// continuation) the conversation's active character. Conservative — a
+// characterless request never inherits one. Delegates to the shared
+// character-context layer so every media pipeline resolves identically.
+function resolveRequestCharacters(message, conversationId, explicitIds, action) {
+    const parsed = characterContext.parseCharacterMessage(message, { explicitIds });
+    const resolution = characterContext.resolveActiveCharacters({
+        conversationId,
+        explicit: parsed.characters,
+        message,
+        action
+    });
+    return resolution.characters.map((ref) => characterPresets.get(ref.id)).filter(Boolean);
 }
 
 // Resolve (or create) the character a playground identity action operates on.
@@ -3514,29 +3557,30 @@ function materializeIdentityCharacter(session, options = {}) {
     return character;
 }
 
-// Build the reference-guided edit conditioning for an approved character, or
-// null when the character has no ready identity sheet / usable base image. The
-// selected references are chosen from the request wording (portrait vs full
-// body vs profile vs accessory).
-function resolveIdentityConditioning(character, scenePrompt) {
-    if (!character) return null;
-    const sheet = characterPresets.getIdentitySheet(character.id);
-    if (!sheet || sheet.status !== characterIdentity.STATUS.READY) return null;
-    const base = sheet.baseImage;
-    if (!base || !base.filename) return null;
-    const sourceAbs = path.join(GENERATED_DIR, path.basename(base.filename));
+// Build the reference-guided edit conditioning for one or more characters, or
+// null when none has a usable base image. The shared character-context layer
+// chooses the relevant references from the request wording (portrait vs full
+// body vs profile vs accessory) and keeps identity separate from the scene.
+// A legacy character without an identity sheet still works through its
+// portrait (the "Basic Reference" state).
+function resolveIdentityConditioning(characters, scenePrompt) {
+    const list = Array.isArray(characters) ? characters : (characters ? [characters] : []);
+    if (!list.length) return null;
+    const conditioning = characterContext.buildConditioning(list, scenePrompt);
+    if (!conditioning) return null;
+    const sourceAbs = path.join(GENERATED_DIR, path.basename(conditioning.sourceFilename));
     if (!fs.existsSync(sourceAbs)) return null;
-    const picked = characterIdentity.selectReferencesForRequest(sheet, { text: scenePrompt });
-    const references = picked.references
+    const references = conditioning.referenceFilenames
         .map((name) => path.join(GENERATED_DIR, path.basename(name)))
         .filter((abs) => fs.existsSync(abs));
     return {
-        characterId: character.id,
-        characterName: character.name || 'character',
+        characterId: conditioning.characters[0] && conditioning.characters[0].id,
+        characterIds: conditioning.characters.map((c) => c.id),
+        characterName: conditioning.names,
         sourceAbs,
         references,
-        instruction: characterIdentity.buildSceneEditInstruction(sheet, scenePrompt),
-        constraints: characterIdentity.buildIdentityConstraints(sheet)
+        instruction: conditioning.instruction,
+        constraints: conditioning.constraints
     };
 }
 
@@ -4031,9 +4075,14 @@ async function handlePlaygroundAction(req, res, ctx, action, rawMessage) {
                 updatedAt: new Date().toISOString()
             });
             // An approved character conditions the scene as a reference-guided
-            // edit (identity preserved, scene/setting changed).
+            // edit (identity preserved, scene/setting changed). It also becomes
+            // the conversation's active character so a later "make her …"
+            // continuation resolves to the same person.
             const identityCharacter = playground.identityCharacterSource(session, null);
             const identity = resolveIdentityConditioning(identityCharacter, imagePrompt);
+            if (identityCharacter) {
+                characterContext.setActiveCharacter(conversationId, [{ id: identityCharacter.id, name: identityCharacter.name }]);
+            }
             taskState.setTask(conversationId, {
                 type: 'image',
                 operation: 'generate',
@@ -4046,7 +4095,8 @@ async function handlePlaygroundAction(req, res, ctx, action, rawMessage) {
                     explicit_constraints: request.explicit_constraints,
                     attributes: attributes || null,
                     playgroundId: session.id,
-                    characterId: identityCharacter ? identityCharacter.id : null
+                    characterId: identityCharacter ? identityCharacter.id : null,
+                    characterIds: identityCharacter ? [identityCharacter.id] : []
                 })
             });
             playground.markUsed(session);
@@ -4107,10 +4157,16 @@ async function handleDirectorStart(req, res, ctx) {
     sseWrite(res, { generating: 'Director \u2014 Planning production\u2026' });
     try {
         await prepareDirectorLlm(provider, model);
-        // A named character (or one bound to the active task) contributes its
-        // approved identity package so identity persists across shots.
-        const chosenCharacter = resolveRequestCharacter(message, conversationId, null);
-        const identity = resolveIdentityConditioning(chosenCharacter, message);
+        // A mentioned / picked character contributes its approved identity
+        // package so identity persists across every shot. The character is
+        // resolved through the shared layer; a characterless production is
+        // unchanged.
+        const contextCharacters = Array.isArray(ctx.characters) && ctx.characters.length
+            ? ctx.characters
+            : characterContext.parseCharacterMessage(message).characters;
+        const characterRecords = contextCharacters.map((ref) => characterPresets.get(ref.id)).filter(Boolean);
+        const identity = resolveIdentityConditioning(characterRecords, message);
+        if (contextCharacters.length) characterContext.setActiveCharacter(conversationId, contextCharacters);
         const production = await director.createProduction({
             conversationId, message, provider, model, think, referenceImage,
             character: identity ? { identityReferences: [identity.sourceAbs && path.basename(identity.sourceAbs)].concat(identity.references.map((p) => path.basename(p))) } : null
@@ -4311,6 +4367,11 @@ async function handleLongVideoStart(req, res, ctx) {
     try {
         vramManager.rememberChatModel(provider, model);
         await vramManager.freeVRAMBeforeChat();
+        // A mentioned character becomes the conversation's active character so
+        // a later continuation resolves to the same person. (The long-video
+        // pipeline is single-job H3 and does not take identity references.)
+        const mentioned = Array.isArray(ctx.characters) ? ctx.characters : [];
+        if (mentioned.length) characterContext.setActiveCharacter(conversationId, mentioned);
         const plan = await longVideoDirector.createFromRequest({
             conversationId, message, provider, model, think, referenceImage
         });

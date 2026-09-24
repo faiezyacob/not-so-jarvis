@@ -17,10 +17,18 @@ const Chat = (() => {
     let chatMentionPopup;
     let pendingAttachments = [];
     let pendingReferences = [];
+    // Characters chosen from the @ picker this turn. Each is sent as a
+    // structured id; the "@Name" token in the text is display only.
+    let pendingCharacters = [];
     let mentionItems = [];
     let mentionIndex = 0;
     let mentionToken = 0;
     let generatedMetaCache = null;
+    let charactersMetaCache = null;
+    let charactersMetaCacheAt = 0;
+    // The picker re-reads the character list after this window so a character
+    // created from the Playground shows up without a reload.
+    const CHARACTERS_CACHE_MS = 8000;
 
     const BASE_TITLE = document.title || 'NOT-SO-JARVIS';
 
@@ -194,7 +202,10 @@ const Chat = (() => {
 
     function resetReferenceState() {
         generatedMetaCache = null;
+        charactersMetaCache = null;
+        charactersMetaCacheAt = 0;
         pendingReferences = [];
+        pendingCharacters = [];
         closeMentionPopup();
         renderAttachments();
     }
@@ -283,11 +294,38 @@ const Chat = (() => {
     function renderAttachments() {
         if (!chatAttachmentsEl) return;
         chatAttachmentsEl.innerHTML = '';
-        if (!pendingAttachments.length && !pendingReferences.length) {
+        if (!pendingAttachments.length && !pendingReferences.length && !pendingCharacters.length) {
             chatAttachmentsEl.style.display = 'none';
             return;
         }
         chatAttachmentsEl.style.display = 'flex';
+
+        // Character chips come first: they are the identity, not a file
+        // reference. Removing one also removes its "@Name" token from the input.
+        pendingCharacters.forEach((character, index) => {
+            const item = document.createElement('div');
+            item.className = 'chat-attachment chat-attachment--character';
+            if (character.imageUrl) {
+                const img = document.createElement('img');
+                img.className = 'chat-attachment-thumb chat-attachment-thumb--round';
+                img.src = character.imageUrl;
+                img.alt = character.name;
+                item.appendChild(img);
+            }
+            const badge = document.createElement('span');
+            badge.className = 'chat-attachment-badge chat-attachment-badge--char';
+            badge.textContent = '@' + character.name;
+            badge.title = 'Character: ' + character.name;
+            const btn = document.createElement('button');
+            btn.className = 'chat-attachment-remove';
+            btn.type = 'button';
+            btn.textContent = '×';
+            btn.title = 'Remove character';
+            btn.addEventListener('click', () => removeCharacter(index + 1));
+            item.appendChild(badge);
+            item.appendChild(btn);
+            chatAttachmentsEl.appendChild(item);
+        });
 
         pendingReferences.forEach((reference, index) => {
             const item = document.createElement('div');
@@ -346,14 +384,24 @@ const Chat = (() => {
         return uploaded;
     }
 
-    // --- @ reference picker ---
+    // --- @ character / image picker ---
     //
-    // Typing "@" opens a picker of the images generated in the current
-    // conversation. Each selection inserts a numbered @imageN token at the
-    // caret and adds a reference chip, so a prompt can position several
-    // references ("make @image1 hold @image2 at @image3"). The tokens are sent
-    // with the next message so the pipelines can use the first as an edit source
-    // or an I2VA first frame and the rest as positional Qwen edit references.
+    // Typing "@" opens a picker of the saved characters (each resolving to its
+    // Character Identity Package) followed by the images generated in the
+    // current conversation. Selecting a character inserts an "@Name" mention and
+    // a chip; the character is sent as a structured id, never as plain prompt
+    // text. Selecting an image inserts a numbered @imageN reference, so a prompt
+    // can position several references ("make @image1 hold @image2 at @image3").
+    // "Create New Character" opens the existing Creative Playground — there is
+    // no second character-creation workflow.
+
+    const IDENTITY_STATUS_LABELS = {
+        ready: 'Identity Ready',
+        generating: 'Identity Generating',
+        failed: 'Identity Failed',
+        basic: 'Basic Reference',
+        none: 'Identity Not Created'
+    };
 
     function autoGrowInput() {
         if (!chatInput) return;
@@ -427,23 +475,53 @@ const Chat = (() => {
         return generatedMetaCache;
     }
 
+    async function characterOptions() {
+        if (charactersMetaCache && (Date.now() - charactersMetaCacheAt) < CHARACTERS_CACHE_MS) {
+            return charactersMetaCache;
+        }
+        try {
+            const res = await fetch('/api/characters/options');
+            const data = await res.json();
+            charactersMetaCache = data.characters || [];
+        } catch (e) {
+            charactersMetaCache = [];
+        }
+        charactersMetaCacheAt = Date.now();
+        return charactersMetaCache;
+    }
+
     async function openMentionPopup(query) {
         const token = ++mentionToken;
-        const images = conversationImages();
-        if (!images.length) {
-            closeMentionPopup();
-            return;
-        }
-        const meta = await generatedMeta();
-        if (token !== mentionToken) return;
         const q = String(query || '').toLowerCase();
+        const [characters, meta] = await Promise.all([characterOptions(), generatedMeta()]);
+        if (token !== mentionToken) return;
+
+        const characterItems = characters
+            .filter((c) => !q || String(c.name || '').toLowerCase().indexOf(q) !== -1)
+            .map((c) => ({
+                kind: 'character',
+                id: c.id,
+                name: c.name || 'Character',
+                url: c.imageUrl || '',
+                identityStatus: c.identityStatus || 'none'
+            }));
+
+        const images = conversationImages();
         const enriched = images.map((img) => {
             const found = meta.find((m) => String(m.file || '').split('?')[0].endsWith('/' + img.filename));
             return Object.assign({}, img, { prompt: found ? (found.prompt || '') : '' });
         });
-        mentionItems = q
+        const imageItems = (q
             ? enriched.filter((img) => (img.filename + ' ' + img.prompt).toLowerCase().indexOf(q) !== -1)
-            : enriched;
+            : enriched
+        ).map((img) => ({ kind: 'image', filename: img.filename, url: img.url, prompt: img.prompt }));
+
+        mentionItems = characterItems.concat(imageItems);
+        // "Create New Character" is always offered unless the query clearly
+        // filters it out.
+        if (!q || 'create new character'.indexOf(q) !== -1 || 'new character'.indexOf(q) !== -1) {
+            mentionItems.push({ kind: 'create', name: 'Create New Character' });
+        }
         if (!mentionItems.length) {
             closeMentionPopup();
             return;
@@ -454,26 +532,71 @@ const Chat = (() => {
 
     function renderMentionPopup() {
         chatMentionPopup.innerHTML = '';
+        let lastKind = null;
         mentionItems.forEach((item, i) => {
+            if (item.kind !== lastKind) {
+                const label = item.kind === 'character' ? 'Characters'
+                    : (item.kind === 'image' ? 'Images' : '');
+                if (label) {
+                    const header = document.createElement('div');
+                    header.className = 'chat-mention-header';
+                    header.textContent = label;
+                    chatMentionPopup.appendChild(header);
+                }
+                lastKind = item.kind;
+            }
             const row = document.createElement('button');
             row.type = 'button';
-            row.className = 'chat-mention-item' + (i === mentionIndex ? ' active' : '');
-            const thumb = document.createElement('img');
-            thumb.className = 'chat-mention-thumb';
-            thumb.src = item.url;
-            thumb.alt = item.filename;
-            const meta = document.createElement('div');
-            meta.className = 'chat-mention-meta';
-            const name = document.createElement('div');
-            name.className = 'chat-mention-name';
-            name.textContent = item.filename;
-            const prompt = document.createElement('div');
-            prompt.className = 'chat-mention-prompt';
-            prompt.textContent = item.prompt || 'Generated image';
-            meta.appendChild(name);
-            meta.appendChild(prompt);
-            row.appendChild(thumb);
-            row.appendChild(meta);
+            row.className = 'chat-mention-item chat-mention-item--' + item.kind + (i === mentionIndex ? ' active' : '');
+            if (item.kind === 'create') {
+                const plus = document.createElement('span');
+                plus.className = 'chat-mention-plus';
+                plus.textContent = '+';
+                const name = document.createElement('div');
+                name.className = 'chat-mention-name';
+                name.textContent = 'Create New Character';
+                row.appendChild(plus);
+                row.appendChild(name);
+            } else {
+                if (item.url) {
+                    const thumb = document.createElement('img');
+                    thumb.className = 'chat-mention-thumb' + (item.kind === 'character' ? ' chat-mention-thumb--round' : '');
+                    thumb.src = item.url;
+                    thumb.alt = item.name || item.filename;
+                    // A missing/unreachable preview falls back to the neutral
+                    // avatar placeholder instead of a broken-image icon.
+                    thumb.addEventListener('error', () => {
+                        const ph = document.createElement('span');
+                        ph.className = 'chat-mention-thumb chat-mention-thumb--placeholder';
+                        ph.textContent = (item.name || '?').charAt(0).toUpperCase();
+                        thumb.replaceWith(ph);
+                    }, { once: true });
+                    row.appendChild(thumb);
+                } else if (item.kind === 'character') {
+                    const ph = document.createElement('span');
+                    ph.className = 'chat-mention-thumb chat-mention-thumb--placeholder';
+                    ph.textContent = (item.name || '?').charAt(0).toUpperCase();
+                    row.appendChild(ph);
+                }
+                const meta = document.createElement('div');
+                meta.className = 'chat-mention-meta';
+                const name = document.createElement('div');
+                name.className = 'chat-mention-name';
+                name.textContent = item.kind === 'character' ? item.name : item.filename;
+                meta.appendChild(name);
+                if (item.kind === 'character') {
+                    const status = document.createElement('div');
+                    status.className = 'chat-mention-status chat-mention-status--' + (item.identityStatus || 'none');
+                    status.textContent = IDENTITY_STATUS_LABELS[item.identityStatus] || 'Identity Not Created';
+                    meta.appendChild(status);
+                } else {
+                    const prompt = document.createElement('div');
+                    prompt.className = 'chat-mention-prompt';
+                    prompt.textContent = item.prompt || 'Generated image';
+                    meta.appendChild(prompt);
+                }
+                row.appendChild(meta);
+            }
             row.addEventListener('mousedown', (e) => {
                 e.preventDefault();
                 selectMention(i);
@@ -510,25 +633,62 @@ const Chat = (() => {
     function selectMention(index) {
         const item = mentionItems[index];
         if (!item) return;
+        if (item.kind === 'create') {
+            closeMentionPopup();
+            if (window.PlaygroundUI && typeof window.PlaygroundUI.open === 'function') {
+                window.PlaygroundUI.open();
+            }
+            return;
+        }
         const caret = chatInput.selectionStart || 0;
-        // Replace the in-progress "@query" token with a numbered reference token
-        // (@image1, @image2, …) so the prompt keeps the reference's position.
+        // Replace the in-progress "@query" token with the chosen mention. A
+        // character becomes "@Name"; an image becomes a numbered @imageN token
+        // so the prompt keeps the reference's position.
         const before = chatInput.value
             .slice(0, caret)
             .replace(/(?:^|\s)@[^\s@]*$/, (match) => (match.charAt(0) === '@' ? '' : ' '));
         const after = chatInput.value.slice(caret);
-        const token = '@image' + (pendingReferences.length + 1);
+        const token = item.kind === 'character'
+            ? '@' + item.name
+            : '@image' + (pendingReferences.length + 1);
         chatInput.value = before + token + after;
         const pos = before.length + token.length;
         if (typeof chatInput.setSelectionRange === 'function') chatInput.setSelectionRange(pos, pos);
         autoGrowInput();
-        addReference(item);
+        if (item.kind === 'character') addCharacter(item);
+        else addReference(item);
         closeMentionPopup();
         chatInput.focus();
     }
 
     function addReference(item) {
         pendingReferences.push(item);
+        renderAttachments();
+    }
+
+    function addCharacter(item) {
+        if (!item || !item.id) return;
+        if (pendingCharacters.some((c) => c.id === item.id)) return;
+        pendingCharacters.push({ id: item.id, name: item.name || 'Character', imageUrl: item.url || '' });
+        renderAttachments();
+    }
+
+    function escapeRegExp(value) {
+        return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+
+    // Remove a character chip and its "@Name" token from the input. The name is
+    // matched exactly (case-insensitive) so a partial word is never mangled.
+    function removeCharacter(n) {
+        if (n < 1 || n > pendingCharacters.length) return;
+        const removed = pendingCharacters.splice(n - 1, 1)[0];
+        if (removed && removed.name) {
+            chatInput.value = chatInput.value
+                .replace(new RegExp('\\s*@' + escapeRegExp(removed.name) + '(?![\\w@])', 'i'), ' ')
+                .replace(/[ \t]{2,}/g, ' ')
+                .replace(/^\s+/, '');
+        }
+        autoGrowInput();
         renderAttachments();
     }
 
@@ -546,6 +706,7 @@ const Chat = (() => {
 
     function clearReferences() {
         pendingReferences = [];
+        pendingCharacters = [];
         renderAttachments();
     }
 
@@ -899,7 +1060,8 @@ const Chat = (() => {
         // pending attachment can never leak into an approval click.
         const attachments = override ? [] : pendingAttachments.slice();
         const references = override ? [] : pendingReferences.slice();
-        if (!text && !attachments.length && !references.length) return;
+        const characters = override ? [] : pendingCharacters.slice();
+        if (!text && !attachments.length && !references.length && !characters.length) return;
 
         let conversationId = Conversations.currentId();
 
@@ -973,6 +1135,7 @@ const Chat = (() => {
                     message: userText || text,
                     images: visionImages,
                     references: references.map((r) => r.filename),
+                    characters: characters.map((c) => c.id),
                     directorAction: override && override.directorAction ? override.directorAction : undefined,
                     longVideoAction: override && override.longVideoAction ? override.longVideoAction : undefined,
                     playgroundAction: override && override.playgroundAction ? override.playgroundAction : undefined,

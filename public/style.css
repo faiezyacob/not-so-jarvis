@@ -2472,6 +2472,100 @@ em {
     margin-top: 2px;
 }
 
+/* Section headers (Characters / Images). */
+.chat-mention-header {
+    padding: 6px 8px 2px;
+    color: var(--text-dim);
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+/* "Create New Character" row. */
+.chat-mention-plus {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    flex-shrink: 0;
+    border: 1px dashed var(--border-focus);
+    border-radius: 5px;
+    color: var(--accent);
+    font-size: 22px;
+    line-height: 1;
+}
+
+.chat-mention-thumb--round {
+    border-radius: 50%;
+}
+
+.chat-mention-thumb--placeholder {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    color: var(--text-dim);
+    font-family: var(--font-mono);
+    font-size: var(--fs-md);
+    background: rgba(108, 255, 154, 0.08);
+}
+
+.chat-mention-status {
+    margin-top: 2px;
+    font-size: var(--fs-xs);
+    color: var(--text-dim);
+}
+
+.chat-mention-status--ready {
+    color: var(--accent);
+}
+
+.chat-mention-status--generating {
+    color: var(--accent);
+    opacity: 0.8;
+}
+
+.chat-mention-status--failed {
+    color: var(--danger, #ff6b6b);
+}
+
+/* Character chip in the attachments bar. */
+.chat-attachment--character {
+    width: auto;
+    height: auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 22px 4px 4px;
+    border: 1px solid var(--border-focus);
+    border-radius: 999px;
+    background: rgba(108, 255, 154, 0.08);
+}
+
+.chat-attachment-thumb--round {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+}
+
+.chat-attachment-badge--char {
+    position: static;
+    left: auto;
+    bottom: auto;
+    border: none;
+    background: transparent;
+    padding: 0;
+    font-size: var(--fs-sm);
+}
+
+.chat-attachment--character .chat-attachment-remove {
+    top: 50%;
+    right: 2px;
+    transform: translateY(-50%);
+}
+
 .message--user .md-image {
     max-width: 320px;
     border-radius: 6px;
