@@ -124,6 +124,9 @@ function identitySummary(session, character) {
 
 function buildCard(session, character) {
     const concept = session.concept || {};
+    const locks = conceptEngine.normalizeLocks(session.locks);
+    const canRerollIdentity = session.mode === 'random_character'
+        && Boolean(concept.identity && typeof concept.identity === 'object') && !locks.identity;
     return {
         id: session.id,
         revision: session.revision || 1,
@@ -134,7 +137,13 @@ function buildCard(session, character) {
         character: character ? { id: character.id, name: character.name || 'Character' } : null,
         // A saved character's name, or the temporary name of a random one.
         characterName: character ? (character.name || 'Character') : (concept.name || ''),
-        locks: conceptEngine.normalizeLocks(session.locks),
+        locks,
+        // Which targeted random-identity re-rolls the card should offer. A saved
+        // character's identity is fixed; a matching lock removes the control.
+        identityReroll: {
+            face: Boolean(canRerollIdentity && !locks.appearance),
+            hair: Boolean(canRerollIdentity && !locks.hair)
+        },
         // The independent generator controls that produced a random character
         // (null for saved characters) and the deterministic seed, so the person
         // can be shown and reproduced.
@@ -475,12 +484,38 @@ function modify(session, action = {}) {
         // prompt blanked it (rerollField is guarded downstream by this check).
         concept = conceptEngine.rerollField(concept, theme, 'outfit', action.rng);
     }
+    // A targeted identity re-roll (face / hair) changes only those structured
+    // traits. It is available only for a structured random character and is
+    // refused while the matching attribute (or the whole identity) is locked.
+    const identityReroll = String(action.rerollIdentity || '').trim().toLowerCase();
+    let identityRerolled = false;
+    if ((identityReroll === 'face' || identityReroll === 'hair')
+        && session.mode === 'random_character' && concept && concept.identity) {
+        const blocked = locks.identity || (identityReroll === 'face' ? locks.appearance : locks.hair);
+        if (!blocked) {
+            concept = conceptEngine.rerollIdentityPart(concept, identityReroll, action.rng, theme);
+            identityRerolled = true;
+        }
+    }
     rememberOutfit(session, concept);
     session.locks = locks;
     session.characterProfile = requestedProfile;
     session.outfitPack = concept.outfitPack || '';
     session.outfitPackCustom = concept.outfitPackCustom || '';
     session.concept = concept;
+    // A re-rolled identity must refresh the bound snapshot so the portrait and
+    // the image request render the new person, not the previous trait set.
+    if (identityRerolled) {
+        session.characterSnapshot = characterStudio.normalizeCharacter({
+            name: concept.name,
+            identity: concept.identity,
+            identityText: concept.subject,
+            identitySignature: concept.identitySignature,
+            appearance: concept.appearance,
+            hair: concept.hair,
+            provenance: { type: 'session-generated' }
+        });
+    }
     session.scene = createScene(concept, theme);
     session.revision = (Number(session.revision) || 1) + 1;
     session.composition = createCompositionSnapshot(session);
@@ -733,6 +768,8 @@ function normalizeAction(value) {
         if (value.reroll) out.reroll = true;
         // A precise one-field re-roll (the concept card's per-attribute dice).
         if (value.rerollField) out.rerollField = String(value.rerollField);
+        // A targeted random-identity re-roll ("face" or "hair").
+        if (value.rerollIdentity) out.rerollIdentity = String(value.rerollIdentity);
         // Outfit Pack selection (a pack id, or `custom` with a text override).
         if (typeof value.outfitPack === 'string') out.outfitPack = value.outfitPack;
         if (typeof value.outfitPackCustom === 'string') out.outfitPackCustom = value.outfitPackCustom;

@@ -1832,7 +1832,23 @@ function buildCard(project) {
         card.products = products.list().map(productSnapshotForCard);
     }
     if (project.stage === STAGES.CREATOR_SELECTION) {
-        card.characters = characterPresets.list().map((c) => ({ id: c.id, name: c.name || 'Character' }));
+        // A compact, safe preview per saved character: the single identity image
+        // (when the character has one) plus a short appearance label so the
+        // picker is visual instead of name-only. Never the full identity payload.
+        card.characters = characterPresets.list().map((c) => {
+            const pkg = characterPresets.getIdentityPackage(c.id);
+            const identityImage = pkg ? characterIdentity.selectIdentityImage(pkg) : null;
+            const filename = identityImage && identityImage.filename ? identityImage.filename : '';
+            return {
+                id: c.id,
+                name: c.name || 'Character',
+                appearanceCategoryLabel: c.appearanceCategoryLabel || '',
+                hasIdentity: Boolean(filename),
+                image: filename
+                    ? (identityImage.url || ('/generated/' + encodeURIComponent(filename)))
+                    : ''
+            };
+        });
     }
     if (project.stage === STAGES.CREATIVE_DIRECTION) {
         card.outfitPacks = outfitPacks.listPacks().map((p) => ({ id: p.id, label: p.label, description: p.description }));

@@ -1147,7 +1147,7 @@ function initImageGenSettings() {
     const statusEl = document.getElementById('imageSettingsStatus');
     if (statusEl) statusEl.style.display = 'none';
     let saved = {};
-    let activeModel = 'krea2';
+    let activeModel = 'qwen_image_2_1';
 
     // The key a base input writes to depends on the selected model; any
     // non-scoped field keeps its own key.
@@ -1245,7 +1245,7 @@ function initImageGenSettings() {
 
     if (modelSelect) {
         modelSelect.addEventListener('change', () => {
-            activeModel = IMAGE_MODEL_BASE_KEYS[modelSelect.value] ? modelSelect.value : 'krea2';
+            activeModel = IMAGE_MODEL_BASE_KEYS[modelSelect.value] ? modelSelect.value : 'qwen_image_2_1';
             paintBaseFields();
             persistSelect('model', modelSelect);
         });
@@ -1369,7 +1369,7 @@ function initImageGenSettings() {
             // inputs from that model's stored filenames.
             if (modelSelect) {
                 const wanted = settings.model || defaults.model;
-                activeModel = IMAGE_MODEL_BASE_KEYS[wanted] ? wanted : 'krea2';
+                activeModel = IMAGE_MODEL_BASE_KEYS[wanted] ? wanted : 'qwen_image_2_1';
                 modelSelect.value = activeModel;
             }
             baseModelData = { settings, defaults, choices };

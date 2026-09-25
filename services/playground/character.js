@@ -101,7 +101,22 @@ const FACE_SHAPES = [
     'an elegantly elongated face',
     'a softly rounded face',
     'a defined square face',
-    'a narrow oval face'
+    'a narrow oval face',
+    'a rectangular face',
+    'a triangular face',
+    'an inverted-triangle face',
+    'a diamond-shaped face',
+    'an oblong face',
+    'a softly squared face',
+    'a chiselled angular face',
+    'a petite rounded face',
+    'a long, narrow face',
+    'a balanced oval face',
+    'a gently tapered face',
+    'a strong, symmetrical face',
+    'a fine-boned oval face',
+    'a softly contoured face',
+    'a wide, open face'
 ];
 
 const EYE_SHAPES = [
@@ -119,7 +134,14 @@ const EYE_SHAPES = [
     'narrow eyes',
     'oval eyes',
     'long-lashed eyes',
-    'bright clear eyes'
+    'bright clear eyes',
+    'cat-like eyes',
+    'doe eyes',
+    'close-set eyes',
+    'small, neat eyes',
+    'softly rounded eyes',
+    'elongated eyes',
+    'striking tilted eyes'
 ];
 
 const EYEBROWS = [
@@ -132,7 +154,110 @@ const EYEBROWS = [
     'subtly feathered eyebrows',
     'strong, straight brows',
     'naturally full eyebrows',
-    'gently curved eyebrows'
+    'gently curved eyebrows',
+    'high-arched eyebrows',
+    'low, straight brows',
+    'bushy brows',
+    'thin, precise brows',
+    'softly angled brows',
+    'feathered arched brows',
+    'bold, defined brows',
+    'delicately arched brows'
+];
+
+// Separately represented face-structure traits. Kept independent of hair so a
+// face re-roll can never disturb the hair (and vice versa).
+const FACE_NOSES = [
+    'a straight nose',
+    'a softly rounded nose',
+    'a slim, narrow nose',
+    'a gently upturned nose',
+    'a broad nose',
+    'a button nose',
+    'a refined nose',
+    'a gently sloping nose',
+    'a softly curved nose',
+    'an elegant straight nose',
+    'a slightly aquiline nose',
+    'a petite nose',
+    'a strong, straight nose',
+    'a delicately bridged nose'
+];
+
+const FACE_LIPS = [
+    'naturally full lips',
+    'slim lips',
+    'softly bowed lips',
+    'a defined cupid\u2019s bow',
+    'a full lower lip',
+    'a balanced mouth',
+    'a wide, generous mouth',
+    'a small, delicate mouth',
+    'gently curved lips',
+    'a soft upper lip',
+    'a defined lip line',
+    'subtly full lips',
+    'elegantly shaped lips',
+    'a softly pointed cupid\u2019s bow'
+];
+
+const FACE_CHEEKS = [
+    'high cheekbones',
+    'soft cheeks',
+    'full cheeks',
+    'defined cheekbones',
+    'delicate cheeks',
+    'gently hollow cheeks',
+    'rounded cheeks',
+    'sculpted cheekbones',
+    'rosy cheeks',
+    'smoothly contoured cheeks'
+];
+
+const FACE_JAWS = [
+    'a strong jawline',
+    'a soft jawline',
+    'a defined jawline',
+    'a gently tapered jaw',
+    'a rounded jawline',
+    'a narrow jawline',
+    'a square jawline',
+    'a subtly angular jaw',
+    'a firm jawline',
+    'a delicate jawline'
+];
+
+// Natural undertone used alongside the tone. Complexion is described by tone +
+// undertone, never a single flat colour value.
+const SKIN_UNDERTONES = [
+    'with a warm golden undertone',
+    'with a cool pink undertone',
+    'with a neutral undertone',
+    'with a warm olive undertone',
+    'with a cool rosy undertone',
+    'with a neutral beige undertone',
+    'with a warm peach undertone',
+    'with a cool ashy undertone',
+    'with a neutral golden undertone',
+    'with a soft warm undertone'
+];
+
+const HAIR_PARTS = [
+    'a centre part',
+    'a side part',
+    'a deep side part',
+    'a middle part with face-framing strands',
+    'an off-centre part'
+];
+
+const HAIR_FRINGES = [
+    { value: '', weight: 3 },
+    { value: 'blunt bangs', weight: 2 },
+    { value: 'wispy bangs', weight: 2 },
+    { value: 'curtain bangs', weight: 2 },
+    { value: 'side-swept bangs', weight: 1.5 },
+    { value: 'baby bangs', weight: 1 },
+    { value: 'long face-framing layers', weight: 1.5 }
 ];
 
 const BUILDS = [
@@ -158,15 +283,23 @@ const DISTINCTIVE_FEATURES = [
     { value: 'deep dimples when smiling', weight: 2 },
     { value: 'a tiny scar above one eyebrow', weight: 1 },
     { value: 'a gap between the front teeth', weight: 1 },
-    { value: 'high cheekbones', weight: 2 },
-    { value: 'a strong jawline', weight: 2 },
+    { value: 'a widow\u2019s peak', weight: 1.5 },
     { value: 'a faint dimple in one cheek', weight: 1.5 },
     { value: 'a small mole on the jawline', weight: 1 },
     { value: 'a subtly dimpled chin', weight: 1 },
-    { value: 'a slightly upturned nose', weight: 1.5 },
-    { value: 'naturally full lips', weight: 2 },
-    { value: 'a widow\u2019s peak', weight: 1.5 },
-    { value: 'a faint scar on the chin', weight: 1 }
+    { value: 'a faint scar on the chin', weight: 1 },
+    { value: 'a faint scattering of freckles across the cheeks', weight: 1.5, skins: ['light', 'medium'] },
+    { value: 'a small beauty mark above the lip', weight: 1.5 },
+    { value: 'a beauty mark on the cheekbone', weight: 1.5 },
+    { value: 'a tiny mole near the ear', weight: 1 },
+    { value: 'a faint horizontal scar on the forehead', weight: 0.8 },
+    { value: 'a small scar beside one eyebrow', weight: 1 },
+    { value: 'a single dimple in the left cheek', weight: 1.5 },
+    { value: 'a subtle cleft chin', weight: 1 },
+    { value: 'a gently crooked smile', weight: 1 },
+    { value: 'a faint freckle on one cheek', weight: 1.5, skins: ['light', 'medium'] },
+    { value: 'soft laugh lines around the eyes', weight: 1, groups: ['mature', 'older'] },
+    { value: 'a small mole on the temple', weight: 0.8 }
 ];
 
 const EXPRESSIONS = [
@@ -205,7 +338,21 @@ const HAIR_STYLES = [
     { value: 'a fade', type: 'noun', weight: 1, textures: ['coily', 'straight'], genders: ['man'] },
     { value: 'a shoulder-length shag', type: 'noun', weight: 1.5, textures: ['wavy', 'curly'] },
     { value: 'a side-swept fringe', type: 'noun', weight: 1.5, textures: ['straight', 'wavy'] },
-    { value: 'curtain bangs', type: 'noun', weight: 1.5, textures: ['straight', 'wavy', 'curly'] }
+    { value: 'curtain bangs', type: 'noun', weight: 1.5, textures: ['straight', 'wavy', 'curly'] },
+    { value: 'a blunt shoulder-length cut', type: 'noun', weight: 1.5, textures: ['straight', 'wavy'] },
+    { value: 'an asymmetric lob', type: 'noun', weight: 1.5, textures: ['straight', 'wavy'] },
+    { value: 'a layered shag with bangs', type: 'noun', weight: 1.5, textures: ['wavy', 'curly'] },
+    { value: 'space buns', type: 'noun', weight: 1, textures: ['straight', 'wavy', 'curly', 'coily'] },
+    { value: 'a sleek middle-part style', type: 'noun', weight: 1.5, textures: ['straight', 'wavy'] },
+    { value: 'a braided crown', type: 'noun', weight: 1.5, textures: ['straight', 'wavy', 'curly', 'coily'] },
+    { value: 'twin French braids', type: 'noun', weight: 1.5, textures: ['straight', 'wavy', 'curly', 'coily'] },
+    { value: 'cornrows', type: 'noun', weight: 1.5, textures: ['coily', 'curly'] },
+    { value: 'finger coils', type: 'noun', weight: 1.5, textures: ['coily', 'curly'] },
+    { value: 'bantu knots', type: 'noun', weight: 1, textures: ['coily', 'curly'] },
+    { value: 'a tapered afro', type: 'noun', weight: 1.5, textures: ['coily', 'curly'] },
+    { value: 'a braided ponytail', type: 'noun', weight: 1.5, textures: ['straight', 'wavy', 'curly', 'coily'] },
+    { value: 'a half-up half-down style', type: 'noun', weight: 1.5, textures: ['straight', 'wavy', 'curly'] },
+    { value: 'a wrapped headwrap style', type: 'noun', weight: 0.8, textures: ['coily', 'curly'] }
 ];
 
 // Hair texture is chosen as a family, then realised as one of its variants, so
@@ -256,10 +403,17 @@ function tex(value, weight) {
 function makeCategory(spec) {
     return Object.assign({
         hairStyles: HAIR_STYLES,
+        hairParts: HAIR_PARTS,
+        hairFringes: HAIR_FRINGES,
         faceShapes: FACE_SHAPES,
+        faceNoses: FACE_NOSES,
+        faceLips: FACE_LIPS,
+        faceCheeks: FACE_CHEEKS,
+        faceJaws: FACE_JAWS,
         eyeShapes: EYE_SHAPES,
         eyebrows: EYEBROWS,
         builds: BUILDS,
+        skinUndertones: SKIN_UNDERTONES,
         distinctiveFeatures: DISTINCTIVE_FEATURES
     }, spec);
 }
@@ -427,9 +581,11 @@ const APPEARANCE_CATEGORIES = {
             skin('medium golden skin', 'medium', 3),
             skin('warm tan skin', 'medium', 3),
             skin('medium olive skin', 'medium', 2),
+            skin('golden tan skin', 'medium', 2),
             skin('golden brown skin', 'medium', 2),
             skin('deep golden brown skin', 'deep', 2),
-            skin('warm brown skin', 'deep', 2)
+            skin('warm brown skin', 'deep', 2),
+            skin('deep warm brown skin', 'deep', 1.5)
         ],
         hairColors: [
             hair('black', 5),
@@ -503,6 +659,8 @@ const APPEARANCE_CATEGORIES = {
             skin('fair skin', 'light', 3),
             skin('light skin', 'light', 2),
             skin('light olive skin', 'light', 2),
+            skin('warm olive skin', 'light', 1.5),
+            skin('light golden skin', 'light', 1.5),
             skin('freckled fair skin', 'light', 1.5),
             skin('medium warm skin', 'medium', 2),
             skin('sun-kissed tan skin', 'medium', 2)
@@ -834,67 +992,133 @@ function joinList(items) {
     return arr.slice(0, -1).join(', ') + ' and ' + arr[arr.length - 1];
 }
 
+// Read a flat trait view from either the generated flat identity or the nested
+// canonical identity, so formatting works for both legacy and new records.
+function flatTraits(value) {
+    const src = value && typeof value === 'object' ? value : {};
+    const skin = src.skin && typeof src.skin === 'object' ? src.skin : {};
+    const face = src.face && typeof src.face === 'object' ? src.face : {};
+    const eyes = src.eyes && typeof src.eyes === 'object' ? src.eyes : {};
+    const hair = src.hair && typeof src.hair === 'object' ? src.hair : {};
+    return {
+        skinTone: src.skinTone || skin.tone || '',
+        skinUndertone: src.skinUndertone || skin.undertone || '',
+        faceShape: src.faceShape || face.shape || '',
+        faceNose: src.faceNose || face.nose || '',
+        faceLips: src.faceLips || face.lips || '',
+        faceCheeks: src.faceCheeks || face.cheeks || '',
+        faceJaw: src.faceJaw || face.jaw || '',
+        eyeColor: src.eyeColor || eyes.color || '',
+        eyeShape: src.eyeShape || eyes.shape || '',
+        eyebrows: src.eyebrows || '',
+        hairColor: src.hairColor || hair.color || '',
+        hairTexture: src.hairTexture || hair.texture || '',
+        hairTextureFamily: src.hairTextureFamily || hair.textureFamily || '',
+        hairStyle: src.hairStyle || hair.style || '',
+        hairStyleType: src.hairStyleType || hair.styleType || 'adj',
+        hairPart: src.hairPart || hair.part || '',
+        hairFringe: src.hairFringe || hair.fringe || '',
+        build: src.build || '',
+        distinctiveFeature: src.distinctiveFeature || '',
+        age: src.age || '',
+        gender: src.gender || '',
+        presentation: src.presentation || ''
+    };
+}
+
 function formatEyes(identity) {
-    const color = String(identity.eyeColor || '').trim();
-    const shape = String(identity.eyeShape || '').trim();
-    return [color, shape].filter(Boolean).join(' ');
+    const t = flatTraits(identity);
+    return [String(t.eyeColor).trim(), String(t.eyeShape).trim()].filter(Boolean).join(' ');
+}
+
+// Face structure: shape + cheeks/jaw + nose + lips, all separately represented.
+function formatFace(identity) {
+    const t = flatTraits(identity);
+    return joinList([t.faceShape, t.faceCheeks, t.faceJaw, t.faceNose, t.faceLips]
+        .map((part) => String(part || '').trim()).filter(Boolean));
 }
 
 function formatHair(identity) {
-    const style = String(identity.hairStyle || '').trim();
-    const texture = String(identity.hairTexture || '').trim();
-    const color = String(identity.hairColor || '').trim();
-    if (!style) return color ? [texture, color, 'hair'].filter(Boolean).join(' ') : '';
-    if (identity.hairStyleType === 'noun') return color ? style + ' in ' + color : style;
-    return [style, texture, color, 'hair'].filter(Boolean).join(' ');
+    const t = flatTraits(identity);
+    const style = String(t.hairStyle || '').trim();
+    const texture = String(t.hairTexture || '').trim();
+    const color = String(t.hairColor || '').trim();
+    const part = String(t.hairPart || '').trim();
+    const fringe = String(t.hairFringe || '').trim();
+    if (!style) {
+        const base = [texture, color, 'hair'].filter(Boolean).join(' ');
+        return joinList([base, fringe].filter(Boolean));
+    }
+    if (t.hairStyleType === 'noun') {
+        let text = style;
+        if (fringe) text += ' with ' + fringe;
+        if (color) text += ' in ' + color;
+        if (part) text += ', ' + part;
+        return text;
+    }
+    let text = [style, texture, color, 'hair'].filter(Boolean).join(' ');
+    if (part) text += ', ' + part;
+    if (fringe) text += ' with ' + fringe;
+    return text;
 }
 
-// Appearance field for the concept model: skin, face, eyes, brows, build, feature.
+// Appearance field for the concept model: skin + undertone, face structure,
+// eyes, brows, build, feature.
 function formatAppearance(identity) {
+    const t = flatTraits(identity);
     const parts = [];
-    if (identity.skinTone) parts.push(identity.skinTone);
-    if (identity.faceShape) parts.push(identity.faceShape);
-    const eyes = formatEyes(identity);
+    if (t.skinTone) parts.push([t.skinTone, t.skinUndertone].filter(Boolean).join(' '));
+    const face = formatFace(t);
+    if (face) parts.push(face);
+    const eyes = formatEyes(t);
     if (eyes) parts.push(eyes);
-    if (identity.eyebrows) parts.push(identity.eyebrows);
-    if (identity.build) parts.push(identity.build);
-    if (identity.distinctiveFeature) parts.push(identity.distinctiveFeature);
+    if (t.eyebrows) parts.push(t.eyebrows);
+    if (t.build) parts.push(t.build);
+    if (t.distinctiveFeature) parts.push(t.distinctiveFeature);
     return joinList(parts);
 }
 
 // The natural-language identity sentence used as the concept's `subject`.
 function formatIdentity(identity) {
-    const age = String(identity.age || '').trim();
-    const presentation = String(identity.presentation || '').trim();
-    const head = ['a', age, presentation].filter(Boolean).join(' ');
+    const t = flatTraits(identity);
+    const head = ['a', String(t.age || '').trim(), String(t.presentation || '').trim()].filter(Boolean).join(' ');
     const parts = [];
-    if (identity.skinTone) parts.push(identity.skinTone);
-    if (identity.faceShape) parts.push(identity.faceShape);
-    const eyes = formatEyes(identity);
+    if (t.skinTone) parts.push([t.skinTone, t.skinUndertone].filter(Boolean).join(' '));
+    const face = formatFace(t);
+    if (face) parts.push(face);
+    const eyes = formatEyes(t);
     if (eyes) parts.push(eyes);
-    if (identity.eyebrows) parts.push(identity.eyebrows);
-    const hair = formatHair(identity);
+    if (t.eyebrows) parts.push(t.eyebrows);
+    const hair = formatHair(t);
     if (hair) parts.push(hair);
-    if (identity.build) parts.push(identity.build);
-    if (identity.distinctiveFeature) parts.push(identity.distinctiveFeature);
+    if (t.build) parts.push(t.build);
+    if (t.distinctiveFeature) parts.push(t.distinctiveFeature);
     return head + (parts.length ? ' with ' + joinList(parts) : '');
 }
 
 // Compact signature for duplicate detection within a session.
 function identitySignature(identity) {
+    const t = flatTraits(identity);
     return [
-        identity.age,
-        identity.gender || identity.presentation,
-        identity.skinTone,
-        identity.faceShape,
-        identity.eyeColor,
-        identity.eyeShape,
-        identity.eyebrows,
-        identity.hairColor,
-        identity.hairTexture,
-        identity.hairStyle,
-        identity.build,
-        identity.distinctiveFeature
+        t.age,
+        t.gender || t.presentation,
+        t.skinTone,
+        t.skinUndertone,
+        t.faceShape,
+        t.faceNose,
+        t.faceLips,
+        t.faceCheeks,
+        t.faceJaw,
+        t.eyeColor,
+        t.eyeShape,
+        t.eyebrows,
+        t.hairColor,
+        t.hairTexture,
+        t.hairStyle,
+        t.hairPart,
+        t.hairFringe,
+        t.build,
+        t.distinctiveFeature
     ].map((value) => String(value || '').toLowerCase()).join('|');
 }
 
@@ -918,44 +1142,62 @@ function canonicalIdentity(value, legacy = {}) {
         age,
         ageGroup,
         gender,
-        skin: Object.keys(skinSource).length ? Object.assign({}, skinSource) : {
-            tone: src.skinTone || fallback.skinTone || '',
-            group: src.skinGroup || fallback.skinGroup || ''
+        skin: {
+            tone: skinSource.tone || src.skinTone || fallback.skinTone || '',
+            group: skinSource.group || src.skinGroup || fallback.skinGroup || '',
+            undertone: skinSource.undertone || src.skinUndertone || fallback.skinUndertone || ''
         },
-        face: Object.keys(faceSource).length ? Object.assign({}, faceSource) : {
-            shape: src.faceShape || fallback.faceShape || ''
+        face: {
+            shape: faceSource.shape || src.faceShape || fallback.faceShape || '',
+            nose: faceSource.nose || src.faceNose || fallback.faceNose || '',
+            lips: faceSource.lips || src.faceLips || fallback.faceLips || '',
+            cheeks: faceSource.cheeks || src.faceCheeks || fallback.faceCheeks || '',
+            jaw: faceSource.jaw || src.faceJaw || fallback.faceJaw || ''
         },
         eyes: Object.keys(eyesSource).length ? Object.assign({}, eyesSource) : {
             color: src.eyeColor || fallback.eyeColor || '',
             shape: src.eyeShape || fallback.eyeShape || ''
         },
         eyebrows: src.eyebrows || fallback.eyebrows || '',
-        hair: Object.keys(hairSource).length ? Object.assign({}, hairSource) : {
-            color: src.hairColor || fallback.hairColor || '',
-            texture: src.hairTexture || fallback.hairTexture || '',
-            textureFamily: src.hairTextureFamily || fallback.hairTextureFamily || '',
-            style: src.hairStyle || fallback.hairStyle || '',
-            styleType: src.hairStyleType || fallback.hairStyleType || 'adj'
+        hair: {
+            color: hairSource.color || src.hairColor || fallback.hairColor || '',
+            texture: hairSource.texture || src.hairTexture || fallback.hairTexture || '',
+            textureFamily: hairSource.textureFamily || src.hairTextureFamily || fallback.hairTextureFamily || '',
+            style: hairSource.style || src.hairStyle || fallback.hairStyle || '',
+            styleType: hairSource.styleType || src.hairStyleType || fallback.hairStyleType || 'adj',
+            part: hairSource.part || src.hairPart || fallback.hairPart || '',
+            fringe: hairSource.fringe || src.hairFringe || fallback.hairFringe || ''
         },
         build: src.build || fallback.build || '',
         distinctiveFeature: src.distinctiveFeature || fallback.distinctiveFeature || ''
     };
     const hasTraits = Boolean(out.seed || out.age || out.ageGroup || out.gender ||
-        out.skin.tone || out.face.shape || out.eyes.color || out.eyes.shape || out.hair.color || out.hair.style || out.build || out.distinctiveFeature);
+        out.skin.tone || out.face.shape || out.face.nose || out.face.lips || out.face.cheeks || out.face.jaw ||
+        out.eyes.color || out.eyes.shape || out.hair.color || out.hair.style || out.hair.part || out.hair.fringe ||
+        out.build || out.distinctiveFeature);
     if (!hasTraits) return null;
     const legacyShape = Object.assign({}, src, {
         age: out.age,
         gender: out.gender,
+        presentation: src.presentation,
         skinTone: out.skin.tone,
         skinGroup: out.skin.group,
+        skinUndertone: out.skin.undertone,
         faceShape: out.face.shape,
+        faceNose: out.face.nose,
+        faceLips: out.face.lips,
+        faceCheeks: out.face.cheeks,
+        faceJaw: out.face.jaw,
         eyeColor: out.eyes.color,
         eyeShape: out.eyes.shape,
+        eyebrows: out.eyebrows,
         hairColor: out.hair.color,
         hairTexture: out.hair.texture,
         hairTextureFamily: out.hair.textureFamily,
         hairStyle: out.hair.style,
         hairStyleType: out.hair.styleType,
+        hairPart: out.hair.part,
+        hairFringe: out.hair.fringe,
         build: out.build,
         distinctiveFeature: out.distinctiveFeature
     });
@@ -1023,7 +1265,12 @@ function generateRandomIdentity(input = Math.random, profile) {
     const skinToneEntry = pickWeighted(category.skinTones, rng);
     const skinTone = skinToneEntry.value;
     const skinGroup = skinToneEntry.group || '';
+    const skinUndertone = pickValue(category.skinUndertones || SKIN_UNDERTONES, rng);
     const faceShape = pickValue(category.faceShapes, rng);
+    const faceNose = pickValue(category.faceNoses || FACE_NOSES, rng);
+    const faceLips = pickValue(category.faceLips || FACE_LIPS, rng);
+    const faceCheeks = pickValue(category.faceCheeks || FACE_CHEEKS, rng);
+    const faceJaw = pickValue(category.faceJaws || FACE_JAWS, rng);
     const eyeColor = pickValue(category.eyeColors, rng, { skinGroup });
     const eyeShape = pickValue(category.eyeShapes, rng);
     const eyebrows = pickValue(category.eyebrows, rng);
@@ -1038,6 +1285,8 @@ function generateRandomIdentity(input = Math.random, profile) {
         gender,
         texture: hairTextureFamily
     });
+    const hairPart = pickValue(category.hairParts || HAIR_PARTS, rng);
+    const hairFringe = pickValue(category.hairFringes || HAIR_FRINGES, rng);
     const build = pickValue(category.builds, rng, { gender });
     const distinctiveFeature = pickValue(category.distinctiveFeatures, rng, { skinGroup, gender });
     const expression = pickValue(EXPRESSIONS, rng);
@@ -1055,7 +1304,12 @@ function generateRandomIdentity(input = Math.random, profile) {
         presentation,
         skinTone,
         skinGroup,
+        skinUndertone,
         faceShape,
+        faceNose,
+        faceLips,
+        faceCheeks,
+        faceJaw,
         eyeColor,
         eyeShape,
         eyebrows,
@@ -1064,6 +1318,8 @@ function generateRandomIdentity(input = Math.random, profile) {
         hairTextureFamily,
         hairStyle: hairStyleEntry.value,
         hairStyleType: hairStyleEntry.type || 'adj',
+        hairPart,
+        hairFringe,
         build,
         distinctiveFeature,
         expression
@@ -1088,6 +1344,90 @@ function generateUniqueIdentity(input = Math.random, avoidSignatures = [], profi
         identity = generateRandomIdentity(numericSeed === null ? input : numericSeed + attempt + 1, profile);
     }
     return identity;
+}
+
+// --- Targeted re-rolls --------------------------------------------------------
+//
+// A face re-roll redraws only the face-structure / eyes / brows / feature traits
+// and a hair re-roll only the hair traits, so neither can disturb the other.
+// Deterministic for a given rng; the appearance category, age and gender (and
+// therefore the person's demographic constraints) are preserved.
+
+function categoryForIdentity(identity) {
+    const key = identity && identity.appearanceCategory;
+    return (key && APPEARANCE_CATEGORIES[key]) || null;
+}
+
+function fallbackCategory() {
+    return {
+        faceShapes: FACE_SHAPES,
+        faceNoses: FACE_NOSES,
+        faceLips: FACE_LIPS,
+        faceCheeks: FACE_CHEEKS,
+        faceJaws: FACE_JAWS,
+        eyeShapes: EYE_SHAPES,
+        eyeColors: mergePool('eyeColors'),
+        eyebrows: EYEBROWS,
+        distinctiveFeatures: DISTINCTIVE_FEATURES,
+        hairColors: mergePool('hairColors'),
+        hairTextures: mergePool('hairTextures'),
+        hairStyles: HAIR_STYLES,
+        hairParts: HAIR_PARTS,
+        hairFringes: HAIR_FRINGES
+    };
+}
+
+function refreshIdentity(identity) {
+    identity.signature = identitySignature(identity);
+    identity.identityText = formatIdentity(identity);
+    identity.appearance = formatAppearance(identity);
+    identity.hair = formatHair(identity);
+    return identity;
+}
+
+function resolveRerollRng(input) {
+    return resolveRng(input === undefined || input === null ? Math.random : input).rng;
+}
+
+function rerollIdentityFace(identity, input) {
+    if (!identity || typeof identity !== 'object') return identity;
+    const rng = resolveRerollRng(input);
+    const category = categoryForIdentity(identity) || fallbackCategory();
+    const next = Object.assign({}, identity);
+    const gender = next.gender || next.presentation || '';
+    const skinGroup = next.skinGroup || '';
+    next.faceShape = pickValue(category.faceShapes, rng);
+    next.faceNose = pickValue(category.faceNoses, rng);
+    next.faceLips = pickValue(category.faceLips, rng);
+    next.faceCheeks = pickValue(category.faceCheeks, rng);
+    next.faceJaw = pickValue(category.faceJaws, rng);
+    next.eyeColor = pickValue(category.eyeColors, rng, { skinGroup });
+    next.eyeShape = pickValue(category.eyeShapes, rng);
+    next.eyebrows = pickValue(category.eyebrows, rng);
+    next.distinctiveFeature = pickValue(category.distinctiveFeatures, rng, { skinGroup, gender });
+    return refreshIdentity(next);
+}
+
+function rerollIdentityHair(identity, input) {
+    if (!identity || typeof identity !== 'object') return identity;
+    const rng = resolveRerollRng(input);
+    const category = categoryForIdentity(identity) || fallbackCategory();
+    const next = Object.assign({}, identity);
+    const ageGroup = next.ageGroup || '';
+    const gender = next.gender || next.presentation || '';
+    next.hairColor = pickValue(category.hairColors, rng, { ageGroup });
+    next.hairTextureFamily = pickValue(category.hairTextures, rng, { ageGroup, gender });
+    next.hairTexture = pickValue(HAIR_TEXTURE_VALUES[next.hairTextureFamily] || HAIR_TEXTURE_FAMILIES, rng);
+    const hairStyleEntry = pickWeighted(category.hairStyles, rng, {
+        ageGroup,
+        gender,
+        texture: next.hairTextureFamily
+    });
+    next.hairStyle = hairStyleEntry.value;
+    next.hairStyleType = hairStyleEntry.type || 'adj';
+    next.hairPart = pickValue(category.hairParts, rng);
+    next.hairFringe = pickValue(category.hairFringes, rng);
+    return refreshIdentity(next);
 }
 
 // --- Merged catalog (introspection / tests) -----------------------------------
@@ -1120,13 +1460,20 @@ const CHARACTER_TRAITS = {
     appearanceCategories: APPEARANCE_CATEGORIES,
     appearanceKeys: APPEARANCE_KEYS,
     skinTones: mergePool('skinTones'),
+    skinUndertones: mergePool('skinUndertones'),
     faceShapes: mergePool('faceShapes'),
+    faceNoses: mergePool('faceNoses'),
+    faceLips: mergePool('faceLips'),
+    faceCheeks: mergePool('faceCheeks'),
+    faceJaws: mergePool('faceJaws'),
     eyeShapes: mergePool('eyeShapes'),
     eyeColors: mergePool('eyeColors'),
     eyebrows: mergePool('eyebrows'),
     hairColors: mergePool('hairColors'),
     hairTextures: mergePool('hairTextures'),
     hairStyles: mergePool('hairStyles'),
+    hairParts: mergePool('hairParts'),
+    hairFringes: mergePool('hairFringes'),
     builds: mergePool('builds'),
     distinctiveFeatures: mergePool('distinctiveFeatures'),
     expressions: EXPRESSIONS,
@@ -1151,8 +1498,11 @@ module.exports = {
     listProfileOptions,
     generateRandomIdentity,
     generateUniqueIdentity,
+    rerollIdentityFace,
+    rerollIdentityHair,
     formatIdentity,
     formatAppearance,
+    formatFace,
     formatHair,
     formatEyes,
     identitySignature

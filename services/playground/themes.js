@@ -1206,6 +1206,206 @@ function outfitSignature(outfit) {
     return String(outfit || '').replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
+// --- Scene-aware outfit compatibility ----------------------------------------
+//
+// Clothing is tagged with the scene dimensions it suits (weather, indoor /
+// outdoor, style and activity). A scenario's descriptors are classified from the
+// chosen environment + activity, and the outfit is drawn from the tagged pool so
+// the look fits the setting. These rules are data: a theme's wardrobe can grow
+// without touching the UI or the concept engine.
+
+const SCENE_LAYERS = {
+    cold: [
+        { value: 'a heavy wool coat', weight: 3 },
+        { value: 'an insulated parka', weight: 2.5 },
+        { value: 'a quilted down jacket', weight: 2.5 },
+        { value: 'a thick knit scarf and wool coat', weight: 2 },
+        { value: 'a fur-lined mantle', weight: 1.5 }
+    ],
+    warm: []
+};
+
+const WEATHER_TAGS = [
+    { tag: 'cold', re: /\b(?:snow|snowy|winter|ice|icy|frozen|frost|blizzard|arctic|snowbound|chilly|cold)\b/i },
+    { tag: 'warm', re: /\b(?:summer|beach|tropical|desert|lagoon|sunlit|sunny|heat|hot|blossom|shore|sand|seaside|coastal|palm|swim|pool)\b/i }
+];
+
+const PLACE_TAGS = [
+    { tag: 'indoor', re: /\b(?:room|interior|indoor|studio|kitchen|apartment|hallway|workshop|gallery|cafe|coffee|office|library|bedroom|bathroom|vanity|bar|restaurant|elevator|shop|boutique|gym|mall|hotel|tent|stage)\b/i },
+    { tag: 'outdoor', re: /\b(?:outdoor|street|city|forest|mountain|beach|shore|cliff|trail|garden|field|desert|dune|rooftop|park|market|pier|village|landscape|island|sky|snow|plaza|sidewalk|precipice|lagoon|curve)\b/i }
+];
+
+const ACTIVITY_TAGS = [
+    { tag: 'gym', re: /\b(?:gym|workout|training|fitness|exercise|running|jogging|lifting)\b/i },
+    { tag: 'hiking', re: /\b(?:hiking|trail|backpack|trek|mountain|ridge|wading)\b/i },
+    { tag: 'beach', re: /\b(?:beach|shore|lagoon|seaside|coastal|wading|shoreline|pier)\b/i },
+    { tag: 'evening', re: /\b(?:evening|night|club|dinner|drinks|party|after dark|city lights)\b/i },
+    { tag: 'travel', re: /\b(?:travel|journey|ferry|market|sightseeing|wander|hotel|airport)\b/i },
+    { tag: 'formal', re: /\b(?:formal|ceremony|gala|black tie|runway|editorial)\b/i },
+    { tag: 'active', re: /\b(?:running|jogging|workout|gym|hiking|climbing|swimming|cycling|sprinting)\b/i },
+    { tag: 'casual', re: /\b(?:candid|relaxed|everyday|casual|lounging|sitting|walking|dancing)\b/i }
+];
+
+// Classify a scenario (environment + activity) into scene descriptors. Pure and
+// deterministic; a single place for the vocabulary so no keyword logic is
+// scattered through the UI.
+function classifyScene(input) {
+    const text = [input && input.environment, input && input.activity].filter(Boolean).join(' ');
+    const tags = [];
+    for (const descriptor of WEATHER_TAGS.concat(PLACE_TAGS, ACTIVITY_TAGS)) {
+        if (descriptor.re.test(text) && !tags.includes(descriptor.tag)) tags.push(descriptor.tag);
+    }
+    return tags;
+}
+
+// Tagged outfit pools per theme. Every entry carries its theme's base tag so the
+// pool is never empty, plus the scene dimensions it suits; the composer prefers
+// entries that match the scenario's descriptors and adds a cold layer when the
+// weather calls for one. Experimental Photography stays simple/silhouette-ready.
+const SCENE_OUTFIT_STYLES = {
+    'fashion-editorial': {
+        baseTags: ['editorial'],
+        entries: [
+            { value: 'a tailored oversized blazer with wide-leg trousers', tags: ['editorial', 'formal', 'indoor', 'temperate'], weight: 3 },
+            { value: 'a floor-length satin slip dress', tags: ['editorial', 'formal', 'indoor', 'evening'], weight: 2.5 },
+            { value: 'a structured trench coat over a turtleneck', tags: ['editorial', 'indoor', 'outdoor', 'cold'], weight: 2 },
+            { value: 'a sculptural knit top with a flowing midi skirt', tags: ['editorial', 'indoor', 'temperate'], weight: 2 },
+            { value: 'a monochrome suit with sharp shoulders', tags: ['editorial', 'formal', 'indoor'], weight: 2.5 },
+            { value: 'a draped silk gown', tags: ['editorial', 'formal', 'indoor', 'evening'], weight: 2 },
+            { value: 'a crisp white shirt with tailored trousers', tags: ['editorial', 'indoor', 'temperate'], weight: 2 },
+            { value: 'a bold statement coat with straight trousers', tags: ['editorial', 'outdoor', 'cold'], weight: 1.5 },
+            { value: 'a monochrome column dress', tags: ['editorial', 'formal', 'indoor'], weight: 2 },
+            { value: 'a fitted leather jacket with slim trousers', tags: ['editorial', 'evening', 'outdoor'], weight: 1.5 },
+            { value: 'a lightweight linen suit', tags: ['editorial', 'outdoor', 'warm'], weight: 1.5 },
+            { value: 'a tailored wool overcoat', tags: ['editorial', 'outdoor', 'cold'], weight: 1.5 }
+        ]
+    },
+    'travel-adventure': {
+        baseTags: ['travel'],
+        entries: [
+            { value: 'a weathered field jacket and hiking boots', tags: ['travel', 'cold', 'hiking', 'outdoor'], weight: 2.5 },
+            { value: 'light linen layers with a sun hat', tags: ['travel', 'warm', 'beach', 'outdoor'], weight: 2.5 },
+            { value: 'a practical daypack over a breathable shirt', tags: ['travel', 'hiking', 'outdoor', 'temperate'], weight: 2.5 },
+            { value: 'a flowing travel dress with a crossbody bag', tags: ['travel', 'warm', 'beach', 'outdoor'], weight: 2 },
+            { value: 'a windproof shell and rolled-up trousers', tags: ['travel', 'cold', 'hiking', 'outdoor'], weight: 2 },
+            { value: 'a fleece mid-layer and thermal trousers', tags: ['travel', 'cold', 'hiking', 'outdoor'], weight: 2 },
+            { value: 'a lightweight quick-dry shirt and cargo shorts', tags: ['travel', 'warm', 'hiking', 'outdoor'], weight: 2 },
+            { value: 'a sarong and sandals over swimwear', tags: ['travel', 'warm', 'beach', 'outdoor'], weight: 1.5 },
+            { value: 'an insulated parka with a scarf', tags: ['travel', 'cold', 'outdoor'], weight: 1.5 },
+            { value: 'polished travel trousers and a merino top', tags: ['travel', 'indoor', 'temperate', 'formal'], weight: 1.5 },
+            { value: 'jeans, casual sneakers and a light jacket', tags: ['travel', 'outdoor', 'temperate', 'casual'], weight: 1.5 }
+        ]
+    },
+    'cinematic-storytelling': {
+        baseTags: ['cinematic'],
+        entries: [
+            { value: 'a long coat with the collar turned up', tags: ['cinematic', 'cold', 'evening', 'outdoor'], weight: 2.5 },
+            { value: 'a lived-in leather jacket and dark trousers', tags: ['cinematic', 'evening', 'temperate', 'outdoor'], weight: 2 },
+            { value: 'a slightly rumpled formal suit', tags: ['cinematic', 'formal', 'evening', 'indoor'], weight: 2 },
+            { value: 'a hooded raincoat beaded with water', tags: ['cinematic', 'cold', 'outdoor'], weight: 2 },
+            { value: 'plain dark clothing that lets the face carry the scene', tags: ['cinematic', 'temperate', 'indoor'], weight: 1.5 },
+            { value: 'a heavy wool overcoat and scarf', tags: ['cinematic', 'cold', 'outdoor'], weight: 2 },
+            { value: 'a simple linen shirt with suspenders', tags: ['cinematic', 'warm', 'outdoor'], weight: 1.5 },
+            { value: 'a damp trench coat over a dark shirt', tags: ['cinematic', 'cold', 'outdoor'], weight: 2 },
+            { value: 'a tailored dark suit without a tie', tags: ['cinematic', 'formal', 'evening', 'indoor'], weight: 1.5 },
+            { value: 'a soft knit sweater and worn jeans', tags: ['cinematic', 'temperate', 'indoor', 'casual'], weight: 1.5 }
+        ]
+    },
+    'fantasy-character-worlds': {
+        baseTags: ['fantasy'],
+        entries: [
+            { value: 'an embroidered travelling cloak over layered robes', tags: ['fantasy', 'cold', 'travel', 'outdoor'], weight: 2.5 },
+            { value: 'ornate ceremonial armour with weathered detailing', tags: ['fantasy', 'formal', 'indoor'], weight: 2 },
+            { value: 'a forest-green hunting tunic and leather bracers', tags: ['fantasy', 'temperate', 'hiking', 'outdoor'], weight: 2 },
+            { value: 'a hooded archivist\u2019s robe with brass clasps', tags: ['fantasy', 'indoor', 'temperate'], weight: 2 },
+            { value: 'a regal gown traced with faintly luminous thread', tags: ['fantasy', 'formal', 'evening', 'indoor'], weight: 2 },
+            { value: 'a fur-lined mantle over leather armour', tags: ['fantasy', 'cold', 'outdoor'], weight: 1.5 },
+            { value: 'a light linen tunic with a woven satchel', tags: ['fantasy', 'warm', 'outdoor'], weight: 1.5 },
+            { value: 'a heavy woollen cloak with a travelling pack', tags: ['fantasy', 'cold', 'travel', 'outdoor'], weight: 2 },
+            { value: 'layered adventurer\u2019s leathers and tall boots', tags: ['fantasy', 'hiking', 'outdoor', 'temperate'], weight: 1.5 }
+        ]
+    },
+    'seasonal-concepts': {
+        baseTags: ['seasonal'],
+        entries: [
+            { value: 'a chunky knit scarf and wool coat', tags: ['seasonal', 'cold', 'outdoor'], weight: 3 },
+            { value: 'a light sundress with a woven bag', tags: ['seasonal', 'warm', 'outdoor'], weight: 3 },
+            { value: 'a corduroy jacket in burnt orange and brown', tags: ['seasonal', 'temperate', 'outdoor'], weight: 2.5 },
+            { value: 'a pastel raincoat with rubber boots', tags: ['seasonal', 'cold', 'outdoor'], weight: 2 },
+            { value: 'a soft cashmere cardigan in winter white', tags: ['seasonal', 'cold', 'indoor'], weight: 2 },
+            { value: 'a linen shirt and shorts', tags: ['seasonal', 'warm', 'outdoor'], weight: 2.5 },
+            { value: 'a quilted jacket with a knitted beanie', tags: ['seasonal', 'cold', 'outdoor'], weight: 2 },
+            { value: 'a breezy floral dress with a sunhat', tags: ['seasonal', 'warm', 'outdoor'], weight: 2 },
+            { value: 'a warm flannel overshirt and jeans', tags: ['seasonal', 'temperate', 'casual'], weight: 2 }
+        ]
+    },
+    'experimental-photography': {
+        baseTags: ['experimental'],
+        entries: [
+            { value: 'a simple monochrome outfit', tags: ['experimental', 'simple', 'indoor', 'temperate'], weight: 3 },
+            { value: 'a flowing oversized garment', tags: ['experimental', 'simple', 'indoor'], weight: 2.5 },
+            { value: 'a fitted minimalist outfit', tags: ['experimental', 'simple', 'indoor'], weight: 2.5 },
+            { value: 'a sharply tailored outfit', tags: ['experimental', 'formal', 'indoor'], weight: 2 },
+            { value: 'a brightly coloured casual outfit', tags: ['experimental', 'casual'], weight: 2 },
+            { value: 'a simple white outfit', tags: ['experimental', 'simple', 'warm'], weight: 2 },
+            { value: 'a simple black outfit', tags: ['experimental', 'simple', 'indoor'], weight: 2.5 },
+            { value: 'a textured knit outfit', tags: ['experimental', 'cold'], weight: 1.5 },
+            { value: 'a layered streetwear outfit', tags: ['experimental', 'casual', 'cold', 'outdoor'], weight: 1.5 },
+            { value: 'a simple silhouette-friendly outfit', tags: ['experimental', 'simple'], weight: 2.5 }
+        ]
+    }
+};
+
+// Compose a scene-compatible outfit for themes with a tagged pool. Returns null
+// when the theme has none (Lifestyle & Candid keeps its component system).
+function composeSceneOutfit(theme, sceneTags, rng, options = {}) {
+    const spec = SCENE_OUTFIT_STYLES[theme && theme.id];
+    if (!spec || !Array.isArray(spec.entries) || !spec.entries.length) return null;
+    const scene = normalizeTags(sceneTags);
+    const allowed = normalizeTags(spec.baseTags).concat(scene);
+    let eligible = spec.entries.filter((entry) => normalizeTags(entry.tags).some((tag) => allowed.includes(tag)));
+    if (!eligible.length) eligible = spec.entries.slice();
+    const matched = scene.length
+        ? eligible.filter((entry) => normalizeTags(entry.tags).some((tag) => scene.includes(tag)))
+        : [];
+    let pool = matched.length ? matched : eligible;
+    const weather = scene.includes('cold') ? 'cold' : (scene.includes('warm') ? 'warm' : '');
+    if (weather === 'warm') {
+        const warmSafe = pool.filter((entry) => !normalizeTags(entry.tags).includes('cold'));
+        if (warmSafe.length) pool = warmSafe;
+    } else if (weather === 'cold') {
+        // A cold setting uses cold-weather or layerable clothing; fall back to a
+        // layer over whatever fits the scene when nothing is cold-tagged.
+        const coldMatched = pool.filter((entry) => normalizeTags(entry.tags).includes('cold'));
+        if (coldMatched.length) pool = coldMatched;
+        else {
+            const coldAny = eligible.filter((entry) => normalizeTags(entry.tags).includes('cold'));
+            if (coldAny.length) pool = coldAny;
+        }
+    }
+    const avoid = new Set((Array.isArray(options.avoidOutfitSignatures) ? options.avoidOutfitSignatures : [])
+        .map((value) => outfitSignature(value)).filter(Boolean));
+    let chosen = null;
+    for (let attempt = 0; attempt < 12; attempt++) {
+        const entry = weightedPickAt(pool, rng, attempt);
+        if (!entry) continue;
+        let value = entry.value;
+        let tags = normalizeTags(entry.tags);
+        if (weather === 'cold' && !tags.includes('cold') && !tags.includes('warm')) {
+            const layer = weightedPickAt(SCENE_LAYERS.cold, rng, attempt);
+            if (layer && layer.value) {
+                value = layer.value + ' over ' + value;
+                tags = tags.concat('cold');
+            }
+        }
+        const signature = outfitSignature(value);
+        const candidate = { value, tags, signature, silhouette: entry.silhouette || '', archetype: 'scene' };
+        if (!chosen) chosen = candidate;
+        if (!avoid.has(signature)) { chosen = candidate; break; }
+    }
+    return chosen;
+}
+
 function joinPhrases(parts) {
     const list = (Array.isArray(parts) ? parts : []).map((p) => String(p || '').trim()).filter(Boolean);
     if (!list.length) return '';
@@ -1331,6 +1531,15 @@ function composeOutfit(system, category, rng = Math.random, options = {}) {
 // `options.avoidOutfitSignatures`/`options.previousOutfitArchetype` reduce
 // repeated looks for themes with an `outfitSystem`.
 function pickScenario(theme, rng = Math.random, categoryRef = '', options = {}) {
+    // Anything stays broad by choosing a real source theme and assembling a
+    // compatible scenario from that theme, rather than flattening every pool and
+    // combining unrelated scene and outfit entries.
+    if (theme && theme.id === ANYTHING_ID) {
+        const source = pick(THEMES, rng);
+        const scenario = pickScenario(source, rng, categoryRef, options);
+        scenario.sourceThemeId = source.id;
+        return scenario;
+    }
     const categories = Array.isArray(theme.categories) ? theme.categories.filter(Boolean) : [];
     if (categories.length) {
         const category = resolveCategory(theme, categoryRef) || pick(categories, rng);
@@ -1364,6 +1573,10 @@ function pickScenario(theme, rng = Math.random, categoryRef = '', options = {}) 
         } else {
             scenario.outfit = pickFrom('outfits');
         }
+        const sceneTags = classifyScene(scenario);
+        if (options.weather && !sceneTags.includes(options.weather)) sceneTags.push(options.weather);
+        scenario.sceneTags = sceneTags;
+        scenario.outfitTags = Array.isArray(category.outfitTags) ? category.outfitTags.slice() : [];
         return scenario;
     }
     // Technique-driven themes (Experimental Photography): choose ONE dominant
@@ -1377,12 +1590,11 @@ function pickScenario(theme, rng = Math.random, categoryRef = '', options = {}) 
             const local = Array.isArray(technique[key]) ? technique[key].filter(Boolean) : [];
             return pick(local.length ? local : theme[key], rng);
         };
-        return {
+        const scenario = {
             technique: technique.id || '',
             techniqueLabel: technique.label || '',
             environment: fromTechnique('environments'),
             activity: fromTechnique('activities'),
-            outfit: pick(theme.outfits, rng),
             lighting: fromTechnique('lighting'),
             camera: fromTechnique('cameras'),
             composition: pick(theme.compositions, rng),
@@ -1390,6 +1602,7 @@ function pickScenario(theme, rng = Math.random, categoryRef = '', options = {}) 
             mood: pick(theme.moods, rng),
             style: pick(theme.styles, rng)
         };
+        return finalizeScenarioOutfit(theme, scenario, rng, options);
     }
     const chosen = rng();
     const scenes = scenariosFor(theme);
@@ -1397,16 +1610,36 @@ function pickScenario(theme, rng = Math.random, categoryRef = '', options = {}) 
         const scene = pick(scenes, () => chosen);
         return Object.assign({}, scene);
     }
-    return {
+    const scenario = {
         environment: pick(theme.environments, rng),
         activity: pick(theme.activities, rng),
-        outfit: pick(theme.outfits, rng),
         lighting: pick(theme.lighting, rng),
         camera: pick(theme.cameras, rng),
         composition: pick(theme.compositions, rng),
         mood: pick(theme.moods, rng),
         style: pick(theme.styles, rng)
     };
+    return finalizeScenarioOutfit(theme, scenario, rng, options);
+}
+
+// Attach scene descriptors and a scene-compatible outfit to a scenario. Used by
+// the tagged-outfit themes; falls back to the flat pool when a theme has none.
+function finalizeScenarioOutfit(theme, scenario, rng, options = {}) {
+    const sceneTags = classifyScene(scenario);
+    if (options.weather && !sceneTags.includes(options.weather)) sceneTags.push(options.weather);
+    scenario.sceneTags = sceneTags;
+    const composed = composeSceneOutfit(theme, sceneTags, rng, options);
+    if (composed) {
+        scenario.outfit = composed.value;
+        scenario.outfitSignature = composed.signature;
+        scenario.outfitArchetype = composed.archetype || '';
+        scenario.outfitSilhouette = composed.silhouette || '';
+        scenario.outfitTags = composed.tags;
+    } else {
+        scenario.outfit = pick(theme.outfits, rng);
+        scenario.outfitTags = [];
+    }
+    return scenario;
 }
 
 function pickAspectRatio(theme, rng = Math.random) {
@@ -1423,6 +1656,9 @@ module.exports = {
     pickScenario,
     pickAspectRatio,
     composeOutfit,
+    composeSceneOutfit,
+    classifyScene,
+    SCENE_OUTFIT_STYLES,
     eligibleComponents,
     outfitSignature
 };

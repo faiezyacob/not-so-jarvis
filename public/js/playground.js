@@ -225,7 +225,8 @@ const PlaygroundUI = (() => {
             return panel;
         }
 
-        // Ready: approved base + the one consolidated identity sheet.
+        // Ready: show only the approved base preview here. The consolidated
+        // identity sheet is inspected in the Character Identity viewer.
         if (status === 'ready') {
             const head = document.createElement('div');
             head.className = 'identity-line';
@@ -235,8 +236,6 @@ const PlaygroundUI = (() => {
             panel.appendChild(head);
             const basePrev = identityPreview(card.characterName || 'Character', identity.baseImageUrl);
             if (basePrev) panel.appendChild(basePrev);
-            const sheetPrev = identityPreview('Character Identity Sheet (one composite reference image)', identity.sheetImageUrl);
-            if (sheetPrev) panel.appendChild(sheetPrev);
             const actions = document.createElement('div');
             actions.className = 'identity-actions';
             const view = identityButton('View Identity', 'view_identity', '', 'user');
@@ -443,6 +442,29 @@ const PlaygroundUI = (() => {
         });
         el.appendChild(actions);
 
+        // Targeted random-character re-rolls. A saved character's identity is
+        // fixed and a matching lock suppresses the control, so these only appear
+        // for an editable random person.
+        if (card.identityReroll && (card.identityReroll.face || card.identityReroll.hair)) {
+            const reroll = document.createElement('div');
+            reroll.className = 'playground-card-actions playground-card-actions--identity';
+            const spec = [
+                { part: 'face', label: 'Re-roll Face', enabled: card.identityReroll.face },
+                { part: 'hair', label: 'Re-roll Hair', enabled: card.identityReroll.hair }
+            ];
+            spec.forEach((item) => {
+                if (!item.enabled) return;
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'playground-btn';
+                btn.innerHTML = iconSvg('refresh', 14) +
+                    '<span class="playground-btn-label">' + item.label + '</span>';
+                btn.addEventListener('click', () => onAction(btn, card, 'identity_reroll', { part: item.part }));
+                reroll.appendChild(btn);
+            });
+            if (reroll.childNodes.length) el.appendChild(reroll);
+        }
+
         contentEl.appendChild(el);
     }
 
@@ -506,6 +528,19 @@ const PlaygroundUI = (() => {
                     changes,
                     direction: 'Set the ' + label + ' to: ' + value
                 });
+            });
+            return;
+        }
+        if (type === 'identity_reroll') {
+            const part = (meta && meta.part) === 'hair' ? 'hair' : 'face';
+            const label = part === 'hair' ? 'hair' : 'face';
+            lock(cardEl);
+            send('Re-roll the character\u2019s ' + label, {
+                type: 'modify',
+                conceptId: card.id,
+                expectedRevision: card.revision,
+                rerollIdentity: part,
+                direction: 'Re-roll the character\u2019s ' + label
             });
             return;
         }
@@ -634,6 +669,20 @@ const PlaygroundUI = (() => {
     let outfitCustomText = '';
     let popupStatusEl = null;
     let closeButtonEl = null;
+    let summaryEl = null;
+    // Form edits must survive opening/closing the popover, so options are only
+    // built once and the active concept is only reflected while the form is
+    // untouched.
+    let popoverLoaded = false;
+    let popoverDirty = false;
+
+    // Wardrobe grouping for the popover. Data-only: an unknown/future pack is
+    // still rendered (appended after the known groups).
+    const OUTFIT_PACK_GROUPS = [
+        { label: 'Everyday', ids: ['casual-everyday', 'lounge-home', 'soft-feminine-casual'] },
+        { label: 'Scene & Activity', ids: ['vacation-summer', 'gym-activewear', 'casual-smart', 'casual-night-out'] },
+        { label: 'Style', ids: ['casual-streetwear', 'minimalist-neutral', 'edgy-alternative', 'glam-boudoir'] }
+    ];
 
     const SWATCHES = {
         white: '#f4f4f2', cream: '#f0e6d2', beige: '#e3d5bd', sand: '#e6d3a7',
@@ -745,22 +794,35 @@ const PlaygroundUI = (() => {
     function renderOutfitPacks() {
         if (!outfitPacksEl) return;
         outfitPacksEl.innerHTML = '';
-        outfitPacksEl.appendChild(outfitCard('', 'None', 'Let the theme choose the clothing.', []));
-        (outfitPackCache || []).forEach((pack) => {
-            outfitPacksEl.appendChild(outfitCard(pack.id, pack.label, pack.description, pack.palette));
+        outfitPacksEl.appendChild(outfitCard('', 'Theme decides', 'Let the theme choose clothing to suit the scene.', []));
+        const byId = new Map((outfitPackCache || []).map((pack) => [pack.id, pack]));
+        OUTFIT_PACK_GROUPS.forEach((group) => {
+            const packs = group.ids.map((id) => byId.get(id)).filter(Boolean);
+            if (!packs.length) return;
+            const heading = document.createElement('div');
+            heading.className = 'playground-outfit-group';
+            heading.textContent = group.label;
+            outfitPacksEl.appendChild(heading);
+            packs.forEach((pack) => outfitPacksEl.appendChild(outfitCard(pack.id, pack.label, pack.description, pack.palette)));
         });
+        (outfitPackCache || [])
+            .filter((pack) => !OUTFIT_PACK_GROUPS.some((group) => group.ids.includes(pack.id)))
+            .forEach((pack) => outfitPacksEl.appendChild(outfitCard(pack.id, pack.label, pack.description, pack.palette)));
         outfitPacksEl.appendChild(outfitCard('custom', 'Custom', 'Describe the exact outfit yourself.', []));
         syncOutfitCustom();
+        updateSummary();
     }
 
     function setOutfitPack(id) {
         outfitPackChoice = id || '';
+        popoverDirty = true;
         if (outfitPacksEl) {
             outfitPacksEl.querySelectorAll('.playground-outfit-card').forEach((el) => {
                 el.classList.toggle('playground-outfit-card--active', el.getAttribute('data-pack') === outfitPackChoice);
             });
         }
         syncOutfitCustom();
+        updateSummary();
     }
 
     function syncOutfitCustom() {
@@ -809,6 +871,7 @@ const PlaygroundUI = (() => {
 
     function setCharacterChoice(value, options) {
         characterChoice = value || '';
+        if (options && options.markDirty) popoverDirty = true;
         if (characterValueEl) {
             characterValueEl.textContent = (options && options.label) || characterLabel(characterChoice);
         }
@@ -816,10 +879,22 @@ const PlaygroundUI = (() => {
             characterMenuEl.querySelectorAll('.playground-character-option').forEach((row) => {
                 const active = row.getAttribute('data-value') === characterChoice;
                 row.classList.toggle('playground-character-option--active', active);
-                row.setAttribute('aria-selected', active ? 'true' : 'false');
+                const main = row.querySelector('.playground-character-option-main');
+                if (main) main.setAttribute('aria-selected', active ? 'true' : 'false');
             });
         }
         if (!options || !options.skipLocks) updateLockAvailability();
+        updateSummary();
+    }
+
+    function focusCharacterOption(mode) {
+        if (!characterMenuEl) return;
+        const options = Array.from(characterMenuEl.querySelectorAll('.playground-character-option-main'));
+        if (!options.length) return;
+        let target = mode === 'first' ? options[0]
+            : characterMenuEl.querySelector('.playground-character-option--active .playground-character-option-main');
+        if (!target) target = options[0];
+        target.focus();
     }
 
     function closeCharacterMenu() {
@@ -832,6 +907,7 @@ const PlaygroundUI = (() => {
         if (!characterMenuEl) return;
         characterMenuEl.hidden = false;
         if (characterTrigger) characterTrigger.setAttribute('aria-expanded', 'true');
+        focusCharacterOption();
     }
 
     function toggleCharacterMenu() {
@@ -839,28 +915,65 @@ const PlaygroundUI = (() => {
         if (characterMenuEl.hidden) openCharacterMenu(); else closeCharacterMenu();
     }
 
-    function characterOptionRow(value, label, deletable) {
+    // The picker's primary image + identity status. A character without an
+    // image still lists cleanly (the list is never broken by a missing image).
+    function characterPrimaryImage(character) {
+        if (!character) return '';
+        if (character.approvedBaseImage && character.approvedBaseImage.url) return character.approvedBaseImage.url;
+        if (character.identitySheet && character.identitySheet.imageUrl) return character.identitySheet.imageUrl;
+        return '';
+    }
+
+    function characterStatusLabel(character) {
+        if (!character) return '';
+        if (character.identitySheet && character.identitySheet.status === 'ready') return 'Identity ready';
+        if (character.approvedBaseImage && character.approvedBaseImage.approvedAt) return 'Approved';
+        if (character.approvedBaseImage && character.approvedBaseImage.filename) return 'Base image';
+        return 'No identity yet';
+    }
+
+    function characterOptionRow(value, label, deletable, character) {
         const row = document.createElement('div');
         row.className = 'playground-character-option';
         row.setAttribute('data-value', value);
-        row.setAttribute('role', 'option');
-        if (value === characterChoice) {
-            row.classList.add('playground-character-option--active');
-            row.setAttribute('aria-selected', 'true');
-        } else {
-            row.setAttribute('aria-selected', 'false');
-        }
+        row.setAttribute('role', 'presentation');
 
         const main = document.createElement('button');
         main.type = 'button';
         main.className = 'playground-character-option-main';
+        main.tabIndex = -1;
+        main.setAttribute('role', 'option');
+        main.setAttribute('aria-selected', value === characterChoice ? 'true' : 'false');
+        if (value === characterChoice) row.classList.add('playground-character-option--active');
+
+        const thumbUrl = characterPrimaryImage(character);
+        if (thumbUrl) {
+            const figure = document.createElement('span');
+            figure.className = 'playground-character-option-thumb';
+            const img = document.createElement('img');
+            img.src = thumbUrl;
+            img.alt = '';
+            img.loading = 'lazy';
+            figure.appendChild(img);
+            main.appendChild(figure);
+        }
+        const text = document.createElement('span');
+        text.className = 'playground-character-option-text';
         const name = document.createElement('span');
         name.className = 'playground-character-option-label';
         name.textContent = label;
-        main.appendChild(name);
+        text.appendChild(name);
+        if (character) {
+            const status = document.createElement('span');
+            status.className = 'playground-character-option-status';
+            status.textContent = characterStatusLabel(character);
+            text.appendChild(status);
+        }
+        main.appendChild(text);
         main.addEventListener('click', () => {
-            setCharacterChoice(value);
+            setCharacterChoice(value, { markDirty: true });
             closeCharacterMenu();
+            if (characterTrigger) characterTrigger.focus();
         });
         row.appendChild(main);
 
@@ -883,8 +996,8 @@ const PlaygroundUI = (() => {
     function renderCharacterMenu() {
         if (!characterMenuEl) return;
         characterMenuEl.innerHTML = '';
-        characterMenuEl.appendChild(characterOptionRow('', CHARACTER_NONE_LABEL, false));
-        characterMenuEl.appendChild(characterOptionRow('__random__', CHARACTER_RANDOM_LABEL, false));
+        characterMenuEl.appendChild(characterOptionRow('', CHARACTER_NONE_LABEL, false, null));
+        characterMenuEl.appendChild(characterOptionRow('__random__', CHARACTER_RANDOM_LABEL, false, null));
         const characters = characterCache || [];
         if (characters.length) {
             const heading = document.createElement('div');
@@ -892,7 +1005,7 @@ const PlaygroundUI = (() => {
             heading.textContent = 'Saved characters';
             characterMenuEl.appendChild(heading);
             characters.forEach((c) => {
-                characterMenuEl.appendChild(characterOptionRow(c.id, c.name || 'Character', true));
+                characterMenuEl.appendChild(characterOptionRow(c.id, c.name || 'Character', true, c));
             });
         }
     }
@@ -1065,6 +1178,40 @@ const PlaygroundUI = (() => {
         const hasPrompt = String(promptEl.value || '').trim().length > 0;
         const label = document.querySelector('#playgroundSurprise .playground-submit-label');
         if (label) label.textContent = hasPrompt ? 'Use My Prompt' : 'Surprise Me';
+        updateSummary();
+    }
+
+    function selectedThemeLabel() {
+        if (!themeSelect) return 'Anything';
+        if (themeSelect.selectedIndex >= 0 && themeSelect.options[themeSelect.selectedIndex]) {
+            return themeSelect.options[themeSelect.selectedIndex].textContent;
+        }
+        return themeSelect.value || 'Anything';
+    }
+
+    function characterSummaryLabel() {
+        if (characterChoice === '__random__') return 'Random new character';
+        if (characterChoice) return characterLabel(characterChoice);
+        if (profileConstrained(selectedProfile())) return 'Random new character';
+        return 'No character';
+    }
+
+    function wardrobeSummaryLabel() {
+        if (outfitPackChoice === 'custom') return 'Custom outfit';
+        if (outfitPackChoice) {
+            const pack = (outfitPackCache || []).find((p) => p.id === outfitPackChoice);
+            return pack ? pack.label : outfitPackChoice;
+        }
+        return 'Theme decides';
+    }
+
+    // A compact one-line summary of the current choices, shown above the
+    // primary button and kept in sync as the controls change.
+    function updateSummary() {
+        if (!summaryEl) return;
+        summaryEl.textContent = 'Scene: ' + selectedThemeLabel()
+            + ' \u00b7 Character: ' + characterSummaryLabel()
+            + ' \u00b7 Wardrobe: ' + wardrobeSummaryLabel();
     }
 
     function submit() {
@@ -1139,6 +1286,7 @@ const PlaygroundUI = (() => {
         characterMenuEl = document.getElementById('playgroundCharacterMenu');
         closeButtonEl = document.getElementById('playgroundClose');
         popupStatusEl = document.getElementById('playgroundPopupStatus');
+        summaryEl = document.getElementById('playgroundSummary');
         appearanceSelect = document.getElementById('playgroundAppearance');
         ageSelect = document.getElementById('playgroundAge');
         genderSelect = document.getElementById('playgroundGender');
@@ -1157,14 +1305,53 @@ const PlaygroundUI = (() => {
         });
         if (submitBtn) submitBtn.addEventListener('click', submit);
         if (closeButtonEl) closeButtonEl.addEventListener('click', close);
-        if (characterTrigger) characterTrigger.addEventListener('click', (e) => {
-            e.stopPropagation();
-            toggleCharacterMenu();
-        });
+        if (characterTrigger) {
+            characterTrigger.addEventListener('click', (e) => {
+                e.stopPropagation();
+                toggleCharacterMenu();
+            });
+            characterTrigger.addEventListener('keydown', (e) => {
+                if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    if (characterMenuEl && characterMenuEl.hidden) openCharacterMenu();
+                }
+            });
+        }
+        if (characterMenuEl) {
+            // Arrow keys move through the options, Escape closes and returns
+            // focus to the trigger; the option buttons handle Enter/Space.
+            characterMenuEl.addEventListener('keydown', (e) => {
+                const options = Array.from(characterMenuEl.querySelectorAll('.playground-character-option-main'));
+                const index = options.indexOf(document.activeElement);
+                if (e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    options[Math.min(index + 1, options.length - 1)] && options[Math.min(index + 1, options.length - 1)].focus();
+                } else if (e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    options[Math.max(index - 1, 0)] && options[Math.max(index - 1, 0)].focus();
+                } else if (e.key === 'Home') {
+                    e.preventDefault();
+                    options[0] && options[0].focus();
+                } else if (e.key === 'End') {
+                    e.preventDefault();
+                    options[options.length - 1] && options[options.length - 1].focus();
+                } else if (e.key === 'Escape') {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    closeCharacterMenu();
+                    if (characterTrigger) characterTrigger.focus();
+                }
+            });
+        }
+        if (themeSelect) themeSelect.addEventListener('change', () => { popoverDirty = true; updateSummary(); });
         [appearanceSelect, ageSelect, genderSelect].forEach((sel) => {
-            if (sel) sel.addEventListener('change', syncCharacterMode);
+            if (sel) sel.addEventListener('change', () => { popoverDirty = true; syncCharacterMode(); });
         });
-        if (promptEl) promptEl.addEventListener('input', syncPromptMode);
+        if (promptEl) promptEl.addEventListener('input', () => { popoverDirty = true; syncPromptMode(); });
+        if (outfitCustomEl) outfitCustomEl.addEventListener('input', () => { popoverDirty = true; });
+        popupEl.querySelectorAll('.playground-lock input[type="checkbox"]').forEach((box) => {
+            box.addEventListener('change', () => { popoverDirty = true; updateSummary(); });
+        });
 
         document.addEventListener('click', (e) => {
             if (!isOpen()) return;
@@ -1177,6 +1364,7 @@ const PlaygroundUI = (() => {
             if (isAppDialogOpen()) return;
             if (characterMenuEl && !characterMenuEl.hidden) {
                 closeCharacterMenu();
+                if (characterTrigger) characterTrigger.focus();
                 return;
             }
             close();

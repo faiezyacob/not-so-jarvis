@@ -926,7 +926,7 @@ function resolveDimensions(settings) {
 // filenames live under qwen* keys so switching back and forth remembers both.
 
 const IMAGE_MODELS = ['krea2', 'qwen_image_2_1'];
-const DEFAULT_IMAGE_MODEL = 'krea2';
+const DEFAULT_IMAGE_MODEL = 'qwen_image_2_1';
 const QWEN_IMAGE_CLIP_TYPE = 'qwen_image';
 // Qwen Image 2.1's official pipeline samples at euler/simple, cfg 1, ~25 steps.
 const DEFAULT_QWEN_STEPS = 25;
@@ -943,7 +943,7 @@ function normalizeImageModel(value) {
 }
 
 const DEFAULT_SETTINGS = {
-    // Active text-to-image model: 'krea2' (default) or 'qwen_image_2_1'.
+    // Active text-to-image model: 'qwen_image_2_1' (default) or 'krea2'.
     model: normalizeImageModel(process.env.JARVIS_IMAGE_MODEL) || DEFAULT_IMAGE_MODEL,
     unet: process.env.KREA2_UNET || 'krea2_turbo_fp8_scaled.safetensors',
     clip: process.env.KREA2_CLIP || 'Huihui-Qwen3-VL-4B-Instruct-abliterated-fp8_scaled.safetensors',

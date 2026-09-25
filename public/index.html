@@ -308,8 +308,8 @@
                             <div class="settings-field">
                                 <label class="settings-field-label" for="imageModel">Model</label>
                                 <select class="settings-select" id="imageModel">
-                                    <option value="krea2">Krea 2 Turbo</option>
                                     <option value="qwen_image_2_1">Qwen Image 2.1</option>
+                                    <option value="krea2">Krea 2 Turbo</option>
                                 </select>
                                 <span class="settings-hint">UNET = diffusion model, CLIP = text encoder, VAE = VAE. Switching models remembers each model's filenames.</span>
                             </div>
@@ -882,65 +882,86 @@
                     <button class="chat-playground-close" id="playgroundClose" type="button" aria-label="Close Creative Playground" title="Close">&times;</button>
                 </div>
                 <div class="playground-popup-status" id="playgroundPopupStatus" role="status" hidden>Loading options...</div>
-                <label class="settings-field-label" for="playgroundTheme">Theme</label>
-                <select class="settings-select" id="playgroundTheme"></select>
-                <div class="settings-field-label">Character</div>
-                <div class="playground-character-select" id="playgroundCharacter">
-                    <button class="playground-character-trigger" id="playgroundCharacterTrigger" type="button" aria-haspopup="listbox" aria-expanded="false">
-                        <span class="playground-character-value" id="playgroundCharacterValue">No character (general exploration)</span>
-                        <svg class="playground-character-caret" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <polyline points="6 9 12 15 18 9"></polyline>
+                <div class="playground-popup-body">
+                    <section class="playground-section">
+                        <h3 class="playground-section-title">Scene</h3>
+                        <label class="settings-field-label" for="playgroundTheme">Theme</label>
+                        <select class="settings-select" id="playgroundTheme"></select>
+                        <label class="settings-field-label" for="playgroundPrompt">Your prompt (optional)</label>
+                        <textarea
+                            class="settings-input playground-prompt-input"
+                            id="playgroundPrompt"
+                            rows="3"
+                            placeholder="Use your saved character with your own scene, e.g. walking a neon-lit Tokyo street at night"
+                        ></textarea>
+                        <p class="playground-section-hint" id="playgroundPopupHint">A custom prompt supplies the scene and takes precedence over the randomly selected scene.</p>
+                    </section>
+
+                    <section class="playground-section">
+                        <h3 class="playground-section-title">Character</h3>
+                        <div class="playground-character-select" id="playgroundCharacter">
+                            <button class="playground-character-trigger" id="playgroundCharacterTrigger" type="button" aria-haspopup="listbox" aria-expanded="false">
+                                <span class="playground-character-value" id="playgroundCharacterValue">No character (general exploration)</span>
+                                <svg class="playground-character-caret" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <polyline points="6 9 12 15 18 9"></polyline>
+                                </svg>
+                            </button>
+                            <div class="playground-character-menu" id="playgroundCharacterMenu" role="listbox" aria-label="Choose a character" hidden></div>
+                        </div>
+                        <div class="settings-field-label">Appearance, age &amp; gender</div>
+                        <div class="playground-profile-grid">
+                            <label class="playground-profile-field">
+                                <span>Appearance</span>
+                                <select class="settings-select" id="playgroundAppearance"></select>
+                            </label>
+                            <label class="playground-profile-field">
+                                <span>Age</span>
+                                <select class="settings-select" id="playgroundAge"></select>
+                            </label>
+                            <label class="playground-profile-field">
+                                <span>Gender</span>
+                                <select class="settings-select" id="playgroundGender"></select>
+                            </label>
+                        </div>
+                        <p class="playground-section-hint" id="playgroundProfileHint">These controls constrain a random character; they do not modify a saved character.</p>
+                    </section>
+
+                    <section class="playground-section">
+                        <h3 class="playground-section-title">Wardrobe</h3>
+                        <div class="playground-outfit-packs" id="playgroundOutfitPacks"></div>
+                        <input
+                            type="text"
+                            class="settings-input playground-outfit-custom"
+                            id="playgroundOutfitCustom"
+                            placeholder="e.g. white summer dress with thin straps and beige sandals"
+                            autocomplete="off"
+                            hidden
+                        >
+                        <p class="playground-section-hint">&ldquo;Theme decides&rdquo; picks clothing to suit the selected scene.</p>
+                    </section>
+
+                    <section class="playground-section">
+                        <h3 class="playground-section-title">Keep fixed</h3>
+                        <div class="playground-locks-grid">
+                            <label class="playground-lock"><input type="checkbox" data-lock="identity"> Identity</label>
+                            <label class="playground-lock"><input type="checkbox" data-lock="appearance"> Face</label>
+                            <label class="playground-lock"><input type="checkbox" data-lock="hair"> Hair</label>
+                            <label class="playground-lock"><input type="checkbox" data-lock="outfit"> Outfit</label>
+                            <label class="playground-lock"><input type="checkbox" data-lock="style"> Style</label>
+                            <label class="playground-lock"><input type="checkbox" data-lock="environment"> Environment</label>
+                        </div>
+                        <p class="playground-section-hint">Locks preserve those attributes when you use &ldquo;Surprise Me Again&rdquo;.</p>
+                    </section>
+                </div>
+                <div class="playground-popup-footer">
+                    <div class="playground-summary" id="playgroundSummary" aria-live="polite"></div>
+                    <button class="playground-submit" id="playgroundSurprise" type="button">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M12 3v4"></path><path d="M12 17v4"></path><path d="M3 12h4"></path><path d="M17 12h4"></path><path d="m5.6 5.6 2.8 2.8"></path><path d="m15.6 15.6 2.8 2.8"></path><path d="m18.4 5.6-2.8 2.8"></path><path d="m8.4 15.6-2.8 2.8"></path>
                         </svg>
+                        <span class="playground-submit-label">Surprise Me</span>
                     </button>
-                    <div class="playground-character-menu" id="playgroundCharacterMenu" role="listbox" hidden></div>
                 </div>
-                <div class="settings-field-label">Character profile</div>
-                <div class="playground-profile-grid">
-                    <label class="playground-profile-field">
-                        <span>Appearance</span>
-                        <select class="settings-select" id="playgroundAppearance"></select>
-                    </label>
-                    <label class="playground-profile-field">
-                        <span>Age</span>
-                        <select class="settings-select" id="playgroundAge"></select>
-                    </label>
-                    <label class="playground-profile-field">
-                        <span>Gender</span>
-                        <select class="settings-select" id="playgroundGender"></select>
-                    </label>
-                </div>
-                <label class="settings-field-label" for="playgroundPrompt">Your prompt (optional)</label>
-                <textarea
-                    class="settings-input playground-prompt-input"
-                    id="playgroundPrompt"
-                    rows="3"
-                    placeholder="Use your saved character with your own scene, e.g. walking a neon-lit Tokyo street at night"
-                ></textarea>
-                <div class="settings-field-label">Outfit pack</div>
-                <div class="playground-outfit-packs" id="playgroundOutfitPacks"></div>
-                <input
-                    type="text"
-                    class="settings-input playground-outfit-custom"
-                    id="playgroundOutfitCustom"
-                    placeholder="e.g. white summer dress with thin straps and beige sandals"
-                    autocomplete="off"
-                    hidden
-                >
-                <div class="settings-field-label">Lock attributes</div>
-                <div class="playground-locks-grid">
-                    <label class="playground-lock"><input type="checkbox" data-lock="identity"> Identity</label>
-                    <label class="playground-lock"><input type="checkbox" data-lock="appearance"> Face</label>
-                    <label class="playground-lock"><input type="checkbox" data-lock="hair"> Hair</label>
-                    <label class="playground-lock"><input type="checkbox" data-lock="outfit"> Outfit</label>
-                    <label class="playground-lock"><input type="checkbox" data-lock="style"> Style</label>
-                    <label class="playground-lock"><input type="checkbox" data-lock="environment"> Environment</label>
-                </div>
-                <button class="playground-submit" id="playgroundSurprise" type="button">
-                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M12 3v4"></path><path d="M12 17v4"></path><path d="M3 12h4"></path><path d="M17 12h4"></path><path d="m5.6 5.6 2.8 2.8"></path><path d="m15.6 15.6 2.8 2.8"></path><path d="m18.4 5.6-2.8 2.8"></path><path d="m8.4 15.6-2.8 2.8"></path>
-                    </svg>
-                    <span class="playground-submit-label">Surprise Me</span>
-                </button>
             </div>
             <div class="chat-input-bar">
                 <input

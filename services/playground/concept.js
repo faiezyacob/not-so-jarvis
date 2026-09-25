@@ -453,6 +453,29 @@ function rerollField(concept, theme, field, rng = Math.random) {
     return finalize(concept, theme);
 }
 
+// Re-roll one half of a random character's structured identity. A "face" re-roll
+// touches only face-structure / eyes / brows / feature traits and a "hair"
+// re-roll only hair traits, so neither can disturb the other; the person's
+// demographic constraints (category / age / gender / skin) are preserved. Only
+// structured random identities can be re-rolled this way.
+function rerollIdentityPart(concept, part, rng, theme) {
+    const c = concept || {};
+    if (!c.identity || typeof c.identity !== 'object') return concept;
+    const kind = String(part || '').trim().toLowerCase();
+    let next;
+    if (kind === 'face') next = identityGen.rerollIdentityFace(c.identity, rng);
+    else if (kind === 'hair') next = identityGen.rerollIdentityHair(c.identity, rng);
+    else return concept;
+    c.identity = next;
+    c.identitySignature = next.signature;
+    c.subject = next.identityText;
+    c.appearance = identityGen.formatAppearance(next);
+    c.hair = identityGen.formatHair(next);
+    // The human-readable title/description are derived from the subject, so
+    // rebuild them or the card would keep describing the previous person.
+    return theme ? finalize(c, theme) : c;
+}
+
 // Apply an explicit modification. Explicit fields win even over a lock (the
 // user asked for the change); untouched fields are preserved exactly.
 const CONCEPT_FIELDS = [
@@ -765,6 +788,7 @@ module.exports = {
     applyChanges,
     applyOutfitPack,
     rerollField,
+    rerollIdentityPart,
     REROLLABLE_FIELDS,
     resolveOutfitPack,
     interpretContextMessage,

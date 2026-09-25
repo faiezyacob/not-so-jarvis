@@ -1393,3 +1393,200 @@ test('Experimental technique reaches the creative direction', () => {
     const direction = concept.conceptToDirection(built);
     assert.ok(direction.includes(built.techniqueLabel), 'direction should name the technique');
 });
+
+// --- Expanded character variation -------------------------------------------
+
+function faceHalf(identity) {
+    return {
+        faceShape: identity.faceShape, faceNose: identity.faceNose, faceLips: identity.faceLips,
+        faceCheeks: identity.faceCheeks, faceJaw: identity.faceJaw, eyeColor: identity.eyeColor,
+        eyeShape: identity.eyeShape, eyebrows: identity.eyebrows, distinctiveFeature: identity.distinctiveFeature
+    };
+}
+
+function hairHalf(identity) {
+    return {
+        hairColor: identity.hairColor, hairTexture: identity.hairTexture,
+        hairTextureFamily: identity.hairTextureFamily, hairStyle: identity.hairStyle,
+        hairStyleType: identity.hairStyleType, hairPart: identity.hairPart, hairFringe: identity.hairFringe
+    };
+}
+
+test('expanded identity pools meet the minimum variety targets', () => {
+    const traits = characterGen.CHARACTER_TRAITS;
+    assert.ok(traits.faceShapes.length >= 25, 'face shapes: ' + traits.faceShapes.length);
+    assert.ok(traits.eyeShapes.length >= 20, 'eye shapes: ' + traits.eyeShapes.length);
+    assert.ok(traits.eyebrows.length >= 16, 'eyebrows: ' + traits.eyebrows.length);
+    assert.ok(traits.faceNoses.length >= 12, 'noses: ' + traits.faceNoses.length);
+    assert.ok(traits.faceLips.length >= 12, 'lips: ' + traits.faceLips.length);
+    assert.ok(traits.faceCheeks.length >= 8, 'cheeks: ' + traits.faceCheeks.length);
+    assert.ok(traits.faceJaws.length >= 8, 'jaws: ' + traits.faceJaws.length);
+    assert.ok(traits.skinUndertones.length >= 8, 'undertones: ' + traits.skinUndertones.length);
+    assert.ok(traits.hairStyles.length >= 35, 'hair styles: ' + traits.hairStyles.length);
+});
+
+test('every appearance category offers broad complexion and hair-colour choices', () => {
+    for (const key of characterGen.APPEARANCE_KEYS) {
+        const category = characterGen.APPEARANCE_CATEGORIES[key];
+        assert.ok(category.skinTones.length >= 8, key + ' complexions: ' + category.skinTones.length);
+        assert.ok(category.hairColors.length >= 10, key + ' hair colours: ' + category.hairColors.length);
+    }
+});
+
+test('the expanded identity is deterministic for seed and profile', () => {
+    const profile = { appearance: 'mixed_diverse', age: 'adult', gender: 'woman' };
+    const a = characterGen.generateRandomIdentity(31337, profile);
+    const b = characterGen.generateRandomIdentity(31337, profile);
+    assert.deepEqual(a, b);
+    assert.ok(a.faceNose && a.faceLips && a.faceCheeks && a.faceJaw);
+    assert.ok(a.skinUndertone && a.hairPart);
+});
+
+test('added face and hair traits vary across seeds', () => {
+    const noses = new Set(); const lips = new Set(); const cheeks = new Set(); const jaws = new Set();
+    const parts = new Set(); const fringes = new Set(); const undertones = new Set();
+    for (let seed = 1; seed <= 250; seed++) {
+        const id = characterGen.generateRandomIdentity(seed);
+        noses.add(id.faceNose); lips.add(id.faceLips); cheeks.add(id.faceCheeks); jaws.add(id.faceJaw);
+        parts.add(id.hairPart); fringes.add(id.hairFringe); undertones.add(id.skinUndertone);
+    }
+    assert.ok(noses.size >= 8, 'noses: ' + noses.size);
+    assert.ok(lips.size >= 8, 'lips: ' + lips.size);
+    assert.ok(cheeks.size >= 5, 'cheeks: ' + cheeks.size);
+    assert.ok(jaws.size >= 5, 'jaws: ' + jaws.size);
+    assert.ok(parts.size >= 4, 'parts: ' + parts.size);
+    assert.ok(fringes.size >= 5, 'fringes: ' + fringes.size);
+    assert.ok(undertones.size >= 6, 'undertones: ' + undertones.size);
+});
+
+test('the identity text and appearance carry the new traits', () => {
+    const id = characterGen.generateRandomIdentity(555, { appearance: 'south_asian', age: 'adult', gender: 'man' });
+    const appearance = characterGen.formatAppearance(id);
+    const text = characterGen.formatIdentity(id);
+    assert.ok(appearance.includes(id.skinUndertone), 'appearance should carry the undertone');
+    assert.ok(appearance.includes(id.faceNose) || appearance.includes(id.faceLips), 'appearance should carry face details');
+    assert.ok(text.includes(id.faceCheeks) || text.includes(id.faceJaw), 'identity text should carry the face structure');
+    assert.ok(characterGen.identitySignature(id).includes(String(id.faceNose).toLowerCase()));
+});
+
+test('face and hair re-rolls change only their own traits', () => {
+    const identity = characterGen.generateRandomIdentity(2468, { appearance: 'black_african_diaspora', age: 'adult', gender: 'woman' });
+    let face = identity;
+    for (let seed = 1; seed <= 40 && face.signature === identity.signature; seed++) {
+        face = characterGen.rerollIdentityFace(identity, seed);
+    }
+    assert.notEqual(face.signature, identity.signature, 'expected the face to change across some re-rolls');
+    assert.deepEqual(hairHalf(face), hairHalf(identity), 'a face re-roll must not touch hair');
+    assert.equal(face.skinTone, identity.skinTone);
+    assert.equal(face.skinUndertone, identity.skinUndertone);
+    assert.equal(face.ageGroup, identity.ageGroup);
+
+    let hair = identity;
+    for (let seed = 1; seed <= 40 && hair.signature === identity.signature; seed++) {
+        hair = characterGen.rerollIdentityHair(identity, seed);
+    }
+    assert.notEqual(hair.signature, identity.signature, 'expected the hair to change across some re-rolls');
+    assert.deepEqual(faceHalf(hair), faceHalf(identity), 'a hair re-roll must not touch the face');
+    assert.equal(hair.build, identity.build);
+    assert.equal(hair.ageGroup, identity.ageGroup);
+});
+
+test('a re-roll is deterministic for the same rng', () => {
+    const identity = characterGen.generateRandomIdentity(9191);
+    assert.deepEqual(characterGen.rerollIdentityFace(identity, 5), characterGen.rerollIdentityFace(identity, 5));
+    assert.deepEqual(characterGen.rerollIdentityHair(identity, 5), characterGen.rerollIdentityHair(identity, 5));
+});
+
+test('expanded identity traits survive a preset save and reload', () => {
+    const identity = characterGen.generateRandomIdentity(4321, { appearance: 'east_asian', age: 'adult', gender: 'woman' });
+    const saved = characterPresets.create({
+        name: identity.name, identity, identityText: identity.identityText, identitySignature: identity.signature
+    });
+    const loaded = characterPresets.get(saved.id);
+    assert.equal(loaded.identity.face.nose, identity.faceNose);
+    assert.equal(loaded.identity.face.lips, identity.faceLips);
+    assert.equal(loaded.identity.face.cheeks, identity.faceCheeks);
+    assert.equal(loaded.identity.face.jaw, identity.faceJaw);
+    assert.equal(loaded.identity.skin.undertone, identity.skinUndertone);
+    assert.equal(loaded.identity.hair.part, identity.hairPart);
+    assert.equal(loaded.identity.hair.fringe, identity.hairFringe);
+    // The persisted signature and text stay authoritative after the round trip.
+    assert.equal(loaded.identity.identitySignature, identity.signature);
+});
+
+test('legacy identities without the new fields still load', () => {
+    const legacy = characterGen.canonicalIdentity(
+        { identityText: 'a legacy character' },
+        { age: '34-year-old', gender: 'woman', hairColor: 'black', hairTexture: 'straight', hairStyle: 'long', faceShape: 'an oval face' }
+    );
+    assert.ok(legacy);
+    assert.equal(legacy.hair.part, '');
+    assert.equal(legacy.hair.fringe, '');
+    assert.equal(legacy.face.nose, '');
+    assert.equal(legacy.face.lips, '');
+    assert.equal(legacy.skin.undertone, '');
+    assert.equal(legacy.hair.color, 'black');
+    assert.equal(legacy.face.shape, 'an oval face');
+});
+
+test('locks block the matching identity re-roll', () => {
+    const id = conversationId('reroll-locks');
+    const session = playground.start({
+        conversationId: id, themeId: 'lifestyle-candid', mode: 'random_character',
+        locks: { appearance: true }, rng: characterGen.createRng(5)
+    });
+    const signature = session.concept.identitySignature;
+    const appearance = session.concept.appearance;
+    playground.modify(session, { rerollIdentity: 'face', rng: characterGen.createRng(9) });
+    assert.equal(session.concept.identitySignature, signature, 'a locked face must not re-roll');
+    assert.equal(session.concept.appearance, appearance);
+    const card = playground.buildCard(session, null);
+    assert.equal(card.identityReroll.face, false);
+    assert.equal(card.identityReroll.hair, true);
+
+    let guard = 0;
+    while (session.concept.identitySignature === signature && guard < 30) {
+        playground.modify(session, { rerollIdentity: 'hair', rng: characterGen.createRng(30 + guard) });
+        guard++;
+    }
+    assert.notEqual(session.concept.identitySignature, signature, 'an unlocked hair re-roll should change the person');
+    assert.equal(session.concept.appearance, appearance, 'hair re-roll must not touch the face');
+});
+
+test('a scene change preserves the character and its identity signature', () => {
+    const id = conversationId('scene-signature');
+    const session = playground.start({
+        conversationId: id, themeId: 'travel-adventure', mode: 'random_character',
+        locks: { identity: true }, rng: characterGen.createRng(3)
+    });
+    const signature = session.concept.identitySignature;
+    const subject = session.concept.subject;
+    playground.modify(session, { changes: { environment: 'a quiet lakeside dock' }, rng: first });
+    assert.equal(session.concept.identitySignature, signature);
+    assert.equal(session.concept.subject, subject);
+});
+
+test('a face re-roll through the service regenerates only the face', () => {
+    const id = conversationId('face-reroll');
+    const session = playground.start({
+        conversationId: id, themeId: 'lifestyle-candid', mode: 'random_character', rng: characterGen.createRng(11)
+    });
+    const before = Object.assign({}, session.concept);
+    let guard = 0;
+    while (session.concept.identitySignature === before.identitySignature && guard < 30) {
+        playground.modify(session, { rerollIdentity: 'face', rng: characterGen.createRng(77 + guard) });
+        guard++;
+    }
+    assert.notEqual(session.concept.identitySignature, before.identitySignature);
+    assert.equal(session.concept.hair, before.hair, 'a face re-roll must not change hair');
+    assert.equal(session.concept.characterSeed, before.characterSeed);
+});
+
+test('a saved character card offers no identity re-roll', () => {
+    const id = conversationId('saved-reroll');
+    const preset = characterPresets.create({ name: 'Fixed', identity: 'a woman with a neat bob' });
+    const session = playground.start({ conversationId: id, themeId: 'fashion-editorial', characterId: preset.id, rng: first });
+    const card = playground.buildCard(session, preset);
+    assert.equal(card.identityReroll.face, false);
+    assert.equal(card.identityReroll.hair, false);
+});

@@ -102,19 +102,19 @@ test('sanitizeSettings: custom imageSize + width/height are validated and clampe
     assert.deepEqual(imageGenerator.sanitizeSettings({ width: 'abc' }), {});
 });
 
-test('resolveBaseModels: returns krea2 slots by default and qwen slots when selected', () => {
+test('resolveBaseModels: returns the selected model slots (qwen by default, krea2 when selected)', () => {
     const defaults = imageGenerator.getDefaults();
-    const krea = imageGenerator.resolveBaseModels(defaults);
-    assert.equal(krea.unet, defaults.unet);
-    assert.equal(krea.clip, defaults.clip);
-    assert.equal(krea.clipType, 'krea2');
-    assert.equal(krea.vae, defaults.vae);
-
-    const qwen = imageGenerator.resolveBaseModels(Object.assign({}, defaults, { model: 'qwen_image_2_1' }));
+    const qwen = imageGenerator.resolveBaseModels(defaults);
     assert.equal(qwen.unet, defaults.qwenUnet);
     assert.equal(qwen.clip, defaults.qwenClip);
     assert.equal(qwen.clipType, 'qwen_image');
     assert.equal(qwen.vae, defaults.qwenVae);
+
+    const krea = imageGenerator.resolveBaseModels(Object.assign({}, defaults, { model: 'krea2' }));
+    assert.equal(krea.unet, defaults.unet);
+    assert.equal(krea.clip, defaults.clip);
+    assert.equal(krea.clipType, 'krea2');
+    assert.equal(krea.vae, defaults.vae);
 });
 
 test('buildQwenImage21T2IGraph: uses the qwen encoder node, clip type and sampler', () => {
@@ -155,7 +155,7 @@ test('buildKrea2T2IGraph: still uses CLIPTextEncode + EmptySD3LatentImage', () =
 
 test('buildQwenImage21EditGraph: always uses the qwen slots (edit is Qwen-only)', () => {
     // Even with Krea2 as the generation model, editing runs the Qwen editor.
-    const settings = imageGenerator.getDefaults();
+    const settings = Object.assign({}, imageGenerator.getDefaults(), { model: 'krea2' });
     assert.equal(settings.model, 'krea2');
     const graph = imageGenerator.buildQwenImage21EditGraph('make it sunset', 'jarvis_edit_x.png', { seed: 3, settings });
 

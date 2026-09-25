@@ -33,7 +33,7 @@ Everything runs from a single chat surface — there are no separate tools or da
 
 ### Image generation
 
-- **Text-to-image** via Krea2 (default) or Qwen Image 2.1 on a local ComfyUI instance — the chat LLM acts as a "visual director" that enriches your prompt before the workflow runs
+- **Text-to-image** via Qwen Image 2.1 (default) or Krea2 on a local ComfyUI instance — the chat LLM acts as a "visual director" that enriches your prompt before the workflow runs
 - **LoRA stack** — attach multiple LoRAs with per-LoRA strength, on/off toggle, and automatic trigger words
 - **Image upscaling** — SeedVR2 (tiled diffusion) or Ultimate SD, with a before/after compare viewer
 
@@ -182,7 +182,7 @@ Chat has no tools, so live machine state is injected as system context when rele
 
 1. Detect the image intent (two-level: regex signal → structured LLM classifier).
 2. Enrich the prompt with the chat LLM as a visual director.
-3. Build the text-to-image graph (Krea2 by default, or Qwen Image 2.1).
+3. Build the text-to-image graph (Qwen Image 2.1 by default, or Krea2).
 4. Submit to ComfyUI and wait, relaying step progress over SSE.
 5. Download the output to `data/generated/` and show it inline.
 

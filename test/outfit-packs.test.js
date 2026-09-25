@@ -321,3 +321,115 @@ test('the pack label reaches the creative direction', () => {
     assert.ok(direction.includes('Gym & Activewear'));
     assert.ok(direction.includes('Outfit:'));
 });
+
+// --- Scene-aware outfit compatibility ----------------------------------------
+
+const SCENE_THEME_IDS = Object.keys(themes.SCENE_OUTFIT_STYLES);
+
+function allThemeSceneValues(theme) {
+    const values = new Set();
+    for (const key of ['environments', 'activities']) {
+        for (const value of theme[key] || []) values.add(value);
+    }
+    for (const category of theme.categories || []) {
+        for (const key of ['environments', 'activities']) {
+            for (const value of category[key] || []) values.add(value);
+        }
+    }
+    return values;
+}
+
+test('classifyScene marks weather, place and activity descriptors', () => {
+    assert.ok(themes.classifyScene({ environment: 'a snowbound village beneath an aurora', activity: 'resting' }).includes('cold'));
+    assert.ok(themes.classifyScene({ environment: 'a turquoise lagoon with a wooden pier', activity: 'wading' }).includes('warm'));
+    assert.ok(themes.classifyScene({ environment: 'a studio set', activity: 'posing' }).includes('indoor'));
+    assert.ok(themes.classifyScene({ environment: 'a gym', activity: 'leaving the gym' }).includes('gym'));
+});
+
+test('every scene-aware theme composes a tagged, scene-compatible outfit', () => {
+    for (const id of SCENE_THEME_IDS) {
+        const theme = themes.getTheme(id);
+        const spec = themes.SCENE_OUTFIT_STYLES[id];
+        const allowed = new Set(spec.entries.map((entry) => entry.value));
+        for (let seed = 1; seed <= 40; seed++) {
+            const scenario = themes.pickScenario(theme, characterGen.createRng(seed * 7919));
+            assert.ok(scenario.outfit, id + ' produced no outfit');
+            assert.ok(Array.isArray(scenario.sceneTags), id + ' needs sceneTags');
+            assert.ok(Array.isArray(scenario.outfitTags) && scenario.outfitTags.length, id + ' needs outfitTags');
+            assert.ok(scenario.outfitTags.some((tag) => spec.baseTags.includes(tag)),
+                id + ' lost its base tag: ' + scenario.outfitTags.join(','));
+            const cold = scenario.sceneTags.includes('cold');
+            const warm = scenario.sceneTags.includes('warm') && !cold;
+            if (cold) assert.ok(scenario.outfitTags.includes('cold'),
+                id + ' cold scene lacks a cold layer: ' + scenario.outfit);
+            if (warm) assert.ok(!scenario.outfitTags.includes('cold'),
+                id + ' warm scene used cold clothing: ' + scenario.outfit);
+            assert.ok(allowed.has(scenario.outfit) || / over /.test(scenario.outfit),
+                id + ' produced an unknown outfit: ' + scenario.outfit);
+        }
+    }
+});
+
+test('warm and cold scenes select weather-appropriate clothing', () => {
+    const theme = themes.getTheme('seasonal-concepts');
+    const warm = themes.composeSceneOutfit(theme, ['warm'], characterGen.createRng(1));
+    const cold = themes.composeSceneOutfit(theme, ['cold'], characterGen.createRng(1));
+    assert.ok(warm.tags.includes('warm') && !warm.tags.includes('cold'));
+    assert.ok(cold.tags.includes('cold'));
+    assert.match(warm.value, /sundress|linen|shorts|floral|dress/i);
+    assert.match(cold.value, /wool|knit|cashmere|quilt|coat|flannel|raincoat/i);
+});
+
+test('Anything assembles a coherent scenario from a real source theme', () => {
+    const anything = themes.getTheme('anything');
+    const realIds = themes.THEMES.map((t) => t.id);
+    for (let seed = 1; seed <= 60; seed++) {
+        const scenario = themes.pickScenario(anything, characterGen.createRng(seed * 104729));
+        assert.ok(realIds.includes(scenario.sourceThemeId), 'expected a real source theme, got ' + scenario.sourceThemeId);
+        const source = themes.getTheme(scenario.sourceThemeId);
+        assert.ok(allThemeSceneValues(source).has(scenario.environment),
+            'environment not from the source theme: ' + scenario.environment);
+        assert.ok(scenario.outfit, 'Anything produced no outfit');
+    }
+});
+
+test('an explicit custom outfit is not replaced by scene matching', () => {
+    const theme = themes.getTheme('seasonal-concepts');
+    const built = concept.assembleConcept({
+        theme, mode: 'none', outfitPack: 'custom',
+        outfitPackCustom: 'a bright yellow raincoat and green boots', rng: first
+    });
+    assert.equal(built.outfit, 'a bright yellow raincoat and green boots');
+    assert.equal(built.outfitPack, 'custom');
+});
+
+test('a locked outfit survives scene-aware composition', () => {
+    const theme = themes.getTheme('seasonal-concepts');
+    const character = { identity: 'a traveller', outfit: 'a signature red coat' };
+    const built = concept.assembleConcept({
+        theme, mode: 'character', character, locks: { outfit: true }, rng: characterGen.createRng(4)
+    });
+    assert.equal(built.outfit, 'a signature red coat');
+});
+
+test('scene-aware composition is deterministic and a re-roll preserves identity', () => {
+    const theme = themes.getTheme('travel-adventure');
+    assert.deepEqual(
+        themes.pickScenario(theme, characterGen.createRng(777)),
+        themes.pickScenario(theme, characterGen.createRng(777))
+    );
+    const c1 = concept.assembleConcept({ theme, mode: 'random_character', locks: {}, rng: characterGen.createRng(888) });
+    const c2 = concept.assembleConcept({ theme, mode: 'random_character', locks: {}, rng: characterGen.createRng(888) });
+    assert.deepEqual(c1, c2);
+
+    const id = conversationId('scene-outfit-reroll');
+    const session = playground.start({
+        conversationId: id, themeId: 'travel-adventure', mode: 'random_character',
+        rng: characterGen.createRng(9)
+    });
+    const subject = session.concept.subject;
+    const signature = session.concept.identitySignature;
+    playground.modify(session, { rerollField: 'outfit', rng: characterGen.createRng(10) });
+    assert.equal(session.concept.subject, subject);
+    assert.equal(session.concept.identitySignature, signature);
+});

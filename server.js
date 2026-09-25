@@ -4109,11 +4109,14 @@ async function handlePlaygroundAction(req, res, ctx, action, rawMessage) {
             // card's per-attribute dice) or an explicit field change (inline
             // edit). They bypass the free-text interpretation.
             const isRerollField = String(action.rerollField || '').trim();
+            const isRerollIdentity = String(action.rerollIdentity || '').trim();
             const uiChanges = (action.changes && typeof action.changes === 'object'
                 && Object.keys(action.changes).length) ? action.changes : null;
             let payload;
             if (isRerollField) {
                 payload = { locks: session.locks || {}, changes: {}, rerollField: isRerollField, reroll: false };
+            } else if (isRerollIdentity) {
+                payload = { locks: session.locks || {}, changes: {}, rerollIdentity: isRerollIdentity, reroll: false };
             } else if (uiChanges) {
                 payload = { locks: session.locks || {}, changes: uiChanges, reroll: false };
             } else {

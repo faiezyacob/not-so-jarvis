@@ -114,21 +114,39 @@ const UGCUI = (() => {
         return node;
     }
 
-    function button(label, iconName, variant, onClick) {
-        const btn = el('button', 'ugc-btn' + (variant ? ' ugc-btn--' + variant : ''));
+    function button(label, iconName, variant, onClick, opts) {
+        const options = opts || {};
+        const btn = el('button', 'ugc-btn' + (variant ? ' ugc-btn--' + variant : '')
+            + (options.iconOnly ? ' ugc-btn--icon' : ''));
         btn.type = 'button';
         if (iconName) btn.innerHTML = iconSvg(iconName, 14);
-        const span = el('span', 'ugc-btn-label', label);
-        btn.appendChild(span);
+        if (label) btn.appendChild(el('span', 'ugc-btn-label', label));
+        if (options.ariaLabel) btn.setAttribute('aria-label', options.ariaLabel);
+        if (options.title) btn.title = options.title;
+        if (options.pressed !== undefined) btn.setAttribute('aria-pressed', options.pressed ? 'true' : 'false');
+        if (options.expanded !== undefined) btn.setAttribute('aria-expanded', options.expanded ? 'true' : 'false');
+        if (options.controls) btn.setAttribute('aria-controls', options.controls);
         btn.addEventListener('click', onClick);
         return btn;
     }
 
-    function row(label, value) {
-        const wrap = el('div', 'ugc-detail');
-        wrap.appendChild(el('span', 'ugc-detail-label', label));
-        wrap.appendChild(el('span', 'ugc-detail-value', value || '\u2014'));
-        return wrap;
+    // A short, in-card heading + hint per stage so the card is scannable without
+    // duplicating the longer server-side stage intro above it.
+    const STAGE_HELP = {
+        product_selection: { title: 'Choose the product', hint: 'Pick one from your library, or create a new one. Only details you supply are used.' },
+        creator_selection: { title: 'Choose who is on camera', hint: 'Use a saved character, roll a new creator, or run it product-only.' },
+        creative_direction: { title: 'Set the creative direction', hint: 'Choose a content type, an outfit and an environment.' },
+        brief: { title: 'Review the brief', hint: 'Adjust anything, then approve it to write the script.' },
+        script_review: { title: 'Review the script', hint: 'Edit the lines or ask for a rewrite, then approve to plan the scenes.' },
+        scene_review: { title: 'Review the scene plan', hint: 'Tune each scene, then approve to generate the reference frames.' },
+        reference_generation: { title: 'Generating reference frames', hint: 'Frames render one at a time. This card updates as they finish.' },
+        reference_approval: { title: 'Review reference frames', hint: 'Every scene needs one current frame. Approve to hand off to Director Mode.' },
+        video_generation: { title: 'Director handoff', hint: 'The approved plan is being produced. Follow the Director card for the video.' },
+        completed: { title: 'Production complete', hint: 'Your UGC video is ready.' }
+    };
+
+    function stageHelp(stage) {
+        return STAGE_HELP[stage] || STAGE_HELP.brief;
     }
 
     function input(value, placeholder) {
@@ -147,8 +165,8 @@ const UGCUI = (() => {
         return t;
     }
 
-    function labelWrap(labelText, control) {
-        const wrap = el('label', 'ugc-field');
+    function labelWrap(labelText, control, extraClass) {
+        const wrap = el('label', 'ugc-field' + (extraClass ? ' ' + extraClass : ''));
         wrap.appendChild(el('span', 'ugc-field-label', labelText));
         wrap.appendChild(control);
         return wrap;
@@ -156,10 +174,14 @@ const UGCUI = (() => {
 
     function chipRow(items, activeId, onPick, extra) {
         const wrap = el('div', 'ugc-chips');
+        wrap.setAttribute('role', 'group');
         items.forEach((item) => {
-            const chip = el('button', 'ugc-chip' + (item.id === activeId ? ' ugc-chip--active' : ''));
+            const active = item.id === activeId;
+            const chip = el('button', 'ugc-chip' + (active ? ' ugc-chip--active' : ''));
             chip.type = 'button';
             chip.textContent = item.label;
+            chip.setAttribute('aria-pressed', active ? 'true' : 'false');
+            if (item.description) chip.title = item.description;
             chip.addEventListener('click', () => onPick(item.id));
             wrap.appendChild(chip);
         });
@@ -167,82 +189,204 @@ const UGCUI = (() => {
         return wrap;
     }
 
-    function actionRow(buttons) {
-        const wrap = el('div', 'ugc-card-actions');
+    function actionRow(buttons, variant) {
+        const wrap = el('div', 'ugc-card-actions' + (variant ? ' ugc-card-actions--' + variant : ''));
         buttons.forEach((b) => wrap.appendChild(b));
         return wrap;
     }
 
+    // A native disclosure: keyboard-accessible, no custom focus management.
+    function disclosure(labelText, iconName, className) {
+        const details = el('details', 'ugc-disclosure' + (className ? ' ' + className : ''));
+        const summary = el('summary', 'ugc-disclosure-summary');
+        if (iconName) {
+            const icon = el('span', 'ugc-disclosure-icon');
+            icon.innerHTML = iconSvg(iconName, 14);
+            summary.appendChild(icon);
+        }
+        summary.appendChild(el('span', 'ugc-disclosure-label', labelText));
+        details.appendChild(summary);
+        return details;
+    }
+
+    // Compact segmented workflow progress: never overflows a narrow card, and the
+    // current phase is stated in text for screen readers.
     function renderProgress(stage, container) {
-        const current = STAGE_PHASES.findIndex((phase) => phase.stages.includes(stage));
-        const progress = el('ol', 'ugc-progress');
-        progress.setAttribute('aria-label', 'UGC workflow progress');
+        const complete = stage === 'completed';
+        const found = STAGE_PHASES.findIndex((phase) => phase.stages.includes(stage));
+        const current = complete ? STAGE_PHASES.length : Math.max(0, found);
+        const progress = el('div', 'ugc-progress');
+        progress.setAttribute('role', 'group');
+        progress.setAttribute('aria-label', 'Workflow progress: '
+            + STAGE_PHASES.map((phase, index) => phase.label + ' '
+                + ((complete || index < current) ? 'done' : (index === current ? 'current' : 'upcoming'))).join(', '));
+        const track = el('div', 'ugc-progress-track');
         STAGE_PHASES.forEach((phase, index) => {
-            const item = el('li', 'ugc-progress-step');
-            const complete = index < current || stage === 'completed';
-            if (complete) item.classList.add('ugc-progress-step--done');
-            if (index === current && stage !== 'completed') {
-                item.classList.add('ugc-progress-step--active');
-                item.setAttribute('aria-current', 'step');
-            }
-            item.appendChild(el('span', 'ugc-progress-marker', complete ? '\u2713' : String(index + 1)));
-            item.appendChild(el('span', 'ugc-progress-label', phase.label));
-            progress.appendChild(item);
+            const seg = el('span', 'ugc-progress-seg');
+            if (complete || index < current) seg.classList.add('ugc-progress-seg--done');
+            else if (index === current) seg.classList.add('ugc-progress-seg--active');
+            track.appendChild(seg);
         });
+        progress.appendChild(track);
+        const label = complete ? 'Complete' : (STAGE_PHASES[current] ? STAGE_PHASES[current].label : 'Setup');
+        const step = Math.min(current + 1, STAGE_PHASES.length);
+        progress.appendChild(el('span', 'ugc-progress-caption', label + ' \u00b7 step ' + step + ' of ' + STAGE_PHASES.length));
         container.appendChild(progress);
     }
 
     // --- Stage renderers ---
 
-    function renderSummary(card, container) {
-        const details = el('div', 'ugc-summary');
-        details.appendChild(row('Product', card.product && card.product.name));
-        details.appendChild(row('Creator', card.creator && (card.creator.name || card.creator.identity)));
-        details.appendChild(row('Outfit', card.outfit && (card.outfit.outfit || card.outfit.label)));
-        details.appendChild(row('Environment', card.environment && (card.environment.description || card.environment.label)));
+    // Per-scene reference status counts used by the context strip and the
+    // reference progress header.
+    function frameStats(card) {
+        const scenes = Array.isArray(card.scenes) ? card.scenes : [];
+        const refs = Array.isArray(card.references) ? card.references : [];
+        const byScene = new Map();
+        refs.forEach((r) => { if (r && r.sceneId) byScene.set(r.sceneId, r); });
+        const stats = { total: scenes.length || refs.length, ready: 0, failed: 0, stale: 0, pending: 0 };
+        const source = scenes.length ? scenes.map((s) => byScene.get(s.id) || null) : refs;
+        source.forEach((r) => {
+            const status = r && r.status ? r.status : 'pending';
+            if (status === 'ready' || status === 'approved') stats.ready += 1;
+            else if (status === 'failed') stats.failed += 1;
+            else if (status === 'stale') stats.stale += 1;
+            else stats.pending += 1;
+        });
+        return stats;
+    }
+
+    // The context strip: only populated values, with the current stage's most
+    // relevant selections emphasized. Never renders an empty placeholder.
+    function contextEntries(card) {
         const brief = card.brief || {};
-        details.appendChild(row('Type', card.contentType && card.contentType.label));
-        details.appendChild(row('Duration', brief.duration ? brief.duration + 's' : ''));
-        details.appendChild(row('Aspect', brief.aspectRatio));
-        details.appendChild(row('Platform', brief.platform));
-        container.appendChild(details);
+        const entries = [];
+        if (card.product && card.product.name) {
+            entries.push({ key: 'product', label: 'Product', value: card.product.name });
+        }
+        if (card.creator && (card.creator.name || card.creator.identity)) {
+            entries.push({ key: 'creator', label: 'Creator', value: card.creator.name || String(card.creator.identity).slice(0, 40) });
+        } else if (card.creatorSkipped || card.creatorMode === 'none') {
+            entries.push({ key: 'creator', label: 'Creator', value: 'Product only' });
+        }
+        if (card.contentType && card.contentType.label) {
+            entries.push({ key: 'contentType', label: 'Type', value: card.contentType.label });
+        }
+        if (card.outfit && (card.outfit.label || card.outfit.outfit)) {
+            entries.push({ key: 'outfit', label: 'Outfit', value: card.outfit.label || card.outfit.outfit });
+        }
+        if (card.environment && (card.environment.label || card.environment.description)) {
+            entries.push({ key: 'environment', label: 'Setting', value: card.environment.label || card.environment.description });
+        }
+        if (brief.duration) entries.push({ key: 'duration', label: 'Length', value: brief.duration + 's' });
+        if (brief.aspectRatio) entries.push({ key: 'aspectRatio', label: 'Aspect', value: brief.aspectRatio });
+        if (brief.platform) entries.push({ key: 'platform', label: 'Platform', value: brief.platform });
+        if (card.scenes && card.scenes.length) entries.push({ key: 'scenes', label: 'Scenes', value: String(card.scenes.length) });
+        if (card.stage === 'reference_generation' || card.stage === 'reference_approval') {
+            const stats = frameStats(card);
+            entries.push({ key: 'frames', label: 'Frames', value: stats.ready + ' of ' + stats.total + ' ready' });
+        }
+        return entries;
+    }
+
+    const STAGE_KEY_FIELDS = {
+        product_selection: ['product'],
+        creator_selection: ['creator'],
+        creative_direction: ['contentType', 'outfit', 'environment'],
+        brief: ['product', 'creator', 'duration'],
+        script_review: ['product', 'creator', 'duration'],
+        scene_review: ['duration', 'scenes'],
+        reference_generation: ['frames'],
+        reference_approval: ['frames'],
+        video_generation: ['product', 'duration'],
+        completed: ['product', 'duration']
+    };
+
+    function renderContext(card, container) {
+        const entries = contextEntries(card);
+        if (!entries.length) return;
+        const keys = STAGE_KEY_FIELDS[card.stage] || [];
+        const wrap = el('div', 'ugc-context');
+        entries.forEach((entry) => {
+            const item = el('div', 'ugc-context-item'
+                + (keys.indexOf(entry.key) !== -1 ? ' ugc-context-item--key' : ''));
+            item.appendChild(el('span', 'ugc-context-label', entry.label));
+            item.appendChild(el('span', 'ugc-context-value', entry.value));
+            wrap.appendChild(item);
+        });
+        container.appendChild(wrap);
     }
 
     function renderProductSelection(card, container) {
         const suggested = String(card.suggestedProductName || '').trim();
         const products = Array.isArray(card.products) ? card.products : [];
         const known = suggested && products.some((p) => String(p.name || '').toLowerCase() === suggested.toLowerCase());
+        const activeId = card.product && card.product.id;
 
         if (suggested && !known) {
-            const btn = button('Use "' + suggested + '" as the product', 'plus', 'primary', () => {
-                send('Create the product "' + suggested + '"', { type: 'create_product', projectId: card.id, product: { name: suggested } });
-            });
-            container.appendChild(actionRow([btn]));
+            const callout = el('div', 'ugc-callout');
+            callout.appendChild(el('p', 'ugc-callout-text',
+                'The brief named "' + suggested + '", which is not in your library yet.'));
+            callout.appendChild(actionRow([
+                button('Create "' + suggested + '"', 'plus', 'primary', () => {
+                    lock(container.closest('.ugc-card'));
+                    send('Create the product "' + suggested + '"', { type: 'create_product', projectId: card.id, product: { name: suggested } });
+                })
+            ]));
+            container.appendChild(callout);
         }
 
         if (products.length) {
-            const list = el('div', 'ugc-list');
+            container.appendChild(el('div', 'ugc-section-title', 'Your products'));
+            const grid = el('div', 'ugc-choices');
             products.forEach((p) => {
-                const row = el('div', 'ugc-list-row');
-                const item = el('button', 'ugc-list-item');
-                item.type = 'button';
-                item.appendChild(el('span', 'ugc-list-title', p.name || 'Product'));
-                const meta = [p.brand, p.category].filter(Boolean).join(' \u00b7 ');
-                if (meta) item.appendChild(el('span', 'ugc-list-sub', meta));
-                if (p.description) item.appendChild(el('span', 'ugc-list-desc', String(p.description).slice(0, 140)));
-                if (p.usageInstructions) item.appendChild(el('span', 'ugc-list-sub', 'Use: ' + String(p.usageInstructions).slice(0, 100)));
-                if (p.keySellingPoints && p.keySellingPoints.length) {
-                    item.appendChild(el('span', 'ugc-list-sub', 'Selling points: ' + p.keySellingPoints.join(', ')));
-                }
-                if (p.targetAudience) item.appendChild(el('span', 'ugc-list-sub', 'Audience: ' + String(p.targetAudience).slice(0, 80)));
+                const selected = p.id === activeId;
+                const tile = el('div', 'ugc-choice ugc-choice--product' + (selected ? ' ugc-choice--selected' : ''));
+                const main = el('button', 'ugc-choice-main');
+                main.type = 'button';
+                main.setAttribute('aria-pressed', selected ? 'true' : 'false');
+                main.setAttribute('aria-label', 'Use product ' + (p.name || ''));
+
+                const thumb = el('span', 'ugc-choice-thumb');
                 if (p.referenceImages && p.referenceImages.length) {
-                    item.appendChild(el('span', 'ugc-list-sub', p.referenceImages.length + ' reference image(s)'));
+                    const img = el('img', 'ugc-choice-img');
+                    img.src = p.referenceImages[0];
+                    img.alt = '';
+                    img.loading = 'lazy';
+                    thumb.appendChild(img);
+                } else {
+                    thumb.classList.add('ugc-choice-thumb--placeholder');
+                    thumb.innerHTML = iconSvg('box', 20);
                 }
-                item.addEventListener('click', () => {
+                main.appendChild(thumb);
+
+                const body = el('span', 'ugc-choice-body');
+                body.appendChild(el('span', 'ugc-choice-title', p.name || 'Product'));
+                const meta = [p.brand, p.category].filter(Boolean).join(' \u00b7 ');
+                if (meta) body.appendChild(el('span', 'ugc-choice-meta', meta));
+                if (p.description) body.appendChild(el('span', 'ugc-choice-desc', String(p.description).slice(0, 120)));
+                const tags = el('span', 'ugc-choice-tags');
+                if (p.referenceImages && p.referenceImages.length) {
+                    tags.appendChild(el('span', 'ugc-tag',
+                        p.referenceImages.length + ' reference' + (p.referenceImages.length > 1 ? 's' : '')));
+                }
+                const benefitCount = p.keyBenefits ? p.keyBenefits.length : 0;
+                if (benefitCount) tags.appendChild(el('span', 'ugc-tag',
+                    benefitCount + ' benefit' + (benefitCount > 1 ? 's' : '')));
+                if (tags.childNodes.length) body.appendChild(tags);
+                main.appendChild(body);
+
+                main.addEventListener('click', () => {
                     lock(container.closest('.ugc-card'));
                     send('Use the product "' + (p.name || '') + '"', { type: 'select_product', projectId: card.id, productId: p.id });
                 });
-                row.appendChild(item);
+                tile.appendChild(main);
+
+                if (selected) {
+                    const check = el('span', 'ugc-choice-check');
+                    check.innerHTML = iconSvg('check', 14);
+                    check.setAttribute('aria-hidden', 'true');
+                    tile.appendChild(check);
+                }
 
                 const del = button('', 'x', 'danger', () => {
                     Dialog.confirm({
@@ -255,19 +399,21 @@ const UGCUI = (() => {
                         // scrolls into view); a failed one leaves this card usable.
                         send('Delete the product "' + (p.name || '') + '"', { type: 'delete_product', projectId: card.id, productId: p.id });
                     });
-                });
-                del.classList.add('ugc-list-delete');
-                del.title = 'Delete product';
-                del.setAttribute('aria-label', 'Delete product');
-                row.appendChild(del);
-                list.appendChild(row);
+                }, { iconOnly: true, ariaLabel: 'Delete product ' + (p.name || ''), title: 'Delete product' });
+                del.classList.add('ugc-choice-delete');
+                tile.appendChild(del);
+                grid.appendChild(tile);
             });
-            container.appendChild(list);
+            container.appendChild(grid);
+        } else {
+            container.appendChild(el('p', 'ugc-note', 'Your product library is empty. Create the first product below.'));
         }
 
-        // Inline "new product" form.
+        // The full "new product" form is a secondary action: collapsed until the
+        // user asks for it (and opened by default only when nothing is selectable).
+        const formDisclosure = disclosure('Create a new product', 'plus', 'ugc-disclosure--create');
+        if (!products.length) formDisclosure.open = true;
         const form = el('div', 'ugc-form ugc-form--product');
-        form.appendChild(el('div', 'ugc-section-title', 'New product'));
         const name = input(suggested, 'Product name');
         const brand = input('', 'Brand');
         const category = input('', 'Category (e.g. skincare, home)');
@@ -282,11 +428,11 @@ const UGCUI = (() => {
         form.appendChild(labelWrap('Name', name));
         form.appendChild(labelWrap('Brand', brand));
         form.appendChild(labelWrap('Category', category));
-        form.appendChild(labelWrap('Description', description));
-        form.appendChild(labelWrap('How it is used', usage));
+        form.appendChild(labelWrap('Description', description, 'ugc-field--wide'));
+        form.appendChild(labelWrap('How it is used', usage, 'ugc-field--wide'));
         form.appendChild(labelWrap('Key benefits', benefits));
         form.appendChild(labelWrap('Key selling points', sellingPoints));
-        form.appendChild(labelWrap('Target audience', audience));
+        form.appendChild(labelWrap('Target audience', audience, 'ugc-field--wide'));
         form.appendChild(labelWrap('Brand colors', colors));
         form.appendChild(labelWrap('Claims to avoid', avoid));
 
@@ -368,13 +514,13 @@ const UGCUI = (() => {
         fileRow.appendChild(uploadBtn);
         fileRow.appendChild(fileInput);
         fileRow.appendChild(refNote);
-        const fileField = el('div', 'ugc-field');
+        const fileField = el('div', 'ugc-field ugc-field--wide');
         fileField.appendChild(el('span', 'ugc-field-label', 'Reference images'));
         fileField.appendChild(fileRow);
         form.appendChild(fileField);
         form.appendChild(refThumbs);
 
-        const save = button('Save product', 'check', 'primary', () => {
+        const save = button('Save product', 'check', products.length ? '' : 'primary', () => {
             if (!String(name.value || '').trim()) {
                 name.focus();
                 return;
@@ -399,30 +545,93 @@ const UGCUI = (() => {
             });
         });
         form.appendChild(actionRow([save]));
-        container.appendChild(form);
+        formDisclosure.appendChild(form);
+        container.appendChild(formDisclosure);
+    }
+
+    function creatorChoice(card, c, container) {
+        const selected = Boolean(card.creator && (card.creator.characterId === c.id
+            || (c.name && card.creator.name === c.name)));
+        const tile = el('div', 'ugc-choice ugc-choice--creator' + (selected ? ' ugc-choice--selected' : ''));
+        const main = el('button', 'ugc-choice-main');
+        main.type = 'button';
+        main.setAttribute('aria-pressed', selected ? 'true' : 'false');
+        main.setAttribute('aria-label', 'Use ' + (c.name || 'character') + ' as the creator');
+
+        const thumb = el('span', 'ugc-choice-thumb ugc-choice-thumb--portrait');
+        if (c.image) {
+            const img = el('img', 'ugc-choice-img');
+            img.src = c.image;
+            img.alt = '';
+            img.loading = 'lazy';
+            thumb.appendChild(img);
+        } else {
+            thumb.classList.add('ugc-choice-thumb--placeholder');
+            thumb.innerHTML = iconSvg('user', 20);
+        }
+        main.appendChild(thumb);
+
+        const body = el('span', 'ugc-choice-body');
+        body.appendChild(el('span', 'ugc-choice-title', c.name || 'Character'));
+        if (c.appearanceCategoryLabel) body.appendChild(el('span', 'ugc-choice-meta', c.appearanceCategoryLabel));
+        const tags = el('span', 'ugc-choice-tags');
+        tags.appendChild(el('span', 'ugc-tag' + (c.hasIdentity ? ' ugc-tag--good' : ''),
+            c.hasIdentity ? 'Identity ready' : 'No identity yet'));
+        body.appendChild(tags);
+        main.appendChild(body);
+
+        main.addEventListener('click', () => {
+            lock(container.closest('.ugc-card'));
+            send('Use ' + (c.name || 'this character') + ' as the creator', { type: 'select_creator', projectId: card.id, characterId: c.id });
+        });
+        tile.appendChild(main);
+        if (selected) {
+            const check = el('span', 'ugc-choice-check');
+            check.innerHTML = iconSvg('check', 14);
+            check.setAttribute('aria-hidden', 'true');
+            tile.appendChild(check);
+        }
+        return tile;
     }
 
     function renderCreatorSelection(card, container) {
         const characters = Array.isArray(card.characters) ? card.characters : [];
-        if (characters.length) {
-            const list = el('div', 'ugc-list');
-            characters.forEach((c) => {
-                const item = el('button', 'ugc-list-item');
-                item.type = 'button';
-                item.appendChild(el('span', 'ugc-list-title', c.name || 'Character'));
-                item.addEventListener('click', () => {
+
+        if (card.creator && card.creator.source === 'random') {
+            const current = el('div', 'ugc-callout ugc-callout--creator');
+            current.appendChild(el('p', 'ugc-callout-text', 'Current creator: ' + (card.creator.name || 'Creator')));
+            if (card.creator.identity) current.appendChild(el('p', 'ugc-note', card.creator.identity));
+            current.appendChild(actionRow([
+                button('Save as character', 'check', '', () => {
                     lock(container.closest('.ugc-card'));
-                    send('Use ' + (c.name || 'this character') + ' as the creator', { type: 'select_creator', projectId: card.id, characterId: c.id });
-                });
-                list.appendChild(item);
-            });
-            container.appendChild(list);
+                    send('Save this creator as a character', {
+                        type: 'create_creator', projectId: card.id,
+                        creator: {
+                            name: card.creator.name,
+                            identity: card.creator.identity,
+                            appearance: card.creator.appearance,
+                            hair: card.creator.hair,
+                            appearanceCategory: card.creator.appearanceCategory,
+                            appearanceCategoryLabel: card.creator.appearanceCategoryLabel
+                        }
+                    });
+                })
+            ]));
+            container.appendChild(current);
+        }
+
+        if (characters.length) {
+            container.appendChild(el('div', 'ugc-section-title', 'Your characters'));
+            const grid = el('div', 'ugc-choices');
+            characters.forEach((c) => grid.appendChild(creatorChoice(card, c, container)));
+            container.appendChild(grid);
         } else {
             container.appendChild(el('p', 'ugc-note', 'No saved characters yet. Roll a new creator below, or open the Character Playground to build one.'));
         }
 
+        const rollDisclosure = disclosure('Roll a new creator', 'refresh');
+        if (!characters.length) rollDisclosure.open = true;
         const form = el('div', 'ugc-form');
-        form.appendChild(el('div', 'ugc-section-title', 'Roll a new creator'));
         const appearance = el('select', 'ugc-input');
         const age = el('select', 'ugc-input');
         const gender = el('select', 'ugc-input');
@@ -443,6 +652,10 @@ const UGCUI = (() => {
                 creator: { profile: { appearance: appearance.value, age: age.value, gender: gender.value } }
             });
         });
+        form.appendChild(actionRow([roll]));
+        rollDisclosure.appendChild(form);
+        container.appendChild(rollDisclosure);
+
         const skip = button('Product only (no creator)', 'box', '', () => {
             lock(container.closest('.ugc-card'));
             send('Skip the creator and make it product-only', { type: 'skip_creator', projectId: card.id });
@@ -450,30 +663,7 @@ const UGCUI = (() => {
         const playground = button('Open Character Playground', 'user', '', () => {
             if (window.PlaygroundUI && typeof window.PlaygroundUI.open === 'function') window.PlaygroundUI.open();
         });
-        form.appendChild(actionRow([roll, skip, playground]));
-        container.appendChild(form);
-
-        if (card.creator && card.creator.source === 'random') {
-            const saveWrap = el('div', 'ugc-form');
-            saveWrap.appendChild(el('div', 'ugc-section-title', 'Current creator: ' + (card.creator.name || 'Creator')));
-            saveWrap.appendChild(el('p', 'ugc-note', card.creator.identity || ''));
-            const save = button('Save as character', 'check', '', () => {
-                lock(container.closest('.ugc-card'));
-                send('Save this creator as a character', {
-                    type: 'create_creator', projectId: card.id,
-                    creator: {
-                        name: card.creator.name,
-                        identity: card.creator.identity,
-                        appearance: card.creator.appearance,
-                        hair: card.creator.hair,
-                        appearanceCategory: card.creator.appearanceCategory,
-                        appearanceCategoryLabel: card.creator.appearanceCategoryLabel
-                    }
-                });
-            });
-            saveWrap.appendChild(actionRow([save]));
-            container.appendChild(saveWrap);
-        }
+        container.appendChild(actionRow([skip, playground]));
     }
 
     function renderCreativeDirection(card, container) {
@@ -488,6 +678,12 @@ const UGCUI = (() => {
         container.appendChild(el('div', 'ugc-section-title', 'Outfit'));
         container.appendChild(chipRow(packs, card.outfit && card.outfit.packId,
             (id) => send('Use that outfit', { type: 'select_outfit', projectId: card.id, outfitPack: id })));
+        if (card.outfit && card.outfit.outfit) {
+            const current = el('p', 'ugc-note ugc-note--tight');
+            current.appendChild(el('span', 'ugc-note-label', 'Current: '));
+            current.appendChild(document.createTextNode(card.outfit.outfit));
+            container.appendChild(current);
+        }
         const customOutfit = el('div', 'ugc-inline');
         const customInput = input('', 'Custom outfit (describe exact clothing)');
         const customBtn = button('Use custom', 'pencil', '', () => {
@@ -525,15 +721,15 @@ const UGCUI = (() => {
         const duration = input(brief.duration || '', 'Duration (seconds)');
         const extra = textarea(brief.additionalInstructions, 'Additional instructions', 2);
 
-        form.appendChild(labelWrap('Objective', objective));
+        form.appendChild(labelWrap('Objective', objective, 'ugc-field--wide'));
         form.appendChild(labelWrap('Target audience', audience));
         form.appendChild(labelWrap('Tone', tone));
         form.appendChild(labelWrap('Key message', keyMessage));
         form.appendChild(labelWrap('Call to action', cta));
         form.appendChild(labelWrap('Duration (s)', duration));
-        form.appendChild(labelWrap('Additional instructions', extra));
+        form.appendChild(labelWrap('Additional instructions', extra, 'ugc-field--wide'));
 
-        const save = button('Save brief', 'check', '', () => {
+        const save = button('Save changes', 'check', '', () => {
             lock(container.closest('.ugc-card'));
             send('Update the brief', {
                 type: 'edit_brief', projectId: card.id,
@@ -551,13 +747,15 @@ const UGCUI = (() => {
         form.appendChild(actionRow([save]));
         container.appendChild(form);
 
+        const setupDisclosure = disclosure('Adjust setup', 'pencil');
         const setup = [];
         setup.push(button('Select product', 'box', '', () => send('Choose the product', { type: 'select_product', projectId: card.id })));
         setup.push(button('Choose creator', 'user', '', () => send('Choose a creator', { type: 'select_creator', projectId: card.id })));
         setup.push(button('Choose outfit', 'pencil', '', () => send('Choose an outfit', { type: 'select_outfit', projectId: card.id })));
         setup.push(button('Choose environment', 'image', '', () => send('Choose an environment', { type: 'select_environment', projectId: card.id })));
         setup.push(button('Choose type', 'film', '', () => send('Choose a content type', { type: 'select_content_type', projectId: card.id })));
-        container.appendChild(actionRow(setup));
+        setupDisclosure.appendChild(actionRow(setup));
+        container.appendChild(setupDisclosure);
 
         container.appendChild(actionRow([
             button('Approve Brief \u2192 Write Script', 'check', 'primary', () => {
@@ -568,28 +766,32 @@ const UGCUI = (() => {
                 lock(container.closest('.ugc-card'));
                 send('Regenerate the brief', { type: 'regenerate_brief', projectId: card.id });
             })
-        ]));
+        ], 'footer'));
     }
 
     function scriptBlock(title, value) {
-        const wrap = el('div', 'ugc-detail ugc-detail--block');
-        wrap.appendChild(el('span', 'ugc-detail-label', title));
-        wrap.appendChild(el('span', 'ugc-detail-value', value || '\u2014'));
+        const wrap = el('div', 'ugc-script-line');
+        wrap.appendChild(el('span', 'ugc-script-label', title));
+        wrap.appendChild(el('span', 'ugc-script-text', value || '\u2014'));
         return wrap;
     }
 
     function renderScript(card, container) {
         const script = card.script || {};
-        container.appendChild(scriptBlock('Hook', script.hook));
-        container.appendChild(scriptBlock('Main message', script.main));
-        container.appendChild(scriptBlock('Product interaction', script.productInteraction));
-        container.appendChild(scriptBlock('Closing / CTA', script.closing));
+        // One review surface (read-only). Editing lives behind an explicit
+        // affordance so the script is never shown twice at once.
+        const review = el('div', 'ugc-script');
+        review.appendChild(scriptBlock('Hook', script.hook));
+        review.appendChild(scriptBlock('Main message', script.main));
+        review.appendChild(scriptBlock('Product interaction', script.productInteraction));
+        review.appendChild(scriptBlock('Closing / CTA', script.closing));
+        container.appendChild(review);
         if (script.needsConfirmation) {
-            container.appendChild(el('p', 'ugc-note', 'Some lines were removed because they made claims the product facts do not support. Check the script before approving.'));
+            container.appendChild(el('p', 'ugc-note ugc-note--warn', 'Some lines were removed because they made claims the product facts do not support. Check the script before approving.'));
         }
 
+        const editDisclosure = disclosure('Edit script', 'pencil');
         const form = el('div', 'ugc-form');
-        form.appendChild(el('div', 'ugc-section-title', 'Edit script'));
         const hook = textarea(script.hook, 'Hook', 2);
         const main = textarea(script.main, 'Main message', 3);
         const interaction = textarea(script.productInteraction, 'Product interaction', 2);
@@ -610,17 +812,11 @@ const UGCUI = (() => {
                 });
             })
         ]));
-        container.appendChild(form);
+        editDisclosure.appendChild(form);
+        container.appendChild(editDisclosure);
 
-        container.appendChild(actionRow([
-            button('Approve Script', 'check', 'primary', () => {
-                lock(container.closest('.ugc-card'));
-                send('Approve the script', { type: 'approve_script', projectId: card.id });
-            }),
-            button('Regenerate Script', 'refresh', '', () => {
-                lock(container.closest('.ugc-card'));
-                send('Regenerate the script', { type: 'regenerate_script', projectId: card.id });
-            }),
+        const rewriteDisclosure = disclosure('Rewrite options', 'refresh');
+        rewriteDisclosure.appendChild(actionRow([
             button('Change Tone', 'pencil', '', () => {
                 Dialog.prompt({ title: 'Change Tone', message: 'Describe the tone you want.', placeholder: 'e.g. more casual and upbeat', confirmText: 'Rewrite' })
                     .then((text) => {
@@ -640,6 +836,18 @@ const UGCUI = (() => {
                     });
             })
         ]));
+        container.appendChild(rewriteDisclosure);
+
+        container.appendChild(actionRow([
+            button('Approve Script', 'check', 'primary', () => {
+                lock(container.closest('.ugc-card'));
+                send('Approve the script', { type: 'approve_script', projectId: card.id });
+            }),
+            button('Regenerate Script', 'refresh', '', () => {
+                lock(container.closest('.ugc-card'));
+                send('Regenerate the script', { type: 'regenerate_script', projectId: card.id });
+            })
+        ], 'footer'));
     }
 
     function renderScenes(card, container) {
@@ -649,46 +857,69 @@ const UGCUI = (() => {
             const item = el('div', 'ugc-scene');
             const head = el('div', 'ugc-scene-head');
             head.appendChild(el('span', 'ugc-scene-num', String(index + 1).padStart(2, '0')));
-            head.appendChild(el('span', 'ugc-scene-dur', scene.duration + 's'));
-            head.appendChild(el('span', 'ugc-scene-obj', scene.objective || ''));
+            head.appendChild(el('span', 'ugc-scene-dur', (Number(scene.duration) || 0) + 's'));
+            if (scene.objective) head.appendChild(el('span', 'ugc-scene-obj', scene.objective));
+            const tools = el('div', 'ugc-scene-tools');
+            tools.appendChild(button('', 'up', '', () => {
+                lock(container.closest('.ugc-card'));
+                send('Move scene ' + (index + 1) + ' up', { type: 'move_scene', projectId: card.id, sceneId: scene.id, direction: 'up' });
+            }, { iconOnly: true, ariaLabel: 'Move scene ' + (index + 1) + ' up', title: 'Move scene up' }));
+            tools.appendChild(button('', 'down', '', () => {
+                lock(container.closest('.ugc-card'));
+                send('Move scene ' + (index + 1) + ' down', { type: 'move_scene', projectId: card.id, sceneId: scene.id, direction: 'down' });
+            }, { iconOnly: true, ariaLabel: 'Move scene ' + (index + 1) + ' down', title: 'Move scene down' }));
+            head.appendChild(tools);
             item.appendChild(head);
 
+            if (scene.action) item.appendChild(el('p', 'ugc-scene-action', scene.action));
+            if (scene.dialogue) {
+                const line = el('p', 'ugc-scene-dialogue');
+                line.appendChild(el('span', 'ugc-scene-dialogue-mark', '\u201c'));
+                line.appendChild(document.createTextNode(scene.dialogue));
+                line.appendChild(el('span', 'ugc-scene-dialogue-mark', '\u201d'));
+                item.appendChild(line);
+            }
+            const meta = el('div', 'ugc-scene-meta');
+            const movementText = scene.camera && scene.camera.movement;
+            if (movementText) meta.appendChild(el('span', 'ugc-tag', 'Camera: ' + movementText));
+            if (scene.productVisibility) meta.appendChild(el('span', 'ugc-tag', 'Product: ' + scene.productVisibility));
+            if (meta.childNodes.length) item.appendChild(meta);
+
+            if (scene.needsConfirmation) {
+                item.appendChild(el('p', 'ugc-note ugc-note--warn', 'This action uses the product in a way the supplied usage facts do not confirm. Check it before approving.'));
+            }
+
+            const editDisclosure = disclosure('Edit scene ' + (index + 1), 'pencil');
+            const editForm = el('div', 'ugc-form');
             const action = textarea(scene.action, 'Scene action', 2);
             const dialogue = textarea(scene.dialogue, 'Dialogue', 2);
             const duration = input(String(scene.duration), 'Seconds');
-            const movement = input((scene.camera && scene.camera.movement) || '', 'Camera movement');
+            const movementInput = input(movementText || '', 'Camera movement');
             const visibility = input(scene.productVisibility, 'Product visibility');
-            item.appendChild(labelWrap('Action', action));
-            item.appendChild(labelWrap('Dialogue', dialogue));
-            item.appendChild(labelWrap('Duration (s)', duration));
-            item.appendChild(labelWrap('Camera movement', movement));
-            item.appendChild(labelWrap('Product visibility', visibility));
-            if (scene.needsConfirmation) {
-                item.appendChild(el('p', 'ugc-note', 'This action uses the product in a way the supplied usage facts do not confirm. Check it before approving.'));
-            }
-
-            item.appendChild(actionRow([
-                button('Save', 'check', '', () => {
+            editForm.appendChild(labelWrap('Action', action, 'ugc-field--wide'));
+            editForm.appendChild(labelWrap('Dialogue', dialogue, 'ugc-field--wide'));
+            editForm.appendChild(labelWrap('Duration (s)', duration));
+            editForm.appendChild(labelWrap('Camera movement', movementInput));
+            editForm.appendChild(labelWrap('Product visibility', visibility));
+            editForm.appendChild(actionRow([
+                button('Save changes', 'check', '', () => {
                     lock(container.closest('.ugc-card'));
                     send('Update scene ' + (index + 1), {
                         type: 'edit_scene', projectId: card.id, sceneId: scene.id,
                         scene: {
                             action: action.value, dialogue: dialogue.value, duration: duration.value,
-                            camera: { movement: movement.value }, productVisibility: visibility.value
+                            camera: { movement: movementInput.value }, productVisibility: visibility.value
                         }
                     });
-                }),
+                })
+            ]));
+            editDisclosure.appendChild(editForm);
+            item.appendChild(editDisclosure);
+
+            item.appendChild(actionRow([
                 button('Regenerate', 'refresh', '', () => {
                     lock(container.closest('.ugc-card'));
                     send('Regenerate only scene ' + (index + 1), { type: 'regenerate_scene', projectId: card.id, sceneId: scene.id });
-                }),
-                button('Up', 'up', '', () => {
-                    lock(container.closest('.ugc-card'));
-                    send('Move scene ' + (index + 1) + ' up', { type: 'move_scene', projectId: card.id, sceneId: scene.id, direction: 'up' });
-                }),
-                button('Down', 'down', '', () => {
-                    lock(container.closest('.ugc-card'));
-                    send('Move scene ' + (index + 1) + ' down', { type: 'move_scene', projectId: card.id, sceneId: scene.id, direction: 'down' });
                 }),
                 button('Delete', 'x', 'danger', () => {
                     lock(container.closest('.ugc-card'));
@@ -708,26 +939,58 @@ const UGCUI = (() => {
                 lock(container.closest('.ugc-card'));
                 send('Approve the scene plan', { type: 'approve_scenes', projectId: card.id });
             })
-        ]));
+        ], 'footer'));
     }
+
+    const REF_STATUS_LABELS = {
+        ready: 'Ready', approved: 'Approved', pending: 'Pending', failed: 'Failed', stale: 'Stale'
+    };
 
     function renderReferences(card, container) {
         const refs = Array.isArray(card.references) ? card.references : [];
         const scenes = Array.isArray(card.scenes) ? card.scenes : [];
         const byScene = new Map();
         refs.forEach((r) => { byScene.set(r.sceneId, r); });
-        const grid = el('div', 'ugc-refs');
-        let hasProblem = false;
         const items = scenes.length
             ? scenes.map((s) => ({ sceneId: s.id, order: s.order, ref: byScene.get(s.id) || null }))
             : refs.map((r) => ({ sceneId: r.sceneId, order: r.order, ref: r }));
+        const stats = frameStats(card);
+        const complete = card.referencesComplete === true;
+        const recovering = stats.failed > 0 || stats.stale > 0;
+
+        // Overall progress: an exact count plus a bar, so several frames being
+        // generated or retried read at a glance.
+        const summary = el('div', 'ugc-refs-summary');
+        const head = el('div', 'ugc-refs-progress-head');
+        head.appendChild(el('span', 'ugc-refs-progress-label', stats.ready + ' of ' + stats.total + ' frames ready'));
+        const badges = el('span', 'ugc-refs-badges');
+        if (stats.failed) badges.appendChild(el('span', 'ugc-tag ugc-tag--warn', stats.failed + ' failed'));
+        if (stats.stale) badges.appendChild(el('span', 'ugc-tag ugc-tag--warn', stats.stale + ' stale'));
+        if (stats.pending) badges.appendChild(el('span', 'ugc-tag', stats.pending + ' pending'));
+        head.appendChild(badges);
+        summary.appendChild(head);
+        const bar = el('div', 'ugc-refs-bar');
+        bar.setAttribute('role', 'progressbar');
+        bar.setAttribute('aria-valuemin', '0');
+        bar.setAttribute('aria-valuemax', String(stats.total || 0));
+        bar.setAttribute('aria-valuenow', String(stats.ready));
+        bar.setAttribute('aria-label', stats.ready + ' of ' + stats.total + ' reference frames ready');
+        const fill = el('span', 'ugc-refs-bar-fill');
+        fill.style.width = stats.total ? Math.round((stats.ready / stats.total) * 100) + '%' : '0%';
+        bar.appendChild(fill);
+        summary.appendChild(bar);
+        container.appendChild(summary);
+
+        const grid = el('div', 'ugc-refs');
         items.forEach((item) => {
             const ref = item.ref || {};
-            const tile = el('div', 'ugc-ref ugc-ref--' + (ref.status || 'pending'));
+            const status = ref.status || 'pending';
+            const tile = el('div', 'ugc-ref ugc-ref--' + status);
+            const frame = el('div', 'ugc-ref-frame');
             if (ref.url) {
                 const img = el('img', 'ugc-ref-img');
                 img.src = ref.url;
-                img.alt = 'Scene ' + item.order;
+                img.alt = '';
                 img.loading = 'lazy';
                 const preview = el('a', 'ugc-ref-preview');
                 preview.href = ref.url;
@@ -735,17 +998,21 @@ const UGCUI = (() => {
                 preview.rel = 'noopener';
                 preview.title = 'Open reference image';
                 preview.appendChild(img);
-                tile.appendChild(preview);
+                frame.appendChild(preview);
             } else {
-                tile.appendChild(el('div', 'ugc-ref-missing', ref.status === 'failed' ? 'Failed' : 'No frame'));
+                frame.appendChild(el('div', 'ugc-ref-missing', status === 'failed' ? 'Failed' : 'No frame'));
             }
-            tile.appendChild(el('span', 'ugc-ref-label', 'Scene ' + item.order + ' \u00b7 ' + (ref.status || 'pending')));
-            if (ref.status === 'failed' && ref.error) {
+            tile.appendChild(frame);
+            const foot = el('div', 'ugc-ref-foot');
+            foot.appendChild(el('span', 'ugc-ref-label', 'Scene ' + item.order));
+            foot.appendChild(el('span', 'ugc-ref-status ugc-ref-status--' + status,
+                REF_STATUS_LABELS[status] || status));
+            tile.appendChild(foot);
+            if (status === 'failed' && ref.error) {
                 tile.appendChild(el('span', 'ugc-ref-error', ref.error));
             }
-            if (ref.status !== 'ready' && ref.status !== 'approved') hasProblem = true;
             if (item.sceneId) {
-                tile.appendChild(button('Regenerate', 'refresh', '', () => {
+                tile.appendChild(button(status === 'failed' ? 'Retry' : 'Regenerate', 'refresh', '', () => {
                     lock(container.closest('.ugc-card'));
                     send('Regenerate only scene ' + item.order, { type: 'regenerate_reference', projectId: card.id, sceneId: item.sceneId });
                 }));
@@ -754,7 +1021,6 @@ const UGCUI = (() => {
         });
         container.appendChild(grid);
 
-        const complete = card.referencesComplete === true;
         const actions = [];
         if (complete) {
             actions.push(button('Approve All \u2192 Director', 'check', 'primary', () => {
@@ -766,7 +1032,7 @@ const UGCUI = (() => {
                 Dialog.alert({ title: 'Reference frames incomplete', message: 'Every scene needs exactly one current frame before the production can be approved. Retry the failed scenes first.' });
             }));
         }
-        if (hasProblem) {
+        if (recovering) {
             actions.push(button('Retry failed', 'refresh', '', () => {
                 lock(container.closest('.ugc-card'));
                 send('Retry the failed reference frames', { type: 'retry_failed', projectId: card.id });
@@ -785,7 +1051,7 @@ const UGCUI = (() => {
                     send('Edit the direction: ' + value, { type: 'edit_direction', projectId: card.id, direction: value });
                 });
         }));
-        container.appendChild(actionRow(actions));
+        container.appendChild(actionRow(actions, 'footer'));
     }
 
     function render(contentEl, card) {
@@ -807,9 +1073,15 @@ const UGCUI = (() => {
         head.appendChild(stage);
         el2.appendChild(head);
 
+        const help = stageHelp(card.stage);
+        const lead = el('div', 'ugc-card-lead');
+        lead.appendChild(el('h3', 'ugc-card-heading', help.title));
+        if (help.hint) lead.appendChild(el('p', 'ugc-card-hint', help.hint));
+        el2.appendChild(lead);
+
         renderProgress(card.stage, el2);
 
-        renderSummary(card, el2);
+        renderContext(card, el2);
 
         if (card.stage === 'product_selection') renderProductSelection(card, el2);
         else if (card.stage === 'creator_selection') renderCreatorSelection(card, el2);
@@ -818,9 +1090,15 @@ const UGCUI = (() => {
         else if (card.stage === 'scene_review') renderScenes(card, el2);
         else if (card.stage === 'reference_approval' || card.stage === 'reference_generation') renderReferences(card, el2);
         else if (card.stage === 'video_generation' || card.stage === 'completed') {
-            el2.appendChild(el('p', 'ugc-note', card.stage === 'completed'
-                ? 'This UGC production is complete.'
-                : 'Handed to Director Mode. Follow the Director card for the final video.'));
+            if (card.stage === 'completed' && card.videoUrl) {
+                el2.appendChild(actionRow([
+                    button('View video', 'film', 'primary', () => {
+                        if (window.Gallery && typeof window.Gallery.openFromUrl === 'function') {
+                            window.Gallery.openFromUrl(card.videoUrl);
+                        }
+                    })
+                ]));
+            }
         } else {
             renderBrief(card, el2);
         }
