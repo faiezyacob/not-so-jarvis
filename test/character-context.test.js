@@ -220,6 +220,35 @@ test('two characters contribute exactly two identity images', () => {
     assert.match(conditioning.instruction, /Never return an identity sheet/i);
 });
 
+test('multi-character scenes keep each complexion while sharing the lighting', () => {
+    const maya = makeCharacter({ name: 'Maya' });
+    const quinn = makeCharacter({
+        name: 'Quinn',
+        identity: { age: '30-year-old', gender: 'man', skinTone: 'deep warm brown skin', hairColor: 'black' }
+    });
+    // Candidate + approve preserves the derived identity metadata (unlike a bare
+    // identity package that carries only image fields).
+    characterPresets.setCandidateBaseImage(maya.id, { url: '/generated/maya-base.png', filename: 'maya-base.png' });
+    characterPresets.approveBaseImage(maya.id);
+    characterPresets.setCandidateBaseImage(quinn.id, { url: '/generated/quinn-base.png', filename: 'quinn-base.png' });
+    characterPresets.approveBaseImage(quinn.id);
+    const conditioning = context.buildConditioning([maya, quinn], 'standing together at sunset');
+    assert.match(conditioning.instruction, /SKIN-TONE CONTINUITY ACROSS CHARACTERS/);
+    assert.match(conditioning.instruction, /do not normalise, swap, or blend/i);
+    assert.match(conditioning.instruction, /Apply the scene's lighting to every character equally/i);
+    assert.match(conditioning.instruction, /medium golden skin/);
+    assert.match(conditioning.instruction, /deep warm brown skin/);
+});
+
+test('a single-character scene carries the body-wide skin continuity section', () => {
+    const maya = makeCharacter();
+    characterPresets.setIdentityPackage(maya.id, readyPackage('maya-base.png', 'maya-sheet.png'));
+    const conditioning = context.buildConditioning([maya], 'standing outside in daylight');
+    assert.match(conditioning.instruction, /CHARACTER SKIN-TONE CONTINUITY/);
+    assert.match(conditioning.instruction, /one consistent underlying natural skin tone/i);
+    assert.match(conditioning.instruction, /neck/i);
+});
+
 test('three characters contribute exactly three identity images', () => {
     const maya = makeCharacter({ name: 'Maya' });
     const quinn = makeCharacter({ name: 'Quinn' });

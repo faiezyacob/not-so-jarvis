@@ -36,14 +36,6 @@ const CharacterIdentityUI = (() => {
         return node;
     }
 
-    function iconSvg(paths, size) {
-        return '<svg width="' + size + '" height="' + size + '" viewBox="0 0 24 24" fill="none" ' +
-            'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + paths + '</svg>';
-    }
-
-    const REFRESH_ICON = '<polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>';
-    const USER_ICON = '<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle>';
-
     function openImage(url) {
         if (url && window.Gallery && typeof window.Gallery.openFromUrl === 'function') {
             window.Gallery.openFromUrl(url);
@@ -79,7 +71,9 @@ const CharacterIdentityUI = (() => {
         if (face.lips) rows.push(['Lips', face.lips]);
         const hairText = [hair.length, hair.style, hair.texture, hair.color].filter(Boolean).join(' \u00b7 ');
         if (hairText) rows.push(['Hair', hairText]);
-        if (skin.tone) rows.push(['Skin', [skin.tone, skin.undertone].filter(Boolean).join(' \u00b7 ')]);
+        const skinText = [skin.tone || skin.baseTone, skin.undertone ? skin.undertone + ' undertone' : '', skin.complexion]
+            .filter(Boolean).join(' \u00b7 ');
+        if (skinText) rows.push(['Skin', skinText]);
         const bodyText = [body.heightDescription, body.build, body.proportions].filter(Boolean).join(' \u00b7 ');
         if (bodyText) rows.push(['Build', bodyText]);
         if (m.distinctiveFeatures && m.distinctiveFeatures.length) rows.push(['Distinctive features', m.distinctiveFeatures.join(', ')]);
@@ -176,205 +170,18 @@ const CharacterIdentityUI = (() => {
         }
     }
 
-    function renderFooter(card) {
-        footerEl.innerHTML = '';
-        const busy = card.status === 'generating_identity';
-        if (busy) {
-            footerEl.appendChild(el('span', 'identity-footer-note', 'Generation is running \u2014 this view updates automatically.'));
-            return;
-        }
-
-        if (card.approvedBaseImage && !card.approvedBaseImage.approved) {
-            const approve = el('button', 'modal-btn modal-btn-primary');
-            approve.type = 'button';
-            approve.innerHTML = iconSvg(USER_ICON, 14) + '<span> Approve Character</span>';
-            approve.addEventListener('click', approveCharacter);
-            footerEl.appendChild(approve);
-            const regen = el('button', 'modal-btn modal-btn-cancel');
-            regen.type = 'button';
-            regen.innerHTML = iconSvg(REFRESH_ICON, 14) + '<span> Regenerate Character</span>';
-            regen.addEventListener('click', regenerateCharacter);
-            footerEl.appendChild(regen);
-            return;
-        }
-
-        if (card.status === 'ready' || card.status === 'failed' || card.status === 'approved') {
-            const label = card.identitySheet ? 'Regenerate Identity Sheet' : 'Create Identity Sheet';
-            const regen = el('button', 'modal-btn modal-btn-cancel');
-            regen.type = 'button';
-            regen.innerHTML = iconSvg(REFRESH_ICON, 14) + '<span> ' + label + '</span>';
-            regen.addEventListener('click', regenerateSheet);
-            footerEl.appendChild(regen);
-        }
-
-        if (card.status === 'ready') {
-            const use = el('button', 'modal-btn modal-btn-cancel');
-            use.type = 'button';
-            use.innerHTML = iconSvg(USER_ICON, 14) + '<span> Use Character</span>';
-            use.addEventListener('click', useCharacter);
-            footerEl.appendChild(use);
-        }
-
-        if (card.identitySheet) {
-            const del = el('button', 'modal-btn modal-btn-danger');
-            del.type = 'button';
-            del.textContent = 'Delete Identity Sheet';
-            del.addEventListener('click', deleteSheet);
-            footerEl.appendChild(del);
-        }
-    }
-
-    // Use the character in the conversation: insert an @Name mention into the
-    // composer so the existing mention system remains the single entry point.
-    function useCharacter() {
-        const name = (currentCard && currentCard.name) || 'Character';
-        const input = document.getElementById('chatInput');
-        if (input && !input.disabled) {
-            const token = '@' + name + ' ';
-            const start = input.selectionStart === null ? input.value.length : input.selectionStart;
-            const end = input.selectionEnd === null ? input.value.length : input.selectionEnd;
-            input.value = input.value.slice(0, start) + token + input.value.slice(end);
-            input.selectionStart = input.selectionEnd = start + token.length;
-            input.focus();
-            input.dispatchEvent(new Event('input', { bubbles: true }));
-        }
-        close();
-    }
-
-    async function approveCharacter() {
-        if (!currentId) return;
-        setBusy('Approving and creating the identity sheet\u2026');
-        try {
-            const res = await fetch('/api/characters/' + encodeURIComponent(currentId) + '/identity/approve', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ provider: providerName(), model: modelName() })
-            });
-            await consumeStream(res);
-        } catch (e) {
-            showError('Could not approve the character. Please try again.');
-        }
-    }
-
-    async function regenerateCharacter() {
-        if (!currentId) return;
-        let confirmed = true;
-        if (typeof Dialog !== 'undefined' && Dialog.confirm) {
-            confirmed = await Dialog.confirm({
-                title: 'Regenerate Character',
-                message: 'Discard this candidate and generate a new one? The approved base image (if any) is not changed.',
-                confirmText: 'Regenerate'
-            });
-        }
-        if (!confirmed) return;
-        // Character regeneration runs through the Creative Playground card so the
-        // new candidate is shown and approved there (the viewer has no concept
-        // context to rebuild the character from).
-        close();
-    }
-
-    async function regenerateSheet() {
-        if (!currentId) return;
-        let confirmed = true;
-        if (typeof Dialog !== 'undefined' && Dialog.confirm) {
-            confirmed = await Dialog.confirm({
-                title: 'Regenerate Identity Sheet',
-                message: "Regenerate this character's identity sheet? The approved base image will remain unchanged, and the current sheet is kept until the new one is ready.",
-                confirmText: 'Regenerate'
-            });
-        }
-        if (!confirmed) return;
-        setBusy('Regenerating identity sheet\u2026');
-        try {
-            const res = await fetch('/api/characters/' + encodeURIComponent(currentId) + '/identity/sheet', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ provider: providerName(), model: modelName() })
-            });
-            await consumeStream(res);
-        } catch (e) {
-            showError('Could not start identity-sheet generation. Please try again.');
-        }
-    }
-
-    async function deleteSheet() {
-        if (!currentId) return;
-        let confirmed = true;
-        if (typeof Dialog !== 'undefined' && Dialog.confirm) {
-            confirmed = await Dialog.confirm({
-                title: 'Delete Identity Sheet',
-                message: 'Delete this character\'s consolidated identity sheet? The character and its approved base image stay saved.',
-                confirmText: 'Delete',
-                danger: true
-            });
-        }
-        if (!confirmed) return;
-        try {
-            await fetch('/api/characters/' + encodeURIComponent(currentId) + '/identity', { method: 'DELETE' });
-            await load(currentId);
-        } catch (e) {
-            showError('Could not delete the identity sheet.');
-        }
-    }
-
-    function setBusy(message) {
+    // The viewer is read-only: no footer actions. Character actions live on the
+    // Creative Playground card / chat.
+    function renderFooter() {
         if (!footerEl) return;
         footerEl.innerHTML = '';
-        footerEl.appendChild(el('span', 'identity-footer-note', message || 'Working\u2026'));
+        footerEl.style.display = 'none';
     }
 
     function showError(message) {
         if (!bodyEl) return;
         const err = el('div', 'identity-error', message);
         bodyEl.insertBefore(err, bodyEl.firstChild);
-    }
-
-    // Read the standalone identity-sheet SSE stream and refresh the view as
-    // progress arrives.
-    async function consumeStream(res) {
-        if (!res.ok || !res.body) {
-            let message = 'Identity-sheet generation failed to start.';
-            try {
-                const data = await res.json();
-                if (data && data.error) message = data.error;
-            } catch (e) { /* keep default */ }
-            showError(message);
-            return;
-        }
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        let card = null;
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop();
-            for (const line of lines) {
-                if (!line.startsWith('data: ')) continue;
-                let data;
-                try { data = JSON.parse(line.slice(6)); } catch (e) { continue; }
-                if (data.error) { showError(data.error); }
-                if (data.identityProgress) {
-                    if (currentCard) {
-                        currentCard.status = 'generating_identity';
-                        renderBody(currentCard);
-                    } else if (bodyEl) {
-                        renderBody({ status: 'generating_identity' });
-                    }
-                }
-                if (data.identity && data.identity.card) card = data.identity.card;
-            }
-        }
-        if (card) {
-            currentCard = card;
-            renderBody(card);
-            renderFooter(card);
-            refreshPlaygroundCards();
-        } else {
-            await load(currentId);
-        }
     }
 
     // Refresh the persisted concept cards so the identity panel status follows
@@ -389,16 +196,8 @@ const CharacterIdentityUI = (() => {
         }
     }
 
-    function providerName() {
-        try { return typeof getChatProvider === 'function' ? getChatProvider() : 'ollama'; } catch (e) { return 'ollama'; }
-    }
-    function modelName() {
-        try { return typeof getChatModel === 'function' ? getChatModel() : ''; } catch (e) { return ''; }
-    }
-
     async function load(id) {
         if (!bodyEl) return;
-        setBusy('Loading identity\u2026');
         try {
             const res = await fetch('/api/characters/' + encodeURIComponent(id) + '/identity');
             if (!res.ok) {
@@ -477,6 +276,7 @@ const CharacterIdentityUI = (() => {
         footerEl = document.getElementById('identityModalFooter');
         titleEl = document.getElementById('identityModalTitle');
         closeEl = document.getElementById('identityModalClose');
+        if (footerEl) footerEl.style.display = 'none';
         if (!overlay) return;
         if (closeEl) closeEl.addEventListener('click', close);
         overlay.addEventListener('click', (e) => {

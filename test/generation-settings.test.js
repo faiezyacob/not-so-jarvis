@@ -207,6 +207,27 @@ test('buildQwenImage21EditGraph: extra references wire images.image_2, image_3',
     assert.deepEqual(graph.sampler.inputs.latent_image, ['conditioning', 2]);
 });
 
+test('buildQwenImage21EditGraph: a pinned canvas uses the global dimensions, not the identity sheet', () => {
+    const settings = imageGenerator.getDefaults();
+    // Character scene generation passes the global width/height (e.g. 4:5 M).
+    const graph = imageGenerator.buildQwenImage21EditGraph('Maya at a cafe', 'identity-sheet.png', {
+        seed: 7,
+        settings,
+        width: 896,
+        height: 1120
+    });
+
+    // The identity sheet stays image_1 — the reference, never the output size.
+    assert.equal(graph.load_image.inputs.image, 'identity-sheet.png');
+    assert.deepEqual(graph.conditioning.inputs['images.image_1'], ['load_image', 0]);
+    // The sampler now samples an explicit canvas instead of the reference latent.
+    assert.equal(graph.canvas.class_type, 'EmptyLatentImage');
+    assert.equal(graph.canvas.inputs.width, 896);
+    assert.equal(graph.canvas.inputs.height, 1120);
+    assert.equal(graph.canvas.inputs.batch_size, 1);
+    assert.deepEqual(graph.sampler.inputs.latent_image, ['canvas', 0]);
+});
+
 test('defaults expose per-model sampling (Krea 2 steps/cfg, Qwen qwenSteps/qwenCfg)', () => {
     const defaults = imageGenerator.getDefaults();
     assert.equal(defaults.steps, 8);

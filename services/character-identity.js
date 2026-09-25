@@ -120,6 +120,94 @@ function hairLengthFromStyle(style) {
     return '';
 }
 
+// --- Skin metadata ------------------------------------------------------------
+//
+// Skin is a persistent identity attribute, not a flat RGB value: the identity
+// package stores a structured base tone + undertone + complexion so a scene can
+// keep one underlying complexion while lighting changes how it is perceived.
+// The descriptive `tone` is preserved as-is; the structured fields classify it
+// deterministically (never inventing a value the identity didn't carry).
+
+const SKIN_DEEP_RE = /\b(?:deep|dark|ebony|espresso|mahogany|rich)\b/i;
+const SKIN_LIGHT_RE = /\b(?:pale|fair|light|porcelain|ivory|peach)\b/i;
+const SKIN_WARM_RE = /\b(?:warm|golden|honey|amber|apricot|bronze|caramel|tan|beige|sunkissed|sun-kissed|gold)\b/i;
+const SKIN_COOL_RE = /\b(?:cool|pink|rosy|rose|porcelain|ivory|ash)\b/i;
+
+function deriveBaseTone(tone, group) {
+    const text = String(tone || '').toLowerCase();
+    if (SKIN_DEEP_RE.test(text)) return 'deep';
+    if (SKIN_LIGHT_RE.test(text)) return 'light';
+    if (/\b(?:medium|golden|bronze|caramel|olive|beige|honey|tan)\b/i.test(text)) return 'medium';
+    const g = String(group || '').toLowerCase();
+    if (g === 'light' || g === 'medium' || g === 'deep') return g;
+    return '';
+}
+
+function deriveUndertone(tone) {
+    const text = String(tone || '');
+    const warm = SKIN_WARM_RE.test(text);
+    const cool = SKIN_COOL_RE.test(text);
+    if (warm && cool) return 'neutral';
+    if (warm) return 'warm';
+    if (cool) return 'cool';
+    return 'neutral';
+}
+
+function deriveComplexion(features) {
+    const text = String(features || '').toLowerCase();
+    if (/\bfreckles?\b/.test(text)) return 'freckled';
+    if (/\brosy\b/.test(text)) return 'rosy';
+    if (/\bdewy\b/.test(text)) return 'dewy';
+    return 'even';
+}
+
+// The reusable continuity instruction stored on the package. It describes the
+// underlying complexion and sets the rule the scene prompt layer repeats:
+// lighting may change how the skin is perceived, never the complexion itself.
+function skinConsistencyInstruction(skin) {
+    const s = skin || {};
+    const descriptor = [];
+    if (s.baseTone) descriptor.push(s.baseTone);
+    if (s.undertone) descriptor.push(s.undertone + ' undertone');
+    return 'The character has one consistent underlying natural skin tone and undertone' +
+        (descriptor.length ? ' (' + descriptor.join(', ') + ')' : '') +
+        ' across the entire body. Maintain continuity between the face, ears, neck, shoulders, chest, ' +
+        'arms, hands, legs and all other exposed skin; never generate the face and body with independent ' +
+        'skin-tone interpretations. Treat all exposed skin as one continuous physical material under the ' +
+        'same scene lighting, so lighting changes affect it consistently according to position, ' +
+        'orientation, shadows and occlusion while the underlying complexion stays the same.';
+}
+
+// Fill every structured skin field from whatever the identity actually carries.
+// Missing structured values are derived deterministically from the descriptive
+// tone; nothing is invented when the identity has no skin information.
+function completeSkinMetadata(input) {
+    const src = input && typeof input === 'object' ? input : {};
+    const tone = String(src.tone || '').trim();
+    const undertone = String(src.undertone || '').trim() || (tone ? deriveUndertone(tone) : '');
+    const baseTone = String(src.baseTone || '').trim() || deriveBaseTone(tone, src.group);
+    const complexion = String(src.complexion || '').trim() ||
+        ((tone || src.group || baseTone) ? deriveComplexion(src.features) : '');
+    const identityCritical = src.identityCritical === undefined || src.identityCritical === null
+        ? Boolean(tone || src.group || baseTone)
+        : Boolean(src.identityCritical);
+    const out = { tone, undertone, baseTone, complexion, identityCritical };
+    out.consistencyInstruction = String(src.consistencyInstruction || '').trim() || skinConsistencyInstruction(out);
+    return out;
+}
+
+// A short "base tone / undertone" descriptor for prompts.
+function skinDescriptor(skin) {
+    const s = skin || {};
+    const parts = [];
+    if (s.tone) parts.push(s.tone);
+    else {
+        if (s.baseTone) parts.push(s.baseTone);
+        if (s.undertone) parts.push(s.undertone + ' undertone');
+    }
+    return parts.join(', ');
+}
+
 // Canonical, display-ready metadata derived from the structured identity. Never
 // invents values — every field is either present in the identity or empty.
 function deriveMetadata(value) {
@@ -145,10 +233,16 @@ function deriveMetadata(value) {
             style: hairStyle,
             texture: hair.texture || id.hairTexture || ''
         },
-        skin: {
+        skin: completeSkinMetadata({
             tone: skin.tone || id.skinTone || '',
-            undertone: skin.undertone || id.skinUndertone || ''
-        },
+            undertone: skin.undertone || id.skinUndertone || '',
+            baseTone: skin.baseTone || '',
+            complexion: skin.complexion || '',
+            consistencyInstruction: skin.consistencyInstruction || '',
+            group: skin.group || id.skinGroup || '',
+            identityCritical: skin.identityCritical,
+            features: distinctive.join(' ')
+        }),
         body: {
             heightDescription: id.height || '',
             build: id.build || '',
@@ -169,7 +263,9 @@ function summary(metadata) {
     const hair = m.hair || {};
     const skin = m.skin || {};
     const body = m.body || {};
-    if (skin.tone) parts.push(skin.tone + ' skin');
+    if (skin.tone) parts.push(skin.tone);
+    else if (skin.baseTone) parts.push(skin.baseTone + ' skin');
+    if (skin.undertone) parts.push(skin.undertone + ' undertone');
     if (face.shape) parts.push(face.shape);
     if (face.eyes) parts.push(face.eyes);
     const hairBits = [hair.length, hair.style, hair.texture, hair.color, 'hair'].filter(Boolean);
@@ -185,7 +281,10 @@ function identityPreservationInstructions(metadata) {
     return 'Preserve the exact same character as the identity reference' +
         (summaryText ? ' (' + summaryText + ')' : '') +
         ': identical facial identity and facial structure, identical hairstyle, hair colour and hairline, ' +
-        'identical skin tone, identical body proportions and the same distinctive features. ' +
+        'identical skin tone and undertone, identical body proportions and the same distinctive features. ' +
+        'The character has one consistent underlying complexion across the entire body: keep it the same on ' +
+        'the face, ears, neck, shoulders, chest, arms, hands and legs, with the neck visually connecting the ' +
+        'facial and body complexion. ' +
         'Do not redesign the character, change the face, or add accessories that are not already present.';
 }
 
@@ -235,6 +334,7 @@ function normalizeMetadata(value) {
     const hair = src.hair && typeof src.hair === 'object' ? src.hair : {};
     const skin = src.skin && typeof src.skin === 'object' ? src.skin : {};
     const body = src.body && typeof src.body === 'object' ? src.body : {};
+    const distinctiveFeatures = toArray(src.distinctiveFeatures);
     const out = {
         face: {
             shape: String(face.shape || ''),
@@ -249,16 +349,22 @@ function normalizeMetadata(value) {
             style: String(hair.style || ''),
             texture: String(hair.texture || '')
         },
-        skin: {
+        skin: completeSkinMetadata({
             tone: String(skin.tone || ''),
-            undertone: String(skin.undertone || '')
-        },
+            undertone: String(skin.undertone || ''),
+            baseTone: String(skin.baseTone || ''),
+            complexion: String(skin.complexion || ''),
+            consistencyInstruction: String(skin.consistencyInstruction || ''),
+            group: String(skin.group || ''),
+            identityCritical: skin.identityCritical,
+            features: distinctiveFeatures.join(' ')
+        }),
         body: {
             heightDescription: String(body.heightDescription || ''),
             build: String(body.build || ''),
             proportions: String(body.proportions || '')
         },
-        distinctiveFeatures: toArray(src.distinctiveFeatures),
+        distinctiveFeatures,
         signatureAccessories: toArray(src.signatureAccessories)
     };
     out.identityPreservationInstructions = String(src.identityPreservationInstructions || '') ||
@@ -472,6 +578,7 @@ function buildIdentitySheetPrompt(character) {
     const clauses = [
         'Create a single character identity reference sheet of the same person shown in image 1.',
         identityPreservationInstructions(metadata),
+        ...(metadata.skin && metadata.skin.consistencyInstruction ? [metadata.skin.consistencyInstruction] : []),
         'Render ONE image laid out as a clean grid of clearly separated reference panels on a plain neutral light-grey seamless studio background with soft, even, consistent lighting.',
         'Panel 1 (top left): full-body front view, standing straight and facing the camera, neutral relaxed pose with arms at the sides, full body visible from head to toe.',
         'Panel 2 (top right): full-body three-quarter view, body turned about 45 degrees to the side, face still angled toward the camera, full body visible.',
@@ -489,7 +596,7 @@ function buildIdentitySheetPrompt(character) {
     } else if (hair.style && /\b(?:braid|locs|dreadlocks|afro|pixie|bob|lob|ponytail|bun|twists|undercut|fade|bangs|fringe|shag|updo)\b/i.test(hair.style)) {
         clauses.push('Add one small detail panel clearly framing the hairstyle.');
     }
-    clauses.push('Every panel shows the exact same person, the same simple plain neutral studio clothing, the same skin tone, hair and body proportions.');
+    clauses.push('Every panel shows the exact same person, the same simple plain neutral studio clothing, the same underlying skin tone and undertone across the face, neck and body, the same hair and the same body proportions.');
     clauses.push('This is a visual identity reference document, not a creative scene: no dramatic cinematic composition, no environmental storytelling, no props, no text, no labels, no complex poses that obscure the face or anatomy.');
     return clauses.join(' ');
 }
@@ -498,15 +605,47 @@ function buildIdentitySheetPrompt(character) {
 // scene wording). Permanent identity only.
 function buildIdentityConstraints(value) {
     const metadata = normalizePackage(value).identityMetadata || {};
+    const skin = metadata.skin || {};
+    const descriptor = skinDescriptor(skin);
     const constraints = [
-        'Preserve the approved character\'s facial identity, hairstyle, skin tone, body proportions and distinctive features'
+        'Preserve the approved character\'s facial identity, hairstyle, skin tone and undertone, body proportions and distinctive features'
         + (summary(metadata) ? ': ' + summary(metadata) : '')
     ];
+    constraints.push('Preserve the character\'s underlying natural skin tone' +
+        (descriptor ? ' (' + descriptor + ')' : '') +
+        ' consistently across all exposed skin; never generate the face and body with independent skin-tone interpretations');
+    constraints.push('Treat the exposed skin as one continuous physical material under the same scene lighting, so ' +
+        'lighting affects it consistently while the underlying complexion stays constant');
+    constraints.push('The neck must visually connect the facial and body complexion, with no visible colour boundary ' +
+        'between the jaw, neck, shoulders and torso');
     if (metadata.signatureAccessories && metadata.signatureAccessories.length) {
         constraints.push('Keep the character\'s signature accessories: ' + metadata.signatureAccessories.join(', '));
     }
     constraints.push('Do not redesign the character or change their facial structure or hairstyle');
     return constraints;
+}
+
+// The dedicated skin-tone continuity section for a scene instruction. It keeps
+// the identity's underlying complexion permanent while letting scene lighting
+// change how that complexion is perceived — across the whole character.
+function buildSkinContinuitySection(value, label) {
+    const metadata = normalizePackage(value).identityMetadata || {};
+    const skin = metadata.skin || {};
+    const descriptor = skinDescriptor(skin);
+    const who = label || 'The character';
+    return 'CHARACTER SKIN-TONE CONTINUITY: ' + who + ' has one consistent underlying natural skin tone and undertone' +
+        (descriptor ? ' (' + descriptor + ')' : '') +
+        ' across the entire body. Preserve that underlying complexion rather than the exact pixel colour of image 1, ' +
+        'and adapt the perceived skin appearance naturally to the lighting and environment of the requested image. ' +
+        'Maintain continuity between the face, ears, neck, shoulders, chest, arms, hands, legs and all other exposed ' +
+        'skin; do not generate the face and body using independent skin-tone interpretations. The neck must visually ' +
+        'connect the facial complexion to the body complexion, with no visible colour boundary between the jaw, neck, ' +
+        'shoulders and torso. Treat all exposed skin as one continuous physical material under the same scene lighting, ' +
+        'so lighting changes affect every exposed area consistently according to position, orientation, shadows and ' +
+        'occlusion. Allow natural highlights, contact shadows, subsurface scattering, reflected light and shading, but ' +
+        'keep the underlying complexion the same. Avoid inconsistent skin tone between the face and body, a mismatched ' +
+        'face and neck complexion, a mismatched face and arms or hands, and any artificial colour boundary between ' +
+        'facial and body skin.';
 }
 
 // Compose the single-character reference-guided instruction used by the Qwen
@@ -522,6 +661,7 @@ function buildSceneEditInstruction(value, scenePrompt, name) {
         '. Image 1 is ' + label + '\'s character identity reference; use it only to preserve their facial identity, ' +
         'face shape, eyes, nose, lips, skin tone, hair colour and length, body proportions and distinctive features. ' +
         'It is reference material, not the requested image.';
+    const skinContinuity = buildSkinContinuitySection(value, label);
     const output = 'OUTPUT: Generate ONE new standalone scene image of ' + label + ' in the requested scene. ' +
         'Never return the identity reference itself, a modified or recreated version of it, a collage, a contact ' +
         'sheet, a multi-panel reference sheet, a character turnaround, or a collection of character views. ' +
@@ -531,7 +671,7 @@ function buildSceneEditInstruction(value, scenePrompt, name) {
     const scene = 'SCENE (change only this): ' + String(scenePrompt || '').trim();
     const dont = 'DO NOT: redesign the character, change facial structure, change the hairstyle unnecessarily, ' +
         'or introduce new accessories unless the scene explicitly asks for them.';
-    return identity + ' ' + output + ' ' + scene + ' ' + dont;
+    return identity + ' ' + skinContinuity + ' ' + output + ' ' + scene + ' ' + dont;
 }
 
 // The structured context one character contributes to downstream generation.
@@ -681,10 +821,14 @@ module.exports = {
     markSheetFailed,
     statusOf,
     mediaFilenames,
+    // skin metadata
+    completeSkinMetadata,
+    skinDescriptor,
     // reference selection / prompts
     selectIdentityImage,
     buildIdentitySheetPrompt,
     buildIdentityConstraints,
+    buildSkinContinuitySection,
     buildSceneEditInstruction,
     buildCharacterContextEntry,
     // UI

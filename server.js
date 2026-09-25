@@ -2019,6 +2019,11 @@ async function handleChatStream(req, res) {
         const routingMessage = parsedCharacters.prompt && parsedCharacters.prompt.trim()
             ? parsedCharacters.prompt
             : message;
+        // `@Name` / picker selection (never a bare name or a continuation). An
+        // explicit invocation must be described by the character's identity
+        // sheet alone — it must not inherit the Creative Playground concept or
+        // the previous prompt's character description.
+        const explicitCharacterReference = characterContext.hasExplicitCharacterReference(message, explicitCharacterIds);
         // Composer "Director Mode" toggle: pre-selects the Director workflow so
         // a fresh video request skips the Direct-vs-Director question.
         const forceDirector = body.forceDirector === true;
@@ -2215,7 +2220,7 @@ async function handleChatStream(req, res) {
             return;
         }
         const activePlayground = playground.getSession(conversationId);
-        if (activePlayground && playground.isOpen(activePlayground)) {
+        if (activePlayground && playground.isOpen(activePlayground) && !explicitCharacterReference) {
             const playgroundDecision = playground.classifyMessage(routingMessage, activePlayground);
             if (playgroundDecision) {
                 await handlePlaygroundAction(req, res, { conversationId, provider, model, think }, {
@@ -2434,6 +2439,10 @@ async function handleChatStream(req, res) {
                     // context (the builder ignores it for new subjects).
                     structuredRequest.previous_prompt = activeTask.prompt || '';
                 }
+                // An explicitly invoked character is described by its identity
+                // sheet, never by the previous prompt's/playground's character
+                // description.
+                if (explicitCharacterReference) structuredRequest.previous_prompt = '';
                 // "generate me another image" carries no subject of its own:
                 // resolve the anaphora to the lineage concept (same style,
                 // fresh subject) instead of sending the literal "an image"
@@ -2467,6 +2476,9 @@ async function handleChatStream(req, res) {
                     creative_mode: 'none',
                     explicit_constraints: []
                 };
+                // An explicitly invoked character is described by its identity
+                // sheet, never by the previous prompt's character context.
+                if (explicitCharacterReference) structuredRequest.previous_prompt = '';
                 enhanced = await imageGenerator.buildImagePrompt(structuredRequest, providers, provider, model, think);
             } else if (isBareRegen) {
                 // Bare "generate the image again": reuse the stored full
@@ -4855,9 +4867,13 @@ async function handleImageGenerationStream(req, res, opts) {
             // Reference-guided generation: the approved base image is the edit
             // source and the selected identity references condition the result,
             // so the character's identity is preserved while the scene changes.
+            // The output is pinned to the global image settings (aspect ratio +
+            // size), never the identity sheet's dimensions.
             const promise = identity
                 ? imageGenerator.editImage(identity.sourceAbs, identity.instruction, {
                     references: identity.references,
+                    width: genSettings.width,
+                    height: genSettings.height,
                     provider, model, conversationId, onQueued, onStart,
                     seed: baseSeed + i,
                     label: 'identity image generation', kind: 'image_generation'

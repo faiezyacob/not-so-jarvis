@@ -93,6 +93,55 @@ test('identity metadata is derived from the structured identity', () => {
     assert.match(meta.identityPreservationInstructions, /facial identity/i);
 });
 
+test('skin metadata is structured with a base tone, undertone and complexion', () => {
+    const meta = identity.deriveMetadata(makeCharacter());
+    assert.equal(meta.skin.tone, 'medium golden skin');
+    assert.equal(meta.skin.baseTone, 'medium');
+    assert.equal(meta.skin.undertone, 'warm');
+    assert.equal(meta.skin.complexion, 'even');
+    assert.equal(meta.skin.identityCritical, true);
+    assert.match(meta.skin.consistencyInstruction, /one consistent underlying natural skin tone/i);
+});
+
+test('deeper and lighter skin tones classify deterministically', () => {
+    const base = makeCharacter().identity;
+    const deep = identity.deriveMetadata(makeCharacter({
+        identity: Object.assign({}, base, {
+            skinTone: 'deep warm brown skin',
+            skin: { tone: 'deep warm brown skin', group: 'deep' }
+        })
+    }));
+    assert.equal(deep.skin.baseTone, 'deep');
+    assert.equal(deep.skin.undertone, 'warm');
+
+    const fair = identity.deriveMetadata(makeCharacter({
+        identity: Object.assign({}, base, {
+            skinTone: 'fair porcelain skin',
+            skin: { tone: 'fair porcelain skin', group: 'light' }
+        })
+    }));
+    assert.equal(fair.skin.baseTone, 'light');
+    assert.equal(fair.skin.undertone, 'cool');
+});
+
+test('legacy metadata upgrades to structured skin information', () => {
+    const normalized = identity.normalizeMetadata({
+        skin: { tone: 'light olive skin', undertone: 'neutral' },
+        distinctiveFeatures: []
+    });
+    assert.equal(normalized.skin.baseTone, 'light');
+    assert.equal(normalized.skin.undertone, 'neutral');
+    assert.ok(normalized.skin.consistencyInstruction);
+});
+
+test('a character without skin data gets no invented complexion', () => {
+    const meta = identity.deriveMetadata({ identity: { face: { shape: 'an oval face' } } });
+    assert.equal(meta.skin.tone, '');
+    assert.equal(meta.skin.baseTone, '');
+    assert.equal(meta.skin.undertone, '');
+    assert.equal(meta.skin.identityCritical, false);
+});
+
 test('a candidate package is unapproved with no sheet', () => {
     const pkg = identity.createPackage({
         baseImage: { url: '/generated/base.png', filename: 'base.png' },
@@ -236,6 +285,28 @@ test('the scene edit instruction separates identity from changeable scene', () =
     assert.match(instruction, /contact sheet|character turnaround/i);
     const identityPart = instruction.slice(0, instruction.indexOf('SCENE'));
     assert.ok(!/tank top|bedroom/i.test(identityPart), 'the identity clause must not carry the scene');
+});
+
+test('the scene edit instruction keeps skin tone continuous across the body', () => {
+    const pkg = identity.normalizePackage(makeCharacter());
+    const instruction = identity.buildSceneEditInstruction(pkg, 'a bedroom mirror selfie in a white tank top', 'Maya');
+    assert.match(instruction, /CHARACTER SKIN-TONE CONTINUITY/);
+    assert.match(instruction, /one consistent underlying natural skin tone/i);
+    assert.match(instruction, /independent skin-tone interpretations/i);
+    assert.match(instruction, /neck/i);
+    assert.match(instruction, /lighting changes affect every exposed area consistently/i);
+    // Skin continuity is part of the identity layer, not the scene description.
+    const beforeScene = instruction.slice(0, instruction.indexOf('SCENE (change only this)'));
+    assert.ok(!/tank top|bedroom/i.test(beforeScene), 'the identity/skin layer must not carry the scene');
+});
+
+test('identity constraints carry the skin-tone continuity rule', () => {
+    const pkg = identity.normalizePackage(makeCharacter());
+    const all = identity.buildIdentityConstraints(pkg).join(' ');
+    assert.match(all, /underlying natural skin tone/i);
+    assert.match(all, /one continuous physical material/i);
+    assert.match(all, /neck/i);
+    assert.ok(!/tank top|bedroom/i.test(all), 'identity constraints must not name a scene');
 });
 
 test('identity is never lost when only the outfit/environment changes', () => {

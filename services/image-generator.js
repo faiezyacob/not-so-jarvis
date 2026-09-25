@@ -2215,6 +2215,9 @@ function detectImageModifyIntent(message, hasActiveImageTask) {
 // `resolution` is a total pixel budget for the text encoder, not a width or
 // height. 0 (the default here) keeps image_1 at its own size rounded to a
 // multiple of 32, so the edit follows the source's shape and dimensions.
+// Passing `width`/`height` pins the output to that exact canvas (EmptyLatentImage)
+// while image_1 stays the identity reference — character scene generation uses
+// the global image settings this way instead of the identity sheet's dimensions.
 function buildQwenImage21EditGraph(instruction, loadName, options = {}) {
     const settings = Object.assign({}, DEFAULT_SETTINGS, options.settings || {});
     // Editing is always the Qwen Image 2.1 pipeline — even when Krea2 is the
@@ -2267,14 +2270,26 @@ function buildQwenImage21EditGraph(instruction, loadName, options = {}) {
         }, imageInputs)
     };
 
+    // A pinned canvas (used for character scene generation) samples at an
+    // explicit width/height — the global image settings — instead of inheriting
+    // the identity reference's dimensions. Without it the output follows the
+    // reference latent sized from image_1 (a plain edit intentionally keeps the
+    // source's shape).
+    const canvasWidth = clampToInt(options.width, 0, 4096, 0);
+    const canvasHeight = clampToInt(options.height, 0, 4096, 0);
+    let latentInput = ['conditioning', 2];
+    if (canvasWidth > 0 && canvasHeight > 0) {
+        graph.canvas = { class_type: 'EmptyLatentImage', inputs: { width: canvasWidth, height: canvasHeight, batch_size: 1 } };
+        latentInput = ['canvas', 0];
+    }
+
     graph.sampler = {
         class_type: 'KSampler',
         inputs: {
             model: stack.model,
             positive: ['conditioning', 0],
             negative: ['conditioning', 1],
-            // The node's third output is the reference latent sized from image_1.
-            latent_image: ['conditioning', 2],
+            latent_image: latentInput,
             seed,
             steps,
             cfg,
@@ -2338,13 +2353,17 @@ async function editImage(sourceAbsPath, instruction, options = {}) {
             : Math.floor(Math.random() * 2 ** 32);
         const settings = effectiveSettings();
 
-        // Editing always uses the Qwen Image 2.1 editor. Output follows the
-        // source (sized from image_1, rounded to a multiple of 32); srcDims is
-        // only a metadata fallback when the output dimensions can't be read.
+        // Editing always uses the Qwen Image 2.1 editor. By default the output
+        // follows the source (sized from image_1, rounded to a multiple of 32);
+        // an explicit width/height pins the canvas to the global image settings
+        // (character scene generation). srcDims is only a metadata fallback when
+        // the output dimensions can't be read.
         const srcDims = readImageDimensions(abs);
+        const canvasWidth = clampToInt(options.width, 0, 4096, 0);
+        const canvasHeight = clampToInt(options.height, 0, 4096, 0);
         const dims = {
-            width: srcDims.width > 0 ? srcDims.width : settings.width,
-            height: srcDims.height > 0 ? srcDims.height : settings.height
+            width: canvasWidth > 0 ? canvasWidth : (srcDims.width > 0 ? srcDims.width : settings.width),
+            height: canvasHeight > 0 ? canvasHeight : (srcDims.height > 0 ? srcDims.height : settings.height)
         };
 
         // LoRA trigger words are prepended exactly once, same as generation.
@@ -2388,6 +2407,8 @@ async function editImage(sourceAbsPath, instruction, options = {}) {
                 steps: options.steps,
                 cfg: options.cfg,
                 resolution: options.resolution,
+                width: canvasWidth,
+                height: canvasHeight,
                 negativePrompt: options.negativePrompt,
                 referenceLoadNames
             });

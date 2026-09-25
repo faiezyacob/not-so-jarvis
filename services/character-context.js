@@ -236,6 +236,16 @@ function resolveCharacterMentions(message, options = {}) {
     return parseCharacterMessage(message, options);
 }
 
+// True when the turn explicitly invokes a saved character — an `@Name` mention
+// or an explicit picker selection, never a bare name or an inherited
+// continuation. An explicit invocation means the character's identity sheet,
+// not any prior conversation/playground context, is what describes the person.
+function hasExplicitCharacterReference(message, explicitIds) {
+    const explicit = Array.isArray(explicitIds) ? explicitIds : (explicitIds ? [explicitIds] : []);
+    if (explicit.some((id) => String(id || '').trim())) return true;
+    return parseMentions(message).characters.length > 0;
+}
+
 // --- Active character store ---------------------------------------------------
 
 function getActiveCharacter(conversationId) {
@@ -350,10 +360,13 @@ function buildSceneInstruction(characters, scenePrompt) {
         const image = characterIdentity.selectIdentityImage(pkg);
         const kind = image && image.kind === 'identity_sheet' ? 'identity sheet' : 'approved character image';
         const meta = pkg ? characterIdentity.summary(pkg.identityMetadata) : '';
+        const skin = pkg && pkg.identityMetadata ? (pkg.identityMetadata.skin || {}) : {};
+        const descriptor = characterIdentity.skinDescriptor(skin);
         return 'CHARACTER ' + (i + 1) + ' \u2014 ' + String(c.name || 'Character').toUpperCase() +
             ' (reference image ' + (i + 1) + ')\n' +
             'Use ' + (c.name || 'this character') + '\'s ' + kind + ' to preserve their facial identity, hair, ' +
-            'skin tone, body proportions, and distinctive features' + (meta ? ' (' + meta + ')' : '') + '.';
+            'skin tone' + (descriptor ? ' (' + descriptor + ')' : '') + ', body proportions, and distinctive features' +
+            (meta ? ' (' + meta + ')' : '') + '.';
     });
     const output = 'OUTPUT: Generate ONE new standalone scene image containing the characters above. ' +
         'Each reference image is an identity reference, never the requested output and never a scene to copy. ' +
@@ -362,9 +375,16 @@ function buildSceneInstruction(characters, scenePrompt) {
         'views. Do not copy any reference\'s panel layout, camera angle, framing, background, pose, lighting, ' +
         'composition, text, borders or labels into the new image. Unless the user explicitly asks for a ' +
         'character sheet or turnaround, the output is a single conventional frame.';
+    const skinLighting = 'SKIN-TONE CONTINUITY ACROSS CHARACTERS\n' +
+        'Each character keeps their own underlying natural skin tone and undertone; do not normalise, swap, or ' +
+        'blend one character\'s complexion into another. Apply the scene\'s lighting to every character equally: ' +
+        'warm, cool, bright, or low light changes how each person\'s skin appears, but must not change their ' +
+        'underlying complexion. Within each character, the face, ears, neck, shoulders, chest, arms, hands and ' +
+        'legs all share that character\'s own complexion, and the neck must visually connect the face and body ' +
+        'without a colour boundary.';
     const separation = 'CHARACTER SEPARATION\nDo not merge, swap, or blend the identities of ' +
         list.map((c) => c.name || 'Character').join(', ') + '. Each supplied reference image is a different person.';
-    return blocks.join('\n\n') + '\n\nSCENE\n' + scene + '\n\n' + output + '\n\n' + separation;
+    return blocks.join('\n\n') + '\n\nSCENE\n' + scene + '\n\n' + output + '\n\n' + skinLighting + '\n\n' + separation;
 }
 
 // The structured conditioning for a set of characters. Returns filenames; the
@@ -445,6 +465,7 @@ module.exports = {
     matchNames,
     parseCharacterMessage,
     resolveCharacterMentions,
+    hasExplicitCharacterReference,
     getActiveCharacter,
     setActiveCharacter,
     clearActiveCharacter,
