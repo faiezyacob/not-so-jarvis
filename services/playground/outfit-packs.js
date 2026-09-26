@@ -973,6 +973,21 @@ function filterByGender(list, gender) {
     return entries.filter((entry) => !Array.isArray(entry.genders) || entry.genders.includes(gender));
 }
 
+// Whether a composed one-piece look suits the character's gender. A pack entry
+// that explicitly declares `genders` is honoured; an untagged dress/gown is
+// treated as feminine (the convention across the catalog) and falls back to a
+// separates look for a male character.
+function genderFitsComposed(composed, gender) {
+    if (!gender) return true;
+    const piece = composed && composed.components && composed.components.onePiece;
+    if (piece && Array.isArray(piece.genders) && piece.genders.length) return piece.genders.includes(gender);
+    const outfit = String((composed && composed.outfit) || '');
+    const feminine = /\b(?:dress|gown|nightgown|skirt|frock|sundress|maxi|midi|camisole|blouse|leggings|bodysuit|bralette|crop\s+top|baby\s+tee|off-shoulder|spaghetti[- ]strap|tankini|bikini)\b/i.test(outfit);
+    if (gender === 'woman') return true;
+    if (gender === 'man') return !feminine;
+    return true;
+}
+
 // Translate a pack's `wardrobe` into the theme outfit engine's component shape.
 // Entries tagged with `genders` are filtered out when the character's gender is
 // known and does not match; otherwise they stay available.
@@ -983,6 +998,14 @@ function toSystem(pack, options = {}) {
         ? pack.archetypes
         : DEFAULT_ARCHETYPES;
     if (options.avoidLayers) archetypes = archetypes.filter((a) => a.id !== 'layered');
+    // A caller may further restrict the silhouette mix (e.g. skip one-piece
+    // looks when the outfit must be gender-appropriate and the pack's wardrobe
+    // is not gender-tagged).
+    if (Array.isArray(options.archetypes) && options.archetypes.length) {
+        const allowed = new Set(options.archetypes.map((id) => String(id)));
+        const filtered = archetypes.filter((a) => allowed.has(a.id));
+        if (filtered.length) archetypes = filtered;
+    }
     return {
         archetypes,
         components: {
@@ -1009,6 +1032,53 @@ function composeFromPack(packId, rng = Math.random, options = {}) {
         avoidSignatures: options.avoidSignatures,
         previousArchetype: options.previousArchetype
     });
+    // Post-filter: a look whose clothing is clearly gender-inappropriate is
+    // swapped for a neutral separates look when the character's gender does not
+    // match. This keeps packs without gender tags usable for every character.
+    if (options.gender && composed && composed.outfit && !genderFitsComposed(composed, options.gender)) {
+        const neutral = Object.assign({}, options, { archetypes: ['separates', 'layered'] });
+        for (let attempt = 0; attempt < 6; attempt++) {
+            const retry = themes.composeOutfit(
+                toSystem(pack, neutral),
+                null,
+                rng,
+                { tags: [], avoidSignatures: options.avoidSignatures, previousArchetype: attempt % 2 ? 'layered' : 'separates' }
+            );
+            if (retry && retry.outfit && genderFitsComposed(retry, options.gender)) {
+                return {
+                    outfit: retry.outfit || '',
+                    signature: retry.signature || '',
+                    archetype: retry.archetype || '',
+                    silhouette: retry.silhouette || '',
+                    components: retry.components || {},
+                    packId: pack.id,
+                    packLabel: pack.label
+                };
+            }
+        }
+        // The pack offers no gender-appropriate separates: fall back to the
+        // neutral everyday pack rather than emit a mismatched outfit.
+        const fallback = PACK_BY_ID['casual-everyday'];
+        if (fallback && fallback.id !== pack.id) {
+            const neutralComposed = themes.composeOutfit(
+                toSystem(fallback, neutral),
+                null,
+                rng,
+                { tags: [], avoidSignatures: options.avoidSignatures, previousArchetype: '' }
+            );
+            if (neutralComposed && neutralComposed.outfit) {
+                return {
+                    outfit: neutralComposed.outfit || '',
+                    signature: neutralComposed.signature || '',
+                    archetype: neutralComposed.archetype || '',
+                    silhouette: neutralComposed.silhouette || '',
+                    components: neutralComposed.components || {},
+                    packId: fallback.id,
+                    packLabel: fallback.label
+                };
+            }
+        }
+    }
     return {
         outfit: composed.outfit || '',
         signature: composed.signature || '',

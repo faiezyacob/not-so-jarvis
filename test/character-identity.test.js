@@ -232,7 +232,7 @@ test('a failed first generation marks the package failed', async () => {
     assert.match(result.error, /ComfyUI OOM/);
 });
 
-test('selectIdentityImage prefers the sheet and falls back to the base image', () => {
+test('selectIdentityImage prefers the approved portrait and uses the sheet only as a legacy display fallback', () => {
     const character = makeCharacter();
     const baseOnly = identity.normalizePackage(character);
     const baseImage = identity.selectIdentityImage(baseOnly);
@@ -242,9 +242,51 @@ test('selectIdentityImage prefers the sheet and falls back to the base image', (
     const withSheet = identity.normalizePackage(Object.assign({}, character, {
         identitySheet: { imageUrl: '/generated/sheet.png', filename: 'sheet.png', status: 'ready', version: 1 }
     }));
-    const sheetImage = identity.selectIdentityImage(withSheet);
-    assert.equal(sheetImage.kind, 'identity_sheet');
-    assert.equal(sheetImage.filename, 'sheet.png');
+    const previewImage = identity.selectIdentityImage(withSheet);
+    assert.equal(previewImage.kind, 'approved_base');
+    assert.equal(previewImage.filename, 'base.png');
+    const legacySheetOnly = identity.selectIdentityImage(identity.normalizePackage({
+        identitySheet: { imageUrl: '/generated/sheet.png', filename: 'sheet.png', status: 'ready', version: 1 }
+    }));
+    assert.equal(legacySheetOnly.kind, 'identity_sheet');
+});
+
+test('selectIdentityReference uses only the approved portrait for generation', () => {
+    const character = makeCharacter();
+    const baseOnly = identity.selectIdentityReference(identity.normalizePackage(character));
+    assert.equal(baseOnly.primary.kind, 'approved_base');
+    assert.equal(baseOnly.primary.filename, 'base.png');
+    assert.equal(baseOnly.sheet, null);
+    assert.equal(baseOnly.hasSheet, false);
+
+    const withSheet = identity.selectIdentityReference(identity.normalizePackage(Object.assign({}, character, {
+        identitySheet: { imageUrl: '/generated/sheet.png', filename: 'sheet.png', status: 'ready', version: 1 }
+    })));
+    assert.equal(withSheet.primary.kind, 'approved_base', 'the multi-panel sheet is never the primary image');
+    assert.equal(withSheet.primary.filename, 'base.png');
+    assert.equal(withSheet.sheet, null, 'the sheet is not sent even as a secondary reference');
+    assert.equal(withSheet.hasSheet, false);
+});
+
+test('the scene edit instruction uses identity metadata without referencing the sheet', () => {
+    const pkg = identity.normalizePackage(Object.assign({}, makeCharacter(), {
+        identitySheet: { imageUrl: '/generated/sheet.png', filename: 'sheet.png', status: 'ready', version: 1 }
+    }));
+    const instruction = identity.buildSceneEditInstruction(pkg, 'squatting in front of a store', 'Maya');
+    assert.match(instruction, /Image 1 is Maya's approved character portrait/);
+    assert.doesNotMatch(instruction, /Image 2 is Maya's character identity sheet/);
+    // The scene clause still only carries the requested scene.
+    assert.match(instruction, /SCENE \(change only this\): squatting in front of a store/);
+});
+
+test('standalone Playground conditioning uses its face portrait as source and never adds sheet references', () => {
+    const conditioning = identity.buildStandaloneConditioning(makeCharacter(), {
+        filename: 'playground-face.png', url: '/generated/playground-face.png'
+    }, 'a rooftop fashion portrait at sunset');
+    assert.equal(conditioning.sourceFilename, 'playground-face.png');
+    assert.deepEqual(conditioning.references, []);
+    assert.match(conditioning.instruction, /IDENTITY:/);
+    assert.match(conditioning.instruction, /SCENE \(change only this\): a rooftop fashion portrait at sunset/);
 });
 
 test('the identity-sheet prompt is a neutral multi-panel reference document', () => {
@@ -373,6 +415,18 @@ test('save_character carries the chosen name through action normalization', () =
     });
     assert.equal(action.type, 'save_character');
     assert.equal(action.name, 'Maya');
+});
+
+test('the Playground resolves a selected saved character for identity conditioning', () => {
+    const character = characterPresets.create({
+        name: 'Selected Character',
+        identityText: 'a person',
+        identity: makeCharacter().identity,
+        provenance: { type: 'generated' }
+    });
+    const selected = playground.identityCharacterSource({ characterId: character.id });
+    assert.equal(selected.id, character.id);
+    characterPresets.remove(character.id);
 });
 
 test('playground concept cards carry a single-image identity summary', () => {

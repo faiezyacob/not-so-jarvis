@@ -731,7 +731,7 @@ function identityCharacterSource(session, explicitCharacter) {
     if (explicitCharacter) return explicitCharacter;
     const bound = session && session.identityCharacterId ? resolveCharacter(session.identityCharacterId) : null;
     if (bound) return bound;
-    return null;
+    return session && session.characterId ? resolveCharacter(session.characterId) : null;
 }
 
 function isOpen(session) {

@@ -179,21 +179,23 @@ test('the picker options carry the identity status and the single primary image'
     const noneOption = options.find((o) => o.id === none.id);
     assert.equal(readyOption.identityStatus, context.IDENTITY_STATUS.READY);
     assert.equal(readyOption.hasIdentity, true);
-    assert.equal(readyOption.imageUrl, '/generated/ready-sheet.png');
+    assert.equal(readyOption.imageUrl, '/generated/ready-base.png');
     assert.equal(basicOption.identityStatus, context.IDENTITY_STATUS.BASIC);
     assert.equal(basicOption.hasIdentity, false);
     assert.equal(basicOption.imageUrl, '/generated/basic-base.png');
     assert.equal(noneOption.identityStatus, context.IDENTITY_STATUS.NONE);
 });
 
-test('one character contributes exactly ONE identity image', () => {
+test('one character leads with the approved portrait and never sends the sheet to generation', () => {
     const maya = makeCharacter();
     characterPresets.setIdentityPackage(maya.id, readyPackage('maya-base.png', 'maya-sheet.png'));
     const conditioning = context.buildConditioning([maya], 'a full-body fashion shot');
-    assert.equal(conditioning.sourceFilename, 'maya-sheet.png', 'the consolidated sheet is the reference');
+    assert.equal(conditioning.sourceFilename, 'maya-base.png', 'the single approved portrait leads');
+    assert.deepEqual(conditioning.sheetFilenames, [], 'the multi-angle sheet is display-only');
     assert.deepEqual(conditioning.referenceFilenames, [], 'no per-angle reference array');
     assert.match(conditioning.instruction, /IDENTITY:/);
     assert.match(conditioning.instruction, /SCENE \(change only this\):/);
+    assert.doesNotMatch(conditioning.instruction, /identity sheet/i);
 });
 
 test('a character without a sheet conditions through the approved base image', () => {
@@ -202,16 +204,18 @@ test('a character without a sheet conditions through the approved base image', (
     const conditioning = context.buildConditioning([maya], 'standing in a park');
     assert.equal(conditioning.sourceFilename, 'maya-base.png');
     assert.deepEqual(conditioning.referenceFilenames, []);
+    assert.deepEqual(conditioning.sheetFilenames, []);
 });
 
-test('two characters contribute exactly two identity images', () => {
+test('two characters contribute only their two approved portraits', () => {
     const maya = makeCharacter({ name: 'Maya' });
     const quinn = makeCharacter({ name: 'Quinn' });
     characterPresets.setIdentityPackage(maya.id, readyPackage('maya-base.png', 'maya-sheet.png'));
     characterPresets.setIdentityPackage(quinn.id, readyPackage('quinn-base.png', 'quinn-sheet.png'));
     const conditioning = context.buildConditioning([maya, quinn], 'standing next to each other in front of a cafe');
-    assert.equal(conditioning.sourceFilename, 'maya-sheet.png');
-    assert.deepEqual(conditioning.referenceFilenames, ['quinn-sheet.png']);
+    assert.equal(conditioning.sourceFilename, 'maya-base.png');
+    assert.deepEqual(conditioning.referenceFilenames, ['quinn-base.png']);
+    assert.deepEqual(conditioning.sheetFilenames, []);
     assert.match(conditioning.instruction, /CHARACTER 1/);
     assert.match(conditioning.instruction, /CHARACTER 2/);
     assert.match(conditioning.instruction, /CHARACTER SEPARATION/);
@@ -249,7 +253,7 @@ test('a single-character scene carries the body-wide skin continuity section', (
     assert.match(conditioning.instruction, /neck/i);
 });
 
-test('three characters contribute exactly three identity images', () => {
+test('three characters contribute exactly three portraits and no sheets', () => {
     const maya = makeCharacter({ name: 'Maya' });
     const quinn = makeCharacter({ name: 'Quinn' });
     const sarah = makeCharacter({ name: 'Sarah' });
@@ -257,25 +261,36 @@ test('three characters contribute exactly three identity images', () => {
     characterPresets.setIdentityPackage(quinn.id, readyPackage('quinn.png', 'quinn-sheet.png'));
     characterPresets.setIdentityPackage(sarah.id, readyPackage('sarah.png', 'sarah-sheet.png'));
     const conditioning = context.buildConditioning([maya, quinn, sarah], 'at a party');
-    const images = [conditioning.sourceFilename].concat(conditioning.referenceFilenames);
-    assert.deepEqual(images, ['maya-sheet.png', 'quinn-sheet.png', 'sarah-sheet.png']);
+    const portraits = [conditioning.sourceFilename].concat(conditioning.referenceFilenames);
+    assert.deepEqual(portraits, ['maya.png', 'quinn.png', 'sarah.png']);
+    assert.deepEqual(conditioning.sheetFilenames, []);
 });
 
-test('user @image references ride along after the character identity images', () => {
+test('user @image references ride along after character portraits without sheets', () => {
     const maya = makeCharacter();
     characterPresets.setIdentityPackage(maya.id, readyPackage('maya-base.png', 'maya-sheet.png'));
     const conditioning = context.buildConditioning([maya], 'a close-up portrait');
     const combined = context.combineReferenceFilenames(conditioning, { userReferences: ['prop.png'] });
-    assert.equal(combined.base, 'maya-sheet.png');
+    assert.equal(combined.base, 'maya-base.png');
     assert.deepEqual(combined.references, ['prop.png']);
     assert.deepEqual(combined.userIndexes, [1]);
 });
 
-test('an @image that is already the character identity image is not duplicated', () => {
+test('still and video conditioning both omit the multi-panel sheet', () => {
+    const maya = makeCharacter();
+    characterPresets.setIdentityPackage(maya.id, readyPackage('maya-base.png', 'maya-sheet.png'));
+    const conditioning = context.buildConditioning([maya], 'walking down the street');
+    conditioning.sheetFilenames = ['maya-sheet.png'];
+    const combined = context.combineReferenceFilenames(conditioning);
+    assert.equal(combined.base, 'maya-base.png');
+    assert.deepEqual(combined.references, [], 'a sheet can bleed its layout into generated media');
+});
+
+test('an @image that is already the character portrait is not duplicated', () => {
     const maya = makeCharacter();
     characterPresets.setIdentityPackage(maya.id, readyPackage('maya-base.png', 'maya-sheet.png'));
     const conditioning = context.buildConditioning([maya], 'a scene');
-    const combined = context.combineReferenceFilenames(conditioning, { userReferences: ['maya-sheet.png', 'prop.png'] });
+    const combined = context.combineReferenceFilenames(conditioning, { userReferences: ['maya-base.png', 'prop.png'] });
     assert.deepEqual(combined.references, ['prop.png']);
     assert.deepEqual(combined.userIndexes, [1]);
 });
@@ -303,8 +318,8 @@ test('getCharactersForGeneration returns the structured single-image package', (
     const [entry] = context.getCharactersForGeneration([maya]);
     assert.equal(entry.id, maya.id);
     assert.equal(entry.approvedBaseImage, 'maya-base.png');
-    assert.equal(entry.identitySheetImage, 'maya-sheet.png');
-    assert.equal(entry.identityImage, 'maya-sheet.png');
+    assert.equal(entry.identitySheetImage, '');
+    assert.equal(entry.identityImage, 'maya-base.png', 'the approved portrait is the primary image');
     assert.ok(entry.identityMetadata);
     assert.match(entry.identityPreservationInstructions, /facial identity/i);
 });
@@ -317,7 +332,7 @@ test('the spec-facing aliases resolve mentions and identity context', () => {
     assert.equal(context.getCharacter(maya.id).name, 'Maya');
     assert.equal(context.getCharacterIdentity(maya.id).identitySheet.filename, 'maya-sheet.png');
     const built = context.buildCharacterIdentityContext([maya], 'in a cafe');
-    assert.equal(built.sourceFilename, 'maya-sheet.png');
+    assert.equal(built.sourceFilename, 'maya-base.png');
 });
 
 test('the active store survives a reload from disk', () => {
@@ -337,4 +352,155 @@ test('deleted characters are dropped from the active store', () => {
     context.setActiveCharacter(conversationId, [{ id: temp.id, name: temp.name }]);
     characterPresets.remove(temp.id);
     assert.deepEqual(context.getActiveCharacter(conversationId).characters, []);
+});
+
+// --- Multi-character identity mode -------------------------------------------
+
+// Two approved characters whose structured identity metadata survives (via
+// candidate + approve), so skin descriptors and summaries are real.
+function makeApproved(name, identity) {
+    const character = makeCharacter({ name, identity });
+    characterPresets.setCandidateBaseImage(character.id, {
+        url: '/generated/' + name.toLowerCase() + '-base.png',
+        filename: name.toLowerCase() + '-base.png'
+    });
+    characterPresets.approveBaseImage(character.id);
+    return character.id;
+}
+
+function scenePair(rawPrompt, scenePrompt) {
+    const jules = characterPresets.get(makeApproved('Jules', {
+        age: '28-year-old', gender: 'woman', skinTone: 'medium golden skin', hairColor: 'dark brown'
+    }));
+    const quinn = characterPresets.get(makeApproved('Quinn', {
+        age: '31-year-old', gender: 'man', skinTone: 'deep warm brown skin', hairColor: 'black'
+    }));
+    const conditioning = context.buildConditioning([jules, quinn], scenePrompt || rawPrompt.replace(/@/g, ''), {
+        rawPrompt
+    });
+    return { jules, quinn, conditioning };
+}
+
+test('multi-character mode: each reference maps to exactly one named character', () => {
+    const { conditioning } = scenePair('@Jules and @Quinn standing next to each other in front of a cafe');
+    assert.equal(conditioning.multiCharacter.count, 2);
+    assert.deepEqual(conditioning.multiCharacter.names, ['Jules', 'Quinn']);
+    assert.match(conditioning.instruction, /CHARACTER IDENTITY/);
+    assert.match(conditioning.instruction, /CHARACTER 1 \u2014 JULES/);
+    assert.match(conditioning.instruction, /CHARACTER 2 \u2014 QUINN/);
+    assert.match(conditioning.instruction, /Reference image 1 is Jules's identity reference\./);
+    assert.match(conditioning.instruction, /Reference image 2 is Quinn's identity reference\./);
+    assert.match(conditioning.instruction, /REFERENCE IMAGE ROLES/);
+    assert.match(conditioning.instruction, /Reference image 1 = Jules only\./);
+    assert.match(conditioning.instruction, /Reference image 2 = Quinn only\./);
+    assert.match(conditioning.instruction, /Preserve Jules's facial identity/);
+    assert.doesNotMatch(conditioning.instruction, /preserve their/i, 'never use an ambiguous "their" for one identity');
+});
+
+test('multi-character mode isolates attributes and forbids cross-assignment', () => {
+    const { conditioning } = scenePair('@Jules and @Quinn standing together');
+    assert.match(conditioning.instruction, /CHARACTER ATTRIBUTE ISOLATION/);
+    assert.match(conditioning.instruction, /never be transferred to another character/i);
+    for (const attribute of ['face shape', 'eyes', 'nose', 'mouth', 'facial structure', 'freckles and marks',
+        'hair colour', 'hairstyle', 'skin tone', 'skin undertone', 'body proportions', 'body build', 'complexion']) {
+        assert.match(conditioning.instruction, new RegExp(attribute, 'i'), 'protects ' + attribute);
+    }
+    assert.match(conditioning.instruction, /CHARACTER SEPARATION/);
+    assert.match(conditioning.instruction, /Do not merge, swap, or blend/);
+    assert.match(conditioning.instruction, /cross-assign one character's attributes to another/i);
+});
+
+test('multi-character mode assigns explicit actions to named characters', () => {
+    const { conditioning } = scenePair('@Jules and @Quinn standing next to each other');
+    assert.match(conditioning.instruction,
+        /CHARACTER-SPECIFIC ACTIONS \/ POSITIONS\nJules and Quinn standing next to each other/);
+});
+
+test('multi-character mode keeps explicit action ownership verbatim', () => {
+    const { conditioning } = scenePair('@Jules taking a selfie with @Quinn');
+    assert.match(conditioning.instruction, /Jules taking a selfie with Quinn/);
+});
+
+test('multi-character mode resolves a pronoun with a named antecedent', () => {
+    const { conditioning } = scenePair('@Jules is sitting on the bed with @Quinn beside her');
+    assert.match(conditioning.instruction, /beside Jules/);
+    assert.doesNotMatch(conditioning.instruction, /beside her/);
+});
+
+test('multi-character complex pose resolves the trailing pronoun to the subject', () => {
+    const { conditioning } = scenePair('@Jules lying on the bed taking a selfie while @Quinn lies beside her');
+    assert.match(conditioning.instruction, /beside Jules/);
+});
+
+test('multi-character clothing changes preserve character names', () => {
+    const { conditioning } = scenePair(
+        '@Jules and @Quinn standing together, Jules wearing a white shirt and Quinn wearing a black jacket');
+    assert.match(conditioning.instruction, /Jules wearing a white shirt/);
+    assert.match(conditioning.instruction, /Quinn wearing a black jacket/);
+});
+
+test('multi-character environment changes preserve character names', () => {
+    const { conditioning } = scenePair('@Jules and @Quinn walking through a rainy city street');
+    assert.match(conditioning.instruction, /Jules and Quinn walking through a rainy city street/);
+});
+
+test('multi-character mode: scene styling cannot overwrite identity', () => {
+    const { conditioning } = scenePair('@Jules and @Quinn under colorful nightclub lighting');
+    assert.match(conditioning.instruction, /colorful nightclub lighting/);
+    assert.match(conditioning.instruction, /SKIN-TONE CONTINUITY ACROSS CHARACTERS/);
+    assert.match(conditioning.instruction, /Jules retains Jules's natural complexion/);
+    assert.match(conditioning.instruction, /Quinn retains Quinn's natural complexion/);
+    assert.match(conditioning.instruction, /do not normalise, swap, or blend/i);
+    assert.match(conditioning.instruction, /medium golden skin/);
+    assert.match(conditioning.instruction, /deep warm brown skin/);
+});
+
+test('multi-character instruction follows the identity priority order', () => {
+    const { conditioning } = scenePair('@Jules and @Quinn sitting together in warm bedroom lighting');
+    const order = [
+        conditioning.instruction.indexOf('CHARACTER IDENTITY'),
+        conditioning.instruction.indexOf('CHARACTER ATTRIBUTE ISOLATION'),
+        conditioning.instruction.indexOf('CHARACTER SEPARATION'),
+        conditioning.instruction.indexOf('REFERENCE IMAGE ROLES'),
+        conditioning.instruction.indexOf('\nSCENE\n'),
+        conditioning.instruction.indexOf('CHARACTER-SPECIFIC ACTIONS / POSITIONS'),
+        conditioning.instruction.indexOf('SKIN-TONE CONTINUITY ACROSS CHARACTERS'),
+        conditioning.instruction.indexOf('OUTPUT CONSTRAINT')
+    ];
+    order.forEach((index, i) => {
+        assert.ok(index >= 0, 'section ' + i + ' present');
+        if (i > 0) assert.ok(index > order[i - 1], 'section ' + i + ' follows section ' + (i - 1));
+    });
+});
+
+test('three characters each map to their own reference', () => {
+    const jules = characterPresets.get(makeApproved('Jules', { gender: 'woman', skinTone: 'medium golden skin' }));
+    const quinn = characterPresets.get(makeApproved('Quinn', { gender: 'man', skinTone: 'deep warm brown skin' }));
+    const maya = characterPresets.get(makeApproved('Maya', { gender: 'woman', skinTone: 'olive skin' }));
+    const conditioning = context.buildConditioning([jules, quinn, maya], 'standing together', {
+        rawPrompt: '@Jules, @Quinn and @Maya standing together'
+    });
+    assert.equal(conditioning.multiCharacter.count, 3);
+    assert.match(conditioning.instruction, /CHARACTER 3 \u2014 MAYA/);
+    assert.match(conditioning.instruction, /Reference image 3 = Maya only\./);
+    assert.match(conditioning.instruction, /three distinct individuals/);
+    assert.match(conditioning.instruction,
+        /CHARACTER-SPECIFIC ACTIONS \/ POSITIONS\nJules, Quinn and Maya standing together/);
+});
+
+test('an ambiguous multi-character scene is preserved, not guessed at', () => {
+    const { conditioning } = scenePair('two people standing next to each other', 'two people standing next to each other');
+    assert.doesNotMatch(conditioning.instruction, /CHARACTER-SPECIFIC ACTIONS/);
+    // The scene wording survives untouched.
+    assert.match(conditioning.instruction, /SCENE\ntwo people standing next to each other/);
+});
+
+test('single-character generation is unchanged by the multi-character mode', () => {
+    const jules = characterPresets.get(makeApproved('Jules', { gender: 'woman', skinTone: 'medium golden skin' }));
+    const conditioning = context.buildConditioning([jules], 'sitting in a cafe', { rawPrompt: '@Jules sitting in a cafe' });
+    assert.equal(conditioning.multiCharacter, null);
+    assert.match(conditioning.instruction, /IDENTITY:/);
+    assert.match(conditioning.instruction, /SCENE \(change only this\):/);
+    assert.doesNotMatch(conditioning.instruction, /CHARACTER ATTRIBUTE ISOLATION/);
+    assert.doesNotMatch(conditioning.instruction, /CHARACTER-SPECIFIC ACTIONS/);
 });

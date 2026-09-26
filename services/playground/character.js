@@ -231,7 +231,6 @@ const FACE_JAWS = [
 // undertone, never a single flat colour value.
 const SKIN_UNDERTONES = [
     'with a warm golden undertone',
-    'with a cool pink undertone',
     'with a neutral undertone',
     'with a warm olive undertone',
     'with a cool rosy undertone',
@@ -263,7 +262,7 @@ const HAIR_FRINGES = [
 const BUILDS = [
     { value: 'a slim build', weight: 3 },
     { value: 'an athletic build', weight: 3 },
-    { value: 'a curvy build', weight: 3 },
+    { value: 'a curvy build', weight: 4, genders: ['woman'] },
     { value: 'a petite frame', weight: 2, genders: ['woman'] },
     { value: 'a tall, lean frame', weight: 2 },
     { value: 'a soft, rounded build', weight: 2 },
@@ -426,41 +425,39 @@ function makeCategory(spec) {
 // people. Flattering traits are weighted slightly higher while variety stays.
 
 const EAST_ASIAN_FACE_SHAPES = FACE_SHAPES.concat([
-    { value: 'a delicate oval face', weight: 2 },
-    { value: 'a soft V-shaped face', weight: 2 },
-    { value: 'a fine-boned face', weight: 1.5 },
-    { value: 'a porcelain-doll face', weight: 1.5 },
-    { value: 'a serene oval face', weight: 2 },
-    { value: 'an ethereal oval face', weight: 1.5 },
-    { value: 'a luminous heart-shaped face', weight: 1.5 },
-    { value: 'a small, refined face', weight: 2 },
+    { value: 'a soft oval face', weight: 2 },
+    { value: 'a gently rounded face', weight: 2 },
+    { value: 'a balanced oval face', weight: 2 },
     { value: 'a softly tapered face', weight: 1.5 },
-    { value: 'a gently rounded face with a tapered chin', weight: 1.5 },
-    { value: 'a graceful face with high cheekbones', weight: 2 },
-    { value: 'a softly angular face', weight: 1.5 }
+    { value: 'a subtle heart-shaped face', weight: 1.5 },
+    { value: 'a softly angular face', weight: 1.5 },
+    { value: 'a broad oval face', weight: 1.2 },
+    { value: 'a rounded face with a defined jawline', weight: 1.2 },
+    { value: 'a longer oval face', weight: 1.2 },
+    { value: 'a naturally proportioned face', weight: 1.5 }
 ]);
 
 const EAST_ASIAN_EYE_SHAPES = EYE_SHAPES.concat([
-    { value: 'large, luminous almond eyes', weight: 2.5 },
-    { value: 'clear, bright almond eyes', weight: 2 },
-    { value: 'double-lidded almond eyes', weight: 2 },
-    { value: 'soft monolid eyes', weight: 2 },
-    { value: 'gentle upturned eyes', weight: 2 },
-    { value: 'cat-like upturned eyes', weight: 1.5 },
-    { value: 'softly hooded almond eyes', weight: 1.5 },
-    { value: 'delicately tapered eyes', weight: 1.5 },
-    { value: 'long, elegant eyes', weight: 1.5 },
-    { value: 'crescent-shaped smiling eyes', weight: 1.5 },
-    { value: 'dark, expressive doe eyes', weight: 2 },
-    { value: 'narrow, graceful eyes', weight: 1.5 }
+    { value: 'almond-shaped eyes', weight: 2 },
+    { value: 'soft almond eyes', weight: 2 },
+    { value: 'slightly hooded almond eyes', weight: 1.5 },
+    { value: 'monolid eyes', weight: 1.5 },
+    { value: 'double-lidded eyes', weight: 1.5 },
+    { value: 'slightly upturned eyes', weight: 1.5 },
+    { value: 'slightly downturned eyes', weight: 1.2 },
+    { value: 'rounded almond eyes', weight: 1.2 },
+    { value: 'narrow almond eyes', weight: 1.2 },
+    { value: 'softly hooded eyes', weight: 1.2 },
+    { value: 'deep-set almond eyes', weight: 1 },
+    { value: 'naturally proportioned eyes', weight: 1.5 }
 ]);
 
 const EAST_ASIAN_EYEBROWS = EYEBROWS.concat([
-    { value: 'softly feathered straight brows', weight: 2 },
-    { value: 'delicate, gently arched brows', weight: 2 },
-    { value: 'fine, softly tapered brows', weight: 1.5 },
+    { value: 'softly feathered straight brows', weight: 1.5 },
     { value: 'natural straight brows', weight: 1.5 },
-    { value: 'softly rounded brows', weight: 1.5 }
+    { value: 'fine, softly tapered brows', weight: 1.2 },
+    { value: 'softly rounded brows', weight: 1.2 },
+    { value: 'gently straight brows', weight: 1.2 }
 ]);
 
 const EAST_ASIAN_BUILDS = BUILDS.concat([

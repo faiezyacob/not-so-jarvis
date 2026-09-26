@@ -2322,10 +2322,18 @@ async function handleChatStream(req, res) {
             const action = (decision.intent === 'new_task' || decision.intent === 'switch_task') ? 'generate' : 'modify';
             const identity = requestCharacters.length
                 ? resolveIdentityConditioning(requestCharacters, routingMessage, {
-                    userReferences: referenceImages
+                    userReferences: referenceImages,
+                    rawPrompt: message,
+                    seed: creativeDefaultSeed(conversationId, routingMessage),
+                    // A follow-up edit preserves the established clothing/style
+                    // unless the user explicitly asks to change them.
+                    continuity: action === 'modify',
+                    previousClothing: activeTask.parameters && activeTask.parameters.clothing,
+                    previousStyle: activeTask.parameters && activeTask.parameters.imageStyle
                 })
                 : null;
             if (identity) {
+                debugResolvedPrompt('image_edit', identity);
                 if (referenceImages.length) {
                     identity.instruction = addUserReferencesToInstruction(identity.instruction, identity);
                 }
@@ -2352,7 +2360,9 @@ async function handleChatStream(req, res) {
                     status: 'running',
                     parameters: Object.assign({}, activeTask.parameters, {
                         characterId: requestCharacters[0] ? requestCharacters[0].id : null,
-                        characterIds: requestCharacters.map((c) => c.id)
+                        characterIds: requestCharacters.map((c) => c.id),
+                        clothing: persistedClothing(identity),
+                        imageStyle: persistedImageStyle(identity)
                     })
                 });
                 if (action === 'generate') {
@@ -2535,11 +2545,22 @@ async function handleChatStream(req, res) {
             // character + image request conditions on both. Characterless
             // requests leave the pipeline completely untouched.
             const identity = resolveIdentityConditioning(requestCharacters, imagePrompt, {
-                userReferences: referenceImages
+                userReferences: referenceImages,
+                rawPrompt: message,
+                // A per-turn seed keeps the automatic clothing/style stable
+                // across the prompt build while still varying between requests.
+                seed: creativeDefaultSeed(conversationId, imagePrompt),
+                // A follow-up tweak preserves the established clothing/style
+                // unless the user explicitly asks to change them. A fresh
+                // standalone image generates new defaults.
+                continuity: action === 'modify',
+                previousClothing: activeTask.parameters && activeTask.parameters.clothing,
+                previousStyle: activeTask.parameters && activeTask.parameters.imageStyle
             });
             if (identity && referenceImages.length) {
                 identity.instruction = addUserReferencesToInstruction(identity.instruction, identity);
             }
+            debugResolvedPrompt('image_generation', identity);
 
             // Track the task as running, then free VRAM and execute.
             const ctxPreviousPrompt = activeTask.prompt || null;
@@ -2550,6 +2571,10 @@ async function handleChatStream(req, res) {
                 lastAction: action,
                 status: 'running'
             });
+            // The resolved automatic clothing/style are persisted so the next
+            // follow-up preserves them instead of re-rolling the outfit.
+            const resolvedClothing = persistedClothing(identity);
+            const resolvedStyle = persistedImageStyle(identity);
             if (action === 'generate') {
                 taskState.setTask(conversationId, {
                     originalPrompt: structuredRequest ? structuredRequest.user_prompt : message,
@@ -2558,14 +2583,18 @@ async function handleChatStream(req, res) {
                         explicit_constraints: structuredRequest ? structuredRequest.explicit_constraints : [],
                         attributes: attributes || null,
                         characterId: requestCharacters[0] ? requestCharacters[0].id : null,
-                        characterIds: requestCharacters.map((c) => c.id)
+                        characterIds: requestCharacters.map((c) => c.id),
+                        clothing: resolvedClothing,
+                        imageStyle: resolvedStyle
                     })
                 });
-            } else if (attributes) {
+            } else if (attributes || resolvedClothing || resolvedStyle) {
+                const patch = {};
+                if (attributes) patch.attributes = attributes;
+                if (resolvedClothing) patch.clothing = resolvedClothing;
+                if (resolvedStyle) patch.imageStyle = resolvedStyle;
                 taskState.setTask(conversationId, {
-                    parameters: Object.assign({}, taskState.getTask(conversationId).parameters, {
-                        attributes
-                    })
+                    parameters: Object.assign({}, taskState.getTask(conversationId).parameters, patch)
                 });
             }
 
@@ -2747,11 +2776,13 @@ async function handleChatStream(req, res) {
             // identity is not forced into ref2va.
             let identityReferences;
             if (requestCharacters.length && videoMode !== 'i2va') {
-                // The @-picker image references the user supplied are kept
-                // alongside the character's identity views so a character +
-                // image video request conditions on both.
+                // User @-picker references are kept alongside the character
+                // portraits so a character + image request conditions on both.
                 const conditioning = resolveIdentityConditioning(requestCharacters, message, {
-                    userReferences: referenceImages
+                    userReferences: referenceImages,
+                    // Video only consumes the identity references; the prompt's
+                    // creative-defaults section is never used.
+                    defaults: false
                 });
                 if (conditioning) {
                     identityReferences = conditioning.references.map((p) => path.basename(p));
@@ -3449,9 +3480,10 @@ async function handleUGCGenerateReferences(req, res, ctx, project, sceneIds, opt
         // reference frame (reference-guided edit), so the same person appears
         // across all scenes. A project with no on-camera creator stays a plain
         // text generation.
-        const creatorIdentityName = (project.creator && Array.isArray(project.creator.identityReferences) &&
-            project.creator.identityReferences[0])
-            || (project.creator && project.creator.identityBaseImage) || '';
+        const creatorIdentityName = (project.creator && project.creator.identityBaseImage)
+            || (project.creator && Array.isArray(project.creator.identityReferences) &&
+                project.creator.identityReferences[0])
+            || '';
         const creatorIdentityAbs = creatorIdentityName
             ? path.join(GENERATED_DIR, path.basename(String(creatorIdentityName)))
             : '';
@@ -3693,19 +3725,75 @@ function materializeIdentityCharacter(session, options = {}) {
 
 // Build the reference-guided edit conditioning for one or more characters, or
 // null when none has a usable identity image. The shared character-context layer
-// contributes exactly ONE image per character — the consolidated identity sheet
-// when ready, otherwise the approved base image — and keeps identity separate
-// from the scene.
+// leads with ONE approved base portrait per character; multi-panel identity
+// sheets are excluded from generation, and identity stays separate from scene.
 //
 // `options.userReferences` are the ordered @-picker image references the user
 // supplied. They are positional references the user explicitly asked for, so
-// they are ALWAYS kept: the first character's identity image is the edit source
-// (image_1) and the user's images + the other characters' identity images follow
-// as image_2..N.
+// they are ALWAYS kept: the first character's approved portrait is the edit
+// source (image_1) and the other characters' portraits and user's images follow
+// as image_2..N. A sheet can leak its layout even as a secondary reference, so
+// it is excluded from every generation path.
+// A stable per-turn seed for the creative-defaults layer. Keyed on the
+// conversation + resolved prompt so a retry of the same request keeps the same
+// automatic clothing/style, while a genuinely new request varies.
+function creativeDefaultSeed(conversationId, scenePrompt) {
+    const creativeDefaults = require('./services/creative-defaults');
+    return creativeDefaults.hashString(String(conversationId || '') + '|' + String(scenePrompt || ''));
+}
+
+// The resolved per-character clothing from the creative-defaults layer, in the
+// shape persisted on the task so a follow-up can preserve it. Null when the
+// user specified clothing or there is nothing to carry.
+function persistedClothing(identity) {
+    const clothing = identity && identity.creativeDefaults && identity.creativeDefaults.clothing;
+    if (!Array.isArray(clothing) || !clothing.length) return null;
+    if (identity.creativeDefaults.hasExplicitClothing) return null;
+    return clothing.map((item) => ({
+        name: item.name,
+        outfit: item.outfit,
+        source: item.source,
+        packId: item.packId || ''
+    }));
+}
+
+// The resolved style package, in the shape persisted for continuity.
+function persistedImageStyle(identity) {
+    const style = identity && identity.creativeDefaults && identity.creativeDefaults.style;
+    if (!style || !style.id || !style.package) return null;
+    return { id: style.id, label: style.package.label, source: style.source };
+}
+
+// Development-only (JARVIS_PROMPT_DEBUG=1): print the resolved prompt so it is
+// easy to verify explicit clothing/style survives, automatic defaults appear,
+// phone photography is used when appropriate, and identity is untouched.
+function debugResolvedPrompt(stage, identity) {
+    if (String(process.env.JARVIS_PROMPT_DEBUG || '') !== '1') return;
+    if (!identity || !identity.instruction) return;
+    const defaults = identity.creativeDefaults || {};
+    console.log('[prompt-debug] ' + stage +
+        ' characters=' + (identity.characterName || '') +
+        ' explicitClothing=' + Boolean(defaults.hasExplicitClothing) +
+        ' automaticClothing=' + ((defaults.clothing || []).map((c) => c.name + ': ' + c.outfit).join(' | ') || '(none)') +
+        ' style=' + ((defaults.style && defaults.style.package && defaults.style.package.label) || '(explicit/none)') +
+        '\n' + identity.instruction);
+}
+
 function resolveIdentityConditioning(characters, scenePrompt, options = {}) {
     const list = Array.isArray(characters) ? characters : (characters ? [characters] : []);
     if (!list.length) return null;
-    const conditioning = characterContext.buildConditioning(list, scenePrompt);
+    const conditioning = characterContext.buildConditioning(list, scenePrompt, {
+        rawPrompt: options.rawPrompt,
+        environment: options.environment,
+        activity: options.activity,
+        seed: options.seed,
+        outfitPack: options.outfitPack,
+        defaults: options.defaults,
+        continuity: options.continuity,
+        previousClothing: options.previousClothing,
+        previousStyle: options.previousStyle,
+        newOccasion: options.newOccasion
+    });
     if (!conditioning) return null;
     const sourceAbs = path.join(GENERATED_DIR, path.basename(conditioning.sourceFilename));
     if (!fs.existsSync(sourceAbs)) return null;
@@ -3727,8 +3815,40 @@ function resolveIdentityConditioning(characters, scenePrompt, options = {}) {
         userReferenceIndexes: combined.userIndexes,
         instruction: conditioning.instruction,
         constraints: conditioning.constraints,
-        entries: conditioning.entries
+        entries: conditioning.entries,
+        multiCharacter: conditioning.multiCharacter || null,
+        creativeDefaults: conditioning.creativeDefaults || null
     };
+}
+
+// A random Playground character has a pre-rendered face before it has a saved
+// preset. Use that portrait with the same identity-vs-scene prompt layer as a
+// saved @Character, so Playground never falls back to text-only character
+// generation. The multi-panel sheet is deliberately not part of this path.
+function resolvePlaygroundIdentityConditioning(session, scenePrompt) {
+    const savedCharacter = playground.identityCharacterSource(session, null);
+    if (savedCharacter) {
+        const saved = resolveIdentityConditioning(savedCharacter, scenePrompt);
+        if (saved) return saved;
+    }
+
+    const portrait = session && (session.characterImage ||
+        (session.characterSnapshot && session.characterSnapshot.portraitReference));
+    if (!portrait || !portrait.filename) return null;
+    const character = session.characterSnapshot || {
+        name: session.concept && session.concept.name,
+        identity: session.concept && session.concept.identity
+    };
+    const conditioning = characterIdentity.buildStandaloneConditioning(character, portrait, scenePrompt);
+    if (!conditioning) return null;
+    const sourceAbs = path.join(GENERATED_DIR, path.basename(conditioning.sourceFilename));
+    if (!fs.existsSync(sourceAbs)) return null;
+    return Object.assign({}, conditioning, {
+        characterId: null,
+        characterIds: [],
+        characterName: conditioning.characterName,
+        sourceAbs
+    });
 }
 
 // Fold the user's @-picker image references into the character edit
@@ -3892,6 +4012,89 @@ async function runPlaygroundFaceStage(req, res, ctx, session) {
     }
 }
 
+// Hand a concept to the existing prompt builder and image pipeline. Shared by
+// the card's Generate action and a Surprise that already has a known (saved)
+// character — the latter skips the preview card and generates in one step.
+async function runPlaygroundGenerate(req, res, ctx, session, rawMessage) {
+    const { conversationId, provider, model, think } = ctx;
+    if (playground.needsCharacterImage(session)) {
+        await runPlaygroundFaceStage(req, res, ctx, session);
+    }
+    if (session.mode === 'random_character' && playground.needsCharacterImage(session)) {
+        sseWrite(res, { error: 'Creative Playground \u2014 I could not establish the character portrait needed to keep this person consistent. Retry the character portrait, then generate the scene.' });
+        res.end();
+        return;
+    }
+    const request = playground.buildImageRequest(session);
+    if (!request) {
+        sseWrite(res, { error: 'Creative Playground \u2014 The concept is no longer available.' });
+        res.end();
+        return;
+    }
+    sseWrite(res, { generating: 'Creating the concept image\u2026' });
+    vramManager.rememberChatModel(provider, model);
+    await vramManager.freeVRAMBeforeChat();
+    const enhanced = await imageGenerator.buildImagePrompt(request, providers, provider, model, think);
+    const imagePrompt = enhanced ? enhanced.prompt : request.user_prompt;
+    const attributes = enhanced ? enhanced.attributes : null;
+    session.generatedPrompt = {
+        prompt: imagePrompt,
+        attributes: attributes || null,
+        builderVersion: enhanced && enhanced.builderVersion || 'legacy',
+        characterRevision: session.characterRef && session.characterRef.revision,
+        sceneRevision: session.revision
+    };
+    session.composition = Object.assign({}, session.composition, {
+        generatedPrompt: session.generatedPrompt,
+        updatedAt: new Date().toISOString()
+    });
+    // An approved character conditions the scene as a reference-guided
+    // edit (identity preserved, scene/setting changed). It also becomes
+    // the conversation's active character so a later "make her …"
+    // continuation resolves to the same person.
+    const identity = resolvePlaygroundIdentityConditioning(session, imagePrompt);
+    if (session.mode === 'random_character' && !identity) {
+        sseWrite(res, { error: 'Creative Playground \u2014 The character portrait is unavailable, so I could not preserve this character in the scene.' });
+        res.end();
+        return;
+    }
+    if (identity && identity.characterId) {
+        characterContext.setActiveCharacter(conversationId, [{ id: identity.characterId, name: identity.characterName }]);
+    }
+    taskState.setTask(conversationId, {
+        type: 'image',
+        operation: 'generate',
+        prompt: imagePrompt,
+        originalPrompt: request.user_prompt,
+        lastAction: 'generate',
+        status: 'running',
+        parameters: Object.assign({}, taskState.getTask(conversationId).parameters, {
+            creative_mode: request.creative_mode,
+            explicit_constraints: request.explicit_constraints,
+            attributes: attributes || null,
+            playgroundId: session.id,
+            characterId: identity ? identity.characterId : null,
+            characterIds: identity && identity.characterIds ? identity.characterIds : []
+        })
+    });
+    playground.markUsed(session);
+    activityLog.record({
+        type: 'generation',
+        title: 'Creative Playground',
+        detail: session.concept && session.concept.title ? session.concept.title : 'Concept generated',
+        conversationId
+    });
+    await vramManager.freeVRAMBeforeImage();
+    await handleImageGenerationStream(req, res, {
+        provider, model, conversationId, message: rawMessage,
+        imagePrompt,
+        action: 'generate',
+        previousPrompt: null,
+        identity,
+        think
+    });
+}
+
 async function handlePlaygroundAction(req, res, ctx, action, rawMessage) {
     const { conversationId, provider, model, think } = ctx;
     let session = playground.getSession(conversationId);
@@ -3911,6 +4114,14 @@ async function handlePlaygroundAction(req, res, ctx, action, rawMessage) {
                 customPrompt: action.customPrompt
             });
             await runPlaygroundFaceStage(req, res, ctx, session);
+            // A saved character already has a known identity, so there is nothing
+            // to preview — generate the scene in one step. A random new character
+            // still stops at the card (its pre-rendered face is what the user
+            // reviews) and a no-character concept stays general exploration.
+            if (session.mode === 'character') {
+                await runPlaygroundGenerate(req, res, ctx, session, rawMessage);
+                return;
+            }
             emitPlaygroundCard(res, session);
             return;
         }
@@ -4153,70 +4364,7 @@ async function handlePlaygroundAction(req, res, ctx, action, rawMessage) {
         }
 
         if (action.type === playground.ACTIONS.GENERATE) {
-            const request = playground.buildImageRequest(session);
-            if (!request) {
-                sseWrite(res, { error: 'Creative Playground \u2014 The concept is no longer available.' });
-                res.end();
-                return;
-            }
-            sseWrite(res, { generating: 'Creating the concept image\u2026' });
-            vramManager.rememberChatModel(provider, model);
-            await vramManager.freeVRAMBeforeChat();
-            const enhanced = await imageGenerator.buildImagePrompt(request, providers, provider, model, think);
-            const imagePrompt = enhanced ? enhanced.prompt : request.user_prompt;
-            const attributes = enhanced ? enhanced.attributes : null;
-            session.generatedPrompt = {
-                prompt: imagePrompt,
-                attributes: attributes || null,
-                builderVersion: enhanced && enhanced.builderVersion || 'legacy',
-                characterRevision: session.characterRef && session.characterRef.revision,
-                sceneRevision: session.revision
-            };
-            session.composition = Object.assign({}, session.composition, {
-                generatedPrompt: session.generatedPrompt,
-                updatedAt: new Date().toISOString()
-            });
-            // An approved character conditions the scene as a reference-guided
-            // edit (identity preserved, scene/setting changed). It also becomes
-            // the conversation's active character so a later "make her …"
-            // continuation resolves to the same person.
-            const identityCharacter = playground.identityCharacterSource(session, null);
-            const identity = resolveIdentityConditioning(identityCharacter, imagePrompt);
-            if (identityCharacter) {
-                characterContext.setActiveCharacter(conversationId, [{ id: identityCharacter.id, name: identityCharacter.name }]);
-            }
-            taskState.setTask(conversationId, {
-                type: 'image',
-                operation: 'generate',
-                prompt: imagePrompt,
-                originalPrompt: request.user_prompt,
-                lastAction: 'generate',
-                status: 'running',
-                parameters: Object.assign({}, taskState.getTask(conversationId).parameters, {
-                    creative_mode: request.creative_mode,
-                    explicit_constraints: request.explicit_constraints,
-                    attributes: attributes || null,
-                    playgroundId: session.id,
-                    characterId: identityCharacter ? identityCharacter.id : null,
-                    characterIds: identityCharacter ? [identityCharacter.id] : []
-                })
-            });
-            playground.markUsed(session);
-            activityLog.record({
-                type: 'generation',
-                title: 'Creative Playground',
-                detail: session.concept && session.concept.title ? session.concept.title : 'Concept generated',
-                conversationId
-            });
-            await vramManager.freeVRAMBeforeImage();
-            await handleImageGenerationStream(req, res, {
-                provider, model, conversationId, message: rawMessage,
-                imagePrompt,
-                action: 'generate',
-                previousPrompt: null,
-                identity,
-                think
-            });
+            await runPlaygroundGenerate(req, res, ctx, session, rawMessage);
             return;
         }
 
@@ -4267,7 +4415,9 @@ async function handleDirectorStart(req, res, ctx) {
             ? ctx.characters
             : characterContext.parseCharacterMessage(message).characters;
         const characterRecords = contextCharacters.map((ref) => characterPresets.get(ref.id)).filter(Boolean);
-        const identity = resolveIdentityConditioning(characterRecords, message);
+        // The Director builds its own image prompt; only the identity
+        // references are consumed here, not the creative-defaults section.
+        const identity = resolveIdentityConditioning(characterRecords, message, { defaults: false });
         if (contextCharacters.length) characterContext.setActiveCharacter(conversationId, contextCharacters);
         const production = await director.createProduction({
             conversationId, message, provider, model, think, referenceImage,

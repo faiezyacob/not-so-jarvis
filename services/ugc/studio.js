@@ -726,9 +726,10 @@ function selectCreator(project, characterId) {
     const preset = characterPresets.get(characterId);
     if (!preset) return project;
     // The approved Character Identity package (when present) conditions the
-    // creator's frames/video through its single consolidated identity image.
+    // creator's frames/video through its single approved portrait. The
+    // multi-panel identity sheet remains display/archive-only.
     const identityPackage = characterPresets.getIdentityPackage(preset.id);
-    const identityImage = identityPackage ? characterIdentity.selectIdentityImage(identityPackage) : null;
+    const reference = identityPackage ? characterIdentity.selectIdentityReference(identityPackage) : null;
     project.creatorMode = 'person';
     project.creatorSkipped = false;
     project.creator = {
@@ -746,10 +747,14 @@ function selectCreator(project, characterId) {
             || (preset.appearanceCategory ? characterGen.appearanceCategoryLabel(preset.appearanceCategory) : ''),
         outfitPack: preset.outfitPack || '',
         outfitPackCustom: preset.outfitPackCustom || '',
-        // The ONE consolidated identity image (identity sheet when ready, else
-        // the approved base image) and the structured identity package.
-        identityReferences: identityImage && identityImage.filename ? [identityImage.filename] : [],
-        identityBaseImage: identityPackage && identityPackage.approvedBaseImage ? identityPackage.approvedBaseImage.filename : '',
+        // The single approved portrait is the only image sent as identity
+        // conditioning; the consolidated sheet is never a model reference.
+        identityReferences: reference && reference.primary && reference.primary.filename
+            ? [reference.primary.filename]
+            : [],
+        identityBaseImage: reference && reference.base ? reference.base.filename
+            : (identityPackage && identityPackage.approvedBaseImage ? identityPackage.approvedBaseImage.filename : ''),
+        identitySheetImage: reference && reference.sheet ? reference.sheet.filename : '',
         identityMetadata: identityPackage ? identityPackage.identityMetadata : null,
         identityPreservationInstructions: identityPackage ? identityPackage.identityPreservationInstructions : ''
     };

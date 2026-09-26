@@ -16,8 +16,12 @@
    The single-sheet model is deliberate: expanding a
    character into several separate reference images
    explodes the reference count for multi-character
-   scenes. Downstream generation receives exactly one
-   identity image per character.
+   scenes. Downstream generation uses exactly one image
+   per character — the approved base portrait. The sheet
+   is display/archive-only: even as a secondary reference
+   it can cause Qwen to reproduce its panel layout.
+   Structured identity metadata reinforces the portrait
+   without sending the sheet to a generator.
    SPDX-License-Identifier: MIT
    Copyright (c) 2026 not-so-jarvis.
    ============================================ */
@@ -540,22 +544,12 @@ function mediaFilenames(value) {
     return uniqueStrings(names);
 }
 
-// --- Reference selection for generation ---------------------------------------
+// --- Character image selection ------------------------------------------------
 
-// The single visual identity reference a character contributes to generation:
-// the consolidated identity sheet when ready, otherwise the approved base
-// image. NEVER an array of angle views.
+// Picker/card previews use the approved portrait. A sheet is only a fallback
+// display asset for a legacy package that has no base portrait.
 function selectIdentityImage(value) {
     const pkg = normalizePackage(value);
-    if (pkg.identitySheet && pkg.identitySheet.status === SHEET_STATUS.READY && pkg.identitySheet.filename) {
-        return {
-            kind: 'identity_sheet',
-            filename: pkg.identitySheet.filename,
-            url: pkg.identitySheet.imageUrl,
-            width: pkg.identitySheet.width,
-            height: pkg.identitySheet.height
-        };
-    }
     if (pkg.approvedBaseImage && pkg.approvedBaseImage.filename) {
         return {
             kind: 'approved_base',
@@ -565,7 +559,56 @@ function selectIdentityImage(value) {
             height: pkg.approvedBaseImage.height
         };
     }
+    if (pkg.identitySheet && pkg.identitySheet.status === SHEET_STATUS.READY && pkg.identitySheet.filename) {
+        return {
+            kind: 'identity_sheet',
+            filename: pkg.identitySheet.filename,
+            url: pkg.identitySheet.imageUrl,
+            width: pkg.identitySheet.width,
+            height: pkg.identitySheet.height
+        };
+    }
     return null;
+}
+
+// The generation reference set for a character. The identity sheet is for
+// display and archival only: even as a secondary reference, Qwen can copy its
+// multi-panel layout. Generation therefore uses only the approved portrait and
+// structured identity metadata.
+function selectIdentityReference(value) {
+    const pkg = normalizePackage(value);
+    const base = pkg.approvedBaseImage && pkg.approvedBaseImage.filename ? {
+        kind: 'approved_base',
+        filename: pkg.approvedBaseImage.filename,
+        url: pkg.approvedBaseImage.url,
+        width: pkg.approvedBaseImage.width,
+        height: pkg.approvedBaseImage.height
+    } : null;
+    return {
+        primary: base,
+        base,
+        sheet: null,
+        hasSheet: false
+    };
+}
+
+function buildStandaloneConditioning(character, baseImage, scenePrompt) {
+    const image = baseImage && typeof baseImage === 'object' ? baseImage : {};
+    const filename = String(image.filename || (image.url ? basenameOf(image.url) : '')).trim();
+    if (!filename) return null;
+    const source = character && typeof character === 'object' ? character : {};
+    const pkg = normalizePackage({
+        approvedBaseImage: Object.assign({}, image, { filename }),
+        identityMetadata: deriveMetadata(source),
+        identitySheet: null
+    });
+    return {
+        sourceFilename: filename,
+        references: [],
+        instruction: buildSceneEditInstruction(pkg, scenePrompt, source.name || 'the character'),
+        constraints: buildIdentityConstraints(pkg),
+        characterName: source.name || 'the character'
+    };
 }
 
 // --- Prompt layer -------------------------------------------------------------
@@ -649,16 +692,17 @@ function buildSkinContinuitySection(value, label) {
 }
 
 // Compose the single-character reference-guided instruction used by the Qwen
-// editor: image 1 is an identity reference (the consolidated identity sheet or
-// the approved base image), and the output is a NEW standalone scene image.
-// The reference is never the requested output and is never modified.
+// editor: image 1 is the approved base portrait and the output is a NEW
+// standalone scene image. Identity details come from structured metadata; the
+// multi-panel sheet is never a generation reference.
 function buildSceneEditInstruction(value, scenePrompt, name) {
-    const metadata = normalizePackage(value).identityMetadata || {};
+    const pkg = normalizePackage(value);
+    const metadata = pkg.identityMetadata || {};
     const summaryText = summary(metadata);
     const label = name || 'the character';
     const identity = 'IDENTITY: Keep the exact same approved person shown in image 1' +
         (summaryText ? ' (' + summaryText + ')' : '') +
-        '. Image 1 is ' + label + '\'s character identity reference; use it only to preserve their facial identity, ' +
+        '. Image 1 is ' + label + '\'s approved character portrait; use it only to preserve their facial identity, ' +
         'face shape, eyes, nose, lips, skin tone, hair colour and length, body proportions and distinctive features. ' +
         'It is reference material, not the requested image.';
     const skinContinuity = buildSkinContinuitySection(value, label);
@@ -678,17 +722,16 @@ function buildSceneEditInstruction(value, scenePrompt, name) {
 function buildCharacterContextEntry(character) {
     if (!character) return null;
     const pkg = normalizePackage(character);
-    const image = selectIdentityImage(pkg);
-    if (!image) return null;
+    const reference = selectIdentityReference(pkg);
+    if (!reference || !reference.primary) return null;
     return {
         id: character.id,
         name: character.name || 'Character',
         approvedBaseImage: pkg.approvedBaseImage ? pkg.approvedBaseImage.filename : '',
-        identitySheetImage: pkg.identitySheet && pkg.identitySheet.status === SHEET_STATUS.READY
-            ? pkg.identitySheet.filename
-            : '',
-        identityImage: image.filename,
-        identityImageKind: image.kind,
+        identitySheetImage: reference.sheet ? reference.sheet.filename : '',
+        // The primary generation image is the single approved base portrait.
+        identityImage: reference.primary.filename,
+        identityImageKind: reference.primary.kind,
         identityMetadata: pkg.identityMetadata,
         identityPreservationInstructions: pkg.identityPreservationInstructions
     };
@@ -826,6 +869,8 @@ module.exports = {
     skinDescriptor,
     // reference selection / prompts
     selectIdentityImage,
+    selectIdentityReference,
+    buildStandaloneConditioning,
     buildIdentitySheetPrompt,
     buildIdentityConstraints,
     buildSkinContinuitySection,
