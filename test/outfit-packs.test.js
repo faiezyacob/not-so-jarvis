@@ -46,18 +46,19 @@ function wardrobeValues(packId) {
 
 // --- Catalog -----------------------------------------------------------------
 
-test('outfit catalog exposes the eleven named packs', () => {
+test('outfit catalog exposes the twelve named packs', () => {
     const packs = outfitPacks.listPacks();
-    assert.equal(packs.length, 11);
+    assert.equal(packs.length, 12);
     const ids = packs.map((p) => p.id);
     for (const id of ['casual-everyday', 'lounge-home', 'soft-feminine-casual', 'casual-streetwear',
         'vacation-summer', 'gym-activewear', 'casual-smart', 'casual-night-out',
-        'minimalist-neutral', 'edgy-alternative', 'glam-boudoir']) {
+        'minimalist-neutral', 'edgy-alternative', 'glam-boudoir', 'confident-seductive']) {
         assert.ok(ids.includes(id), 'missing pack: ' + id);
     }
     assert.equal(outfitPacks.getPack('casual-everyday').label, 'Casual Everyday');
     assert.equal(outfitPacks.getPack('vacation-summer').label, 'Vacation & Summer');
     assert.equal(outfitPacks.getPack('glam-boudoir').label, 'Glam & Boudoir');
+    assert.equal(outfitPacks.getPack('confident-seductive').label, 'Confident & Seductive');
 });
 
 test('every pack describes a wardrobe space, not a prompt string', () => {

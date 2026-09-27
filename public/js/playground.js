@@ -34,7 +34,8 @@ const PlaygroundUI = (() => {
         hair: 'Hair',
         outfit: 'Outfit',
         style: 'Style',
-        environment: 'Environment'
+        environment: 'Environment',
+        activity: 'Activity'
     };
 
     const BUTTONS = [
@@ -391,13 +392,11 @@ const PlaygroundUI = (() => {
         el.appendChild(section);
         const details = document.createElement('div');
         details.className = 'playground-details';
-        const bothScene = Boolean(c.activity && c.environment);
         const outfitRerollable = Boolean(c.outfitPack && c.outfitPack !== 'custom');
         const rows = [
             detailRow('Prompt', c.userPrompt),
-            buildDetailRow('Scene', bothScene ? (c.activity + ' \u2014 ' + c.environment) : '', { rerollField: 'scene', card })
-                || buildDetailRow('Activity', c.activity, { rerollField: 'activity', editField: 'activity', card })
-                || buildDetailRow('Environment', c.environment, { rerollField: 'environment', editField: 'environment', card }),
+            buildDetailRow('Environment', c.environment, { rerollField: 'environment', editField: 'environment', card }),
+            buildDetailRow('Activity', c.activity, { rerollField: 'activity', editField: 'activity', card }),
             detailRow('Character', card.character
                 ? card.character.name
                 : (card.characterName
@@ -429,6 +428,15 @@ const PlaygroundUI = (() => {
 
         const actions = document.createElement('div');
         actions.className = 'playground-card-actions';
+        const frequentActions = document.createElement('div');
+        frequentActions.className = 'playground-card-actions-main';
+        const moreActions = document.createElement('details');
+        moreActions.className = 'playground-card-more';
+        const moreSummary = document.createElement('summary');
+        moreSummary.textContent = 'More actions';
+        const moreList = document.createElement('div');
+        moreList.className = 'playground-card-more-list';
+        moreActions.append(moreSummary, moreList);
         BUTTONS.forEach((spec) => {
             if (spec.type === 'save_character' && !hasCharacter) return;
             if (spec.type === 'retry_portrait' && (!hasCharacter || card.characterImage)) return;
@@ -438,8 +446,16 @@ const PlaygroundUI = (() => {
             btn.innerHTML = iconSvg(spec.icon, 14) +
                 '<span class="playground-btn-label">' + spec.label + '</span>';
             btn.addEventListener('click', () => onAction(btn, card, spec.type));
-            actions.appendChild(btn);
+            if (spec.type === 'generate') {
+                actions.appendChild(btn);
+            } else if (spec.type === 'again' || spec.type === 'modify') {
+                frequentActions.appendChild(btn);
+            } else {
+                moreList.appendChild(btn);
+            }
         });
+        if (frequentActions.childElementCount) actions.appendChild(frequentActions);
+        if (moreList.childElementCount) actions.appendChild(moreActions);
         el.appendChild(actions);
 
         // Targeted random-character re-rolls. A saved character's identity is
@@ -448,21 +464,26 @@ const PlaygroundUI = (() => {
         if (card.identityReroll && (card.identityReroll.face || card.identityReroll.hair)) {
             const reroll = document.createElement('div');
             reroll.className = 'playground-card-actions playground-card-actions--identity';
+            const label = document.createElement('span');
+            label.className = 'playground-card-actions-label';
+            label.textContent = 'Identity details';
+            reroll.appendChild(label);
             const spec = [
                 { part: 'face', label: 'Re-roll Face', enabled: card.identityReroll.face },
                 { part: 'hair', label: 'Re-roll Hair', enabled: card.identityReroll.hair }
-            ];
-            spec.forEach((item) => {
-                if (!item.enabled) return;
-                const btn = document.createElement('button');
-                btn.type = 'button';
-                btn.className = 'playground-btn';
-                btn.innerHTML = iconSvg('refresh', 14) +
-                    '<span class="playground-btn-label">' + item.label + '</span>';
-                btn.addEventListener('click', () => onAction(btn, card, 'identity_reroll', { part: item.part }));
-                reroll.appendChild(btn);
-            });
-            if (reroll.childNodes.length) el.appendChild(reroll);
+            ].filter((item) => item.enabled);
+            if (spec.length) {
+                spec.forEach((item) => {
+                    const btn = document.createElement('button');
+                    btn.type = 'button';
+                    btn.className = 'playground-btn';
+                    btn.innerHTML = iconSvg('refresh', 14) +
+                        '<span class="playground-btn-label">' + item.label + '</span>';
+                    btn.addEventListener('click', () => onAction(btn, card, 'identity_reroll', { part: item.part }));
+                    reroll.appendChild(btn);
+                });
+                el.appendChild(reroll);
+            }
         }
 
         contentEl.appendChild(el);
@@ -667,6 +688,11 @@ const PlaygroundUI = (() => {
     // attribute, so the popover tracks it alongside the character controls.
     let outfitPackChoice = '';
     let outfitCustomText = '';
+    // The Activity Library selector: '', 'auto', 'random' or an activity id.
+    let activitySelect = null;
+    let activityCache = null;
+    let activityCategories = null;
+    let activityChoice = '';
     let popupStatusEl = null;
     let closeButtonEl = null;
     let summaryEl = null;
@@ -751,6 +777,78 @@ const PlaygroundUI = (() => {
             outfitPackCache = [];
         }
         return outfitPackCache;
+    }
+
+    async function loadActivities() {
+        if (activityCache) return activityCache;
+        try {
+            const res = await fetch('/api/playground/activities');
+            const data = await res.json();
+            activityCache = Array.isArray(data.activities) ? data.activities : [];
+            activityCategories = Array.isArray(data.categories) && data.categories.length
+                ? data.categories
+                : [{ id: 'social', label: 'Social' }, { id: 'home', label: 'Home' },
+                    { id: 'lifestyle', label: 'Lifestyle' }, { id: 'travel', label: 'Travel' }];
+        } catch (e) {
+            activityCache = [];
+            activityCategories = [];
+        }
+        return activityCache;
+    }
+
+    // The Activity selector mirrors the Theme/Character controls: "Theme
+    // decides" (no library activity), Auto (fit the scene), a random activity,
+    // then the catalog grouped by category.
+    function renderActivities() {
+        if (!activitySelect) return;
+        const current = activityChoice;
+        activitySelect.innerHTML = '';
+        const addOption = (value, label) => {
+            const option = document.createElement('option');
+            option.value = value;
+            option.textContent = label;
+            activitySelect.appendChild(option);
+        };
+        addOption('', 'Theme decides');
+        addOption('auto', 'Auto \u2014 fit the scene');
+        addOption('random', 'Random activity');
+        const categories = activityCategories || [];
+        const byId = activityCache || [];
+        categories.forEach((category) => {
+            const items = byId.filter((activity) => activity.category === category.id);
+            if (!items.length) return;
+            const group = document.createElement('optgroup');
+            group.label = category.label;
+            items.forEach((activity) => {
+                const option = document.createElement('option');
+                option.value = activity.id;
+                option.textContent = activity.label;
+                group.appendChild(option);
+            });
+            activitySelect.appendChild(group);
+        });
+        activitySelect.value = current || '';
+        updateSummary();
+    }
+
+    function setActivityChoice(value) {
+        activityChoice = value || '';
+        popoverDirty = true;
+        if (activitySelect && activitySelect.value !== activityChoice) activitySelect.value = activityChoice;
+        updateSummary();
+    }
+
+    function selectedActivity() {
+        return activitySelect ? String(activitySelect.value || '') : '';
+    }
+
+    function activitySummaryLabel() {
+        const value = selectedActivity();
+        if (!value) return 'Theme decides';
+        if (value === 'auto') return 'Auto';
+        if (value === 'random') return 'Random';
+        const activity = (activityCache || []).find((a) => a.id === value);
+        return activity ? activity.label : value;
     }
 
     function outfitCard(id, label, description, palette) {
@@ -1053,6 +1151,8 @@ const PlaygroundUI = (() => {
             fillSelect(genderSelect, options.gender, '');
             await loadOutfitPacks();
             renderOutfitPacks();
+            await loadActivities();
+            renderActivities();
             applyActiveConcept(await loadActiveConcept());
             updateLockAvailability();
             setPopupBusy(false);
@@ -1112,6 +1212,12 @@ const PlaygroundUI = (() => {
         outfitCustomText = concept.outfitPackCustom || '';
         if (outfitCustomEl) outfitCustomEl.value = outfitCustomText;
         renderOutfitPacks();
+        // Reflect the active Activity Library selection so a pinned/auto
+        // activity is visible and clearable before the next Surprise.
+        const activityMode = concept.activityMode || (concept.concept && concept.concept.activityMode) || '';
+        activityChoice = activityMode === 'none' ? ''
+            : (activityMode === 'explicit' ? (concept.activityId || (concept.concept && concept.concept.activityId) || '') : activityMode);
+        if (activitySelect) activitySelect.value = activityChoice;
         // Reflect the active user prompt so it can be edited and re-run.
         const activePrompt = (concept.concept && concept.concept.userPrompt) || concept.userPrompt || '';
         if (promptEl) promptEl.value = activePrompt;
@@ -1211,7 +1317,8 @@ const PlaygroundUI = (() => {
         if (!summaryEl) return;
         summaryEl.textContent = 'Scene: ' + selectedThemeLabel()
             + ' \u00b7 Character: ' + characterSummaryLabel()
-            + ' \u00b7 Wardrobe: ' + wardrobeSummaryLabel();
+            + ' \u00b7 Wardrobe: ' + wardrobeSummaryLabel()
+            + ' \u00b7 Activity: ' + activitySummaryLabel();
     }
 
     function submit() {
@@ -1234,6 +1341,7 @@ const PlaygroundUI = (() => {
         }
         const locks = selectedLocks();
         const outfit = selectedOutfit();
+        const activity = selectedActivity();
         close();
         send(customPrompt ? 'Use my character with my prompt' : 'Surprise me with a creative concept', {
             type: 'surprise',
@@ -1244,6 +1352,7 @@ const PlaygroundUI = (() => {
             profile,
             outfitPack: outfit.outfitPack,
             outfitPackCustom: outfit.outfitPackCustom,
+            activity,
             customPrompt
         });
     }
@@ -1292,6 +1401,7 @@ const PlaygroundUI = (() => {
         genderSelect = document.getElementById('playgroundGender');
         outfitPacksEl = document.getElementById('playgroundOutfitPacks');
         outfitCustomEl = document.getElementById('playgroundOutfitCustom');
+        activitySelect = document.getElementById('playgroundActivity');
         promptEl = document.getElementById('playgroundPrompt');
         const submitBtn = document.getElementById('playgroundSurprise');
 
@@ -1349,6 +1459,7 @@ const PlaygroundUI = (() => {
         });
         if (promptEl) promptEl.addEventListener('input', () => { popoverDirty = true; syncPromptMode(); });
         if (outfitCustomEl) outfitCustomEl.addEventListener('input', () => { popoverDirty = true; });
+        if (activitySelect) activitySelect.addEventListener('change', () => { popoverDirty = true; updateSummary(); });
         popupEl.querySelectorAll('.playground-lock input[type="checkbox"]').forEach((box) => {
             box.addEventListener('change', () => { popoverDirty = true; updateSummary(); });
         });

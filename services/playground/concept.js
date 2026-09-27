@@ -13,10 +13,11 @@
 const { getTheme, pickScenario, pickAspectRatio, outfitSignature } = require('./themes');
 const identityGen = require('./character');
 const outfitPacks = require('./outfit-packs');
+const activities = require('./activities');
 
 // Lockable attribute groups. Each group maps to the concept/character field it
 // freezes during randomization.
-const LOCKABLE = ['identity', 'appearance', 'hair', 'outfit', 'style', 'environment'];
+const LOCKABLE = ['identity', 'appearance', 'hair', 'outfit', 'style', 'environment', 'activity'];
 
 const MODES = ['character', 'random_character', 'none'];
 
@@ -89,6 +90,108 @@ function finalize(concept, theme) {
     return concept;
 }
 
+// --- Activity Library --------------------------------------------------------
+//
+// An activity is a shared creative vocabulary (see services/playground/
+// activities.js): what the subject is doing, its environment compatibility and
+// its composition/camera hints. It is creative direction, never final prompt
+// text. The Playground resolves it explicitly or automatically; the Chat
+// Creative Director will consume the very same definitions later.
+
+function clearActivityFields(concept) {
+    concept.activityId = '';
+    concept.activityLabel = '';
+    concept.activityActions = [];
+    concept.activityComposition = '';
+    concept.activityCamera = '';
+    concept.activityGroupSize = 1;
+    concept.activitySource = '';
+    concept.activityMode = 'none';
+    return concept;
+}
+
+// Attach a structured activity. `keepText` preserves the concept's existing
+// activity wording (used when a theme-drawn activity is merely matched, so the
+// richer theme phrase is not replaced by the library phrase).
+function attachActivity(concept, activity, source, keepText) {
+    if (!concept || !activity) return concept;
+    if (!keepText) concept.activity = activity.phrase || concept.activity || '';
+    concept.activityId = activity.id;
+    concept.activityLabel = activity.label || '';
+    concept.activityActions = (activity.actions || []).slice();
+    concept.activityComposition = (activity.compositionHints || []).join(', ');
+    concept.activityCamera = (activity.cameraHints || []).join(', ');
+    concept.activityGroupSize = Array.isArray(activity.groupSizes) && activity.groupSizes.length
+        ? activity.groupSizes[0]
+        : 1;
+    concept.activitySource = source;
+    return concept;
+}
+
+// Resolve the concept's activity from a raw selection ("", "auto", "random", or
+// an activity id). Auto picks an activity compatible with the drawn scene; none
+// keeps the theme's activity wording but still attaches hints when it matches a
+// known activity so composition/camera benefit from the shared vocabulary.
+function resolveConceptActivity(concept, options = {}) {
+    if (!concept) return concept;
+    const selection = activities.resolveActivitySelection(options.selection);
+    const rng = rngOf(options.rng);
+    concept.activityMode = selection.mode;
+
+    if (selection.mode === 'explicit') {
+        const activity = activities.getActivity(selection.id);
+        clearActivityFields(concept);
+        concept.activityMode = selection.mode;
+        if (activity) attachActivity(concept, activity, 'library');
+        return concept;
+    }
+
+    if (selection.mode === 'none') {
+        const match = activities.matchActivityFromText(concept.activity || '');
+        clearActivityFields(concept);
+        concept.activityMode = selection.mode;
+        if (match.id) attachActivity(concept, match.activity, 'matched', true);
+        return concept;
+    }
+
+    const chosen = activities.selectActivity({
+        environment: concept.environment,
+        themeId: options.themeId || concept.themeId,
+        character: options.character,
+        outfitPack: concept.outfitPack,
+        groupSize: options.groupSize || 1,
+        mode: selection.mode,
+        rng,
+        avoidActivityIds: options.avoidActivityIds
+    });
+    clearActivityFields(concept);
+    concept.activityMode = selection.mode;
+    if (chosen) attachActivity(concept, chosen, 'library');
+    return concept;
+}
+
+// Let the activity adapt the composed outfit (footwear/accessories/comfort
+// bottoms) through the central resolver, without recomposing a new look. Used
+// when the activity changes on an already-composed concept.
+function adaptConceptOutfitToActivity(concept, rng) {
+    if (!concept || !concept.outfit || concept.userPrompt) return concept;
+    const resolved = outfitPacks.resolveOutfitForContext(
+        { outfit: concept.outfit, components: concept.outfitComponents || null },
+        concept.environment,
+        concept.activity || concept.activityId,
+        { rng, activityId: concept.activityId, packLabel: concept.outfitPackLabel }
+    );
+    if (resolved && resolved.outfit) {
+        concept.outfit = resolved.outfit;
+        if (resolved.components && Object.keys(resolved.components).some((key) => resolved.components[key])) {
+            concept.outfitComponents = resolved.components;
+        }
+        concept.outfitSignature = outfitSignature(resolved.outfit);
+        if (resolved.resolution) concept.outfitResolution = resolved.resolution;
+    }
+    return concept;
+}
+
 // --- Outfit Packs ------------------------------------------------------------
 //
 // An Outfit Pack is a first-class, replaceable wardrobe attribute: selecting one
@@ -126,6 +229,7 @@ function applyOutfitPack(concept, options = {}) {
         concept.outfitArchetype = 'custom';
         concept.outfitSilhouette = '';
         concept.outfitSignature = outfitSignature(customText);
+        concept.outfitResolution = null;
         return concept;
     }
 
@@ -133,7 +237,15 @@ function applyOutfitPack(concept, options = {}) {
         avoidSignatures: options.avoidSignatures,
         previousArchetype: options.previousArchetype,
         gender: options.gender,
-        avoidLayers: options.avoidLayers
+        avoidLayers: options.avoidLayers,
+        // The environment/scene lets the compatibility resolver adapt the pack
+        // (footwear, heavy outerwear, accessories) without creating a second
+        // outfit system.
+        environment: options.environment !== undefined ? options.environment : concept.environment,
+        activity: options.activity !== undefined ? options.activity : concept.activity,
+        scene: options.scene,
+        explicit: options.explicit,
+        protect: options.protect
     });
     if (!composed.outfit) return concept;
     concept.outfit = composed.outfit;
@@ -141,6 +253,10 @@ function applyOutfitPack(concept, options = {}) {
     concept.outfitArchetype = composed.archetype;
     concept.outfitSilhouette = composed.silhouette;
     concept.outfitComponents = composed.components;
+    concept.outfitResolution = composed.resolution || null;
+    if (composed.resolution) {
+        outfitPacks.outfitContext.logResolution('pack:' + packId, composed.resolution, options);
+    }
     return concept;
 }
 
@@ -220,8 +336,22 @@ function assembleConcept(input = {}) {
         outfitPackLabel: '',
         outfitPackCustom: '',
         outfitComponents: null,
+        // The environment/outfit compatibility report (selected environment,
+        // adaptations, final outfit). Surfaced only in Playground debug mode.
+        outfitResolution: null,
         environment: scenario.environment || '',
         activity: scenario.activity || '',
+        // Structured Activity Library resolution: the activity id/label, its
+        // action palette and composition/camera hints, and whether it was
+        // selected from the library or merely matched from the theme scenario.
+        activityId: '',
+        activityLabel: '',
+        activityActions: [],
+        activityComposition: '',
+        activityCamera: '',
+        activityGroupSize: 1,
+        activitySource: '',
+        activityMode: 'none',
         lighting: scenario.lighting || '',
         camera: scenario.camera || '',
         composition: scenario.composition || '',
@@ -326,6 +456,29 @@ function assembleConcept(input = {}) {
     if (locks.environment && previous && previous.environment) {
         concept.environment = previous.environment;
     }
+    // Activity: a locked activity is carried from the previous concept;
+    // otherwise the shared Activity Library resolves what the scene suggests
+    // (or the user's explicit selection). This runs before the outfit pack so
+    // the clothing composition is activity-aware.
+    if (locks.activity && previous && previous.activity) {
+        concept.activity = previous.activity;
+        concept.activityId = previous.activityId || '';
+        concept.activityLabel = previous.activityLabel || '';
+        concept.activityActions = Array.isArray(previous.activityActions) ? previous.activityActions.slice() : [];
+        concept.activityComposition = previous.activityComposition || '';
+        concept.activityCamera = previous.activityCamera || '';
+        concept.activityGroupSize = previous.activityGroupSize || 1;
+        concept.activitySource = previous.activitySource || '';
+        concept.activityMode = previous.activityMode || 'none';
+    } else {
+        resolveConceptActivity(concept, {
+            selection: input.activity,
+            rng,
+            themeId: theme && theme.id,
+            character,
+            avoidActivityIds: input.avoidActivityIds
+        });
+    }
 
     // Outfit Pack: compose the specific outfit from the selected pack's wardrobe
     // space. A locked outfit wins, so only the pack metadata is recorded then.
@@ -335,6 +488,9 @@ function assembleConcept(input = {}) {
     const resolvedPack = resolveOutfitPack(input, packCharacter);
     if (resolvedPack.packId) {
         const context = input.contextText ? outfitPacks.contextModifiers(input.contextText) : null;
+        // The user's own prompt is the scene authority when present; otherwise
+        // the drawn scenario environment/activity describes the setting.
+        const envText = userPrompt || concept.environment;
         applyOutfitPack(concept, {
             packId: resolvedPack.packId,
             customText: resolvedPack.customText,
@@ -343,8 +499,15 @@ function assembleConcept(input = {}) {
             gender: conceptGender(concept, character),
             avoidSignatures: input.avoidOutfitSignatures,
             previousArchetype: input.previousOutfitArchetype,
-            avoidLayers: Boolean(context && context.warm && !context.cold)
+            avoidLayers: Boolean(context && context.warm && !context.cold),
+            environment: envText,
+            activity: userPrompt ? '' : concept.activity,
+            debug: input.debug
         });
+    } else if (concept.activitySource === 'library' && concept.outfit && !locks.outfit && !userPrompt) {
+        // No pack drove the clothing: still let the selected activity adapt the
+        // theme-drawn outfit through the central resolver (footwear, comfort).
+        adaptConceptOutfitToActivity(concept, rng);
     }
 
     // A user-supplied prompt is the authoritative scene brief. Drop the
@@ -362,6 +525,7 @@ function assembleConcept(input = {}) {
         if (!locks.style) concept.style = '';
         if (!locks.environment) concept.environment = '';
         concept.activity = '';
+        if (!locks.activity) clearActivityFields(concept);
         concept.lighting = '';
         concept.camera = '';
         concept.composition = '';
@@ -438,6 +602,28 @@ function rerollField(concept, theme, field, rng = Math.random) {
         concept.outfitComponents = null;
         return finalize(concept, theme);
     }
+    if (name === 'activity') {
+        // A library-resolved activity re-rolls within the shared Activity
+        // Library (compatible with the current scene); a theme-drawn activity
+        // keeps drawing from the theme pool below.
+        if (concept.activityId && concept.activityMode !== 'none') {
+            const mode = concept.activityMode === 'random' ? 'random' : 'auto';
+            const chosen = activities.selectActivity({
+                environment: concept.environment,
+                themeId: theme && theme.id,
+                outfitPack: concept.outfitPack,
+                groupSize: concept.activityGroupSize || 1,
+                mode,
+                rng,
+                avoidActivityIds: concept.activityId ? [concept.activityId] : []
+            });
+            clearActivityFields(concept);
+            concept.activityMode = mode;
+            if (chosen) attachActivity(concept, chosen, 'library');
+            adaptConceptOutfitToActivity(concept, rng);
+            return finalize(concept, theme);
+        }
+    }
     if (name === 'scene') {
         const activity = pickDifferent(concept.activity, poolList(theme, 'activities'), rng);
         const environment = pickDifferent(concept.environment, poolList(theme, 'environments'), rng);
@@ -504,6 +690,21 @@ function applyChanges(concept, changes) {
     if (typeof src.customDirection === 'string' && src.customDirection.trim()) {
         next.customDirection = src.customDirection.trim();
     }
+    // Activity wording or an explicit activity id resolves through the shared
+    // Activity Library so its action/composition/camera hints travel with it.
+    if (typeof src.activityId === 'string' && src.activityId.trim()) {
+        const activity = activities.getActivity(src.activityId);
+        if (activity) {
+            attachActivity(next, activity, 'library');
+            next.activityMode = 'explicit';
+        }
+    } else if (typeof src.activity === 'string' && src.activity.trim()) {
+        const match = activities.matchActivityFromText(next.activity);
+        clearActivityFields(next);
+        next.activity = src.activity.trim();
+        next.activityMode = 'explicit';
+        if (match.id) attachActivity(next, match.activity, 'matched', true);
+    }
     return next;
 }
 
@@ -522,7 +723,8 @@ const KEEP_HINTS = [
     { lock: 'appearance', re: /\b(?:face|facial|appearance|features)\b/i },
     { lock: 'identity', re: /\b(?:character|identity|person|subject|same\s+(?:woman|man|guy|girl|person))\b/i },
     { lock: 'style', re: /\b(?:style|look|aesthetic|vibe)\b/i },
-    { lock: 'environment', re: /\b(?:environment|setting|background|scene|place|location|backdrop)\b/i }
+    { lock: 'environment', re: /\b(?:environment|setting|background|scene|place|location|backdrop)\b/i },
+    { lock: 'activity', re: /\b(?:activity|what (?:she|he|they)(?:'s| is| are|re)? doing|doing)\b/i }
 ];
 
 const CHANGE_HINTS = [
@@ -629,9 +831,18 @@ function lockedGroupsFromText(text) {
 
 function detectChanges(text, options = {}) {
     const changes = {};
+    // The shared Activity Library matcher runs first: a confident match becomes
+    // a structured activity (id + phrase) so the concept carries its
+    // composition/camera hints. An uncertain match leaves it unspecified.
+    const matchedActivity = activities.matchActivityFromText(text);
     for (const hint of CHANGE_HINTS) {
         if (typeof changes[hint.field] === 'string') continue;
+        if (hint.field === 'activity' && matchedActivity.id) continue;
         if (hint.re.test(text)) changes[hint.field] = hint.value;
+    }
+    if (matchedActivity.id) {
+        changes.activityId = matchedActivity.id;
+        changes.activity = matchedActivity.activity.phrase;
     }
     for (const hint of THEME_HINTS) {
         if (hint.re.test(text)) {
@@ -710,7 +921,17 @@ function conceptToDirection(concept) {
     if (c.outfit) lines.push('Outfit: ' + c.outfit + '.');
     if (c.outfitPackLabel) lines.push('Outfit pack (wardrobe personality): ' + c.outfitPackLabel + '.');
     if (c.outfitPackCustom) lines.push('Requested custom outfit: ' + c.outfitPackCustom + '.');
-    if (c.activity) lines.push('Character activity: ' + c.activity + '.');
+    // Spoken action is name-owned (the same library is reused for multi-character
+    // scenes later): "Yara is reading a paperback book while relaxing."
+    if (c.activity) {
+        const owner = c.name ? c.name : 'the character';
+        lines.push('Character activity: ' + owner + ' is ' + c.activity + '.');
+    }
+    if (Array.isArray(c.activityActions) && c.activityActions.length) {
+        lines.push('Activity actions: ' + c.activityActions.join('; ') + '.');
+    }
+    if (c.activityComposition) lines.push('Activity composition: ' + c.activityComposition + '.');
+    if (c.activityCamera) lines.push('Activity camera: ' + c.activityCamera + '.');
     if (c.environment) lines.push('Environment: ' + c.environment + '.');
     if (c.category) lines.push('Social-media category: ' + c.category + '.');
     if (c.lighting) lines.push('Lighting: ' + c.lighting + '.');
@@ -774,6 +995,7 @@ function conceptToConstraints(concept, options = {}) {
     if (locks.outfit && c.outfit) constraints.push('Preserve the outfit exactly: ' + c.outfit);
     if (locks.style && c.style) constraints.push('Preserve the visual style: ' + c.style);
     if (locks.environment && c.environment) constraints.push('Preserve the environment: ' + c.environment);
+    if (locks.activity && c.activity) constraints.push('Preserve the character activity: ' + c.activity);
     if (c.aspectRatio) constraints.push('Frame for a ' + c.aspectRatio + ' aspect ratio');
     return constraints;
 }
@@ -787,6 +1009,8 @@ module.exports = {
     assembleConcept,
     applyChanges,
     applyOutfitPack,
+    resolveConceptActivity,
+    adaptConceptOutfitToActivity,
     rerollField,
     rerollIdentityPart,
     REROLLABLE_FIELDS,

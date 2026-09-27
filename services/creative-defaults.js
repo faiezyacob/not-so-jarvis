@@ -18,6 +18,7 @@
    ============================================ */
 
 const outfitPacks = require('./playground/outfit-packs');
+const outfitContext = require('./playground/outfit-context');
 const themes = require('./playground/themes');
 
 // --- Scene classification -----------------------------------------------------
@@ -116,7 +117,7 @@ function sceneModifiers(text) {
         warm: /\b(?:beach|summer|tropical|pool|warm|hot|sunny|seaside|coastal|resort)\b/i.test(value),
         cold: /\b(?:winter|snow|cold|chilly|freezing|arctic)\b/i.test(value),
         gym: /\b(?:gym|workout|training|fitness|exercise|running|jogging)\b/i.test(value),
-        evening: /\b(?:evening|night|club|party|dinner|drinks|date\s+night)\b/i.test(value),
+        evening: /\b(?:evening|night|club|party|dinner|drinks|date\s+night|date|going\s+out|getting\s+ready)\b/i.test(value),
         bedroom: /\b(?:bedroom|bed|lounge|lounging|pyjamas|pajamas|in\s+bed)\b/i.test(value),
         outdoor: /\b(?:outdoor|street|park|city|hiking|trail|mountain|walking)\b/i.test(value)
     };
@@ -171,25 +172,41 @@ function composeCharacterOutfit(character, options = {}) {
     const seed = options.seed;
     const rng = mulberry32((seed >>> 0) ^ hashString(firstName(character, options.index) + '|' + String(options.avoid || '')));
     const gender = genderOf(character) || options.gender || '';
-    const mods = sceneModifiers(options.sceneText || '');
+    const sceneText = String(options.environment || options.sceneText || '');
+    const mods = sceneModifiers(options.sceneText || sceneText);
+    // A male character uses separates/layered looks from any pack, since most
+    // packs are not gender-tagged. A partial instruction that names a top
+    // excludes one-piece and layered looks (an outer layer could obscure the
+    // user's own top); a named bottom excludes one-piece looks only, so a light
+    // layer remains possible.
+    let archetypes = gender === 'man' ? ['separates', 'layered'] : undefined;
+    if (options.explicit && options.explicit.top) archetypes = ['separates'];
+    else if (options.explicit && options.explicit.bottom) archetypes = ['separates', 'layered'];
     const packOptions = {
         gender,
         avoidLayers: mods.warm,
         avoidSignatures: Array.isArray(options.avoidSignatures) ? options.avoidSignatures : [],
         previousArchetype: options.previousArchetype || '',
-        // A male character uses separates/layered looks from any pack, since
-        // most packs are not gender-tagged. The pack's own gendered entries are
-        // still honoured by composeFromPack.
-        archetypes: gender === 'man' ? ['separates', 'layered'] : undefined
+        // The environment + activity drive the central compatibility resolver
+        // (footwear, heavy outerwear, accessories) so the composed outfit suits
+        // where the character is and what they are doing.
+        environment: sceneText,
+        activity: options.activity || '',
+        scene: options.activity || options.sceneText || '',
+        explicit: options.explicit,
+        protect: options.protect,
+        archetypes
     };
 
     // 1. An assigned pack (character preset, then an explicit pack, then a pack
-    //    the scene wording implies).
+    //    the scene wording implies). "Getting ready for a date" in a bedroom is
+    //    an occasion cue, so it outranks the room's own wardrobe hint.
     let packId = outfitPacks.normalizePackId(character && character.outfitPack);
     if (!packId && options.outfitPack) packId = outfitPacks.normalizePackId(options.outfitPack);
+    if (!packId) packId = occasionPack(sceneText);
     if (!packId) packId = outfitPacks.detectOutfitPackFromText(options.sceneText || '');
     if (packId === outfitPacks.CUSTOM_PACK_ID && character && character.outfitPackCustom) {
-        return { outfit: String(character.outfitPackCustom).trim(), source: 'custom', packId };
+        return { outfit: String(character.outfitPackCustom).trim(), source: 'custom', packId, components: null, resolution: null };
     }
     // No pack assigned: fall back to a scene-appropriate wardrobe personality
     // from the SAME pack catalog (gender-aware), never a second clothing pool.
@@ -197,13 +214,19 @@ function composeCharacterOutfit(character, options = {}) {
     if (packId) {
         const composed = outfitPacks.composeFromPack(packId, rng, packOptions);
         if (composed && composed.outfit) {
-            return { outfit: composed.outfit, source: 'pack', packId, components: composed.components };
+            return {
+                outfit: composed.outfit,
+                source: 'pack',
+                packId,
+                components: composed.components,
+                resolution: composed.resolution || null
+            };
         }
     }
 
     // 2. Last resort: the shared Lifestyle casual wardrobe (the same component
     //    system the Playground uses), tagged by the scene so the look fits the
-    //    setting.
+    //    setting. The environment resolver still applies.
     const theme = themes.getTheme('lifestyle-candid') || themes.getTheme('anything');
     if (theme && theme.outfitSystem) {
         const sceneTags = themes.classifyScene({ environment: options.environment, activity: options.activity }) || [];
@@ -213,15 +236,43 @@ function composeCharacterOutfit(character, options = {}) {
             previousArchetype: packOptions.previousArchetype
         });
         if (composed && composed.outfit) {
-            return { outfit: composed.outfit, source: 'wardrobe', components: composed.components };
+            const resolved = outfitContext.resolveOutfitForEnvironment(
+                { outfit: composed.outfit, components: composed.components },
+                sceneText,
+                { rng, activity: options.activity, explicit: options.explicit, protect: options.protect }
+            );
+            return {
+                outfit: resolved.outfit || composed.outfit,
+                source: 'wardrobe',
+                components: resolved.components || composed.components,
+                resolution: resolved.resolution || null
+            };
         }
     }
 
-    return { outfit: '', source: '' };
+    return { outfit: '', source: '', components: null, resolution: null };
+}
+
+// "Getting ready" wording is an occasion cue: a bedroom becomes date-night (or
+// work / party) preparation rather than a relaxed lounging scene. Returns a pack
+// id or '' when the scene has no occasion cue.
+const GETTING_READY_RE =
+    /\b(?:getting ready|get ready|preparing (?:for|to)|dressing (?:up )?for|about to (?:go|leave)|ready for)\b/i;
+
+function occasionPack(text) {
+    const value = String(text || '');
+    if (!GETTING_READY_RE.test(value)) return '';
+    if (/\b(?:date|romantic)\b/i.test(value)) return 'casual-night-out';
+    if (/\b(?:party|celebration|club|night\s+out|evening\s+out)\b/i.test(value)) return 'casual-night-out';
+    if (/\b(?:work|office|interview|meeting)\b/i.test(value)) return 'casual-smart';
+    if (/\b(?:gym|workout|work[- ]out|training)\b/i.test(value)) return 'gym-activewear';
+    if (/\b(?:wedding|ceremony|gala)\b/i.test(value)) return 'glam-boudoir';
+    if (/\b(?:beach|pool|vacation|resort)\b/i.test(value)) return 'vacation-summer';
+    return '';
 }
 
 // The wardrobe personality a scene implies when the character has no assigned
-// pack. Reuses the existing pack catalog (all 10 packs are gender-aware); the
+// pack. Reuses the existing pack catalog (all packs are gender-aware); the
 // everyday casual pack is the safe default for a neutral scene.
 function defaultPackForScene(text, gender, mods) {
     const value = String(text || '');
@@ -328,6 +379,17 @@ function selectStylePackage(options = {}) {
 
 // --- Section builder ----------------------------------------------------------
 
+// Decide which garment slots an instruction already covers. `full` marks a
+// complete outfit (one-piece, suit, or a named top + bottom), which suppresses
+// auto-fill entirely; any other named slot is a partial instruction.
+function decideClothingSlots(rawPrompt, contextText) {
+    const explicit = outfitContext.detectClothingSlots(rawPrompt);
+    const context = outfitContext.detectClothingSlots(contextText);
+    const slots = explicit.any ? explicit : context;
+    const full = Boolean(slots.full || slots.dress || (slots.top && slots.bottom));
+    return { explicit, context, slots, full, any: explicit.any || context.any };
+}
+
 // Build the creative-defaults contribution for a set of characters. Only fills
 // what the user left unspecified; an explicit instruction in `rawPrompt` always
 // wins and the corresponding slot is omitted from the section.
@@ -341,8 +403,17 @@ function buildCreativeDefaults(characters, options = {}) {
     // scene generates fresh defaults.
     const continuity = options.continuity === true;
 
-    const hasExplicitClothing = specifiesClothing(rawPrompt) || specifiesClothing(context);
+    // Which garment slots the user already decided. A complete outfit (a
+    // one-piece, a suit, or a top + bottom) suppresses auto-fill entirely; a
+    // partial instruction only fills the missing pieces. Multi-character scenes
+    // keep the conservative "any explicit clothing suppresses auto-fill" rule
+    // because per-character ownership cannot be inferred reliably.
+    const decision = decideClothingSlots(rawPrompt, context);
+    const slots = decision.slots;
+    const fullExplicit = decision.full;
+    const hasExplicitClothing = specifiesClothing(rawPrompt) || specifiesClothing(context) || decision.any;
     const hasExplicitStyle = specifiesStyle(rawPrompt);
+    const singlePartial = list.length === 1 && hasExplicitClothing && slots.any && !fullExplicit;
     const previousClothing = Array.isArray(options.previousClothing) ? options.previousClothing : [];
     const previousStyle = options.previousStyle && typeof options.previousStyle === 'object'
         ? options.previousStyle
@@ -363,7 +434,7 @@ function buildCreativeDefaults(characters, options = {}) {
             if (name && outfit) clothing.push({ name, outfit, source: item.source || 'continuity', packId: item.packId || '' });
         }
     }
-    if (!hasExplicitClothing && !clothing.length) {
+    if ((!hasExplicitClothing || singlePartial) && !clothing.length) {
         const usedSignatures = [];
         list.forEach((character, index) => {
             const composed = composeCharacterOutfit(character, {
@@ -375,15 +446,39 @@ function buildCreativeDefaults(characters, options = {}) {
                 activity: options.activity,
                 outfitPack: options.outfitPack,
                 avoidSignatures: usedSignatures,
-                previousArchetype: index > 0 ? 'separates' : ''
+                previousArchetype: index > 0 ? 'separates' : '',
+                // Only a partial instruction needs the explicit slot map; it
+                // keeps the resolver off the user's own garments.
+                explicit: singlePartial ? outfitContext.explicitSlotsFrom(slots) : undefined
             });
-            if (composed.outfit) {
-                usedSignatures.push(themes.outfitSignature(composed.outfit));
+            let outfit = composed.outfit;
+            let components = composed.components || null;
+            let resolution = composed.resolution || null;
+            // Partial instruction: drop the slots the user already named, keep
+            // (and re-resolve) only the pieces we are filling in. The explicit
+            // garments stay in the scene wording, untouched by the resolver.
+            if (singlePartial && components) {
+                const stripped = outfitContext.stripSlots(components, slots);
+                const rebuilt = outfitContext.describeOutfit(stripped);
+                if (!rebuilt) return;
+                const resolved = outfitContext.resolveOutfitForEnvironment(
+                    { outfit: rebuilt, components: stripped },
+                    options.environment || context,
+                    { activity: options.activity, seed: seedBase }
+                );
+                outfit = resolved.outfit || rebuilt;
+                components = resolved.components || stripped;
+                resolution = resolved.resolution || resolution;
+            }
+            if (outfit) {
+                usedSignatures.push(themes.outfitSignature(outfit));
                 clothing.push({
                     name: firstName(character, index),
-                    outfit: composed.outfit,
+                    outfit,
                     source: composed.source,
-                    packId: composed.packId || ''
+                    packId: composed.packId || '',
+                    components: components || null,
+                    resolution: resolution || null
                 });
             }
         });
@@ -419,6 +514,8 @@ function buildCreativeDefaults(characters, options = {}) {
         style,
         hasExplicitClothing,
         hasExplicitStyle,
+        explicitSlots: slots,
+        partial: singlePartial,
         section
     };
 }
@@ -431,6 +528,8 @@ module.exports = {
     specifiesClothing,
     specifiesStyle,
     selectStylePackage,
+    explicitClothingSlots: outfitContext.detectClothingSlots,
+    decideClothingSlots,
     composeCharacterOutfit,
     buildCreativeDefaults,
     sceneText,

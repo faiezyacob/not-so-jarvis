@@ -862,6 +862,17 @@ async function handleAPI(req, res, urlPath) {
         return true;
     }
 
+    // GET /api/playground/activities — the shared Activity Library catalog
+    // (single-character activities for the Playground selector). The UI never
+    // hardcodes the catalog.
+    if (urlPath === '/api/playground/activities' && req.method === 'GET') {
+        json(res, 200, {
+            activities: playground.listActivities({ groupSize: 1 }),
+            categories: playground.listActivityCategories()
+        });
+        return true;
+    }
+
     // GET /api/playground/state — the active concept for a conversation, so the
     // concept card keeps working after a reload.
     if (urlPath === '/api/playground/state' && req.method === 'GET') {
@@ -3748,7 +3759,9 @@ function creativeDefaultSeed(conversationId, scenePrompt) {
 function persistedClothing(identity) {
     const clothing = identity && identity.creativeDefaults && identity.creativeDefaults.clothing;
     if (!Array.isArray(clothing) || !clothing.length) return null;
-    if (identity.creativeDefaults.hasExplicitClothing) return null;
+    // A complete explicit outfit produces no automatic clothing (empty array),
+    // so it falls out above; a partial instruction's auto-filled pieces are
+    // still persisted so a follow-up preserves them.
     return clothing.map((item) => ({
         name: item.name,
         outfit: item.outfit,
@@ -4110,6 +4123,8 @@ async function handlePlaygroundAction(req, res, ctx, action, rawMessage) {
                 profile: action.profile,
                 outfitPack: action.outfitPack,
                 outfitPackCustom: action.outfitPackCustom,
+                // The shared Activity Library selection ("", "auto", "random" or id).
+                activity: action.activity,
                 // The user's own prompt, used verbatim with the chosen character.
                 customPrompt: action.customPrompt
             });
@@ -4339,6 +4354,7 @@ async function handlePlaygroundAction(req, res, ctx, action, rawMessage) {
             // An explicit pack selection from the popover wins over interpretation.
             if (action.outfitPack !== undefined) payload.outfitPack = action.outfitPack;
             if (action.outfitPackCustom !== undefined) payload.outfitPackCustom = action.outfitPackCustom;
+            if (action.activity !== undefined) payload.activity = action.activity;
             payload.direction = direction;
             session = playground.modify(session, payload);
             await runPlaygroundFaceStage(req, res, ctx, session);

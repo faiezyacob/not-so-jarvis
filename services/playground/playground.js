@@ -18,6 +18,7 @@ const state = require('./state');
 const themes = require('./themes');
 const conceptEngine = require('./concept');
 const outfitPacks = require('./outfit-packs');
+const activities = require('./activities');
 const characterStudio = require('../character-studio');
 
 const ACTIONS = {
@@ -83,6 +84,16 @@ function rememberOutfit(session, concept) {
     const signature = concept && concept.outfitSignature;
     if (signature && !list.includes(signature)) list.push(signature);
     session.outfitSignatures = list.slice(-12);
+}
+
+// Track the activity ids already used in this session so consecutive Surprises
+// don't immediately repeat the same activity. Only library-resolved activities
+// are tracked; a theme-drawn activity has no id.
+function rememberActivity(session, concept) {
+    const list = Array.isArray(session.activityIds) ? session.activityIds.slice() : [];
+    const id = concept && concept.activityId;
+    if (id && !list.includes(id)) list.push(id);
+    session.activityIds = list.slice(-12);
 }
 
 function previousOutfitArchetype(previous) {
@@ -168,6 +179,19 @@ function buildCard(session, character) {
         outfitPack: concept.outfitPack || '',
         outfitPackLabel: concept.outfitPackLabel || '',
         outfitPackCustom: concept.outfitPackCustom || '',
+        // The resolved Activity Library selection (id + UI mode) so the popover
+        // can reflect it and a card reload keeps the selector in sync.
+        activityMode: concept.activityMode || session.activity || '',
+        activityId: concept.activityId || '',
+        // Development-only (JARVIS_PLAYGROUND_DEBUG=1): the environment/outfit
+        // resolution report, so the resolver is easy to tune. Never sent to
+        // normal users and never included in an image prompt.
+        debug: String(process.env.JARVIS_PLAYGROUND_DEBUG || '') === '1'
+            ? {
+                outfitResolution: concept.outfitResolution || null,
+                formatted: outfitPacks.formatResolution(concept.outfitResolution)
+            }
+            : undefined,
         title: concept.title || '',
         description: concept.description || '',
         concept: {
@@ -189,6 +213,12 @@ function buildCard(session, character) {
             outfitPackCustom: concept.outfitPackCustom || '',
             environment: concept.environment || '',
             activity: concept.activity || '',
+            activityId: concept.activityId || '',
+            activityLabel: concept.activityLabel || '',
+            activityActions: Array.isArray(concept.activityActions) ? concept.activityActions.slice() : [],
+            activityComposition: concept.activityComposition || '',
+            activityCamera: concept.activityCamera || '',
+            activityMode: concept.activityMode || '',
             lighting: concept.lighting || '',
             camera: concept.camera || '',
             composition: concept.composition || '',
@@ -246,6 +276,7 @@ function start(input = {}) {
     const previous = state.getSession(conversationId);
     const avoidSignatures = previous && Array.isArray(previous.identitySignatures) ? previous.identitySignatures : [];
     const avoidOutfitSignatures = previous && Array.isArray(previous.outfitSignatures) ? previous.outfitSignatures : [];
+    const avoidActivityIds = previous && Array.isArray(previous.activityIds) ? previous.activityIds : [];
     // Explicit controls, or the previous session's, or fully random.
     const profile = characterGen.normalizeProfile(
         input.profile || (previous && previous.characterProfile)
@@ -253,6 +284,7 @@ function start(input = {}) {
     // A constrained profile is a character request: never let "general
     // exploration" silently drop the appearance/age/gender controls.
     if (mode === 'none' && !characterGen.isRandomProfile(profile)) mode = 'random_character';
+    const activitySelection = String(input.activity || '').trim();
     const concept = conceptEngine.assembleConcept({
         theme,
         mode,
@@ -268,6 +300,9 @@ function start(input = {}) {
         outfitPack: input.outfitPack,
         outfitPackCustom: input.outfitPackCustom,
         contextText: input.contextText,
+        // The Activity Library selection ("", "auto", "random" or an id).
+        activity: activitySelection,
+        avoidActivityIds,
         // A user's own prompt (with a saved or random character) replaces the
         // theme's randomised scene; the character identity is untouched.
         userPrompt: input.customPrompt,
@@ -286,15 +321,18 @@ function start(input = {}) {
         characterProfile: profile,
         outfitPack: concept.outfitPack || '',
         outfitPackCustom: concept.outfitPackCustom || '',
+        activity: activitySelection,
         locks: conceptEngine.normalizeLocks(input.locks),
         concept,
         status: STATUS.PREVIEW,
         createdAt: now,
         updatedAt: now,
-        // Carry the recent identity/outfit history forward so repeated Surprises
-        // in one conversation don't cycle back through the same few people/looks.
+        // Carry the recent identity/outfit/activity history forward so repeated
+        // Surprises in one conversation don't cycle back through the same few
+        // people, looks or activities.
         identitySignatures: avoidSignatures.slice(-12),
-        outfitSignatures: avoidOutfitSignatures.slice(-12)
+        outfitSignatures: avoidOutfitSignatures.slice(-12),
+        activityIds: avoidActivityIds.slice(-12)
     };
     const characterSnapshot = character
         ? characterStudio.normalizeCharacter(character)
@@ -314,6 +352,7 @@ function start(input = {}) {
     session.composition = createCompositionSnapshot(session);
     rememberIdentity(session, concept);
     rememberOutfit(session, concept);
+    rememberActivity(session, concept);
     state.setSession(conversationId, session);
     return session;
 }
@@ -324,6 +363,7 @@ function again(session, options = {}) {
     const character = resolveCharacter(session.characterId);
     const avoidSignatures = Array.isArray(session.identitySignatures) ? session.identitySignatures : [];
     const avoidOutfitSignatures = Array.isArray(session.outfitSignatures) ? session.outfitSignatures : [];
+    const avoidActivityIds = Array.isArray(session.activityIds) ? session.activityIds : [];
     // "Surprise Me Again" keeps the theme and builds a new scene/outfit. The
     // character is preserved while the Identity lock is set; otherwise a new
     // person is cast from the same appearance/age/gender controls. (A saved
@@ -341,6 +381,10 @@ function again(session, options = {}) {
         outfitPack: session.outfitPack,
         outfitPackCustom: session.outfitPackCustom,
         contextText: options.contextText,
+        // An explicit/auto Activity Library selection persists across the
+        // re-roll; an auto pick re-fits the new scene.
+        activity: session.activity,
+        avoidActivityIds,
         // A user prompt is preserved: "Surprise Me Again" re-runs the same
         // prompt instead of silently dropping the user's own wording.
         userPrompt: session.concept && session.concept.userPrompt,
@@ -357,6 +401,7 @@ function again(session, options = {}) {
     session.outfitPackCustom = concept.outfitPackCustom || '';
     rememberIdentity(session, concept);
     rememberOutfit(session, concept);
+    rememberActivity(session, concept);
     session.status = STATUS.PREVIEW;
     session.updatedAt = new Date().toISOString();
     state.setSession(session.conversationId, session);
@@ -420,6 +465,14 @@ function modify(session, action = {}) {
 
     const theme = themes.getTheme(session.themeId);
     const character = resolveCharacter(session.characterId);
+    // Activity changes arrive either from the popover (`action.activity`) or
+    // from a typed follow-up resolved by the Activity Library (`changes`).
+    const activityProvided = Object.prototype.hasOwnProperty.call(action, 'activity');
+    const activitySelection = activityProvided ? String(action.activity || '') : '';
+    const activityChanged = activityProvided
+        || (typeof changes.activityId === 'string' && changes.activityId.trim())
+        || (typeof changes.activity === 'string' && changes.activity.trim());
+    const avoidActivityIds = Array.isArray(session.activityIds) ? session.activityIds : [];
     // A precise one-field re-roll never re-runs the scenario roll; it is a
     // surgical change to the current concept only.
     const fieldReroll = String(action.rerollField || '').trim().toLowerCase();
@@ -437,6 +490,9 @@ function modify(session, action = {}) {
             freshIdentity: profileChanged,
             avoidSignatures: Array.isArray(session.identitySignatures) ? session.identitySignatures : [],
             avoidOutfitSignatures: Array.isArray(session.outfitSignatures) ? session.outfitSignatures : [],
+            // A popover activity selection persists; otherwise the session's.
+            activity: activityProvided ? activitySelection : session.activity,
+            avoidActivityIds,
             previousOutfitArchetype: session.concept && session.concept.outfitArchetype ? session.concept.outfitArchetype : '',
             // Preserve an existing user prompt unless the action replaces it.
             userPrompt: action.customPrompt !== undefined
@@ -448,6 +504,15 @@ function modify(session, action = {}) {
         rememberIdentity(session, concept);
     } else {
         concept = conceptEngine.applyChanges(session.concept, changes);
+        if (activityProvided) {
+            concept = conceptEngine.resolveConceptActivity(concept, {
+                selection: activitySelection,
+                rng: action.rng,
+                themeId: session.themeId,
+                character,
+                avoidActivityIds
+            });
+        }
     }
     // Recompose only when the pack actually changed or the scenario was
     // re-rolled — a scene-only tweak keeps the exact outfit (applyChanges).
@@ -466,13 +531,25 @@ function modify(session, action = {}) {
             avoidLayers: (() => {
                 const context = action.direction ? outfitPacks.contextModifiers(action.direction) : null;
                 return Boolean(context && context.warm && !context.cold);
-            })()
+            })(),
+            // A pack change is reconciled with the concept's current environment
+            // and activity so the new outfit suits the scene it will render in.
+            environment: concept.environment || (changes && changes.environment) || '',
+            activity: concept.activity || (changes && changes.activity) || '',
+            debug: action.debug
         });
     } else if (packProvided && !effectivePack) {
         // The pack was explicitly cleared; keep the clothing but drop the metadata.
         concept.outfitPack = '';
         concept.outfitPackLabel = '';
         concept.outfitPackCustom = '';
+    }
+    // Let a changed activity adapt the clothing (footwear, comfort, accessories)
+    // through the central resolver without recomposing a new look. A pack
+    // recomposition above already accounted for the activity, so this is a
+    // near no-op in that case.
+    if (activityChanged && !locks.outfit) {
+        concept = conceptEngine.adaptConceptOutfitToActivity(concept, action.rng);
     }
     // A surgical field re-roll draws the new value from the same theme pool the
     // scenario was drawn from. An Outfit re-roll with no pack falls through to
@@ -498,10 +575,22 @@ function modify(session, action = {}) {
         }
     }
     rememberOutfit(session, concept);
+    rememberActivity(session, concept);
     session.locks = locks;
     session.characterProfile = requestedProfile;
     session.outfitPack = concept.outfitPack || '';
     session.outfitPackCustom = concept.outfitPackCustom || '';
+    // Keep the requested activity selection in sync so "Surprise Me Again"
+    // preserves an explicit pick and re-fits an auto one.
+    if (activityProvided) {
+        session.activity = activitySelection;
+    } else if (typeof changes.activityId === 'string' && changes.activityId.trim()) {
+        session.activity = changes.activityId;
+    } else if (fieldReroll === 'activity' && concept.activityMode && concept.activityMode !== 'none') {
+        session.activity = concept.activityMode === 'explicit'
+            ? (concept.activityId || session.activity)
+            : concept.activityMode;
+    }
     session.concept = concept;
     // A re-rolled identity must refresh the bound snapshot so the portrait and
     // the image request render the new person, not the previous trait set.
@@ -604,7 +693,11 @@ function buildImageRequest(session) {
         },
         scene: {
             activity: c.activity || '', environment: c.environment || '', outfit: c.outfit || '',
-            lighting: c.lighting || '', camera: c.camera || '', composition: c.composition || '',
+            lighting: c.lighting || '',
+            // The activity's composition/camera hints ride alongside the theme's
+            // own direction; the prompt builder still owns the final wording.
+            camera: [c.camera, c.activityCamera].filter(Boolean).join(', '),
+            composition: [c.composition, c.activityComposition].filter(Boolean).join(', '),
             mood: c.mood || '', style: c.style || '', technique: c.technique || '', texture: c.texture || '',
             customDirection: userPrompt || c.customDirection || ''
         },
@@ -655,6 +748,8 @@ function createScene(concept, theme) {
     return {
         id: 'scene_' + Date.now().toString(36), schemaVersion: 1,
         themeId: theme && theme.id || '', categoryId: c.categoryId || '', activity: c.activity || '',
+        activityId: c.activityId || '', activityLabel: c.activityLabel || '',
+        activityComposition: c.activityComposition || '', activityCamera: c.activityCamera || '',
         environment: c.environment || '', outfit: c.outfit || '', outfitPack: c.outfitPack || '',
         lighting: c.lighting || '', camera: c.camera || '', composition: c.composition || '', mood: c.mood || '',
         style: c.style || '', technique: c.technique || '', texture: c.texture || '', aspectRatio: c.aspectRatio || '',
@@ -774,6 +869,8 @@ function normalizeAction(value) {
         if (typeof value.outfitPack === 'string') out.outfitPack = value.outfitPack;
         if (typeof value.outfitPackCustom === 'string') out.outfitPackCustom = value.outfitPackCustom;
         else if (typeof value.customOutfit === 'string') out.outfitPackCustom = value.customOutfit;
+        // Activity Library selection ("", "auto", "random" or an activity id).
+        if (typeof value.activity === 'string') out.activity = value.activity;
         // Character controls may arrive nested or flat; merge both shapes.
         const profile = {};
         if (value.profile && typeof value.profile === 'object') Object.assign(profile, value.profile);
@@ -827,6 +924,8 @@ module.exports = {
     themeLabel,
     listThemes: themes.listThemes,
     listOutfitPacks: outfitPacks.listPacks,
+    listActivities: activities.listActivities,
+    listActivityCategories: activities.listActivityCategories,
     getSession: state.getSession,
     removeSession: state.removeSession,
     listSaved: state.listSaved,

@@ -115,13 +115,29 @@ test('clothing is generated automatically when the user omits it', () => {
     assert.match(result.section, /Jules wears /);
 });
 
-test('explicit clothing suppresses automatic clothing entirely', () => {
+test('a complete explicit outfit suppresses automatic clothing entirely', () => {
     const jules = JULES();
-    const raw = '@Jules sitting in a cafe wearing a red leather jacket';
+    const raw = '@Jules sitting in a cafe wearing a red leather jacket, a white top and black jeans';
     const result = creativeDefaults.buildCreativeDefaults([jules], { rawPrompt: raw, scenePrompt: raw.replace('@Jules ', ''), seed: 1 });
     assert.equal(result.hasExplicitClothing, true);
+    assert.equal(result.partial, false);
     assert.equal(result.clothing.length, 0);
     assert.doesNotMatch(result.section, /Jules wears /);
+});
+
+test('a partial clothing instruction fills only the missing pieces', () => {
+    const jules = JULES();
+    const raw = '@Jules sitting on her bed wearing a white crop top';
+    const result = creativeDefaults.buildCreativeDefaults([jules], {
+        rawPrompt: raw, scenePrompt: raw.replace('@Jules ', ''), environment: 'in her bedroom', seed: 1
+    });
+    assert.equal(result.hasExplicitClothing, true);
+    assert.equal(result.partial, true);
+    assert.equal(result.explicitSlots.top, true);
+    assert.equal(result.clothing.length, 1);
+    // The user's top is never re-generated: only bottoms/footwear are filled.
+    assert.doesNotMatch(result.clothing[0].outfit, /\btop\b/i);
+    assert.match(result.clothing[0].outfit, /\b(?:shorts|trousers|pants|jeans|skirt|leggings|shoes|slippers|barefoot|socks)\b/i);
 });
 
 test('every character gets an independent outfit in a multi-character scene', () => {
@@ -246,13 +262,25 @@ test('single-character generation appends auto clothing and a style package', ()
     assert.ok(conditioning.creativeDefaults);
 });
 
-test('single-character explicit clothing survives and no auto clothing appears', () => {
+test('single-character complete explicit clothing survives and no auto clothing appears', () => {
     const jules = JULES();
-    const raw = '@Jules sitting in a cafe wearing a red leather jacket';
+    const raw = '@Jules sitting in a cafe wearing a red leather jacket, a white top and black jeans';
     const conditioning = context.buildConditioning([jules], raw.replace('@Jules ', ''), { rawPrompt: raw, seed: 1 });
     assert.match(conditioning.instruction, /SCENE \(change only this\):/);
     assert.doesNotMatch(conditioning.instruction, /CLOTHING \(automatically selected/);
     assert.doesNotMatch(conditioning.instruction, /Jules wears /);
+});
+
+test('explicit footwear is preserved while the rest is auto-filled', () => {
+    const jules = JULES();
+    const raw = '@Jules standing in her bedroom wearing white sneakers';
+    const result = creativeDefaults.buildCreativeDefaults([jules], {
+        rawPrompt: raw, scenePrompt: raw.replace('@Jules ', ''), environment: 'in her bedroom', seed: 3
+    });
+    assert.equal(result.explicitSlots.footwear, true);
+    assert.ok(result.clothing.length === 1);
+    // The auto-filled pieces never re-specify (or replace) the user's footwear.
+    assert.doesNotMatch(result.clothing[0].outfit, /\b(?:sneakers|boots|heels|sandals|slippers|barefoot|flats)\b/i);
 });
 
 test('multi-character generation assigns clothing inside each named identity block', () => {

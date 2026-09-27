@@ -512,6 +512,18 @@ test('changing the profile changes the generated person', () => {
     assert.notEqual(a.signature, b.signature);
 });
 
+test('East Asian women have an increased chance of a curvy build', () => {
+    let curvy = 0;
+    const samples = 300;
+    for (let seed = 1; seed <= samples; seed++) {
+        const identity = characterGen.generateRandomIdentity(seed, {
+            appearance: 'east_asian', age: 'adult', gender: 'woman'
+        });
+        if (identity.build === 'a curvy build') curvy++;
+    }
+    assert.ok(curvy / samples > 0.25, 'expected curvy builds in more than 25% of samples, got ' + curvy + '/' + samples);
+});
+
 test('character control options always include Random plus the categories', () => {
     const options = characterGen.listProfileOptions();
     for (const key of ['appearance', 'age', 'gender']) {

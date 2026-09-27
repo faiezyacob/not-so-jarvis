@@ -262,7 +262,7 @@ const HAIR_FRINGES = [
 const BUILDS = [
     { value: 'a slim build', weight: 3 },
     { value: 'an athletic build', weight: 3 },
-    { value: 'a curvy build', weight: 4, genders: ['woman'] },
+    { value: 'a curvy build', weight: 12, genders: ['woman'] },
     { value: 'a petite frame', weight: 2, genders: ['woman'] },
     { value: 'a tall, lean frame', weight: 2 },
     { value: 'a soft, rounded build', weight: 2 },

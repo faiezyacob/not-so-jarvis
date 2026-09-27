@@ -15,6 +15,7 @@
    ============================================ */
 
 const themes = require('./themes');
+const outfitContext = require('./outfit-context');
 
 // The synthetic id for a user-defined outfit. The composed-outfit fields stay
 // empty and `outfitPackCustom` carries the exact clothing the user asked for.
@@ -881,6 +882,80 @@ const OUTFIT_PACKS = [
             'still elegant, not costume-like',
             'adult characters only'
         ]
+    },
+    {
+        id: 'confident-seductive',
+        label: 'Confident & Seductive',
+        description: 'Fashion-forward, confident and sensual adult styling.',
+        personality: 'Fitted silhouettes, considered styling and quiet sensuality — confident and attractive, never explicit.',
+        archetypes: [
+            { id: 'separates', requires: ['tops', 'bottoms'], weight: 4 },
+            { id: 'one-piece', requires: ['onePieces'], weight: 4 },
+            { id: 'layered', requires: ['outerwear', 'bottoms'], weight: 2 }
+        ],
+        wardrobe: {
+            tops: [
+                piece('a fitted ribbed top', 3),
+                piece('an elegant off-shoulder top', 2.5, { genders: ['woman'] }),
+                piece('a satin camisole', 2.5, { genders: ['woman'] }),
+                piece('a fitted square-neck top', 2, { genders: ['woman'] }),
+                piece('a cropped knit top', 2, { genders: ['woman'] }),
+                piece('a fitted long-sleeve top', 2.5),
+                piece('an elegant halter top', 2, { genders: ['woman'] }),
+                piece('a fitted mock-neck top', 1.5),
+                piece('a draped satin blouse', 1.5, { genders: ['woman'] }),
+                piece('a sleeveless draped top', 1.2, { genders: ['woman'] })
+            ],
+            bottoms: [
+                piece('fitted high-waisted trousers', 3),
+                piece('a tailored mini skirt', 2.5, { genders: ['woman'] }),
+                piece('a fitted midi skirt', 2.5, { genders: ['woman'] }),
+                piece('high-waisted jeans', 3),
+                piece('sleek shorts', 2),
+                piece('a fitted pencil skirt', 2, { genders: ['woman'] }),
+                piece('tailored wide-leg trousers', 1.5),
+                piece('a body-skimming midi skirt', 1.5, { genders: ['woman'] })
+            ],
+            dresses: [
+                piece('a fitted midi dress', 3, { genders: ['woman'] }),
+                piece('an elegant body-skimming dress', 2.5, { genders: ['woman'], avoidContexts: ['bedroom', 'sleeping', 'bathroom', 'gym', 'hiking', 'beach', 'resort'] }),
+                piece('a wrap dress', 2.5, { genders: ['woman'] }),
+                piece('a satin slip dress', 2, { genders: ['woman'] }),
+                piece('an off-shoulder dress', 2, { genders: ['woman'], avoidContexts: ['bedroom', 'sleeping', 'bathroom', 'gym', 'hiking'] }),
+                piece('a fitted evening dress', 2, { genders: ['woman'], avoidContexts: ['bedroom', 'sleeping', 'bathroom', 'gym', 'hiking', 'beach', 'resort', 'office'] })
+            ],
+            layers: [
+                piece('a cropped blazer', 2.5),
+                piece('a tailored blazer', 2.5),
+                piece('a lightweight cardigan', 2),
+                piece('an oversized blazer worn over a fitted outfit', 1.5),
+                piece('a fitted leather jacket', 1.5)
+            ],
+            footwear: [
+                piece('ankle boots', 3),
+                piece('elegant sandals', 2.5),
+                piece('heeled sandals', 2.5),
+                piece('pointed-toe pumps', 2),
+                piece('sleek flats', 2)
+            ],
+            accessories: [
+                piece('a delicate necklace', 2.5),
+                piece('small hoop earrings', 2),
+                piece('a simple bracelet', 1.5),
+                piece('an elegant handbag', 2),
+                piece('sunglasses', 1.5),
+                piece('a slim metallic belt', 1.2)
+            ]
+        },
+        palette: ['black', 'cream', 'champagne', 'burgundy', 'deep navy', 'camel', 'muted gold'],
+        rules: [
+            'fitted, confident silhouettes',
+            'considered, fashion-forward styling',
+            'sensual through silhouette and fabric, never explicit',
+            'tailored and polished',
+            'adult characters only',
+            'avoid costume-like or overdone styling'
+        ]
     }
 ];
 
@@ -899,6 +974,7 @@ const PACK_HINTS = [
     { id: 'lounge-home', re: /\b(?:lounge|at\s+home|homewear|home\s+wear|cozy|cosy|comfortable|pajamas|pyjamas|pjs|sleepwear|bedroom|relaxing\s+at\s+home|house)\b/i },
     { id: 'vacation-summer', re: /\b(?:vacation|holiday|summer|beach|tropical|resort|pool|swim|warm\s+weather|hot\s+weather|sunny|seaside|coastal|warm\s+outdoor)\b/i },
     { id: 'glam-boudoir', re: /\b(?:seductive|sultry|alluring|boudoir|glam(?:orous)?|sexy|tempting|siren|provocative|lingerie|corset|lace[- ]trim(?:med)?|silk\s+slip|bodycon|plunging)\b/i },
+    { id: 'confident-seductive', re: /\b(?:confident|attractive|fashion[- ]forward|chic|stylish|statement\s+look|sensual|elegant\s+and\s+sexy)\b/i },
     { id: 'casual-night-out', re: /\b(?:night\s+out|evening\s+out|party|clubbing|club|dinner|date\s+night|going\s+out|nightlife|drinks)\b/i },
     { id: 'casual-streetwear', re: /\b(?:streetwear|street\s+style|urban|skate|hip[- ]?hop|hoodie|street)\b/i },
     { id: 'soft-feminine-casual', re: /\b(?:feminine|girly|gentle|romantic|soft\s+and\s+pretty)\b/i },
@@ -990,10 +1066,17 @@ function genderFitsComposed(composed, gender) {
 
 // Translate a pack's `wardrobe` into the theme outfit engine's component shape.
 // Entries tagged with `genders` are filtered out when the character's gender is
-// known and does not match; otherwise they stay available.
+// known and does not match; otherwise they stay available. When an environment
+// context is supplied, pieces that are clearly incompatible with it are dropped
+// (softly — a slot is never left empty), which biases the composition toward a
+// context-appropriate look without a second wardrobe pool.
 function toSystem(pack, options = {}) {
     const wardrobe = (pack && pack.wardrobe) || {};
-    const byGender = (list) => filterByGender(list, options.gender);
+    const ctx = options.context || null;
+    const byGender = (list) => {
+        const gendered = filterByGender(list, options.gender);
+        return ctx ? outfitContext.compatiblePieces(gendered, ctx) : gendered;
+    };
     let archetypes = Array.isArray(pack.archetypes) && pack.archetypes.length
         ? pack.archetypes
         : DEFAULT_ARCHETYPES;
@@ -1019,14 +1102,64 @@ function toSystem(pack, options = {}) {
     };
 }
 
+// Resolve the environment context a composition request carries. The resolver
+// stays a no-op unless an environment/scene is actually supplied, so existing
+// pack composition is unchanged when no context is known.
+function contextForOptions(options = {}) {
+    if (options.context) return options.context;
+    const env = options.environment !== undefined ? options.environment : options.environmentText;
+    if (env === undefined || env === null || env === '') return null;
+    return outfitContext.classifyEnvironment(env, options.activity);
+}
+
+// Finish a composed pack outfit by reconciling it with the environment. The
+// returned shape carries the adaptation report so the Playground debug view can
+// show what changed (it is never written into an image prompt).
+function finalizeComposedPack(base, options, ctx, rng) {
+    const resolved = outfitContext.resolveOutfitForEnvironment(
+        { outfit: base.outfit || '', components: base.components || {} },
+        ctx,
+        {
+            rng,
+            explicit: options.explicit,
+            protect: options.protect,
+            packLabel: base.packLabel || '',
+            activity: options.activity,
+            scene: options.scene
+        }
+    );
+    const outfit = resolved.outfit || base.outfit || '';
+    return {
+        outfit,
+        signature: themes.outfitSignature(outfit),
+        archetype: base.archetype || '',
+        silhouette: base.silhouette || '',
+        components: resolved.components || base.components || {},
+        packId: base.packId,
+        packLabel: base.packLabel,
+        environment: ctx ? ctx.id : '',
+        contextTags: ctx ? ctx.tags.slice() : [],
+        adaptations: resolved.adaptations || [],
+        resolution: resolved.resolution || null
+    };
+}
+
 // Compose a specific, coherent outfit from a pack. Deterministic for a given
-// `rng`; a different seed yields a different look from the same wardrobe.
+// `rng`; a different seed yields a different look from the same wardrobe. When
+// an environment context is supplied the composition is drawn from the
+// compatible pieces and the result is run through the central compatibility
+// resolver (heavy outerwear removed indoors, footwear adapted to the setting).
 function composeFromPack(packId, rng = Math.random, options = {}) {
     const pack = getPack(packId);
     if (!pack) {
-        return { outfit: '', signature: '', archetype: '', silhouette: '', components: {}, packId: '', packLabel: '' };
+        return {
+            outfit: '', signature: '', archetype: '', silhouette: '', components: {},
+            packId: '', packLabel: '', environment: '', contextTags: [], adaptations: [], resolution: null
+        };
     }
-    const composed = themes.composeOutfit(toSystem(pack, options), null, rng, {
+    const ctx = contextForOptions(options);
+    const systemOptions = Object.assign({}, options, { context: ctx });
+    const composed = themes.composeOutfit(toSystem(pack, systemOptions), null, rng, {
         // No tag gating: the pack itself is the wardrobe constraint.
         tags: [],
         avoidSignatures: options.avoidSignatures,
@@ -1036,7 +1169,7 @@ function composeFromPack(packId, rng = Math.random, options = {}) {
     // swapped for a neutral separates look when the character's gender does not
     // match. This keeps packs without gender tags usable for every character.
     if (options.gender && composed && composed.outfit && !genderFitsComposed(composed, options.gender)) {
-        const neutral = Object.assign({}, options, { archetypes: ['separates', 'layered'] });
+        const neutral = Object.assign({}, systemOptions, { archetypes: ['separates', 'layered'] });
         for (let attempt = 0; attempt < 6; attempt++) {
             const retry = themes.composeOutfit(
                 toSystem(pack, neutral),
@@ -1045,15 +1178,14 @@ function composeFromPack(packId, rng = Math.random, options = {}) {
                 { tags: [], avoidSignatures: options.avoidSignatures, previousArchetype: attempt % 2 ? 'layered' : 'separates' }
             );
             if (retry && retry.outfit && genderFitsComposed(retry, options.gender)) {
-                return {
-                    outfit: retry.outfit || '',
-                    signature: retry.signature || '',
+                return finalizeComposedPack({
+                    outfit: retry.outfit,
                     archetype: retry.archetype || '',
                     silhouette: retry.silhouette || '',
                     components: retry.components || {},
                     packId: pack.id,
                     packLabel: pack.label
-                };
+                }, options, ctx, rng);
             }
         }
         // The pack offers no gender-appropriate separates: fall back to the
@@ -1067,27 +1199,25 @@ function composeFromPack(packId, rng = Math.random, options = {}) {
                 { tags: [], avoidSignatures: options.avoidSignatures, previousArchetype: '' }
             );
             if (neutralComposed && neutralComposed.outfit) {
-                return {
-                    outfit: neutralComposed.outfit || '',
-                    signature: neutralComposed.signature || '',
+                return finalizeComposedPack({
+                    outfit: neutralComposed.outfit,
                     archetype: neutralComposed.archetype || '',
                     silhouette: neutralComposed.silhouette || '',
                     components: neutralComposed.components || {},
                     packId: fallback.id,
                     packLabel: fallback.label
-                };
+                }, options, ctx, rng);
             }
         }
     }
-    return {
+    return finalizeComposedPack({
         outfit: composed.outfit || '',
-        signature: composed.signature || '',
         archetype: composed.archetype || '',
         silhouette: composed.silhouette || '',
         components: composed.components || {},
         packId: pack.id,
         packLabel: pack.label
-    };
+    }, options, ctx, rng);
 }
 
 module.exports = {
@@ -1102,6 +1232,17 @@ module.exports = {
     isCustomPack,
     detectOutfitPackFromText,
     contextModifiers,
+    contextForOptions,
     toSystem,
-    composeFromPack
+    composeFromPack,
+    // The central environment/outfit compatibility layer this module composes
+    // through. Re-exported so callers have one import site for outfit work.
+    resolveOutfitForEnvironment: outfitContext.resolveOutfitForEnvironment,
+    resolveOutfitForContext: outfitContext.resolveOutfitForContext,
+    classifyEnvironment: outfitContext.classifyEnvironment,
+    detectClothingSlots: outfitContext.detectClothingSlots,
+    describeOutfit: outfitContext.describeOutfit,
+    stripSlots: outfitContext.stripSlots,
+    formatResolution: outfitContext.formatResolution,
+    outfitContext
 };
