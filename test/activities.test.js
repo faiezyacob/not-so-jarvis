@@ -406,6 +406,26 @@ test('8. the Activity Library is reusable without Playground UI state', () => {
     assert.ok(scene.some((a) => a.id === 'coffee-chat'));
 });
 
+test('group scenes keep the featured character distinct from friends', () => {
+    const groupConcept = {
+        name: 'Ada',
+        subject: 'a woman with auburn hair',
+        appearance: 'a soft jawline',
+        hair: 'a long braid',
+        outfit: 'a red jacket and dark jeans',
+        activity: 'laughing with friends',
+        activityGroupSize: 1
+    };
+    const direction = concept.conceptToDirection(groupConcept);
+    const constraints = concept.conceptToConstraints(groupConcept, { mode: 'character' });
+    assert.match(direction, /single featured lead/i);
+    assert.match(direction, /not copies of the lead or of one another/i);
+    assert.match(direction, /clearly different facial features, hairstyle and hair color, and body build/i);
+    assert.match(direction, /do not copy the lead character's outfit/i);
+    assert.ok(constraints.some((item) => /friends must each have distinct faces, hair, and body builds/i.test(item)));
+    assert.ok(constraints.some((item) => /different individualized outfit/i.test(item)));
+});
+
 test('9. Playground regression: outfit packs and environments still work', () => {
     const composed = outfitPacks.composeFromPack('casual-everyday', characterGen.createRng(1), {
         environment: 'a cafe'

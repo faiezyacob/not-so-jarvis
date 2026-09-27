@@ -908,6 +908,13 @@ function interpretContextMessage(message, options = {}) {
     return null;
 }
 
+function isGroupScene(concept) {
+    const c = concept || {};
+    if (Number(c.activityGroupSize) > 1) return true;
+    return /\b(?:friends?|together|group|with someone|with other people)\b/i
+        .test([c.activity, c.userPrompt].filter(Boolean).join(' '));
+}
+
 // Build the creative direction handed to the image prompt builder. This is
 // direction, not the final prompt: the builder turns it into the Krea2 prompt.
 function conceptToDirection(concept) {
@@ -933,6 +940,9 @@ function conceptToDirection(concept) {
     }
     if (c.activityComposition) lines.push('Activity composition: ' + c.activityComposition + '.');
     if (c.activityCamera) lines.push('Activity camera: ' + c.activityCamera + '.');
+    if (isGroupScene(c)) {
+        lines.push('Group character separation: the specified character is the single featured lead and must match the character identity/reference; include the requested friends as separate people, not copies of the lead or of one another. Give each friend clearly different facial features, hairstyle and hair color, and body build. Dress every friend in an individualized outfit with a distinct color palette; do not copy the lead character\'s outfit or reuse the same outfit across friends. Keep each person visually distinct and recognizable.');
+    }
     if (c.environment) lines.push('Environment: ' + c.environment + '.');
     if (c.category) lines.push('Social-media category: ' + c.category + '.');
     if (c.lighting) lines.push('Lighting: ' + c.lighting + '.');
@@ -997,6 +1007,9 @@ function conceptToConstraints(concept, options = {}) {
     if (locks.style && c.style) constraints.push('Preserve the visual style: ' + c.style);
     if (locks.environment && c.environment) constraints.push('Preserve the environment: ' + c.environment);
     if (locks.activity && c.activity) constraints.push('Preserve the character activity: ' + c.activity);
+    if (isGroupScene(c)) {
+        constraints.push('Show the specified character as the only person matching the featured character\'s identity/reference; friends must each have distinct faces, hair, and body builds, and each friend must wear a different individualized outfit that does not copy the lead character\'s clothing.');
+    }
     if (c.aspectRatio) constraints.push('Frame for a ' + c.aspectRatio + ' aspect ratio');
     return constraints;
 }
