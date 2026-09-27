@@ -1236,8 +1236,28 @@
         if (img.prompt) {
             const promptEl = document.createElement('div');
             promptEl.className = 'gallery-preview-prompt';
-            promptEl.innerHTML = '<div class="gallery-preview-label">Prompt</div><div class="gallery-preview-prompt-text">' + escapeHtml(img.prompt) + '</div>';
+            const promptLabel = document.createElement('div');
+            promptLabel.className = 'gallery-preview-label';
+            promptLabel.textContent = 'Prompt';
+            const promptText = document.createElement('div');
+            promptText.className = 'gallery-preview-prompt-text gallery-preview-prompt-text--collapsed';
+            promptText.textContent = img.prompt;
+            const promptToggle = document.createElement('button');
+            promptToggle.type = 'button';
+            promptToggle.className = 'gallery-preview-prompt-toggle';
+            promptToggle.textContent = 'Show more';
+            promptToggle.setAttribute('aria-expanded', 'false');
+            promptToggle.addEventListener('click', () => {
+                const expanded = promptText.classList.toggle('gallery-preview-prompt-text--expanded');
+                promptText.classList.toggle('gallery-preview-prompt-text--collapsed', !expanded);
+                promptToggle.textContent = expanded ? 'Show less' : 'Show more';
+                promptToggle.setAttribute('aria-expanded', String(expanded));
+            });
+            promptEl.appendChild(promptLabel);
+            promptEl.appendChild(promptText);
+            promptEl.appendChild(promptToggle);
             body.appendChild(promptEl);
+            if (promptText.scrollHeight <= promptText.clientHeight + 1) promptToggle.hidden = true;
         }
 
         const footer = document.createElement('div');

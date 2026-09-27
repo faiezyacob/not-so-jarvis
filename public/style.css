@@ -1946,6 +1946,31 @@ details.settings-card[open] summary.settings-card-title::after {
     margin-bottom: 0;
 }
 
+.chat-generated-prompt--collapsed {
+    max-height: calc(1.7em * 2);
+    overflow: hidden;
+}
+
+.chat-generated-prompt-toggle {
+    display: block;
+    margin: -4px 0 8px;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--text-dim);
+    font: inherit;
+    font-size: var(--fs-sm);
+    cursor: pointer;
+}
+
+.chat-generated-prompt-toggle:hover {
+    color: var(--text-primary);
+}
+
+.chat-generated-prompt-toggle[hidden] {
+    display: none;
+}
+
 del {
     color: var(--text-dim);
     text-decoration: line-through;
@@ -4867,6 +4892,30 @@ a.modal-btn {
     color: var(--text-secondary);
     white-space: pre-wrap;
     word-break: break-word;
+}
+
+.gallery-preview-prompt-text--collapsed {
+    max-height: calc(1.55em * 2);
+    overflow: hidden;
+}
+
+.gallery-preview-prompt-toggle {
+    align-self: flex-start;
+    padding: 2px 0;
+    border: 0;
+    background: none;
+    color: var(--text-dim);
+    font: inherit;
+    font-size: var(--fs-sm);
+    cursor: pointer;
+}
+
+.gallery-preview-prompt-toggle:hover {
+    color: var(--text-primary);
+}
+
+.gallery-preview-prompt-toggle[hidden] {
+    display: none;
 }
 
 /* --- Model Library Responsive --- */

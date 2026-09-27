@@ -1024,8 +1024,8 @@ test('Lifestyle subcategories only receive components tagged for them', () => {
 
 test('gym scenarios use athletic clothing', () => {
     const theme = themes.getTheme('lifestyle-candid');
-    const athletic = ['sports bra', 'athletic top', 'gym T-shirt', 'fitted tank', 'fitted T-shirt',
-        'leggings', 'biker shorts', 'running shorts', 'matching athletic set', 'zip jacket',
+    const athletic = ['sports bra', 'athletic top', 'training top', 'training bra', 'athletic training romper', 'gym T-shirt', 'fitted tank', 'fitted T-shirt',
+        'leggings', 'biker shorts', 'running shorts', 'matching athletic set', 'zip jacket', 'contour-seam', 'seamless training tights',
         'athletic shorts', 'running shoes', 'zip-up hoodie'];
     const banned = /sundress|midi dress|floral|linen|skirt|blazer|heels|wide-leg jeans/i;
     for (let seed = 1; seed <= 120; seed++) {

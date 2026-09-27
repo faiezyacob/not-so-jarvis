@@ -358,7 +358,7 @@ test('the Confident & Seductive pack is a wardrobe personality with context meta
         assert.ok(Array.isArray(pack.wardrobe[slot]) && pack.wardrobe[slot].length, 'missing ' + slot);
     }
     for (const value of pack.wardrobe.footwear.map((e) => e.value)) {
-        assert.ok(/boots|sandals|pumps|flats/i.test(value), 'unexpected footwear: ' + value);
+        assert.ok(/boots|sandals|pumps|flats|heels|loafers/i.test(value), 'unexpected footwear: ' + value);
     }
     // Tasteful adult styling, never explicit wording in the wardrobe itself.
     const text = JSON.stringify(pack.wardrobe).toLowerCase();

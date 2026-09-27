@@ -152,7 +152,12 @@ const OUTFIT_PACKS = [
                 piece('an oversized button-down sleep shirt', 1.5),
                 piece('a waffle-knit long-sleeve top', 1.5),
                 piece('a soft modal wrap top', 1.2),
-                piece('a relaxed thermal henley', 1)
+                piece('a relaxed thermal henley', 1),
+                piece('a satin-trimmed camisole in warm rose', 1.5, { genders: ['woman'] }),
+                piece('a soft wrap-front lounge top', 1.5, { genders: ['woman'] }),
+                piece('a fitted ribbed scoop-neck lounge tank', 1.2),
+                piece('a relaxed off-shoulder knit top', 1, { genders: ['woman'] }),
+                piece('a silky button-front sleep shirt', 1, { genders: ['woman'] })
             ],
             bottoms: [
                 piece('soft grey sweatpants', 3),
@@ -164,14 +169,21 @@ const OUTFIT_PACKS = [
                 piece('muted-pink lounge leggings', 1.5),
                 piece('wide-leg jersey lounge pants', 1.5),
                 piece('a soft ribbed lounge skirt', 1),
-                piece('a relaxed cotton pajama bottom', 1.2)
+                piece('a relaxed cotton pajama bottom', 1.2),
+                piece('soft satin sleep shorts with a relaxed fit', 1.5, { genders: ['woman'] }),
+                piece('high-waisted ribbed lounge shorts', 1.2, { genders: ['woman'] }),
+                piece('soft fitted lounge leggings', 1.2),
+                piece('a flowing satin pajama trouser', 1, { genders: ['woman'] })
             ],
             dresses: [
                 piece('a soft lounge slip dress', 2),
                 piece('a relaxed cotton night dress', 1.5),
                 piece('a soft jersey nightgown', 1.5),
                 piece('a modal short-sleeve sleep dress', 1.2),
-                piece('a loose waffle-knit lounge dress', 1)
+                piece('a loose waffle-knit lounge dress', 1),
+                piece('a soft satin-trim slip dress for lounging', 1.5, { genders: ['woman'] }),
+                piece('a fitted ribbed lounge dress with a modest neckline', 1.2, { genders: ['woman'] }),
+                piece('a lightweight wrap-front sleep dress', 1, { genders: ['woman'] })
             ],
             layers: [
                 piece('a loose muted-pink cardigan', 2),
@@ -179,21 +191,28 @@ const OUTFIT_PACKS = [
                 piece('a soft grey hoodie', 1.5),
                 piece('a fleecy cream robe', 1.5),
                 piece('a soft zip-front fleece', 1.2),
-                piece('a long brushed-knit cardigan', 1)
+                piece('a long brushed-knit cardigan', 1),
+                piece('a lightweight satin robe with a soft tie belt', 1.2, { genders: ['woman'] }),
+                piece('a soft cropped cardigan worn open over a camisole', 1, { genders: ['woman'] }),
+                piece('a relaxed wrap cardigan in muted rose', 1)
             ],
             footwear: [
                 piece('simple slippers', 3),
                 piece('soft socks', 2.5),
                 piece('cosy house shoes', 2),
                 piece('quilted slippers', 1.5),
-                piece('fuzzy slide slippers', 1)
+                piece('fuzzy slide slippers', 1),
+                piece('soft satin house slippers', 1.2, { genders: ['woman'] }),
+                piece('soft knit ballet slippers', 1)
             ],
             accessories: [
                 piece('a simple scrunchie', 2),
                 piece('a soft hair tie', 1.5),
                 piece('a cozy knit headband', 1),
                 piece('a satin sleep mask', 1),
-                piece('a soft blanket scarf', 0.8)
+                piece('a soft blanket scarf', 0.8),
+                piece('a delicate pendant necklace', 1, { genders: ['woman'] }),
+                piece('a simple satin hair ribbon', 1, { genders: ['woman'] })
             ]
         },
         palette: ['cream', 'grey', 'muted beige', 'soft blue', 'muted pink', 'charcoal'],
@@ -462,7 +481,12 @@ const OUTFIT_PACKS = [
                 piece('a slate sleeveless running top', 1.5),
                 piece('a fitted compression shirt', 1.5),
                 piece('a cropped training tank', 1, { genders: ['woman'] }),
-                piece('a lightweight performance quarter-zip', 1.2)
+                piece('a lightweight performance quarter-zip', 1.2),
+                piece('a deep-plum racerback training bra', 1.3, { genders: ['woman'] }),
+                piece('a fitted cropped square-neck training top', 1.2, { genders: ['woman'] }),
+                piece('a sleek longline sports bra with wide straps', 1.2, { genders: ['woman'] }),
+                piece('a fitted athletic tank with a high neckline', 1.2),
+                piece('a coordinated strappy-back performance top', 1, { genders: ['woman'] })
             ],
             bottoms: [
                 piece('black high-waisted leggings', 3),
@@ -474,18 +498,28 @@ const OUTFIT_PACKS = [
                 piece('black performance joggers', 1.5),
                 piece('navy compression shorts', 1.5),
                 piece('grey training tights', 1.2),
-                piece('black split running shorts', 1)
+                piece('black split running shorts', 1),
+                piece('high-waisted plum training leggings with contour seams', 1.3, { genders: ['woman'] }),
+                piece('fitted charcoal bike shorts', 1.2, { genders: ['woman'] }),
+                piece('high-rise seamless training tights', 1.2),
+                piece('lightweight running shorts with a fitted liner', 1),
+                piece('a coordinated performance legging', 1, { genders: ['woman'] })
             ],
             dresses: [
                 piece('a fitted athletic set', 1.5),
-                piece('a one-piece training jumpsuit', 1)
+                piece('a one-piece training jumpsuit', 1),
+                piece('a coordinated racerback sports-bra and legging set', 1.2, { genders: ['woman'] }),
+                piece('a fitted sleeveless training romper', 1, { genders: ['woman'] }),
+                piece('a sleek long-sleeve performance unitard', 0.8, { genders: ['woman'] })
             ],
             layers: [
                 piece('a lightweight grey athletic jacket', 2),
                 piece('a black zip training jacket', 1.5),
                 piece('a reflective running vest', 1),
                 piece('a lightweight track jacket', 1.5),
-                piece('a fitted performance hoodie', 1.2)
+                piece('a fitted performance hoodie', 1.2),
+                piece('a cropped zip-front training jacket', 1, { genders: ['woman'] }),
+                piece('a lightweight mesh-panel running layer', 0.8, { genders: ['woman'] })
             ],
             footwear: [
                 piece('white running shoes', 3),
@@ -499,7 +533,10 @@ const OUTFIT_PACKS = [
                 piece('a gym duffel bag', 1),
                 piece('a sweat-wicking headband', 1),
                 piece('a running cap', 1),
-                piece('a pair of sport sunglasses', 0.8)
+                piece('a pair of sport sunglasses', 0.8),
+                piece('a slim performance hairband', 1.2, { genders: ['woman'] }),
+                piece('a minimal fitness tracker', 1.2),
+                piece('a pair of small stud earrings', 0.5, { genders: ['woman'] })
             ]
         },
         palette: ['black', 'grey', 'white', 'navy', 'muted athletic colors'],
@@ -604,7 +641,11 @@ const OUTFIT_PACKS = [
                 piece('a lace-detail emerald top', 1.5, { genders: ['woman'] }),
                 piece('a fitted ribbed mock-neck top', 1.5),
                 piece('a deep-plum wrap blouse', 1.2),
-                piece('a black halter top', 1, { genders: ['woman'] })
+                piece('a black halter top', 1, { genders: ['woman'] }),
+                piece('a fitted cowl-neck satin top', 1.2, { genders: ['woman'] }),
+                piece('a square-neck velvet top', 1.2, { genders: ['woman'] }),
+                piece('a draped one-shoulder evening top', 1, { genders: ['woman'] }),
+                piece('a deep-plum fitted knit top', 1.2)
             ],
             bottoms: [
                 piece('dark denim jeans', 3),
@@ -615,21 +656,29 @@ const OUTFIT_PACKS = [
                 piece('a charcoal leather-look pencil skirt', 1.5, { genders: ['woman'] }),
                 piece('dark straight-leg trousers', 1.5),
                 piece('a satin wide-leg trouser', 1.2),
-                piece('a dark denim midi skirt', 1)
+                piece('a dark denim midi skirt', 1),
+                piece('a high-waisted satin skirt with a side slit', 1.2, { genders: ['woman'] }),
+                piece('tailored high-waisted shorts', 1),
+                piece('a fitted velvet mini skirt', 1, { genders: ['woman'] })
             ],
             dresses: [
                 piece('a simple black dress', 3),
                 piece('a deep-navy cocktail dress', 2),
                 piece('a burgundy midi dress', 1.5),
                 piece('a fitted bodycon dress', 1.5, { genders: ['woman'] }),
-                piece('a draped satin midi dress', 1.5, { genders: ['woman'] })
+                piece('a draped satin midi dress', 1.5, { genders: ['woman'] }),
+                piece('a one-shoulder fitted midi dress', 1.2, { genders: ['woman'] }),
+                piece('a black wrap-front evening dress', 1.2, { genders: ['woman'] }),
+                piece('a deep-red velvet cocktail dress', 1, { genders: ['woman'] })
             ],
             layers: [
                 piece('a lightweight black jacket', 2),
                 piece('a fitted leather jacket', 1.5),
                 piece('a deep-navy blazer', 1.5),
                 piece('a cropped satin bomber jacket', 1),
-                piece('a longline tailored coat', 1)
+                piece('a longline tailored coat', 1),
+                piece('a cropped evening blazer', 1.2, { genders: ['woman'] }),
+                piece('a soft faux-fur evening jacket', 0.8)
             ],
             footwear: [
                 piece('ankle boots', 2.5),
@@ -637,14 +686,18 @@ const OUTFIT_PACKS = [
                 piece('black heeled boots', 1.5),
                 piece('strappy black heels', 1.5),
                 piece('pointed-toe slingback heels', 1.2),
-                piece('sleek black loafers', 1.2)
+                piece('sleek black loafers', 1.2),
+                piece('strappy low-heel sandals', 1.2, { genders: ['woman'] }),
+                piece('velvet ankle-strap heels', 0.8, { genders: ['woman'] })
             ],
             accessories: [
                 piece('understated gold jewellery', 2),
                 piece('a small black clutch', 1.5),
                 piece('delicate earrings', 1.5),
                 piece('a slim metallic belt', 1),
-                piece('a small shoulder bag', 1.2)
+                piece('a small shoulder bag', 1.2),
+                piece('a fine layered gold necklace', 1.2, { genders: ['woman'] }),
+                piece('a velvet choker with a small pendant', 0.8, { genders: ['woman'] })
             ]
         },
         palette: ['black', 'charcoal', 'dark denim', 'cream', 'burgundy', 'deep navy', 'muted metallic accents'],
@@ -904,7 +957,12 @@ const OUTFIT_PACKS = [
                 piece('an elegant halter top', 2, { genders: ['woman'] }),
                 piece('a fitted mock-neck top', 1.5),
                 piece('a draped satin blouse', 1.5, { genders: ['woman'] }),
-                piece('a sleeveless draped top', 1.2, { genders: ['woman'] })
+                piece('a sleeveless draped top', 1.2, { genders: ['woman'] }),
+                piece('a fitted sweetheart-neck top', 1.2, { genders: ['woman'] }),
+                piece('a soft cowl-neck knit top', 1.2, { genders: ['woman'] }),
+                piece('a refined wrap-front blouse', 1.2, { genders: ['woman'] }),
+                piece('a fitted fine-knit polo', 1.2),
+                piece('a sleek sleeveless mock-neck top', 1)
             ],
             bottoms: [
                 piece('fitted high-waisted trousers', 3),
@@ -914,7 +972,11 @@ const OUTFIT_PACKS = [
                 piece('sleek shorts', 2),
                 piece('a fitted pencil skirt', 2, { genders: ['woman'] }),
                 piece('tailored wide-leg trousers', 1.5),
-                piece('a body-skimming midi skirt', 1.5, { genders: ['woman'] })
+                piece('a body-skimming midi skirt', 1.5, { genders: ['woman'] }),
+                piece('a high-waisted satin midi skirt', 1.2, { genders: ['woman'] }),
+                piece('fitted dark-wash jeans', 1.5),
+                piece('tailored high-waisted shorts', 1),
+                piece('a slim tapered trouser with a clean crease', 1.2)
             ],
             dresses: [
                 piece('a fitted midi dress', 3, { genders: ['woman'] }),
@@ -922,21 +984,28 @@ const OUTFIT_PACKS = [
                 piece('a wrap dress', 2.5, { genders: ['woman'] }),
                 piece('a satin slip dress', 2, { genders: ['woman'] }),
                 piece('an off-shoulder dress', 2, { genders: ['woman'], avoidContexts: ['bedroom', 'sleeping', 'bathroom', 'gym', 'hiking'] }),
-                piece('a fitted evening dress', 2, { genders: ['woman'], avoidContexts: ['bedroom', 'sleeping', 'bathroom', 'gym', 'hiking', 'beach', 'resort', 'office'] })
+                piece('a fitted evening dress', 2, { genders: ['woman'], avoidContexts: ['bedroom', 'sleeping', 'bathroom', 'gym', 'hiking', 'beach', 'resort', 'office'] }),
+                piece('a soft jersey wrap dress with a defined waist', 1.2, { genders: ['woman'] }),
+                piece('a sleek square-neck midi dress', 1.2, { genders: ['woman'] }),
+                piece('a ribbed body-skimming knit dress', 1.2, { genders: ['woman'], avoidContexts: ['gym', 'hiking'] })
             ],
             layers: [
                 piece('a cropped blazer', 2.5),
                 piece('a tailored blazer', 2.5),
                 piece('a lightweight cardigan', 2),
                 piece('an oversized blazer worn over a fitted outfit', 1.5),
-                piece('a fitted leather jacket', 1.5)
+                piece('a fitted leather jacket', 1.5),
+                piece('a cropped soft-knit cardigan', 1.2, { genders: ['woman'] }),
+                piece('a lightweight draped evening jacket', 1)
             ],
             footwear: [
                 piece('ankle boots', 3),
                 piece('elegant sandals', 2.5),
                 piece('heeled sandals', 2.5),
                 piece('pointed-toe pumps', 2),
-                piece('sleek flats', 2)
+                piece('sleek flats', 2),
+                piece('slim ankle-strap heels', 1.2, { genders: ['woman'] }),
+                piece('polished leather loafers', 1.2)
             ],
             accessories: [
                 piece('a delicate necklace', 2.5),
@@ -944,7 +1013,9 @@ const OUTFIT_PACKS = [
                 piece('a simple bracelet', 1.5),
                 piece('an elegant handbag', 2),
                 piece('sunglasses', 1.5),
-                piece('a slim metallic belt', 1.2)
+                piece('a slim metallic belt', 1.2),
+                piece('a delicate layered necklace', 1.2, { genders: ['woman'] }),
+                piece('a small pair of drop earrings', 1.2, { genders: ['woman'] })
             ]
         },
         palette: ['black', 'cream', 'champagne', 'burgundy', 'deep navy', 'camel', 'muted gold'],

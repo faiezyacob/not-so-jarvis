@@ -26,6 +26,7 @@ const playground = require('../services/playground/playground');
 const themes = require('../services/playground/themes');
 const characterGen = require('../services/playground/character');
 const characterPresets = require('../services/character-presets');
+const outfitContext = require('../services/playground/outfit-context');
 
 const first = () => 0;
 
@@ -88,6 +89,31 @@ test('the catalog payload is compact and UI-ready', () => {
         assert.ok(Array.isArray(pack.palette));
         assert.equal(pack.wardrobe, undefined, 'the UI payload should not ship the wardrobe pools');
     }
+});
+
+test('home and gym wardrobes include more fitted, stylish options across clothing slots', () => {
+    const home = outfitPacks.getPack('lounge-home').wardrobe;
+    const gym = outfitPacks.getPack('gym-activewear').wardrobe;
+    const homeValues = Object.values(home).flat().map((entry) => entry.value.toLowerCase());
+    const gymValues = Object.values(gym).flat().map((entry) => entry.value.toLowerCase());
+
+    assert.ok(homeValues.some((value) => value.includes('satin-trimmed camisole')));
+    assert.ok(homeValues.some((value) => value.includes('satin-trim slip dress')));
+    assert.ok(homeValues.some((value) => value.includes('satin robe')));
+    assert.ok(gymValues.some((value) => value.includes('racerback training bra')));
+    assert.ok(gymValues.some((value) => value.includes('contour seams')));
+    assert.ok(gymValues.some((value) => value.includes('training romper')));
+
+    const gymContext = outfitContext.classifyEnvironment('at the gym');
+    const compatibleGymTops = outfitPacks.toSystem(outfitPacks.getPack('gym-activewear'), {
+        gender: 'woman', context: gymContext
+    }).components.tops.map((entry) => entry.value);
+    assert.ok(compatibleGymTops.includes('a fitted cropped square-neck training top'));
+
+    const lifestyleOutfit = themes.getTheme('lifestyle-candid').outfitSystem.components;
+    assert.ok(lifestyleOutfit.tops.some((entry) => entry.tags.includes('lounge') && /satin-trimmed/i.test(entry.value)));
+    assert.ok(lifestyleOutfit.tops.some((entry) => entry.tags.includes('gym') && /training top/i.test(entry.value)));
+    assert.ok(lifestyleOutfit.bottoms.some((entry) => entry.tags.includes('gym') && /contour-seam/i.test(entry.value)));
 });
 
 // --- Composition -------------------------------------------------------------

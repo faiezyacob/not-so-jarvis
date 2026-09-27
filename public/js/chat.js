@@ -819,6 +819,35 @@ const Chat = (() => {
         }
     }
 
+    function attachGeneratedPromptDisclosure(container) {
+        if (!container.querySelector('img.md-image')) return;
+        const paragraphs = Array.from(container.querySelectorAll('p.md-paragraph'));
+        paragraphs.forEach((paragraph) => {
+            const label = paragraph.querySelector('strong');
+            if (!label || label.textContent.trim().toLowerCase() !== 'prompt:') return;
+            const siblings = Array.from(paragraph.parentNode.children);
+            const followsImage = siblings
+                .slice(siblings.indexOf(paragraph) + 1)
+                .some((element) => element.querySelector && element.querySelector('img.md-image'));
+            if (!followsImage) return;
+
+            paragraph.classList.add('chat-generated-prompt--collapsed');
+            const toggle = document.createElement('button');
+            toggle.type = 'button';
+            toggle.className = 'chat-generated-prompt-toggle';
+            toggle.textContent = 'Show more';
+            toggle.setAttribute('aria-expanded', 'false');
+            toggle.addEventListener('click', () => {
+                const expanded = paragraph.classList.toggle('chat-generated-prompt--expanded');
+                paragraph.classList.toggle('chat-generated-prompt--collapsed', !expanded);
+                toggle.textContent = expanded ? 'Show less' : 'Show more';
+                toggle.setAttribute('aria-expanded', String(expanded));
+            });
+            paragraph.insertAdjacentElement('afterend', toggle);
+            if (paragraph.scrollHeight <= paragraph.clientHeight + 1) toggle.hidden = true;
+        });
+    }
+
     // Render assistant markdown into a content element and collapse any
     // original + upscaled image pairs (keeping just the upscaled image).
     // Videos are handed to the custom VideoPlayer synchronously so the
@@ -859,6 +888,7 @@ const Chat = (() => {
         contentEl.innerHTML = Markdown.parse(ugcParsed.text);
         if (streaming) return;
         collapseUpscalePairs(contentEl);
+        attachGeneratedPromptDisclosure(contentEl);
         if (window.VideoPlayer && typeof window.VideoPlayer.scan === 'function') {
             window.VideoPlayer.scan(contentEl);
         }
