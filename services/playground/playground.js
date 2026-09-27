@@ -153,7 +153,8 @@ function buildCard(session, character) {
         // character's identity is fixed; a matching lock removes the control.
         identityReroll: {
             face: Boolean(canRerollIdentity && !locks.appearance),
-            hair: Boolean(canRerollIdentity && !locks.hair)
+            hair: Boolean(canRerollIdentity && !locks.hair),
+            build: Boolean(canRerollIdentity)
         },
         // The independent generator controls that produced a random character
         // (null for saved characters) and the deterministic seed, so the person
@@ -561,14 +562,18 @@ function modify(session, action = {}) {
         // prompt blanked it (rerollField is guarded downstream by this check).
         concept = conceptEngine.rerollField(concept, theme, 'outfit', action.rng);
     }
-    // A targeted identity re-roll (face / hair) changes only those structured
-    // traits. It is available only for a structured random character and is
-    // refused while the matching attribute (or the whole identity) is locked.
+    // A targeted identity re-roll (face / hair / build) changes only those
+    // structured traits. It is available only for a structured random character
+    // and is refused while the matching attribute (or the whole identity) is
+    // locked.
     const identityReroll = String(action.rerollIdentity || '').trim().toLowerCase();
+    const identityParts = ['face', 'hair', 'build'];
     let identityRerolled = false;
-    if ((identityReroll === 'face' || identityReroll === 'hair')
+    if (identityParts.includes(identityReroll)
         && session.mode === 'random_character' && concept && concept.identity) {
-        const blocked = locks.identity || (identityReroll === 'face' ? locks.appearance : locks.hair);
+        const blocked = locks.identity
+            || (identityReroll === 'face' && locks.appearance)
+            || (identityReroll === 'hair' && locks.hair);
         if (!blocked) {
             concept = conceptEngine.rerollIdentityPart(concept, identityReroll, action.rng, theme);
             identityRerolled = true;

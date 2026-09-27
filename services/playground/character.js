@@ -1365,6 +1365,7 @@ function fallbackCategory() {
         eyeShapes: EYE_SHAPES,
         eyeColors: mergePool('eyeColors'),
         eyebrows: EYEBROWS,
+        builds: mergePool('builds'),
         distinctiveFeatures: DISTINCTIVE_FEATURES,
         hairColors: mergePool('hairColors'),
         hairTextures: mergePool('hairTextures'),
@@ -1424,6 +1425,16 @@ function rerollIdentityHair(identity, input) {
     next.hairStyleType = hairStyleEntry.type || 'adj';
     next.hairPart = pickValue(category.hairParts, rng);
     next.hairFringe = pickValue(category.hairFringes, rng);
+    return refreshIdentity(next);
+}
+
+function rerollIdentityBuild(identity, input) {
+    if (!identity || typeof identity !== 'object') return identity;
+    const rng = resolveRerollRng(input);
+    const category = categoryForIdentity(identity) || fallbackCategory();
+    const next = Object.assign({}, identity);
+    const gender = next.gender || next.presentation || '';
+    next.build = pickValue(category.builds, rng, { gender });
     return refreshIdentity(next);
 }
 
@@ -1497,6 +1508,7 @@ module.exports = {
     generateUniqueIdentity,
     rerollIdentityFace,
     rerollIdentityHair,
+    rerollIdentityBuild,
     formatIdentity,
     formatAppearance,
     formatFace,

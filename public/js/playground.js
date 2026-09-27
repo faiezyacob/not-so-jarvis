@@ -461,7 +461,7 @@ const PlaygroundUI = (() => {
         // Targeted random-character re-rolls. A saved character's identity is
         // fixed and a matching lock suppresses the control, so these only appear
         // for an editable random person.
-        if (card.identityReroll && (card.identityReroll.face || card.identityReroll.hair)) {
+        if (card.identityReroll && (card.identityReroll.face || card.identityReroll.hair || card.identityReroll.build)) {
             const reroll = document.createElement('div');
             reroll.className = 'playground-card-actions playground-card-actions--identity';
             const label = document.createElement('span');
@@ -470,7 +470,8 @@ const PlaygroundUI = (() => {
             reroll.appendChild(label);
             const spec = [
                 { part: 'face', label: 'Re-roll Face', enabled: card.identityReroll.face },
-                { part: 'hair', label: 'Re-roll Hair', enabled: card.identityReroll.hair }
+                { part: 'hair', label: 'Re-roll Hair', enabled: card.identityReroll.hair },
+                { part: 'build', label: 'Re-roll Build', enabled: card.identityReroll.build }
             ].filter((item) => item.enabled);
             if (spec.length) {
                 spec.forEach((item) => {
@@ -553,15 +554,15 @@ const PlaygroundUI = (() => {
             return;
         }
         if (type === 'identity_reroll') {
-            const part = (meta && meta.part) === 'hair' ? 'hair' : 'face';
-            const label = part === 'hair' ? 'hair' : 'face';
+            const requested = (meta && meta.part) || '';
+            const part = (requested === 'hair' || requested === 'build') ? requested : 'face';
             lock(cardEl);
-            send('Re-roll the character\u2019s ' + label, {
+            send('Re-roll the character\u2019s ' + part, {
                 type: 'modify',
                 conceptId: card.id,
                 expectedRevision: card.revision,
                 rerollIdentity: part,
-                direction: 'Re-roll the character\u2019s ' + label
+                direction: 'Re-roll the character\u2019s ' + part
             });
             return;
         }

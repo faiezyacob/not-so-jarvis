@@ -651,6 +651,7 @@ function rerollIdentityPart(concept, part, rng, theme) {
     let next;
     if (kind === 'face') next = identityGen.rerollIdentityFace(c.identity, rng);
     else if (kind === 'hair') next = identityGen.rerollIdentityHair(c.identity, rng);
+    else if (kind === 'build') next = identityGen.rerollIdentityBuild(c.identity, rng);
     else return concept;
     c.identity = next;
     c.identitySignature = next.signature;

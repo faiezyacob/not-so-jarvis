@@ -24,11 +24,12 @@ Everything runs from a single chat surface — there are no separate tools or da
 ### Chat
 
 - **Ollama chat** with SSE token streaming, markdown rendering, and persisted conversation history
-- **Context builder** that assembles a bounded prompt (system prompt + rolling summary + recent messages)
+- **Conversation memory** that automatically rolls older turns into an editable local summary, then combines it with a character-bounded recent transcript
 - **Task router / ActiveTask** — remembers the active image or video session across turns, so *"make the sky darker"* or *"another one"* keeps working without restating context
 - **`@` image references** — type `@` in the composer to attach earlier generated images as references; questions use them as vision input, instructions route to a multi-reference edit, and video wording routes to image-to-video
 - **Voice input** — push-to-talk dictation via the browser Web Speech API (optional auto-send)
 - **Spoken replies** — read JARVIS replies aloud via the SpeechSynthesis API, with voice selection and rate control
+- **Queued follow-up** — keep drafting during a long local generation, queue one next turn, or stop the active response explicitly
 - **Live machine, weather & news awareness** — ask about your CPU/GPU/VRAM, the weather, or the news and the assistant is given a gated live snapshot (system telemetry + Open-Meteo + RSS headlines) as context, so it answers with real values and real sources instead of guessing
 
 ### Image generation

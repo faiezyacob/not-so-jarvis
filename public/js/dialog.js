@@ -84,13 +84,13 @@ const Dialog = (() => {
 
         let input = null;
         if (options.input) {
-            input = document.createElement('input');
-            input.type = 'text';
-            input.className = 'dialog-input';
+            input = document.createElement(options.multiline ? 'textarea' : 'input');
+            if (!options.multiline) input.type = 'text';
+            input.className = 'dialog-input' + (options.multiline ? ' dialog-input--multiline' : '');
             input.value = options.value || '';
             input.placeholder = options.placeholder || '';
             input.autocomplete = 'off';
-            input.spellcheck = false;
+            input.spellcheck = options.multiline === true;
             bodyEl.appendChild(input);
         }
 
@@ -115,7 +115,7 @@ const Dialog = (() => {
             active = { resolve, cancelValue: options.cancelValue };
             if (input) {
                 input.addEventListener('keydown', (e) => {
-                    if (e.key === 'Enter') {
+                    if (e.key === 'Enter' && (!options.multiline || e.ctrlKey || e.metaKey)) {
                         e.preventDefault();
                         settle(input.value);
                     }
@@ -138,6 +138,7 @@ const Dialog = (() => {
             input: true,
             value: options.value || '',
             placeholder: options.placeholder || '',
+            multiline: options.multiline === true,
             confirmText: options.confirmText || 'Save',
             cancelText: options.cancelText || 'Cancel',
             cancelValue: null

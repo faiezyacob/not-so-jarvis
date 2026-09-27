@@ -41,6 +41,31 @@ test.afterEach(() => {
     videoGenerator.detectVideoIntent = originals.detectVideoIntent;
 });
 
+test('createTurnPlan keeps workflow selection and execution details together', () => {
+    const plan = taskRouter.createTurnPlan({
+        intent: 'continue_task',
+        task: 'image_generation',
+        action: 'modify',
+        shouldExecuteTool: true,
+        updatedPrompt: 'make the sky darker',
+        resolvedIntent: { intent: 'modify_previous_generation' }
+    }, {
+        conversationId: 'conv-plan',
+        activeTask: { type: 'image' },
+        message: 'make the sky darker',
+        referenceImages: ['first.png', 'second.png']
+    });
+
+    assert.equal(plan.version, 1);
+    assert.equal(plan.conversation.id, 'conv-plan');
+    assert.equal(plan.conversation.activeTaskType, 'image');
+    assert.equal(plan.intent, 'modify_previous_generation');
+    assert.equal(plan.execution.workflow, 'image');
+    assert.equal(plan.execution.shouldRun, true);
+    assert.equal(plan.execution.prompt, 'make the sky darker');
+    assert.deepEqual(plan.request.references, ['first.png', 'second.png']);
+});
+
 function route(message, extra = {}) {
     return taskRouter.routeMessage({
         message,

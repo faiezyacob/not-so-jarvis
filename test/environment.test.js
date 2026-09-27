@@ -144,3 +144,20 @@ test('buildContext: appends the environment context as a system message', () => 
         configManager.getChatSettings = originals.getChatSettings;
     }
 });
+
+test('getBoundedRecentMessages: excludes the already-persisted current turn and caps history text', () => {
+    const original = conversationService.getMessages;
+    const long = 'x'.repeat(contextBuilder.MAX_RECENT_CONTEXT_CHARS);
+    conversationService.getMessages = () => [
+        { role: 'user', content: long },
+        { role: 'assistant', content: 'prior answer' },
+        { role: 'user', content: 'current request' }
+    ];
+    try {
+        const messages = contextBuilder.getBoundedRecentMessages('conv', 'current request');
+        assert.equal(messages.some((m) => m.content === 'current request'), false);
+        assert.equal(messages.reduce((total, m) => total + m.content.length, 0) <= contextBuilder.MAX_RECENT_CONTEXT_CHARS, true);
+    } finally {
+        conversationService.getMessages = original;
+    }
+});

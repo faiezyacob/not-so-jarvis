@@ -196,7 +196,7 @@ function buildMessages(id) {
     if (conv.summary) {
         aiMessages.push({
             role: 'system',
-            content: 'Conversation summary:\n' + conv.summary
+            content: 'Durable conversation memory:\n' + conv.summary
         });
     }
 
@@ -207,13 +207,34 @@ function buildMessages(id) {
     return { messages: aiMessages };
 }
 
-function setSummary(id, summary) {
+function setSummary(id, summary, throughMessageCount) {
     const conv = getConversation(id);
     if (!conv) return null;
-    conv.summary = summary || '';
+    conv.summary = String(summary || '').slice(0, 12000);
+    conv.summaryThroughMessageCount = Number.isInteger(throughMessageCount)
+        ? Math.max(0, Math.min(getMessages(id).length, throughMessageCount))
+        : getMessages(id).length;
     conv.updatedAt = Date.now();
     saveStore();
     return conv;
+}
+
+function getSummaryWindow(id, recentLimit) {
+    const conv = getConversation(id);
+    if (!conv) return null;
+    const messages = getMessages(id);
+    const limit = Math.max(1, Number(recentLimit) || CONFIG.RECENT_MESSAGE_LIMIT);
+    const end = Math.max(0, messages.length - limit);
+    if (!Number.isInteger(conv.summaryThroughMessageCount)) {
+        conv.summaryThroughMessageCount = conv.summary ? end : 0;
+        saveStore();
+    }
+    const start = Math.max(0, Math.min(end, conv.summaryThroughMessageCount));
+    return {
+        summary: conv.summary || '',
+        messages: messages.slice(start, end),
+        throughMessageCount: end
+    };
 }
 
 module.exports = {
@@ -232,5 +253,6 @@ module.exports = {
     addMessage,
     getMessages,
     buildMessages,
-    setSummary
+    setSummary,
+    getSummaryWindow
 };

@@ -149,21 +149,28 @@ async function* chatStream(provider, messages, model, options) {
 
 // Provider router for summarization
 async function summarize(provider, model, messagesToSummarize, options) {
-    const content = messagesToSummarize
+    const opts = options || {};
+    const transcript = messagesToSummarize
         .map((m) => (m.role === 'user' ? 'User: ' : 'Assistant: ') + m.content)
         .join('\n');
 
+    const previousSummary = String(opts.previousSummary || '').trim();
+    const content = (previousSummary ? 'EXISTING CONVERSATION MEMORY:\n' + previousSummary + '\n\n' : '') +
+        'NEWER CONVERSATION EXCERPT:\n' + transcript;
+
     const sysPrompt = {
         role: 'system',
-        content: 'You are a conversation summarizer. Given a transcript of an ongoing '
-            + 'conversation, write a concise summary that captures the key decisions, '
-            + 'user requirements, technical details, unresolved issues, and important '
-            + 'facts needed to continue the conversation later. Do not summarize every '
-            + 'sentence. Output only the summary text.'
+        content: 'You maintain concise memory for an ongoing conversation. Merge the '
+            + 'existing memory with the newer excerpt, keeping durable user preferences, '
+            + 'facts, decisions, explicit constraints, active project details, and unresolved '
+            + 'questions that will help continue naturally. Preserve exact names and important '
+            + 'values. Remove obsolete details when the user corrects them. Do not invent '
+            + 'facts, repeat transient small talk, or summarize every sentence. Keep the result '
+            + 'under 1200 words and output only the updated memory text.'
     };
 
     if (provider === 'ollama') {
-        return callOllama([sysPrompt, { role: 'user', content: content }], model, options);
+        return callOllama([sysPrompt, { role: 'user', content: content }], model, opts);
     }
     throw new Error('Unknown provider: ' + provider);
 }

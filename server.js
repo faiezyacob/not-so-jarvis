@@ -1737,6 +1737,13 @@ async function handleUpdateConversation(req, res, id) {
         if (body.private !== undefined) {
             conversation = conversationService.setConversationPrivate(id, body.private) || conversation;
         }
+        if (body.summary !== undefined) {
+            if (typeof body.summary !== 'string' || body.summary.length > 12000) {
+                json(res, 400, { error: 'Conversation memory must be text under 12000 characters.' });
+                return;
+            }
+            conversation = conversationService.setSummary(id, body.summary) || conversation;
+        }
         json(res, 200, conversation);
     } catch (err) {
         json(res, 500, { error: err.message });
@@ -1876,6 +1883,29 @@ async function handleSummarize(req, res, id) {
     }
 }
 
+async function updateConversationMemory(conversationId, provider, model) {
+    const window = conversationService.getSummaryWindow(
+        conversationId,
+        conversationService.CONFIG.RECENT_MESSAGE_LIMIT
+    );
+    if (!window || window.messages.length < conversationService.CONFIG.RECENT_MESSAGE_LIMIT) return false;
+    const messages = window.messages.map((m) => Object.assign({}, m, {
+        content: contextBuilder.stripDirectorMarkers(m.content)
+    }));
+    try {
+        const summary = await providers.summarize(provider, model, messages, {
+            think: false,
+            previousSummary: window.summary
+        });
+        if (!String(summary || '').trim()) return false;
+        conversationService.setSummary(conversationId, summary, window.throughMessageCount);
+        return true;
+    } catch (err) {
+        console.warn('[conversation-memory] Automatic update failed:', err.message);
+        return false;
+    }
+}
+
 // Build the live environment block injected into a chat turn: machine
 // telemetry (gated on a stats question), weather (gated on a weather
 // question, with an Open-Meteo lookup), and news (gated on a news question,
@@ -1977,6 +2007,7 @@ async function handleChat(req, res) {
 
         vramManager.rememberChatModel(provider, model);
         await vramManager.freeVRAMBeforeChat();
+        await updateConversationMemory(conversationId, provider, model);
 
         const sampling = resolveChatSampling(body);
         const environmentContext = await buildEnvironmentContext(message);
@@ -2251,22 +2282,25 @@ async function handleChatStream(req, res) {
         // image/video branch below unloads Ollama again before ComfyUI loads.
         vramManager.rememberChatModel(provider, model);
         await vramManager.freeVRAMBeforeChat();
+        await updateConversationMemory(conversationId, provider, model);
 
         // Route the message through the context-aware task router. The router
         // decides (before any tool runs) whether this message should start a new
         // task, continue/modify the active task, answer a question about it, or
         // is just unrelated conversation. The LLM's natural-language reply never
         // decides whether a tool executes — that decision lives here.
-        const decision = await taskRouter.routeMessage({
+        const turnPlan = await taskRouter.planTurn({
             message: routingMessage,
             provider,
             model,
             conversationId,
+            activeTask: taskState.getTask(conversationId),
             hasAttachedImage: chatImages.length > 0,
             referenceImage,
             referenceImages,
             think
         });
+        const decision = turnPlan.decision;
 
         // Character context for this turn, now that the action is known. An
         // explicit mention/picker selection switches the active character; a
@@ -2298,7 +2332,7 @@ async function handleChatStream(req, res) {
         // Upscale the last generated image in this conversation. Only the
         // deterministic "upscale" intent routes here, so the user-facing reply
         // can reference the exact before/after it produced.
-        if (decision.shouldExecuteTool && decision.task === 'image_upscale') {
+        if (turnPlan.execution.shouldRun && turnPlan.execution.workflow === 'image_upscale') {
             await vramManager.freeVRAMBeforeImage();
             await handleImageUpscaleStream(req, res, {
                 provider, model, conversationId, message
@@ -2309,7 +2343,7 @@ async function handleChatStream(req, res) {
         // Upscale the last generated video in this conversation. Manual-only,
         // just like image upscale — the user must ask ("upscale this video").
         // There is no automatic 4K pass after generation.
-        if (decision.shouldExecuteTool && decision.task === 'video_upscale') {
+        if (turnPlan.execution.shouldRun && turnPlan.execution.workflow === 'video_upscale') {
             await vramManager.freeVRAMBeforeImage();
             await handleVideoUpscaleStream(req, res, {
                 provider, model, conversationId, message
@@ -2328,7 +2362,7 @@ async function handleChatStream(req, res) {
         // the user's image(s) become positional scene references. This is a
         // character-aware generation (reference-guided), never a bare edit that
         // would drop the character.
-        if (decision.shouldExecuteTool && decision.task === 'image_edit') {
+        if (turnPlan.execution.shouldRun && turnPlan.execution.workflow === 'image_edit') {
             const activeTask = taskState.getTask(conversationId);
             const action = (decision.intent === 'new_task' || decision.intent === 'switch_task') ? 'generate' : 'modify';
             const identity = requestCharacters.length
@@ -2418,7 +2452,7 @@ async function handleChatStream(req, res) {
             return;
         }
 
-        if (decision.shouldExecuteTool && decision.task === 'image_generation') {
+        if (turnPlan.execution.shouldRun && turnPlan.execution.workflow === 'image') {
             const activeTask = taskState.getTask(conversationId);
             const isNew = decision.intent === 'new_task' || decision.intent === 'switch_task';
             // Regenerate insight: "generate the image again" re-runs the SAME
@@ -2624,7 +2658,7 @@ async function handleChatStream(req, res) {
         // Video generation via MiniMax H3. Follows the same pattern as image
         // generation but routes through the video pipeline and emits a 'video'
         // SSE event instead of 'image'.
-        if (decision.shouldExecuteTool && decision.task === 'video_generation') {
+        if (turnPlan.execution.shouldRun && turnPlan.execution.workflow === 'video') {
             const activeTask = taskState.getTask(conversationId);
             const isNew = decision.intent === 'new_task' || decision.intent === 'switch_task';
             // Same regenerate insight as images: bare "again" reuses the
@@ -2868,7 +2902,7 @@ async function handleChatStream(req, res) {
         // resume it later. It is only cleared when the user explicitly starts a
         // different, non-tool task (new_task/switch_task that is not a
         // generation), which replaces the active task.
-        if ((decision.intent === 'new_task' || decision.intent === 'switch_task') && !decision.shouldExecuteTool) {
+        if ((decision.intent === 'new_task' || decision.intent === 'switch_task') && !turnPlan.execution.shouldRun) {
             taskState.clearTask(conversationId);
         }
 

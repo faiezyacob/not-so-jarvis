@@ -9,6 +9,8 @@
 const conversationService = require('./conversation-service');
 const configManager = require('./config-manager');
 
+const MAX_RECENT_CONTEXT_CHARS = 24000;
+
 const SYSTEM_PROMPT =
     'You are JARVIS, a local AI assistant running on the user\'s own machine. '
     + 'You assist with system monitoring, software development, and general tasks. '
@@ -25,7 +27,14 @@ const SYSTEM_PROMPT =
     + 'reply without a tool run must not contain any. If the user asks for a '
     + 'generation, upscale, or edit that you cannot run, say so plainly instead of '
     + 'describing a fake result. '
-    + 'Be concise and helpful. When the user asks about their machine you may be '
+    + 'Be warm, direct, and conversational. Lead with the useful answer; avoid '
+    + 'repeating the request, filler, and unnecessary headings. Use relevant '
+    + 'conversation history naturally, and treat the user\'s corrections and latest '
+    + 'explicit constraints as authoritative. If a reasonable assumption lets you '
+    + 'proceed, make it and briefly say so; ask one focused question only when '
+    + 'proceeding would likely produce the wrong result. Be clear about uncertainty '
+    + 'and local limitations, and report only results the system confirms. '
+    + 'When the user asks about their machine you may be '
     + 'given a live CPU/RAM/GPU/VRAM telemetry snapshot, and when they ask about '
     + 'the weather you may be given a live weather snapshot, both as system '
     + 'context. Use only those values when present; never estimate or invent '
@@ -59,6 +68,34 @@ function stripDirectorMarkers(content) {
         .trim();
 }
 
+function getBoundedRecentMessages(conversationId, currentUserMessage) {
+    const recent = conversationService.getMessages(conversationId)
+        .slice(-conversationService.CONFIG.RECENT_MESSAGE_LIMIT);
+    const last = recent[recent.length - 1];
+    if (last && last.role === 'user' && String(last.content || '') === String(currentUserMessage || '')) {
+        recent.pop();
+    }
+    const selected = [];
+    let remaining = MAX_RECENT_CONTEXT_CHARS;
+    for (let i = recent.length - 1; i >= 0; i--) {
+        const message = recent[i];
+        const content = stripDirectorMarkers(message.content);
+        if (content.length <= remaining) {
+            selected.unshift({ role: message.role, content });
+            remaining -= content.length;
+            continue;
+        }
+        if (selected.length === 0 && remaining > 1000) {
+            selected.unshift({
+                role: message.role,
+                content: '[Earlier part of this message omitted to fit context]\n' + content.slice(-(remaining - 56))
+            });
+        }
+        break;
+    }
+    return selected;
+}
+
 // Effective system prompt: base JARVIS guardrails plus the user's custom
 // persona instruction (Settings > Chat). The base prompt is never replaced
 // so the /generated/ link and image-tool guardrails always apply.
@@ -74,9 +111,7 @@ function getSystemPrompt() {
 }
 
 function buildContext(conversationId, userMessage, provider, model, activeTaskContext, images, environmentContext) {
-    const recent = conversationService
-        .getMessages(conversationId)
-        .slice(-conversationService.CONFIG.RECENT_MESSAGE_LIMIT);
+    const recent = getBoundedRecentMessages(conversationId, userMessage);
 
     const messages = [];
 
@@ -97,7 +132,7 @@ function buildContext(conversationId, userMessage, provider, model, activeTaskCo
     if (conv && conv.summary) {
         messages.push({
             role: 'system',
-            content: 'Conversation summary:\n' + conv.summary
+            content: 'Durable conversation memory (correct it if newer messages conflict):\n' + conv.summary
         });
     }
 
@@ -110,9 +145,7 @@ function buildContext(conversationId, userMessage, provider, model, activeTaskCo
         });
     }
 
-    recent.forEach((m) => {
-        messages.push({ role: m.role, content: stripDirectorMarkers(m.content) });
-    });
+    recent.forEach((m) => messages.push(m));
 
     const current = { role: 'user', content: stripDirectorMarkers(userMessage) };
     if (Array.isArray(images) && images.length > 0) {
@@ -174,6 +207,7 @@ function buildSystemStatsContext(message, stats) {
 
 module.exports = {
     buildContext,
+    getBoundedRecentMessages,
     getRelevantMessages,
     getSystemPrompt,
     SYSTEM_PROMPT,
@@ -181,5 +215,6 @@ module.exports = {
     formatSystemStats,
     buildSystemStatsContext,
     stripDirectorMarkers,
-    SYSTEM_QUERY_RE
+    SYSTEM_QUERY_RE,
+    MAX_RECENT_CONTEXT_CHARS
 };

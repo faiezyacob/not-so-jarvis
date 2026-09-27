@@ -990,6 +990,50 @@ async function routeMessage({ message, provider, model, conversationId, hasAttac
     return decision;
 }
 
+function createTurnPlan(decision, input = {}) {
+    const routed = decision || ROUTER_FALLBACK;
+    const task = routed.task || 'chat';
+    const workflowByTask = {
+        image_generation: 'image',
+        image_edit: 'image_edit',
+        video_generation: 'video',
+        image_upscale: 'image_upscale',
+        video_upscale: 'video_upscale'
+    };
+    const resolvedIntent = routed.resolvedIntent || null;
+    return {
+        version: 1,
+        conversation: {
+            id: input.conversationId || null,
+            activeTaskType: input.activeTask && input.activeTask.type || null
+        },
+        request: {
+            message: String(input.message || ''),
+            hasAttachedImage: Boolean(input.hasAttachedImage),
+            references: Array.isArray(input.referenceImages)
+                ? input.referenceImages.slice()
+                : (input.referenceImage ? [input.referenceImage] : [])
+        },
+        intent: resolvedIntent ? resolvedIntent.intent
+            : (task === 'image_upscale' || task === 'video_upscale' ? task : routed.intent),
+        routeIntent: routed.intent,
+        execution: {
+            workflow: workflowByTask[task] || 'chat',
+            task,
+            action: routed.action || 'respond',
+            shouldRun: Boolean(routed.shouldExecuteTool),
+            prompt: String(routed.updatedPrompt || ''),
+            structuredRequest: routed.structuredRequest || null
+        },
+        decision: routed
+    };
+}
+
+async function planTurn(input = {}) {
+    const decision = await routeMessage(input);
+    return createTurnPlan(decision, input);
+}
+
 async function askRouter(routerPrompt, provider, model, think) {
     // Two attempts: small local models often wrap the verdict in commentary
     // on the first try. Classification runs at temperature 0 so the verdict
@@ -1110,6 +1154,8 @@ async function buildSuccessReply({ action, prompt, previousPrompt, provider, mod
 
 module.exports = {
     routeMessage,
+    planTurn,
+    createTurnPlan,
     applyPromptModification,
     buildSuccessReply,
     buildRouterContext,

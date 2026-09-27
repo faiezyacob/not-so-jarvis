@@ -10,9 +10,13 @@ const Chat = (() => {
     let chatMessagesEl;
     let chatInput;
     let chatSend;
+    let chatStop;
     let chatAttach;
     let chatFileInput;
     let chatAttachmentsEl;
+    let chatQueueStatusEl;
+    let chatQueueLabelEl;
+    let chatQueueClearEl;
     let conversationListEl;
     let chatMentionPopup;
     let pendingAttachments = [];
@@ -48,14 +52,30 @@ const Chat = (() => {
         chatMessagesEl = document.getElementById('chatMessages');
         chatInput = document.getElementById('chatInput');
         chatSend = document.getElementById('chatSend');
+        chatStop = document.getElementById('chatStop');
         chatAttach = document.getElementById('chatAttach');
         chatFileInput = document.getElementById('chatFileInput');
         chatAttachmentsEl = document.getElementById('chatAttachments');
+        chatQueueStatusEl = document.getElementById('chatQueueStatus');
+        chatQueueLabelEl = document.getElementById('chatQueueLabel');
+        chatQueueClearEl = document.getElementById('chatQueueClear');
         chatMentionPopup = document.getElementById('chatMentionPopup');
         conversationListEl = document.getElementById('conversationList');
 
         document.getElementById('newConversationBtn').addEventListener('click', onNewConversation);
         chatSend.addEventListener('click', onSendButton);
+        if (chatStop) chatStop.addEventListener('click', cancelActiveStream);
+        if (chatQueueClearEl) chatQueueClearEl.addEventListener('click', clearQueuedTurn);
+        document.addEventListener('click', (e) => {
+            const toolButton = e.target.closest('.chat-tool-row button');
+            const tools = toolButton && toolButton.closest('.chat-tools');
+            if (!tools) return;
+            setTimeout(() => {
+                tools.open = false;
+                const summary = tools.querySelector('summary');
+                if (summary) summary.focus();
+            }, 0);
+        });
         if (chatAttach && chatFileInput) {
             chatAttach.addEventListener('click', () => chatFileInput.click());
             chatFileInput.addEventListener('change', () => {
@@ -87,7 +107,7 @@ const Chat = (() => {
             }
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
-                if (activeStreamAbort) return;
+                if (chatSend.disabled) return;
                 sendMessage();
             }
         });
@@ -144,6 +164,17 @@ const Chat = (() => {
             const actions = document.createElement('div');
             actions.className = 'conv-actions';
 
+            const memoryBtn = document.createElement('button');
+            memoryBtn.className = 'conv-action conv-action--memory';
+            memoryBtn.type = 'button';
+            memoryBtn.textContent = '✦';
+            memoryBtn.title = 'Manage conversation memory';
+            memoryBtn.setAttribute('aria-label', 'Manage conversation memory');
+            memoryBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                onManageMemory(conv);
+            });
+
             const lockBtn = document.createElement('button');
             lockBtn.className = 'conv-action conv-action--lock' + (conv.private ? ' active' : '');
             lockBtn.title = conv.private
@@ -175,6 +206,7 @@ const Chat = (() => {
                 onDelete(conv);
             });
 
+            actions.appendChild(memoryBtn);
             actions.appendChild(lockBtn);
             actions.appendChild(renameBtn);
             actions.appendChild(deleteBtn);
@@ -219,6 +251,32 @@ const Chat = (() => {
         });
         if (title === null) return;
         await Conversations.rename(conv.id, title.trim() || conv.title);
+    }
+
+    async function onManageMemory(conv) {
+        try {
+            const response = await fetch('/api/conversations/' + encodeURIComponent(conv.id));
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(data.error || 'Could not load conversation memory.');
+            const memory = await Dialog.prompt({
+                title: 'Conversation Memory',
+                message: 'JARVIS keeps a short local memory of useful details as this chat grows. Review, edit, or clear it here. Press Ctrl+Enter to save.',
+                value: typeof data.summary === 'string' ? data.summary : '',
+                placeholder: 'No saved memory yet',
+                multiline: true,
+                confirmText: 'Save memory'
+            });
+            if (memory === null) return;
+            const saved = await fetch('/api/conversations/' + encodeURIComponent(conv.id), {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ summary: memory })
+            });
+            const result = await saved.json().catch(() => ({}));
+            if (!saved.ok) throw new Error(result.error || 'Could not save conversation memory.');
+        } catch (err) {
+            await Dialog.alert({ title: 'Conversation Memory', message: err.message });
+        }
     }
 
     // Toggle the conversation's private/locked state; private conversations
@@ -369,9 +427,9 @@ const Chat = (() => {
         });
     }
 
-    async function uploadAttachments() {
+    async function uploadAttachments(attachments) {
         const uploaded = [];
-        for (const a of pendingAttachments) {
+        for (const a of attachments || pendingAttachments) {
             const res = await fetch('/api/uploads', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -973,7 +1031,31 @@ const Chat = (() => {
         if (!messages || messages.length === 0) {
             const empty = document.createElement('div');
             empty.className = 'chat-empty';
-            empty.textContent = 'Start a conversation.';
+            const title = document.createElement('h2');
+            title.textContent = 'What would you like to work on?';
+            const hint = document.createElement('p');
+            hint.textContent = 'Chat naturally, ask about your system, or create something.';
+            const suggestions = document.createElement('div');
+            suggestions.className = 'chat-starters';
+            [
+                'What can you help me with?',
+                'How is my GPU doing?',
+                'Generate an image of a tiny cabin in a snowy forest'
+            ].forEach((text) => {
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'chat-starter';
+                button.textContent = text;
+                button.addEventListener('click', () => {
+                    chatInput.value = text;
+                    autoGrowInput();
+                    chatInput.focus();
+                });
+                suggestions.appendChild(button);
+            });
+            empty.appendChild(title);
+            empty.appendChild(hint);
+            empty.appendChild(suggestions);
             chatMessagesEl.appendChild(empty);
         } else {
             messages.forEach((m) => {
@@ -1043,6 +1125,7 @@ const Chat = (() => {
     let activeQueueActive = false;
     let activeMessageEl = null;
     let activeMessageConversationId = null;
+    let queuedTurn = null;
 
     async function cancelActiveStream() {
         if (typeof VoiceOutput !== 'undefined' && VoiceOutput && typeof VoiceOutput.cancel === 'function') {
@@ -1071,11 +1154,46 @@ const Chat = (() => {
     }
 
     function onSendButton() {
-        if (activeStreamAbort) {
-            cancelActiveStream();
+        sendMessage();
+    }
+
+    function renderQueuedTurn() {
+        if (!chatQueueStatusEl || !chatQueueLabelEl) return;
+        chatQueueStatusEl.hidden = !queuedTurn;
+        if (!queuedTurn) {
+            chatQueueLabelEl.textContent = '';
+            if (activeStreamAbort) setSendingState(true);
             return;
         }
-        sendMessage();
+        const text = String(queuedTurn.text || 'Message with attachments').replace(/\s+/g, ' ').trim();
+        chatQueueLabelEl.textContent = 'Next message: ' + (text.length > 100 ? text.slice(0, 97) + '…' : text);
+        if (activeStreamAbort) setSendingState(true);
+    }
+
+    function clearQueuedTurn() {
+        queuedTurn = null;
+        renderQueuedTurn();
+    }
+
+    function queueNextTurn(text, attachments, references, characters) {
+        if (queuedTurn) {
+            if (chatQueueLabelEl) chatQueueLabelEl.textContent = 'A follow-up is already queued. Clear it before adding another.';
+            return;
+        }
+        if (!text && !attachments.length && !references.length && !characters.length) return;
+        queuedTurn = {
+            text,
+            attachments,
+            references,
+            characters,
+            conversationId: Conversations.currentId()
+        };
+        renderQueuedTurn();
+        chatInput.value = '';
+        autoGrowInput();
+        clearAttachments();
+        clearReferences();
+        chatInput.focus();
     }
 
     async function sendMessage(options) {
@@ -1091,12 +1209,26 @@ const Chat = (() => {
             : chatInput.value.trim();
         // A Director action is a self-contained turn: drafts are ignored so a
         // pending attachment can never leak into an approval click.
-        const attachments = override ? [] : pendingAttachments.slice();
-        const references = override ? [] : pendingReferences.slice();
-        const characters = override ? [] : pendingCharacters.slice();
+        const attachments = override && Array.isArray(override.attachments)
+            ? override.attachments.slice()
+            : (override ? [] : pendingAttachments.slice());
+        const references = override && Array.isArray(override.references)
+            ? override.references.slice()
+            : (override ? [] : pendingReferences.slice());
+        const characters = override && Array.isArray(override.characters)
+            ? override.characters.slice()
+            : (override ? [] : pendingCharacters.slice());
         if (!text && !attachments.length && !references.length && !characters.length) return;
 
-        let conversationId = Conversations.currentId();
+        if (activeStreamAbort) {
+            if (override) return;
+            queueNextTurn(text, attachments, references, characters);
+            return;
+        }
+
+        let conversationId = override && override.conversationId
+            ? override.conversationId
+            : Conversations.currentId();
 
         // Auto-create a conversation when none is active
         if (!conversationId) {
@@ -1114,7 +1246,7 @@ const Chat = (() => {
         if (attachments.length) {
             setSendingState(true);
             try {
-                const uploaded = await uploadAttachments();
+                const uploaded = await uploadAttachments(attachments);
                 parts.push(uploaded.map((u) => '![upload](' + u.url + ')').join('\n'));
             } catch (e) {
                 setSendingState(false);
@@ -1124,7 +1256,7 @@ const Chat = (() => {
         }
         const userText = parts.join('\n\n');
 
-        addMessageDom('user', userText);
+        if (Conversations.currentId() === conversationId) addMessageDom('user', userText);
         if (!override) {
             chatInput.value = '';
             autoGrowInput();
@@ -1137,7 +1269,7 @@ const Chat = (() => {
         try {
             userMsg = await Conversations.saveUserMessage(conversationId, userText);
         } catch (e) {
-            addMessageDom('ai', 'Failed to save message: ' + e.message);
+            if (Conversations.currentId() === conversationId) addMessageDom('ai', 'Failed to save message: ' + e.message);
             return;
         }
 
@@ -1149,9 +1281,10 @@ const Chat = (() => {
         const think = typeof getReasoningEnabled === 'function' ? getReasoningEnabled() : true;
 
         setSendingState(true);
-        showTypingIndicator();
+        showTypingIndicator(conversationId);
 
         activeStreamAbort = new AbortController();
+        setSendingState(true);
         activeQueueId = null;
         activeTurnId = null;
         activeQueueActive = false;
@@ -1471,6 +1604,12 @@ const Chat = (() => {
             activeMessageConversationId = null;
             setProgressTitle('');
             setSendingState(false);
+            const nextTurn = queuedTurn;
+            if (nextTurn) {
+                queuedTurn = null;
+                renderQueuedTurn();
+                setTimeout(() => sendMessage(Object.assign({ queuedRequest: true }, nextTurn)), 0);
+            }
             // A concept card disables its buttons while an action is running.
             // Re-apply the active concept after the turn settles so a card that
             // just generated its image (or failed) becomes clickable again —
@@ -1489,25 +1628,27 @@ const Chat = (() => {
 
     function setSendingState(active) {
         if (active) {
-            // Keep the send button enabled so it acts as Cancel while streaming.
-            chatSend.disabled = false;
-            chatInput.disabled = true;
+            chatSend.disabled = !activeStreamAbort;
             chatSend.classList.add('sending');
-            chatSend.setAttribute('aria-label', 'Cancel');
-            chatSend.title = 'Cancel';
+            chatSend.setAttribute('aria-label', queuedTurn ? 'Follow-up already queued' : 'Queue next message');
+            chatSend.title = queuedTurn ? 'A follow-up is already queued' : 'Queue this message after the current turn';
+            if (chatStop) chatStop.hidden = !activeStreamAbort;
         } else {
             chatSend.disabled = false;
-            chatInput.disabled = false;
             chatSend.classList.remove('sending');
             chatSend.setAttribute('aria-label', 'Send message');
-            chatSend.title = '';
+            chatSend.title = 'Send message';
+            if (chatStop) chatStop.hidden = true;
             chatInput.focus();
         }
     }
 
     // --- Typing Indicator ---
 
-    function showTypingIndicator() {
+    let typingConversationId = null;
+
+    function showTypingIndicator(conversationId) {
+        if (Conversations.currentId() !== conversationId) return;
         const existing = document.getElementById('typingIndicator');
         if (existing) return;
 
@@ -1526,12 +1667,18 @@ const Chat = (() => {
         el.appendChild(roleLabel);
         el.appendChild(dotsContainer);
         chatMessagesEl.appendChild(el);
+        typingConversationId = conversationId;
         chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
     }
 
     function removeTypingIndicator() {
+        if (typingConversationId && Conversations.currentId() !== typingConversationId) {
+            typingConversationId = null;
+            return;
+        }
         const el = document.getElementById('typingIndicator');
         if (el) el.remove();
+        typingConversationId = null;
     }
 
     return {

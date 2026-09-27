@@ -1507,6 +1507,21 @@ test('a re-roll is deterministic for the same rng', () => {
     const identity = characterGen.generateRandomIdentity(9191);
     assert.deepEqual(characterGen.rerollIdentityFace(identity, 5), characterGen.rerollIdentityFace(identity, 5));
     assert.deepEqual(characterGen.rerollIdentityHair(identity, 5), characterGen.rerollIdentityHair(identity, 5));
+    assert.deepEqual(characterGen.rerollIdentityBuild(identity, 5), characterGen.rerollIdentityBuild(identity, 5));
+});
+
+test('a build re-roll changes only the build', () => {
+    const identity = characterGen.generateRandomIdentity(2468, { appearance: 'black_african_diaspora', age: 'adult', gender: 'woman' });
+    let build = identity;
+    for (let seed = 1; seed <= 40 && build.build === identity.build; seed++) {
+        build = characterGen.rerollIdentityBuild(identity, seed);
+    }
+    assert.notEqual(build.build, identity.build, 'expected the build to change across some re-rolls');
+    assert.deepEqual(faceHalf(build), faceHalf(identity), 'a build re-roll must not touch the face');
+    assert.deepEqual(hairHalf(build), hairHalf(identity), 'a build re-roll must not touch the hair');
+    assert.equal(build.skinTone, identity.skinTone);
+    assert.equal(build.ageGroup, identity.ageGroup);
+    assert.equal(build.gender, identity.gender);
 });
 
 test('expanded identity traits survive a preset save and reload', () => {
@@ -1555,6 +1570,7 @@ test('locks block the matching identity re-roll', () => {
     const card = playground.buildCard(session, null);
     assert.equal(card.identityReroll.face, false);
     assert.equal(card.identityReroll.hair, true);
+    assert.equal(card.identityReroll.build, true);
 
     let guard = 0;
     while (session.concept.identitySignature === signature && guard < 30) {
@@ -1601,4 +1617,35 @@ test('a saved character card offers no identity re-roll', () => {
     const card = playground.buildCard(session, preset);
     assert.equal(card.identityReroll.face, false);
     assert.equal(card.identityReroll.hair, false);
+    assert.equal(card.identityReroll.build, false);
+});
+
+test('a build re-roll through the service keeps the face and hair', () => {
+    const id = conversationId('build-reroll');
+    const session = playground.start({
+        conversationId: id, themeId: 'lifestyle-candid', mode: 'random_character', rng: characterGen.createRng(23)
+    });
+    const before = Object.assign({}, session.concept);
+    let guard = 0;
+    while (session.concept.identity.build === before.identity.build && guard < 40) {
+        playground.modify(session, { rerollIdentity: 'build', rng: characterGen.createRng(90 + guard) });
+        guard++;
+    }
+    assert.notEqual(session.concept.identity.build, before.identity.build, 'expected the build to change');
+    assert.deepEqual(faceHalf(session.concept.identity), faceHalf(before.identity), 'a build re-roll must not change the face');
+    assert.equal(session.concept.hair, before.hair, 'a build re-roll must not change the hair');
+    assert.equal(session.concept.characterSeed, before.characterSeed);
+});
+
+test('an identity lock blocks the build re-roll', () => {
+    const id = conversationId('build-lock');
+    const session = playground.start({
+        conversationId: id, themeId: 'lifestyle-candid', mode: 'random_character',
+        locks: { identity: true }, rng: characterGen.createRng(7)
+    });
+    const build = session.concept.identity.build;
+    playground.modify(session, { rerollIdentity: 'build', rng: characterGen.createRng(3) });
+    assert.equal(session.concept.identity.build, build, 'a locked identity must not re-roll the build');
+    const card = playground.buildCard(session, null);
+    assert.equal(card.identityReroll.build, false);
 });
