@@ -785,6 +785,18 @@ test('visual edits invalidate approved references', async () => {
     assert.equal(studio.referencesComplete(project), false);
 });
 
+test('referenceFilenames lists every frame the project owns for cleanup', () => {
+    const project = twoSceneProject();
+    studio.recordReference(project, 's1', { url: '/generated/a.png', filename: 'a.png' });
+    studio.recordReference(project, 's2', { url: '/generated/b.png', filename: 'b.png' });
+    studio.approveReferences(project);
+    assert.deepEqual(studio.referenceFilenames(project).sort(), ['a.png', 'b.png']);
+    // An entry that only carries a URL (no filename) still resolves its basename.
+    project.references.push({ sceneId: 's3', order: 3, url: '/generated/c.png', status: 'ready' });
+    assert.deepEqual(studio.referenceFilenames(project).sort(), ['a.png', 'b.png', 'c.png']);
+    assert.deepEqual(studio.referenceFilenames(null), []);
+});
+
 test('creator, outfit, environment and duration changes all invalidate references', async () => {
     const mutations = [
         (p) => studio.selectEnvironment(p, 'kitchen'),

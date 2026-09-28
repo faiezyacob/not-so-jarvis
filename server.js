@@ -1759,9 +1759,22 @@ function handleDeleteConversation(req, res, id) {
         return;
     }
     removeConversationImages(messages, id);
+    removeUGCMedia(id);
     taskState.clearTask(id);
     director.removeProduction(id);
     json(res, 200, { ok: true });
+}
+
+// UGC reference frames are hidden from the gallery and never linked from chat
+// messages, so removeConversationImages can't find them. Drop the project's
+// reference files explicitly, then the project record itself.
+function removeUGCMedia(conversationId) {
+    const project = ugcStudio.getProject(conversationId);
+    if (!project) return;
+    ugcStudio.referenceFilenames(project).forEach((name) => {
+        try { generatedHistory.removeByFilename(name); } catch (err) { /* ignore */ }
+    });
+    ugcStudio.removeProject(conversationId);
 }
 
 // Remove generated media files (images and videos) that were linked from a
@@ -3549,6 +3562,9 @@ async function handleUGCGenerateReferences(req, res, ctx, project, sceneIds, opt
                     ? imageGenerator.editImage(creatorIdentityAbs, creatorIdentityInstruction + job.imagePrompt, {
                         provider, model, conversationId, onQueued, onStart,
                         references: [],
+                        // Reference frames exist only for the UGC video handoff;
+                        // keep them out of the shared gallery/activity/`@` picker.
+                        hidden: true,
                         label: 'ugc reference', kind: 'image_generation'
                     })
                     : imageGenerator.generateImage(job.imagePrompt, {
@@ -3557,6 +3573,7 @@ async function handleUGCGenerateReferences(req, res, ctx, project, sceneIds, opt
                         // are never merged with the scene reference frames.
                         productReferences: job.request.product_references || [],
                         onStart,
+                        hidden: true,
                         label: 'ugc reference', kind: 'image_generation'
                     });
                 queueId = promise.queueId || null;

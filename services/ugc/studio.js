@@ -1485,6 +1485,26 @@ function resolveOpeningFrame(project) {
     return first ? { url: first.url, filename: first.filename } : null;
 }
 
+// Every generated reference file the project owns. Reference frames are hidden
+// from the gallery but stay tied to the conversation, so deleting that
+// conversation must remove them explicitly by filename.
+function referenceFilenames(project) {
+    if (!project) return [];
+    const names = new Set();
+    const collect = (list) => {
+        (list || []).forEach((ref) => {
+            const source = ref && (ref.filename || ref.url);
+            if (!source) return;
+            const raw = String(source).split('?')[0];
+            const base = raw.slice(raw.lastIndexOf('/') + 1);
+            if (base) names.add(base);
+        });
+    };
+    collect(project.references);
+    collect(project.approvedReferences);
+    return Array.from(names);
+}
+
 // --- Natural-language editing -------------------------------------------------
 
 const APPROVE_RE =
@@ -1972,6 +1992,7 @@ module.exports = {
     validateAction,
     isStaleAction,
     resolveOpeningFrame,
+    referenceFilenames,
     reconcileContinuity,
     classifyMessage,
     applyNaturalEdit,
