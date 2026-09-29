@@ -24,6 +24,7 @@ const path = require('path');
 const characterPresets = require('./character-presets');
 const characterIdentity = require('./character-identity');
 const creativeDefaults = require('./creative-defaults');
+const faceActions = require('./playground/face-actions');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 // An explicit path keeps the tests hermetic (they never touch data/).
@@ -452,6 +453,33 @@ function buildCharacterActionSection(characters, rawPrompt) {
     return 'CHARACTER-SPECIFIC ACTIONS / POSITIONS\n' + resolved;
 }
 
+// Resolve an explicit facial request into the shared Face Action model. Keep it
+// as a separate layer from character identity and scene actions; only a single
+// referenced character is accepted here so an ambiguous multi-person request
+// can never assign an expression to the wrong face.
+function buildFaceActionSection(characters, rawPrompt) {
+    const list = (characters || []).filter(Boolean);
+    if (list.length !== 1) return null;
+    const matched = faceActions.matchFaceActionFromText(rawPrompt);
+    if (!matched.confident || !matched.action) return null;
+    const character = list[0];
+    const identity = character.identity && typeof character.identity === 'object' ? character.identity : null;
+    const sentence = faceActions.formatFaceAction(matched.action, {
+        name: character.name || '',
+        gender: identity && identity.gender || character.gender
+    });
+    return {
+        id: matched.action.id || '',
+        label: matched.action.label || '',
+        expression: matched.action.expression,
+        mouth: matched.action.mouth,
+        eyes: matched.action.eyes,
+        head: matched.action.head,
+        description: matched.action.prompt || '',
+        section: 'FACIAL EXPRESSION\n' + sentence + '. This changes expression only; preserve the same facial structure, eye shape and colour, nose, lips, hairstyle, skin tone, age and distinctive facial features.'
+    };
+}
+
 // Choose the best scene wording. The scene prompt usually has `@Name` stripped,
 // which can leave a pronoun ("her") with no named antecedent; when the user's
 // own resolved wording contains the scene text, prefer the resolved form so the
@@ -615,12 +643,15 @@ function buildSceneInstruction(characters, scenePrompt, options = {}) {
     const scene = String(scenePrompt || '').trim();
     if (list.length === 1) {
         const pkg = characterPresets.getIdentityPackage(list[0].id);
-        const base = characterIdentity.buildSceneEditInstruction(pkg, scene, list[0].name || 'the character');
+        const faceAction = buildFaceActionSection(list, options.rawPrompt);
+        const sceneDirection = faceAction ? faceActions.stripFaceActionText(scene) : scene;
+        const base = characterIdentity.buildSceneEditInstruction(pkg, sceneDirection, list[0].name || 'the character');
+        const withFaceAction = faceAction ? base + ' ' + faceAction.section : base;
         // Creative defaults are additive: identity wording is untouched, the
         // resolved clothing/style only fill what the user left unspecified.
         return creativeDefaultsEnabled(options)
-            ? appendCreativeDefaults(base, list, scene, options)
-            : base;
+            ? appendCreativeDefaults(withFaceAction, list, scene, options)
+            : withFaceAction;
     }
     return buildMultiCharacterInstruction(list, scene, options);
 }
@@ -677,6 +708,7 @@ function buildConditioning(characters, scenePrompt, options = {}) {
         names: records.map((c) => c.name || 'character'),
         section: buildMultiCharacterInstruction(records, scenePrompt, sceneOptions)
     } : null;
+    const faceAction = buildFaceActionSection(records, options.rawPrompt);
     const defaults = options.defaults === false
         ? null
         : creativeDefaults.buildCreativeDefaults(records, sceneOptions);
@@ -690,6 +722,7 @@ function buildConditioning(characters, scenePrompt, options = {}) {
         instruction: buildSceneInstruction(records, scenePrompt, sceneOptions),
         constraints,
         multiCharacter,
+        faceAction,
         creativeDefaults: defaults
     };
 }
@@ -759,6 +792,7 @@ module.exports = {
     buildSceneInstruction,
     buildMultiCharacterInstruction,
     buildCharacterActionSection,
+    buildFaceActionSection,
     appendCreativeDefaults,
     resolveCharacterPronouns,
     resolveActionText,

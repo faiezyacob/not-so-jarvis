@@ -952,6 +952,22 @@
                     </section>
 
                     <section class="playground-section">
+                        <h3 class="playground-section-title">Face Action</h3>
+                        <label class="settings-field-label" for="playgroundFaceAction">Facial expression</label>
+                        <select class="settings-select" id="playgroundFaceAction"></select>
+                        <details class="playground-face-advanced">
+                            <summary>Advanced face controls</summary>
+                            <div class="playground-profile-grid">
+                                <label class="playground-profile-field"><span>Expression</span><select class="settings-select" id="playgroundFaceExpression"></select></label>
+                                <label class="playground-profile-field"><span>Mouth</span><select class="settings-select" id="playgroundFaceMouth"></select></label>
+                                <label class="playground-profile-field"><span>Eyes / Gaze</span><select class="settings-select" id="playgroundFaceEyes"></select></label>
+                                <label class="playground-profile-field"><span>Head</span><select class="settings-select" id="playgroundFaceHead"></select></label>
+                            </div>
+                        </details>
+                        <p class="playground-section-hint">Auto selects a coherent expression for the content style. Facial actions never change character identity.</p>
+                    </section>
+
+                    <section class="playground-section">
                         <h3 class="playground-section-title">Keep fixed</h3>
                         <div class="playground-locks-grid">
                             <label class="playground-lock"><input type="checkbox" data-lock="identity"> Identity</label>
@@ -961,8 +977,9 @@
                             <label class="playground-lock"><input type="checkbox" data-lock="style"> Style</label>
                             <label class="playground-lock"><input type="checkbox" data-lock="environment"> Environment</label>
                             <label class="playground-lock"><input type="checkbox" data-lock="activity"> Activity</label>
+                            <label class="playground-lock"><input type="checkbox" data-lock="faceAction"> Face Action</label>
                         </div>
-                        <p class="playground-section-hint">Locks preserve those attributes when you use &ldquo;Surprise Me Again&rdquo;.</p>
+                        <p class="playground-section-hint">Locks pin creative attributes. Surprise Me Again keeps the current character and creates another moment from the same session.</p>
                     </section>
                 </div>
                 <div class="playground-popup-footer">

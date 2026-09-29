@@ -6043,6 +6043,23 @@ a.modal-btn {
     color: var(--text-dim);
 }
 
+.playground-face-advanced {
+    margin-top: 2px;
+    color: var(--text-secondary);
+    font-size: var(--fs-2xs);
+}
+
+.playground-face-advanced summary {
+    width: fit-content;
+    cursor: pointer;
+    color: var(--text-dim);
+}
+
+.playground-face-advanced[open] .playground-profile-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin-top: 7px;
+}
+
 .playground-summary {
     font-family: var(--font-mono);
     font-size: var(--fs-2xs);

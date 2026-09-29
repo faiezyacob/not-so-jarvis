@@ -35,7 +35,8 @@ const PlaygroundUI = (() => {
         outfit: 'Outfit',
         style: 'Style',
         environment: 'Environment',
-        activity: 'Activity'
+        activity: 'Activity',
+        faceAction: 'Face Action'
     };
 
     const BUTTONS = [
@@ -119,7 +120,7 @@ const PlaygroundUI = (() => {
         return row;
     }
 
-    const EDITABLE_FIELDS = ['activity', 'environment', 'outfit', 'lighting', 'camera', 'composition', 'mood', 'style'];
+    const EDITABLE_FIELDS = ['activity', 'environment', 'outfit', 'lighting', 'camera', 'composition', 'mood', 'style', 'faceAction'];
 
     function lockChips(card) {
         const locks = card.locks || {};
@@ -397,6 +398,9 @@ const PlaygroundUI = (() => {
             detailRow('Prompt', c.userPrompt),
             buildDetailRow('Environment', c.environment, { rerollField: 'environment', editField: 'environment', card }),
             buildDetailRow('Activity', c.activity, { rerollField: 'activity', editField: 'activity', card }),
+            buildDetailRow('Face Action', c.faceActionLabel || c.faceActionDescription, {
+                rerollField: 'faceAction', editField: 'faceAction', card
+            }),
             detailRow('Character', card.character
                 ? card.character.name
                 : (card.characterName
@@ -694,6 +698,14 @@ const PlaygroundUI = (() => {
     let activityCache = null;
     let activityCategories = null;
     let activityChoice = '';
+    let faceActionSelect = null;
+    let faceExpressionSelect = null;
+    let faceMouthSelect = null;
+    let faceEyesSelect = null;
+    let faceHeadSelect = null;
+    let faceActionCache = null;
+    let faceActionChoice = 'auto';
+    let faceActionComponentsDirty = false;
     let popupStatusEl = null;
     let closeButtonEl = null;
     let summaryEl = null;
@@ -797,6 +809,76 @@ const PlaygroundUI = (() => {
         return activityCache;
     }
 
+    async function loadFaceActions() {
+        if (faceActionCache) return faceActionCache;
+        try {
+            const res = await fetch('/api/playground/face-actions');
+            const data = await res.json();
+            faceActionCache = {
+                presets: Array.isArray(data.presets) ? data.presets : [],
+                expressions: Array.isArray(data.expressions) ? data.expressions : [],
+                mouths: Array.isArray(data.mouths) ? data.mouths : [],
+                eyes: Array.isArray(data.eyes) ? data.eyes : [],
+                heads: Array.isArray(data.heads) ? data.heads : []
+            };
+        } catch (e) {
+            faceActionCache = { presets: [], expressions: [], mouths: [], eyes: [], heads: [] };
+        }
+        return faceActionCache;
+    }
+
+    function selectOption(select, value, label) {
+        if (!select) return;
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = label;
+        select.appendChild(option);
+    }
+
+    function renderFaceActions() {
+        if (!faceActionSelect || !faceActionCache) return;
+        const current = faceActionChoice || 'auto';
+        faceActionSelect.innerHTML = '';
+        selectOption(faceActionSelect, 'auto', 'Auto');
+        selectOption(faceActionSelect, 'random', 'Random');
+        (faceActionCache.presets || []).forEach((preset) => selectOption(faceActionSelect, preset.id, preset.label));
+        selectOption(faceActionSelect, 'custom', 'Advanced components');
+        faceActionSelect.value = current;
+        fillSelect(faceExpressionSelect, faceActionCache.expressions || [], 'Theme decides');
+        fillSelect(faceMouthSelect, faceActionCache.mouths || [], 'Theme decides');
+        fillSelect(faceEyesSelect, faceActionCache.eyes || [], 'Theme decides');
+        fillSelect(faceHeadSelect, faceActionCache.heads || [], 'Theme decides');
+    }
+
+    function setFaceActionComponents(components) {
+        const c = components || {};
+        if (faceExpressionSelect) faceExpressionSelect.value = c.expression || '';
+        if (faceMouthSelect) faceMouthSelect.value = c.mouth || '';
+        if (faceEyesSelect) faceEyesSelect.value = c.eyes || '';
+        if (faceHeadSelect) faceHeadSelect.value = c.head || '';
+    }
+
+    function selectedFaceAction() {
+        if (faceActionComponentsDirty || (faceActionSelect && faceActionSelect.value === 'custom')) {
+            return {
+                faceAction: 'custom',
+                faceActionComponents: {
+                    expression: faceExpressionSelect ? faceExpressionSelect.value : '',
+                    mouth: faceMouthSelect ? faceMouthSelect.value : '',
+                    eyes: faceEyesSelect ? faceEyesSelect.value : '',
+                    head: faceHeadSelect ? faceHeadSelect.value : ''
+                }
+            };
+        }
+        return { faceAction: faceActionSelect ? faceActionSelect.value : 'auto' };
+    }
+
+    function syncFaceActionComponentsFromPreset(value) {
+        if (!faceActionCache) return;
+        const preset = (faceActionCache.presets || []).find((item) => item.id === value);
+        if (preset) setFaceActionComponents(preset);
+    }
+
     // The Activity selector mirrors the Theme/Character controls: "Theme
     // decides" (no library activity), Auto (fit the scene), a random activity,
     // then the catalog grouped by category.
@@ -850,6 +932,15 @@ const PlaygroundUI = (() => {
         if (value === 'random') return 'Random';
         const activity = (activityCache || []).find((a) => a.id === value);
         return activity ? activity.label : value;
+    }
+
+    function faceActionSummaryLabel() {
+        const value = faceActionSelect ? String(faceActionSelect.value || 'auto') : 'auto';
+        if (faceActionComponentsDirty || value === 'custom') return 'Custom expression';
+        if (value === 'auto') return 'Auto expression';
+        if (value === 'random') return 'Random expression';
+        const preset = (faceActionCache && faceActionCache.presets || []).find((item) => item.id === value);
+        return preset ? preset.label : value;
     }
 
     function outfitCard(id, label, description, palette) {
@@ -1154,6 +1245,8 @@ const PlaygroundUI = (() => {
             renderOutfitPacks();
             await loadActivities();
             renderActivities();
+            await loadFaceActions();
+            renderFaceActions();
             applyActiveConcept(await loadActiveConcept());
             updateLockAvailability();
             setPopupBusy(false);
@@ -1219,6 +1312,16 @@ const PlaygroundUI = (() => {
         activityChoice = activityMode === 'none' ? ''
             : (activityMode === 'explicit' ? (concept.activityId || (concept.concept && concept.concept.activityId) || '') : activityMode);
         if (activitySelect) activitySelect.value = activityChoice;
+        const activeFaceAction = concept.faceAction || null;
+        const nestedFaceComponents = concept.concept && concept.concept.faceActionComponents;
+        if (activeFaceAction) {
+            faceActionChoice = activeFaceAction.mode === 'auto'
+                ? 'auto'
+                : (activeFaceAction.id || 'custom');
+            faceActionComponentsDirty = !activeFaceAction.id && Boolean(activeFaceAction.components || nestedFaceComponents);
+            if (faceActionSelect) faceActionSelect.value = faceActionChoice;
+            setFaceActionComponents(activeFaceAction.components || nestedFaceComponents);
+        }
         // Reflect the active user prompt so it can be edited and re-run.
         const activePrompt = (concept.concept && concept.concept.userPrompt) || concept.userPrompt || '';
         if (promptEl) promptEl.value = activePrompt;
@@ -1243,7 +1346,7 @@ const PlaygroundUI = (() => {
         if (label) {
             label.classList.remove('playground-lock--disabled');
             label.title = randomMode
-                ? 'A new Surprise casts a new person; Surprise Me Again keeps this one while Identity is locked.'
+                ? 'A new Surprise casts a new person; Surprise Me Again keeps this character and varies the scene.'
                 : '';
         }
     }
@@ -1319,7 +1422,8 @@ const PlaygroundUI = (() => {
         summaryEl.textContent = 'Scene: ' + selectedThemeLabel()
             + ' \u00b7 Character: ' + characterSummaryLabel()
             + ' \u00b7 Wardrobe: ' + wardrobeSummaryLabel()
-            + ' \u00b7 Activity: ' + activitySummaryLabel();
+            + ' \u00b7 Activity: ' + activitySummaryLabel()
+            + ' \u00b7 Face: ' + faceActionSummaryLabel();
     }
 
     function submit() {
@@ -1343,6 +1447,7 @@ const PlaygroundUI = (() => {
         const locks = selectedLocks();
         const outfit = selectedOutfit();
         const activity = selectedActivity();
+        const faceAction = selectedFaceAction();
         close();
         send(customPrompt ? 'Use my character with my prompt' : 'Surprise me with a creative concept', {
             type: 'surprise',
@@ -1354,6 +1459,8 @@ const PlaygroundUI = (() => {
             outfitPack: outfit.outfitPack,
             outfitPackCustom: outfit.outfitPackCustom,
             activity,
+            faceAction: faceAction.faceAction,
+            faceActionComponents: faceAction.faceActionComponents,
             customPrompt
         });
     }
@@ -1403,6 +1510,11 @@ const PlaygroundUI = (() => {
         outfitPacksEl = document.getElementById('playgroundOutfitPacks');
         outfitCustomEl = document.getElementById('playgroundOutfitCustom');
         activitySelect = document.getElementById('playgroundActivity');
+        faceActionSelect = document.getElementById('playgroundFaceAction');
+        faceExpressionSelect = document.getElementById('playgroundFaceExpression');
+        faceMouthSelect = document.getElementById('playgroundFaceMouth');
+        faceEyesSelect = document.getElementById('playgroundFaceEyes');
+        faceHeadSelect = document.getElementById('playgroundFaceHead');
         promptEl = document.getElementById('playgroundPrompt');
         const submitBtn = document.getElementById('playgroundSurprise');
 
@@ -1461,6 +1573,23 @@ const PlaygroundUI = (() => {
         if (promptEl) promptEl.addEventListener('input', () => { popoverDirty = true; syncPromptMode(); });
         if (outfitCustomEl) outfitCustomEl.addEventListener('input', () => { popoverDirty = true; });
         if (activitySelect) activitySelect.addEventListener('change', () => { popoverDirty = true; updateSummary(); });
+        if (faceActionSelect) faceActionSelect.addEventListener('change', () => {
+            faceActionChoice = faceActionSelect.value || 'auto';
+            faceActionComponentsDirty = faceActionChoice === 'custom';
+            if (!faceActionComponentsDirty) syncFaceActionComponentsFromPreset(faceActionChoice);
+            popoverDirty = true;
+            updateSummary();
+        });
+        [faceExpressionSelect, faceMouthSelect, faceEyesSelect, faceHeadSelect].forEach((select) => {
+            if (!select) return;
+            select.addEventListener('change', () => {
+                faceActionComponentsDirty = true;
+                faceActionChoice = 'custom';
+                if (faceActionSelect) faceActionSelect.value = 'custom';
+                popoverDirty = true;
+                updateSummary();
+            });
+        });
         popupEl.querySelectorAll('.playground-lock input[type="checkbox"]').forEach((box) => {
             box.addEventListener('change', () => { popoverDirty = true; updateSummary(); });
         });

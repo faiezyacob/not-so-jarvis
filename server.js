@@ -873,6 +873,13 @@ async function handleAPI(req, res, urlPath) {
         return true;
     }
 
+    // GET /api/playground/face-actions — coherent expression presets and
+    // composable expression/mouth/eyes/head options. The UI never hardcodes them.
+    if (urlPath === '/api/playground/face-actions' && req.method === 'GET') {
+        json(res, 200, playground.listFaceActionOptions());
+        return true;
+    }
+
     // GET /api/playground/state — the active concept for a conversation, so the
     // concept card keeps working after a reload.
     if (urlPath === '/api/playground/state' && req.method === 'GET') {
@@ -2420,7 +2427,8 @@ async function handleChatStream(req, res) {
                         characterId: requestCharacters[0] ? requestCharacters[0].id : null,
                         characterIds: requestCharacters.map((c) => c.id),
                         clothing: persistedClothing(identity),
-                        imageStyle: persistedImageStyle(identity)
+                        imageStyle: persistedImageStyle(identity),
+                        faceAction: identity.faceAction || null
                     })
                 });
                 if (action === 'generate') {
@@ -2643,14 +2651,16 @@ async function handleChatStream(req, res) {
                         characterId: requestCharacters[0] ? requestCharacters[0].id : null,
                         characterIds: requestCharacters.map((c) => c.id),
                         clothing: resolvedClothing,
-                        imageStyle: resolvedStyle
+                        imageStyle: resolvedStyle,
+                        faceAction: identity && identity.faceAction || null
                     })
                 });
-            } else if (attributes || resolvedClothing || resolvedStyle) {
+            } else if (attributes || resolvedClothing || resolvedStyle || (identity && identity.faceAction)) {
                 const patch = {};
                 if (attributes) patch.attributes = attributes;
                 if (resolvedClothing) patch.clothing = resolvedClothing;
                 if (resolvedStyle) patch.imageStyle = resolvedStyle;
+                if (identity && identity.faceAction) patch.faceAction = identity.faceAction;
                 taskState.setTask(conversationId, {
                     parameters: Object.assign({}, taskState.getTask(conversationId).parameters, patch)
                 });
@@ -3881,6 +3891,7 @@ function resolveIdentityConditioning(characters, scenePrompt, options = {}) {
         constraints: conditioning.constraints,
         entries: conditioning.entries,
         multiCharacter: conditioning.multiCharacter || null,
+        faceAction: conditioning.faceAction || null,
         creativeDefaults: conditioning.creativeDefaults || null
     };
 }
@@ -4137,6 +4148,14 @@ async function runPlaygroundGenerate(req, res, ctx, session, rawMessage) {
             explicit_constraints: request.explicit_constraints,
             attributes: attributes || null,
             playgroundId: session.id,
+            faceActionId: request.generationContext && request.generationContext.faceActionId || '',
+            faceAction: session.concept && session.concept.faceAction ? {
+                expression: session.concept.faceAction.expression,
+                mouth: session.concept.faceAction.mouth,
+                eyes: session.concept.faceAction.eyes,
+                head: session.concept.faceAction.head,
+                description: session.concept.faceActionDescription || ''
+            } : null,
             characterId: identity ? identity.characterId : null,
             characterIds: identity && identity.characterIds ? identity.characterIds : []
         })
@@ -4176,6 +4195,8 @@ async function handlePlaygroundAction(req, res, ctx, action, rawMessage) {
                 outfitPackCustom: action.outfitPackCustom,
                 // The shared Activity Library selection ("", "auto", "random" or id).
                 activity: action.activity,
+                faceAction: action.faceAction,
+                faceActionComponents: action.faceActionComponents,
                 // The user's own prompt, used verbatim with the chosen character.
                 customPrompt: action.customPrompt
             });
@@ -4406,6 +4427,8 @@ async function handlePlaygroundAction(req, res, ctx, action, rawMessage) {
             if (action.outfitPack !== undefined) payload.outfitPack = action.outfitPack;
             if (action.outfitPackCustom !== undefined) payload.outfitPackCustom = action.outfitPackCustom;
             if (action.activity !== undefined) payload.activity = action.activity;
+            if (action.faceAction !== undefined) payload.faceAction = action.faceAction;
+            if (action.faceActionComponents !== undefined) payload.faceActionComponents = action.faceActionComponents;
             payload.direction = direction;
             session = playground.modify(session, payload);
             await runPlaygroundFaceStage(req, res, ctx, session);

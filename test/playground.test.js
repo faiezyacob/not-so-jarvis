@@ -268,7 +268,7 @@ test('Surprise Me Again keeps the locked character and rerolls the scene', () =>
     assert.equal(next.themeId, beforeTheme);
 });
 
-test('Surprise Me Again casts a new character when identity is unlocked', () => {
+test('Surprise Me Again keeps the same character even when identity is not manually locked', () => {
     const id = conversationId('again-unlocked');
     const session = playground.start({
         conversationId: id, themeId: 'lifestyle-candid', mode: 'random_character',
@@ -276,7 +276,7 @@ test('Surprise Me Again casts a new character when identity is unlocked', () => 
     });
     const beforeSubject = session.concept.subject;
     const next = playground.again(session, { rng: () => 0.99 });
-    assert.notEqual(next.concept.subject, beforeSubject);
+    assert.equal(next.concept.subject, beforeSubject);
 });
 
 test('Surprise Me Again preserves a saved character identity', () => {

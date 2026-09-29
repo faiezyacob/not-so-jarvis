@@ -19,6 +19,7 @@ const themes = require('./themes');
 const conceptEngine = require('./concept');
 const outfitPacks = require('./outfit-packs');
 const activities = require('./activities');
+const faceActions = require('./face-actions');
 const characterStudio = require('../character-studio');
 
 const ACTIONS = {
@@ -94,6 +95,15 @@ function rememberActivity(session, concept) {
     const id = concept && concept.activityId;
     if (id && !list.includes(id)) list.push(id);
     session.activityIds = list.slice(-12);
+}
+
+// Track the face-action ids already used in this session so consecutive
+// Surprises don't immediately repeat the same expression.
+function rememberFaceAction(session, concept) {
+    const list = Array.isArray(session.faceActionIds) ? session.faceActionIds.slice() : [];
+    const id = concept && concept.faceActionId;
+    if (id && !list.includes(id)) list.push(id);
+    session.faceActionIds = list.slice(-12);
 }
 
 function previousOutfitArchetype(previous) {
@@ -184,6 +194,17 @@ function buildCard(session, character) {
         // can reflect it and a card reload keeps the selector in sync.
         activityMode: concept.activityMode || session.activity || '',
         activityId: concept.activityId || '',
+        // The active Face Action (expression / mouth / eyes / head), so the
+        // popover can reflect it and the card can show and re-roll it.
+        faceAction: concept.faceAction
+            ? {
+                id: concept.faceActionId || '',
+                label: concept.faceActionLabel || '',
+                description: concept.faceActionDescription || '',
+                mode: concept.faceActionMode || '',
+                components: concept.faceActionComponents || null
+            }
+            : null,
         // Development-only (JARVIS_PLAYGROUND_DEBUG=1): the environment/outfit
         // resolution report, so the resolver is easy to tune. Never sent to
         // normal users and never included in an image prompt.
@@ -220,6 +241,11 @@ function buildCard(session, character) {
             activityComposition: concept.activityComposition || '',
             activityCamera: concept.activityCamera || '',
             activityMode: concept.activityMode || '',
+            faceActionId: concept.faceActionId || '',
+            faceActionLabel: concept.faceActionLabel || '',
+            faceActionDescription: concept.faceActionDescription || '',
+            faceActionComponents: concept.faceActionComponents || null,
+            faceActionMode: concept.faceActionMode || '',
             lighting: concept.lighting || '',
             camera: concept.camera || '',
             composition: concept.composition || '',
@@ -251,6 +277,7 @@ function conceptText(session, character) {
     if (c.appearanceCategoryLabel) lines.push('Appearance category: ' + c.appearanceCategoryLabel);
     if (c.appearance) lines.push('Appearance: ' + c.appearance);
     if (c.hair) lines.push('Hair: ' + c.hair);
+    if (c.faceActionLabel) lines.push('Face Action: ' + c.faceActionLabel);
     if (c.userPrompt) lines.push('Prompt: ' + c.userPrompt);
     if (c.outfit) lines.push('Outfit: ' + c.outfit);
     if (c.outfitPackLabel) lines.push('Outfit pack: ' + c.outfitPackLabel);
@@ -278,6 +305,7 @@ function start(input = {}) {
     const avoidSignatures = previous && Array.isArray(previous.identitySignatures) ? previous.identitySignatures : [];
     const avoidOutfitSignatures = previous && Array.isArray(previous.outfitSignatures) ? previous.outfitSignatures : [];
     const avoidActivityIds = previous && Array.isArray(previous.activityIds) ? previous.activityIds : [];
+    const avoidFaceActionIds = previous && Array.isArray(previous.faceActionIds) ? previous.faceActionIds : [];
     // Explicit controls, or the previous session's, or fully random.
     const profile = characterGen.normalizeProfile(
         input.profile || (previous && previous.characterProfile)
@@ -304,6 +332,11 @@ function start(input = {}) {
         // The Activity Library selection ("", "auto", "random" or an id).
         activity: activitySelection,
         avoidActivityIds,
+        // The Face Action selection ("auto", "random", a preset id, or explicit
+        // expression/mouth/eyes/head components).
+        faceAction: input.faceAction,
+        faceActionComponents: input.faceActionComponents,
+        avoidFaceActionIds,
         // A user's own prompt (with a saved or random character) replaces the
         // theme's randomised scene; the character identity is untouched.
         userPrompt: input.customPrompt,
@@ -323,6 +356,10 @@ function start(input = {}) {
         outfitPack: concept.outfitPack || '',
         outfitPackCustom: concept.outfitPackCustom || '',
         activity: activitySelection,
+        faceAction: String(input.faceAction || 'auto').trim(),
+        faceActionComponents: input.faceActionComponents && typeof input.faceActionComponents === 'object'
+            ? Object.assign({}, input.faceActionComponents)
+            : null,
         locks: conceptEngine.normalizeLocks(input.locks),
         concept,
         status: STATUS.PREVIEW,
@@ -333,7 +370,8 @@ function start(input = {}) {
         // people, looks or activities.
         identitySignatures: avoidSignatures.slice(-12),
         outfitSignatures: avoidOutfitSignatures.slice(-12),
-        activityIds: avoidActivityIds.slice(-12)
+        activityIds: avoidActivityIds.slice(-12),
+        faceActionIds: avoidFaceActionIds.slice(-12)
     };
     const characterSnapshot = character
         ? characterStudio.normalizeCharacter(character)
@@ -354,6 +392,7 @@ function start(input = {}) {
     rememberIdentity(session, concept);
     rememberOutfit(session, concept);
     rememberActivity(session, concept);
+    rememberFaceAction(session, concept);
     state.setSession(conversationId, session);
     return session;
 }
@@ -365,6 +404,11 @@ function again(session, options = {}) {
     const avoidSignatures = Array.isArray(session.identitySignatures) ? session.identitySignatures : [];
     const avoidOutfitSignatures = Array.isArray(session.outfitSignatures) ? session.outfitSignatures : [];
     const avoidActivityIds = Array.isArray(session.activityIds) ? session.activityIds : [];
+    const avoidFaceActionIds = Array.isArray(session.faceActionIds) ? session.faceActionIds : [];
+    // A Surprise Me Again is another moment from the same character/session.
+    // A brand-new Surprise action starts a fresh identity; this in-session
+    // re-roll always pins the current character while varying the scene and face.
+    const rerollLocks = Object.assign({}, session.locks, { identity: true });
     // "Surprise Me Again" keeps the theme and builds a new scene/outfit. The
     // character is preserved while the Identity lock is set; otherwise a new
     // person is cast from the same appearance/age/gender controls. (A saved
@@ -374,7 +418,7 @@ function again(session, options = {}) {
         theme,
         mode: session.mode,
         character,
-        locks: session.locks,
+        locks: rerollLocks,
         previous: session.concept,
         profile,
         // The pack persists across "Surprise Me Again" (it is a wardrobe
@@ -386,6 +430,12 @@ function again(session, options = {}) {
         // re-roll; an auto pick re-fits the new scene.
         activity: session.activity,
         avoidActivityIds,
+        // Auto mode varies expressions across the same locked character and
+        // content style; an explicit preset remains pinned across re-rolls.
+        faceAction: session.concept && session.concept.userPrompt && session.faceAction === 'auto'
+            && !session.faceActionComponents ? undefined : (session.faceAction || 'auto'),
+        faceActionComponents: session.faceActionComponents || null,
+        avoidFaceActionIds,
         // A user prompt is preserved: "Surprise Me Again" re-runs the same
         // prompt instead of silently dropping the user's own wording.
         userPrompt: session.concept && session.concept.userPrompt,
@@ -403,6 +453,8 @@ function again(session, options = {}) {
     rememberIdentity(session, concept);
     rememberOutfit(session, concept);
     rememberActivity(session, concept);
+    rememberFaceAction(session, concept);
+    session.faceAction = session.faceAction || 'auto';
     session.status = STATUS.PREVIEW;
     session.updatedAt = new Date().toISOString();
     state.setSession(session.conversationId, session);
@@ -423,6 +475,16 @@ function modify(session, action = {}) {
         }
     }
     const changes = Object.assign({}, action.changes);
+    const faceActionProvided = Object.prototype.hasOwnProperty.call(action, 'faceAction')
+        || Object.prototype.hasOwnProperty.call(action, 'faceActionComponents');
+    const faceActionValue = Object.prototype.hasOwnProperty.call(action, 'faceAction')
+        ? String(action.faceAction || '')
+        : '';
+    if (action.faceActionComponents && typeof action.faceActionComponents === 'object') {
+        changes.faceActionComponents = action.faceActionComponents;
+    } else if (faceActionValue && !['auto', 'random', 'none'].includes(faceActionValue.trim().toLowerCase())) {
+        changes.faceAction = faceActionValue;
+    }
     // A named subcategory forces a re-roll inside that category; the rest of
     // the explicit changes are layered on top. `action.category` is an explicit
     // override (used by the API); `changes.category` comes from typed follow-ups.
@@ -474,6 +536,7 @@ function modify(session, action = {}) {
         || (typeof changes.activityId === 'string' && changes.activityId.trim())
         || (typeof changes.activity === 'string' && changes.activity.trim());
     const avoidActivityIds = Array.isArray(session.activityIds) ? session.activityIds : [];
+    const avoidFaceActionIds = Array.isArray(session.faceActionIds) ? session.faceActionIds : [];
     // A precise one-field re-roll never re-runs the scenario roll; it is a
     // surgical change to the current concept only.
     const fieldReroll = String(action.rerollField || '').trim().toLowerCase();
@@ -494,6 +557,11 @@ function modify(session, action = {}) {
             // A popover activity selection persists; otherwise the session's.
             activity: activityProvided ? activitySelection : session.activity,
             avoidActivityIds,
+            faceAction: faceActionProvided ? faceActionValue
+                : (session.concept && session.concept.userPrompt && session.faceAction === 'auto'
+                    && !session.faceActionComponents ? undefined : (session.faceAction || 'auto')),
+            faceActionComponents: action.faceActionComponents,
+            avoidFaceActionIds,
             previousOutfitArchetype: session.concept && session.concept.outfitArchetype ? session.concept.outfitArchetype : '',
             // Preserve an existing user prompt unless the action replaces it.
             userPrompt: action.customPrompt !== undefined
@@ -514,6 +582,16 @@ function modify(session, action = {}) {
                 avoidActivityIds
             });
         }
+    }
+    if (faceActionProvided && ['auto', 'random'].includes(faceActionValue.trim().toLowerCase())) {
+        conceptEngine.resolveConceptFaceAction(concept, {
+            faceAction: faceActionValue,
+            themeId: session.themeId,
+            rng: action.rng,
+            avoidFaceActionIds
+        });
+    } else if (faceActionProvided && faceActionValue.trim().toLowerCase() === 'none') {
+        conceptEngine.clearFaceActionFields(concept);
     }
     // Recompose only when the pack actually changed or the scenario was
     // re-rolled — a scene-only tweak keeps the exact outfit (applyChanges).
@@ -581,10 +659,22 @@ function modify(session, action = {}) {
     }
     rememberOutfit(session, concept);
     rememberActivity(session, concept);
+    rememberFaceAction(session, concept);
     session.locks = locks;
     session.characterProfile = requestedProfile;
     session.outfitPack = concept.outfitPack || '';
     session.outfitPackCustom = concept.outfitPackCustom || '';
+    if (faceActionProvided) session.faceAction = faceActionValue.trim() || 'auto';
+    else if (changes.faceAction || changes.faceActionComponents) session.faceAction = concept.faceActionId || 'auto';
+    if (faceActionProvided) {
+        session.faceActionComponents = action.faceActionComponents && typeof action.faceActionComponents === 'object'
+            ? Object.assign({}, action.faceActionComponents)
+            : null;
+    } else if (changes.faceAction || changes.faceActionComponents) {
+        session.faceActionComponents = changes.faceActionComponents && typeof changes.faceActionComponents === 'object'
+            ? Object.assign({}, changes.faceActionComponents)
+            : null;
+    }
     // Keep the requested activity selection in sync so "Surprise Me Again"
     // preserves an explicit pick and re-fits an auto one.
     if (activityProvided) {
@@ -698,13 +788,15 @@ function buildImageRequest(session) {
         },
         scene: {
             activity: c.activity || '', environment: c.environment || '', outfit: c.outfit || '',
+            faceAction: c.faceActionDescription || '',
             lighting: c.lighting || '',
             // The activity's composition/camera hints ride alongside the theme's
             // own direction; the prompt builder still owns the final wording.
             camera: [c.camera, c.activityCamera].filter(Boolean).join(', '),
             composition: [c.composition, c.activityComposition].filter(Boolean).join(', '),
             mood: c.mood || '', style: c.style || '', technique: c.technique || '', texture: c.texture || '',
-            customDirection: userPrompt || c.customDirection || ''
+            customDirection: (c.faceAction && userPrompt ? faceActions.stripFaceActionText(userPrompt) : userPrompt)
+                || c.customDirection || ''
         },
         user_prompt: conceptEngine.conceptToDirection(session.concept),
         previous_prompt: '',
@@ -712,6 +804,20 @@ function buildImageRequest(session) {
         explicit_constraints: constraints,
         authoritativeConstraints: constraints,
         creativeHints: Array.isArray(theme.constraints) ? theme.constraints : [],
+        faceAction: c.faceAction ? {
+            id: c.faceActionId || faceActions.faceActionSignature(c.faceAction),
+            description: c.faceActionDescription || '',
+            components: c.faceActionComponents || null
+        } : null,
+        generationContext: {
+            characterId: session.characterId || null,
+            outfitId: c.outfitPack || '',
+            poseId: c.activityId || '',
+            faceActionId: c.faceActionId || faceActions.faceActionSignature(c.faceAction),
+            sceneId: session.scene && session.scene.id || '',
+            cameraId: c.camera || '',
+            lightingId: c.lighting || ''
+        },
         characterRevision: session.characterRef && session.characterRef.revision,
         sceneRevision: session.revision
     };
@@ -755,6 +861,9 @@ function createScene(concept, theme) {
         themeId: theme && theme.id || '', categoryId: c.categoryId || '', activity: c.activity || '',
         activityId: c.activityId || '', activityLabel: c.activityLabel || '',
         activityComposition: c.activityComposition || '', activityCamera: c.activityCamera || '',
+        faceActionId: c.faceActionId || '', faceActionLabel: c.faceActionLabel || '',
+        faceActionDescription: c.faceActionDescription || '',
+        faceActionComponents: c.faceActionComponents || null,
         environment: c.environment || '', outfit: c.outfit || '', outfitPack: c.outfitPack || '',
         lighting: c.lighting || '', camera: c.camera || '', composition: c.composition || '', mood: c.mood || '',
         style: c.style || '', technique: c.technique || '', texture: c.texture || '', aspectRatio: c.aspectRatio || '',
@@ -876,6 +985,11 @@ function normalizeAction(value) {
         else if (typeof value.customOutfit === 'string') out.outfitPackCustom = value.customOutfit;
         // Activity Library selection ("", "auto", "random" or an activity id).
         if (typeof value.activity === 'string') out.activity = value.activity;
+        // Face Action selection or an explicit component composition.
+        if (typeof value.faceAction === 'string') out.faceAction = value.faceAction;
+        if (value.faceActionComponents && typeof value.faceActionComponents === 'object') {
+            out.faceActionComponents = value.faceActionComponents;
+        }
         // Character controls may arrive nested or flat; merge both shapes.
         const profile = {};
         if (value.profile && typeof value.profile === 'object') Object.assign(profile, value.profile);
@@ -931,6 +1045,8 @@ module.exports = {
     listOutfitPacks: outfitPacks.listPacks,
     listActivities: activities.listActivities,
     listActivityCategories: activities.listActivityCategories,
+    listFaceActions: faceActions.listFaceActions,
+    listFaceActionOptions: faceActions.listFaceActionOptions,
     getSession: state.getSession,
     removeSession: state.removeSession,
     listSaved: state.listSaved,

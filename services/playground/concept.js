@@ -14,10 +14,11 @@ const { getTheme, pickScenario, pickAspectRatio, outfitSignature } = require('./
 const identityGen = require('./character');
 const outfitPacks = require('./outfit-packs');
 const activities = require('./activities');
+const faceActions = require('./face-actions');
 
 // Lockable attribute groups. Each group maps to the concept/character field it
 // freezes during randomization.
-const LOCKABLE = ['identity', 'appearance', 'hair', 'outfit', 'style', 'environment', 'activity'];
+const LOCKABLE = ['identity', 'appearance', 'hair', 'outfit', 'style', 'environment', 'activity', 'faceAction'];
 
 const MODES = ['character', 'random_character', 'none'];
 
@@ -192,6 +193,114 @@ function adaptConceptOutfitToActivity(concept, rng) {
     return concept;
 }
 
+// --- Face Actions ------------------------------------------------------------
+//
+// A Face Action is a first-class expression dimension (see services/playground/
+// face-actions.js): a coherent expression preset or an explicit composition of
+// expression / mouth / eyes / head. It describes what the FACE is doing, never
+// who the character is, so it composes on top of identity, outfit and scene and
+// must never be allowed to alter the character's identity.
+
+function clearFaceActionFields(concept) {
+    concept.faceAction = null;
+    concept.faceActionId = '';
+    concept.faceActionLabel = '';
+    concept.faceActionDescription = '';
+    concept.faceActionComponents = null;
+    concept.faceActionSource = '';
+    concept.faceActionMode = 'none';
+    return concept;
+}
+
+function attachFaceAction(concept, action, source, mode) {
+    if (!concept || !action) return concept;
+    concept.faceAction = action;
+    concept.faceActionId = action.id || '';
+    concept.faceActionLabel = action.label || '';
+    concept.faceActionDescription = action.prompt || '';
+    concept.faceActionComponents = {
+        expression: action.expression,
+        mouth: action.mouth,
+        eyes: action.eyes,
+        head: action.head
+    };
+    concept.faceActionSource = source || '';
+    concept.faceActionMode = mode || 'explicit';
+    return concept;
+}
+
+// Resolve the concept's Face Action. Priority is the explicit user instruction
+// (popover selection, inline edit or a typed follow-up) > a locked expression
+// carried from the previous concept > a match found inside the user's own prompt
+// > a context-aware automatic pick.
+function resolveConceptFaceAction(concept, options = {}) {
+    if (!concept) return concept;
+    const rng = rngOf(options.rng);
+    const previous = options.previous && typeof options.previous === 'object' ? options.previous : null;
+    const explicitComponents = options.faceActionComponents && typeof options.faceActionComponents === 'object'
+        ? options.faceActionComponents
+        : null;
+    const explicitValue = explicitComponents
+        ? explicitComponents
+        : (typeof options.faceAction === 'string' ? options.faceAction.trim() : '');
+    const selection = typeof explicitValue === 'string'
+        ? faceActions.resolveFaceActionSelection(explicitValue)
+        : { mode: explicitValue ? 'explicit' : 'none' };
+
+    // A concrete preset or component choice is an explicit user instruction
+    // and wins over a lock. Auto/random are selection modes, so a Face Action
+    // lock still carries the last resolved expression forward.
+    if (explicitValue && (explicitComponents || selection.mode === 'explicit')) {
+        const action = faceActions.resolveFaceActionValue(explicitValue, {
+            rng,
+            themeId: options.themeId,
+            outfitPack: concept.outfitPack,
+            environment: concept.environment,
+            activity: concept.activity
+        });
+        if (action) {
+            attachFaceAction(concept, action, selection.mode === 'explicit' ? 'explicit' : 'library', selection.mode);
+        }
+        return concept;
+    }
+    if (options.locked && previous && previous.faceAction) {
+        attachFaceAction(concept, previous.faceAction, 'locked', previous.faceActionMode || 'explicit');
+        return concept;
+    }
+    if (explicitValue && (selection.mode === 'auto' || selection.mode === 'random')) {
+        const action = faceActions.resolveFaceActionValue(explicitValue, {
+            rng,
+            themeId: options.themeId,
+            outfitPack: concept.outfitPack,
+            environment: concept.environment,
+            activity: concept.activity,
+            avoidFaceActionIds: options.avoidFaceActionIds
+        });
+        if (action) attachFaceAction(concept, action, 'auto', selection.mode);
+        return concept;
+    }
+    if (explicitValue && selection.mode === 'none') {
+        clearFaceActionFields(concept);
+        return concept;
+    }
+    if (options.userPrompt) {
+        const matched = faceActions.matchFaceActionFromText(options.userPrompt);
+        if (matched.confident && matched.action) {
+            attachFaceAction(concept, matched.action, 'matched', 'explicit');
+        }
+        return concept;
+    }
+    const chosen = faceActions.selectFaceAction({
+        themeId: options.themeId,
+        outfitPack: concept.outfitPack,
+        mode: 'auto',
+        rng,
+        avoidFaceActionIds: options.avoidFaceActionIds
+    });
+    if (chosen) attachFaceAction(concept, chosen, 'auto', 'auto');
+    return concept;
+}
+
 // --- Outfit Packs ------------------------------------------------------------
 //
 // An Outfit Pack is a first-class, replaceable wardrobe attribute: selecting one
@@ -352,6 +461,16 @@ function assembleConcept(input = {}) {
         activityGroupSize: 1,
         activitySource: '',
         activityMode: 'none',
+        // Structured Face Action resolution (expression / mouth / eyes / head):
+        // the composed action, its display label and concise description, and
+        // whether it was auto-selected, explicit or matched from the user prompt.
+        faceAction: null,
+        faceActionId: '',
+        faceActionLabel: '',
+        faceActionDescription: '',
+        faceActionComponents: null,
+        faceActionSource: '',
+        faceActionMode: 'none',
         lighting: scenario.lighting || '',
         camera: scenario.camera || '',
         composition: scenario.composition || '',
@@ -510,6 +629,20 @@ function assembleConcept(input = {}) {
         adaptConceptOutfitToActivity(concept, rng);
     }
 
+    // Face Action: an explicit user instruction wins; a locked expression is
+    // carried forward; a custom prompt is scanned for an expression; otherwise a
+    // context-aware expression is drawn (and varied across Surprises).
+    resolveConceptFaceAction(concept, {
+        faceAction: input.faceAction,
+        faceActionComponents: input.faceActionComponents,
+        locked: Boolean(locks.faceAction),
+        previous,
+        userPrompt,
+        themeId: theme && theme.id,
+        rng,
+        avoidFaceActionIds: input.avoidFaceActionIds
+    });
+
     // A user-supplied prompt is the authoritative scene brief. Drop the
     // randomly drawn scene fields so the final prompt cannot contradict it;
     // only locked groups and an explicitly chosen Outfit Pack survive.
@@ -558,7 +691,7 @@ const REROLL_FIELD_POOLS = {
     outfit: 'outfits'
 };
 
-const REROLLABLE_FIELDS = Object.keys(REROLL_FIELD_POOLS).concat(['scene', 'aspectRatio']);
+const REROLLABLE_FIELDS = Object.keys(REROLL_FIELD_POOLS).concat(['scene', 'aspectRatio', 'faceAction']);
 
 function poolList(theme, key) {
     const list = theme && Array.isArray(theme[key]) ? theme[key] : [];
@@ -583,7 +716,7 @@ function rerollField(concept, theme, field, rng = Math.random) {
     // a scene-field re-roll on a user-prompted concept would contradict the
     // prompt. Leave it untouched (the UI hides the dice on these rows anyway
     // because the fields are blank).
-    const sceneField = name !== 'outfit' && name !== 'aspectRatio';
+    const sceneField = !['outfit', 'aspectRatio', 'faceAction'].includes(name);
     if (concept.userPrompt && sceneField) return concept;
 
     if (name === 'aspectRatio') {
@@ -623,6 +756,20 @@ function rerollField(concept, theme, field, rng = Math.random) {
             adaptConceptOutfitToActivity(concept, rng);
             return finalize(concept, theme);
         }
+    }
+    if (name === 'faceAction') {
+        // A precise expression re-roll draws a fresh coherent Face Action from
+        // the library (context-aware or fully random) without touching identity.
+        const mode = concept.faceActionMode === 'random' ? 'random' : 'auto';
+        const chosen = faceActions.selectFaceAction({
+            themeId: theme && theme.id,
+            outfitPack: concept.outfitPack,
+            mode,
+            rng,
+            avoidFaceActionIds: concept.faceActionId ? [concept.faceActionId] : []
+        });
+        if (chosen) attachFaceAction(concept, chosen, 'auto', mode);
+        return finalize(concept, theme);
     }
     if (name === 'scene') {
         const activity = pickDifferent(concept.activity, poolList(theme, 'activities'), rng);
@@ -706,6 +853,19 @@ function applyChanges(concept, changes) {
         next.activityMode = 'explicit';
         if (match.id) attachActivity(next, match.activity, 'matched', true);
     }
+    // Face Action: an explicit component map or a preset id/label/free-text
+    // expression resolves to a structured, coherent action.
+    if (src.faceActionComponents && typeof src.faceActionComponents === 'object') {
+        const action = faceActions.composeFaceAction(src.faceActionComponents);
+        if (action) attachFaceAction(next, action, 'explicit', 'explicit');
+    } else if (typeof src.faceAction === 'string' && src.faceAction.trim()) {
+        const value = src.faceAction.trim();
+        const action = faceActions.resolveFaceActionValue(value);
+        if (action) {
+            const selection = faceActions.resolveFaceActionSelection(value);
+            attachFaceAction(next, action, 'explicit', selection.mode === 'explicit' ? 'explicit' : selection.mode);
+        }
+    }
     return next;
 }
 
@@ -725,7 +885,8 @@ const KEEP_HINTS = [
     { lock: 'identity', re: /\b(?:character|identity|person|subject|same\s+(?:woman|man|guy|girl|person))\b/i },
     { lock: 'style', re: /\b(?:style|look|aesthetic|vibe)\b/i },
     { lock: 'environment', re: /\b(?:environment|setting|background|scene|place|location|backdrop)\b/i },
-    { lock: 'activity', re: /\b(?:activity|what (?:she|he|they)(?:'s| is| are|re)? doing|doing)\b/i }
+    { lock: 'activity', re: /\b(?:activity|what (?:she|he|they)(?:'s| is| are|re)? doing|doing)\b/i },
+    { lock: 'faceAction', re: /\b(?:expression|facial expression|gaze|smile|smirk)\b/i }
 ];
 
 const CHANGE_HINTS = [
@@ -845,6 +1006,19 @@ function detectChanges(text, options = {}) {
         changes.activityId = matchedActivity.id;
         changes.activity = matchedActivity.activity.phrase;
     }
+    // A facial instruction (smile, smirk, tongue out, wink, gaze, head) becomes a
+    // structured Face Action, never a raw phrase appended to the prompt. When the
+    // only activity signal is the shared word "laughing", the expression wins so
+    // the turn changes the face, not the scene's activity.
+    const matchedFaceAction = faceActions.matchFaceActionFromText(text);
+    if (matchedFaceAction.confident && matchedFaceAction.action) {
+        if (matchedActivity.id === 'laughing-together') {
+            delete changes.activityId;
+            delete changes.activity;
+        }
+        if (matchedFaceAction.id) changes.faceAction = matchedFaceAction.id;
+        else changes.faceActionComponents = matchedFaceAction.components;
+    }
     for (const hint of THEME_HINTS) {
         if (hint.re.test(text)) {
             changes.themeId = hint.id;
@@ -920,12 +1094,31 @@ function isGroupScene(concept) {
 function conceptToDirection(concept) {
     const c = concept || {};
     const lines = [];
-    lines.push('Creative direction: ' + (c.title || 'an original concept') + '. ' + (c.description || ''));
+    const cleanedUserPrompt = c.faceAction && c.userPrompt
+        ? faceActions.stripFaceActionText(c.userPrompt)
+        : String(c.userPrompt || '');
+    const description = c.faceAction && c.userPrompt
+        ? (cleanedUserPrompt
+            ? String(c.description || '').replace(c.userPrompt, cleanedUserPrompt)
+            : 'A custom image of ' + (c.name || 'the character') + '.')
+        : c.description;
+    const title = c.faceAction && c.userPrompt
+        ? (faceActions.stripFaceActionText(c.title) || 'Custom concept')
+        : c.title;
+    lines.push('Creative direction: ' + (title || 'an original concept') + '. ' + (description || ''));
     if (c.subject) lines.push('Character: ' + c.subject + '.');
     if (c.appearanceCategoryLabel) lines.push('Character appearance category: ' + c.appearanceCategoryLabel + '.');
     if (c.appearance) lines.push('Facial appearance: ' + c.appearance + '.');
     if (c.hair) lines.push('Hair and physical appearance: ' + c.hair + '.');
-    if (c.userPrompt) lines.push('User prompt (follow this exactly): ' + c.userPrompt + '.');
+    // Face Action is its own layer: what the expression is doing, separate from
+    // who the character is. It never describes identity.
+    if (c.faceAction) {
+        lines.push('Facial expression: ' + faceActions.formatFaceAction(c.faceAction, {
+            name: c.name,
+            gender: c.identity && c.identity.gender
+        }) + '.');
+    }
+    if (cleanedUserPrompt) lines.push('User prompt (follow this exactly): ' + cleanedUserPrompt + '.');
     if (c.outfit) lines.push('Outfit: ' + c.outfit + '.');
     if (c.outfitPackLabel) lines.push('Outfit pack (wardrobe personality): ' + c.outfitPackLabel + '.');
     if (c.outfitPackCustom) lines.push('Requested custom outfit: ' + c.outfitPackCustom + '.');
@@ -1007,6 +1200,12 @@ function conceptToConstraints(concept, options = {}) {
     if (locks.style && c.style) constraints.push('Preserve the visual style: ' + c.style);
     if (locks.environment && c.environment) constraints.push('Preserve the environment: ' + c.environment);
     if (locks.activity && c.activity) constraints.push('Preserve the character activity: ' + c.activity);
+    if (c.faceAction) {
+        const voice = c.identity && c.identity.gender;
+        constraints.push('Facial expression: ' + faceActions.formatFaceAction(c.faceAction, { name: c.name, gender: voice }));
+        constraints.push('The facial expression changes only the expression. Keep the character\'s facial structure, eye shape and colour, nose, lips, hairstyle, skin tone, age and distinctive facial features exactly unchanged');
+    }
+    if (locks.faceAction && c.faceAction) constraints.push('Preserve the facial expression: ' + c.faceActionLabel);
     if (isGroupScene(c)) {
         constraints.push('Show the specified character as the only person matching the featured character\'s identity/reference; friends must each have distinct faces, hair, and body builds, and each friend must wear a different individualized outfit that does not copy the lead character\'s clothing.');
     }
@@ -1025,6 +1224,9 @@ module.exports = {
     applyOutfitPack,
     resolveConceptActivity,
     adaptConceptOutfitToActivity,
+    resolveConceptFaceAction,
+    attachFaceAction,
+    clearFaceActionFields,
     rerollField,
     rerollIdentityPart,
     REROLLABLE_FIELDS,
