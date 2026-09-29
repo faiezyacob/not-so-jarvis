@@ -1290,6 +1290,34 @@ function ensureShotDialogue(prompt, shotPlan, defaultLanguage) {
         text.slice(bodyEnd);
 }
 
+function ensureCreatorCameraDirection(prompt, cameraDirection) {
+    const text = String(prompt || '');
+    const direction = String(cameraDirection || '').trim();
+    if (!direction || /Camera direction for this shot \(maintain throughout\):/i.test(text)) return text;
+    const header = /(?:detailed_description|integrated_multimodal_description)\s*:/i.exec(text);
+    if (!header) return text;
+    const bodyStart = header.index + header[0].length;
+    const bodyEnd = findDescriptionEnd(text, bodyStart);
+    const body = text.slice(bodyStart, bodyEnd);
+    const markers = [];
+    const re = /\[Shot\s+\d+\]/g;
+    let match;
+    while ((match = re.exec(body))) markers.push(match.index);
+    const cameraNote = ' Camera direction for this shot (maintain throughout): ' + direction;
+    if (!markers.length) {
+        return text.slice(0, bodyStart) + body.replace(/[\s.]+$/, '') + cameraNote + text.slice(bodyEnd);
+    }
+    let out = body;
+    for (let i = markers.length - 1; i >= 0; i--) {
+        const start = markers[i];
+        const end = i + 1 < markers.length ? markers[i + 1] : out.length;
+        const shot = out.slice(start, end);
+        const contentEnd = shot.replace(/\s+$/, '').length;
+        out = out.slice(0, start) + shot.slice(0, contentEnd) + cameraNote + shot.slice(contentEnd) + out.slice(end);
+    }
+    return text.slice(0, bodyStart) + out + text.slice(bodyEnd);
+}
+
 // Deterministic full-reference document used when the director LLM fails or
 // returns a non-compliant rewrite. Mirrors the official Full-Reference Mode
 // guide's six sections.
@@ -1572,7 +1600,12 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
     ).trim();
     // The approved dialogue is authoritative; repair the finished prompt so the
     // exact words + language tag always reach H3 (see ensureShotDialogue).
-    const finalizePrompt = (p) => ensureShotDialogue(p, shotPlan, dialogueLanguage);
+    const finalizePrompt = (p) => {
+        const withDialogue = ensureShotDialogue(p, shotPlan, dialogueLanguage);
+        return creatorIdentityOnly
+            ? ensureCreatorCameraDirection(withDialogue, structuredRequest.creator_camera_direction)
+            : withDialogue;
+    };
 
     let visionAvailable = false;
     let sourceImageBase64 = null;

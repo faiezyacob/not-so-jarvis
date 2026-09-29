@@ -15,7 +15,7 @@
             <span class="header-title">NOT-SO-JARVIS</span>
         </div>
         <div class="header-right">
-            <button class="studio-trigger" id="ugcStudioOpen" type="button" title="Start or return to the chat-based UGC workflow">UGC STUDIO</button>
+            <button class="studio-trigger" id="ugcStudioOpen" type="button" title="Open UGC Studio">UGC STUDIO</button>
             <button class="studio-trigger" id="creatorStudioOpen" type="button" title="Open Creator Studio">CREATOR STUDIO</button>
             <button class="settings-btn" id="settingsBtn" aria-label="Settings">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -833,6 +833,37 @@
                     </div>
                 </div>
             </div>
+
+    <div class="ugc-studio-overlay" id="ugcStudioOverlay" hidden>
+        <section class="ugc-studio" role="dialog" aria-modal="true" aria-labelledby="ugcStudioTitle">
+            <header class="creator-studio-header">
+                <div>
+                    <div class="creator-studio-kicker">NOT-SO-JARVIS · CONTENT TOOLS</div>
+                    <h1 id="ugcStudioTitle">UGC STUDIO</h1>
+                    <p>Plan a product-led creator video, then review each step in chat.</p>
+                </div>
+                <button class="creator-studio-close" id="ugcStudioClose" type="button" aria-label="Close UGC Studio" title="Close UGC Studio">×</button>
+            </header>
+            <div class="ugc-studio-body">
+                <div class="ugc-studio-form">
+                    <label class="creator-studio-field" for="ugcStudioBrief">
+                        <span>What are we making?</span>
+                        <textarea id="ugcStudioBrief" rows="4" maxlength="1200" placeholder="A relaxed TikTok unboxing for my handmade skincare brand..."></textarea>
+                    </label>
+                    <p class="ugc-studio-hint">Add your product, audience, platform, or creative idea. You can fill in the details during the guided workflow.</p>
+                    <div class="ugc-studio-current" id="ugcStudioCurrent" hidden>
+                        <div class="creator-studio-section-label">CURRENT PROJECT</div>
+                        <div class="ugc-studio-current-copy" id="ugcStudioCurrentCopy"></div>
+                        <button class="creator-studio-new-session" id="ugcStudioReturn" type="button">Return to project</button>
+                    </div>
+                    <div class="creator-studio-actions">
+                        <button class="creator-studio-generate" id="ugcStudioStart" type="button">Start UGC project</button>
+                        <span class="creator-studio-status" id="ugcStudioStatus" aria-live="polite"></span>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </div>
 
     <div class="creator-studio-overlay" id="creatorStudioOverlay" hidden>
         <section class="creator-studio" role="dialog" aria-modal="true" aria-labelledby="creatorStudioTitle">

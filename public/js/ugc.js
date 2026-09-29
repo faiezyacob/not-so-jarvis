@@ -1209,6 +1209,82 @@ const UGCUI = (() => {
     let barEl = null;
     let barLabelEl = null;
     let barStageEl = null;
+    let launcherProject = null;
+
+    function renderLauncherProject(data) {
+        const panel = document.getElementById('ugcStudioCurrent');
+        const copy = document.getElementById('ugcStudioCurrentCopy');
+        const returnButton = document.getElementById('ugcStudioReturn');
+        if (!panel || !copy || !returnButton) return;
+        launcherProject = data && data.project ? data.project : null;
+        if (!launcherProject) {
+            panel.hidden = true;
+            return;
+        }
+        const project = launcherProject;
+        const status = project.status === 'draft' ? 'Draft'
+            : project.status === 'completed' ? 'Complete' : 'In progress';
+        const productName = project.product && project.product.name;
+        copy.textContent = [status, stageLabel(project.stage), productName].filter(Boolean).join(' · ');
+        returnButton.hidden = project.status === 'completed';
+        returnButton.textContent = project.status === 'draft' ? 'Resume project' : 'Return to project';
+        panel.hidden = false;
+    }
+
+    function open() {
+        const overlay = document.getElementById('ugcStudioOverlay');
+        if (!overlay) return;
+        overlay.hidden = false;
+        requestAnimationFrame(() => overlay.classList.add('open'));
+        const status = document.getElementById('ugcStudioStatus');
+        if (status) status.textContent = '';
+        const brief = document.getElementById('ugcStudioBrief');
+        if (brief) setTimeout(() => brief.focus(), 30);
+        const conversationId = (typeof Conversations !== 'undefined' && Conversations.currentId)
+            ? Conversations.currentId() : '';
+        fetchState(conversationId).then((data) => {
+            updateBar(data);
+            renderLauncherProject(data);
+        });
+    }
+
+    function close() {
+        const overlay = document.getElementById('ugcStudioOverlay');
+        if (!overlay) return;
+        overlay.classList.remove('open');
+        setTimeout(() => { overlay.hidden = true; }, 180);
+    }
+
+    function startFromPopup() {
+        const brief = document.getElementById('ugcStudioBrief');
+        const status = document.getElementById('ugcStudioStatus');
+        const detail = brief ? brief.value.trim() : '';
+        const text = detail
+            ? 'Create a UGC video for my product. ' + detail
+            : 'Create a UGC video for my product.';
+        if (typeof Chat === 'undefined' || !Chat || typeof Chat.sendMessage !== 'function') {
+            if (status) status.textContent = 'Chat is not ready yet.';
+            return;
+        }
+        send(text);
+        close();
+    }
+
+    function returnToProject() {
+        const project = launcherProject;
+        if (!project) return;
+        if (project.status === 'draft') {
+            send('Resume the UGC project', { type: 'resume', projectId: project.id });
+            close();
+            return;
+        }
+        const messages = document.getElementById('chatMessages');
+        const cards = messages && messages.querySelectorAll('.ugc-card');
+        if (cards && cards.length) scrollToCard(messages, cards[cards.length - 1]);
+        const input = document.getElementById('chatInput');
+        if (input) input.focus();
+        close();
+    }
 
     function barButton(label, onClick, variant) {
         const btn = el('button', 'ugc-bar-btn' + (variant ? ' ugc-bar-btn--' + variant : ''), label);
@@ -1218,6 +1294,7 @@ const UGCUI = (() => {
     }
 
     function updateBar(data) {
+        renderLauncherProject(data);
         if (!barEl) return;
         const project = data && data.project ? data.project : null;
         if (!project) {
@@ -1273,32 +1350,29 @@ const UGCUI = (() => {
     }
 
     async function start() {
-        const conversationId = (typeof Conversations !== 'undefined' && Conversations.currentId)
-            ? Conversations.currentId()
-            : '';
-        const data = await fetchState(conversationId);
-        if (data) updateBar(data);
-        const project = data && data.project;
-        if (project && project.status === 'draft') {
-            send('Resume the UGC project', { type: 'resume', projectId: project.id });
-            return;
-        }
-        if (project && project.status === 'active') {
-            const messages = document.getElementById('chatMessages');
-            const cards = messages && messages.querySelectorAll('.ugc-card');
-            if (cards && cards.length) scrollToCard(messages, cards[cards.length - 1]);
-            const input = document.getElementById('chatInput');
-            if (input) input.focus();
-            return;
-        }
-        send('Create a UGC video for my product.');
+        open();
     }
 
     function init() {
         barEl = document.getElementById('ugcBar');
         if (!barEl) return;
         const trigger = document.getElementById('ugcStudioOpen');
-        if (trigger) trigger.addEventListener('click', () => { start().catch(() => send('Create a UGC video for my product.')); });
+        if (trigger) trigger.addEventListener('click', open);
+        const overlay = document.getElementById('ugcStudioOverlay');
+        const closeButton = document.getElementById('ugcStudioClose');
+        const startButton = document.getElementById('ugcStudioStart');
+        const returnButton = document.getElementById('ugcStudioReturn');
+        if (closeButton) closeButton.addEventListener('click', close);
+        if (startButton) startButton.addEventListener('click', startFromPopup);
+        if (returnButton) returnButton.addEventListener('click', returnToProject);
+        if (overlay) overlay.addEventListener('click', (event) => { if (event.target === overlay) close(); });
+        const brief = document.getElementById('ugcStudioBrief');
+        if (brief) brief.addEventListener('keydown', (event) => {
+            if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') startFromPopup();
+        });
+        document.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape' && overlay && !overlay.hidden) close();
+        });
         // The bar is refreshed by Chat.renderMessages (via hydrate) on a
         // conversation switch and by the send flow's finally block after each
         // turn, so no extra listeners are needed here.
@@ -1306,7 +1380,7 @@ const UGCUI = (() => {
     }
 
     return {
-        extract, strip, render, applyState, hydrate, refreshBar, updateBar, stageLabel, start, init
+        extract, strip, render, applyState, hydrate, refreshBar, updateBar, stageLabel, start, open, close, init
     };
 })();
 

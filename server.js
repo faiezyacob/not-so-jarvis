@@ -3247,6 +3247,7 @@ async function handleCreatorStudioRequest(req, res, ctx) {
             has_reference_image: false,
             reference_images: identityReferences,
             shot_plan: content.shotPlan,
+            creator_camera_direction: content.cameraDirection,
             dialogue_language: 'English',
             requested_duration: content.duration,
             creator_content: true,
@@ -5838,7 +5839,7 @@ async function handleVideoGenerationStream(req, res, opts) {
             const creatorSession = creatorStudio.recordVideo(
                 creatorStudio.getSession(conversationId),
                 opts.creatorStudio.content,
-                { url: finalResult.url, prompt: videoPrompt }
+                { url: finalResult.url, filename: finalResult.filename, prompt: videoPrompt }
             );
             creatorStudio.setSession(conversationId, creatorSession);
         }

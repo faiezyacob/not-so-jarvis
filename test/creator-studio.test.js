@@ -28,7 +28,8 @@ test('Creator Studio drops legacy profiles and keeps the canonical Character on 
         sessions: {
             legacy: {
                 creatorId: 'maya-profile', characterId: 'maya-id',
-                content: { creatorId: 'maya-profile', characterId: 'maya-id' }
+                content: { creatorId: 'maya-profile', characterId: 'maya-id' },
+                videos: [{ id: 'legacy-video', url: '/generated/old%20clip.mp4?cache=1' }]
             }
         }
     }));
@@ -37,6 +38,16 @@ test('Creator Studio drops legacy profiles and keeps the canonical Character on 
     assert.equal(Object.hasOwn(session, 'creatorId'), false);
     assert.equal(Object.hasOwn(session.content, 'creatorId'), false);
     assert.equal(Object.hasOwn(studio.loadStore(), 'profiles'), false);
+    assert.equal(session.videos[0].filename, 'old clip.mp4');
+    assert.equal(session.videos[0].url, '/generated/old%20clip.mp4');
+});
+
+test('recordVideo stores a canonical generated-media URL and filename', () => {
+    const session = studio.recordVideo(null, {
+        characterId: 'maya-id', concept: 'weekend update', contentType: 'talking'
+    }, { url: '/generated/clip%20one.mp4', prompt: 'creator prompt' });
+    assert.equal(session.videos[0].filename, 'clip one.mp4');
+    assert.equal(session.videos[0].url, '/generated/clip%20one.mp4');
 });
 
 test('Creator Studio includes the primary portrait when there are no supplementary references', () => {
@@ -89,6 +100,27 @@ test('creator performance contains varied identity-safe face actions and exact s
     assert.equal(Object.hasOwn(content, 'creatorId'), false);
     const words = content.performanceBeats.map((beat) => beat.speech).join(' ').split(/\s+/).length;
     assert.ok(words <= 33);
+});
+
+test('talking-to-camera content defaults to selfie framing while allowing a fixed camera choice', async () => {
+    const selfie = await studio.buildCreatorContent({
+        characterId: 'maya-id',
+        concept: 'a weekend update'
+    }, makeCharacter('29-year-old'));
+
+    assert.equal(selfie.camera, 'phone_selfie');
+    assert.match(selfie.cameraDirection, /creator's own front-facing smartphone/i);
+    assert.match(selfie.cameraDirection, /arm's-length distance/i);
+    assert.match(selfie.shotPlan[0], /front-facing smartphone/i);
+
+    const tripod = await studio.buildCreatorContent({
+        characterId: 'maya-id',
+        concept: 'a weekend update',
+        camera: 'tripod'
+    }, makeCharacter('29-year-old'));
+    assert.equal(tripod.camera, 'tripod');
+    assert.match(tripod.cameraDirection, /fixed tripod/i);
+    assert.doesNotMatch(tripod.cameraDirection, /selfie|front-facing smartphone/i);
 });
 
 test('flirty and seductive delivery require structured adult age', async () => {
@@ -188,6 +220,7 @@ test('Creator beat plan reaches the shared H3 reference prompt with exact dialog
         user_prompt: content.userPrompt,
         reference_images: ['maya-base.png'],
         shot_plan: content.shotPlan,
+        creator_camera_direction: content.cameraDirection,
         dialogue_language: 'English',
         requested_duration: 15,
         explicit_constraints: []
@@ -196,6 +229,9 @@ test('Creator beat plan reaches the shared H3 reference prompt with exact dialog
     assert.equal(result.mode, 'ref2va');
     assert.match(systemPrompt, /approved single Character base portrait/i);
     for (const beat of content.performanceBeats) assert.ok(result.prompt.includes(beat.speech));
+    assert.equal((result.prompt.match(/Camera direction for this shot \(maintain throughout\):/g) || []).length, content.performanceBeats.length);
+    assert.match(result.prompt, /creator's own front-facing smartphone/i);
+    assert.match(result.prompt, /arm's-length distance/i);
     assert.match(result.prompt, /<d>\[English\]/);
     assert.doesNotMatch(result.prompt, /user-generated-content phone-camera/i);
 });

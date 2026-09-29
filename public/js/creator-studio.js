@@ -94,7 +94,7 @@ const CreatorStudioUI = (() => {
         fillSelect($('creatorContentType'), catalogs.contentTypes, 'talking');
         fillSelect($('creatorDeliveryStyle'), catalogs.deliveryStyles, 'natural');
         fillSelect($('creatorSpeechBehavior'), catalogs.speechBehaviors, 'direct_to_camera');
-        fillSelect($('creatorCamera'), catalogs.cameraPresets, 'talking_head');
+        fillSelect($('creatorCamera'), catalogs.cameraPresets, 'phone_selfie');
         fillSelect($('creatorCameraMotion'), catalogs.cameraMotions, 'static');
         fillSelect($('creatorExpressionArc'), catalogs.expressionArcs, 'auto');
         fillSelect($('creatorBodyAction'), catalogs.bodyActions, 'conversational_gesture');
@@ -136,32 +136,52 @@ const CreatorStudioUI = (() => {
         const title = $('creatorSessionTitle');
         const list = $('creatorSessionVideos');
         if (!title || !list) return;
-        list.replaceChildren();
         $('creatorRegenerateLayers').querySelectorAll('button').forEach((button) => { button.disabled = !session; });
         if (!session) {
+            list.replaceChildren();
+            delete list.dataset.videoKey;
             title.textContent = 'Your generated videos will appear here.';
             return;
         }
         title.textContent = (session.creatorName || 'Creator') + ' · ' + (session.content && session.content.concept || 'Content session');
-        (session.videos || []).slice().reverse().forEach((video, index) => {
-            const card = document.createElement('article');
-            card.className = 'creator-session-video';
-            const label = document.createElement('div');
-            label.className = 'creator-session-video-title';
-            label.textContent = 'Video ' + ((session.videos.length - index)) + ' · ' + (video.title || 'Creator video');
-            const player = document.createElement('video');
-            player.controls = true;
-            player.preload = 'metadata';
-            player.playsInline = true;
-            player.src = video.url;
-            card.append(label, player);
-            list.appendChild(card);
-        });
+        const videos = (session.videos || []).filter((video) => video && typeof video === 'object').slice().reverse();
+        const videoKey = JSON.stringify(videos.map((video) => [video.id, video.url]));
+        if (list.dataset.videoKey !== videoKey) {
+            list.replaceChildren();
+            videos.forEach((video, index) => {
+                const card = document.createElement('article');
+                card.className = 'creator-session-video';
+                const label = document.createElement('div');
+                label.className = 'creator-session-video-title';
+                label.textContent = 'Video ' + (videos.length - index) + ' · ' + (video.title || 'Creator video');
+                card.appendChild(label);
+                if (video.url) {
+                    const player = document.createElement('video');
+                    player.controls = true;
+                    player.preload = 'metadata';
+                    player.playsInline = true;
+                    player.src = video.url;
+                    card.appendChild(player);
+                } else {
+                    const unavailable = document.createElement('div');
+                    unavailable.className = 'creator-session-video-error';
+                    unavailable.textContent = 'This video is unavailable.';
+                    card.appendChild(unavailable);
+                }
+                list.appendChild(card);
+            });
+            list.dataset.videoKey = videoKey;
+        }
+        const pending = list.querySelector('.creator-session-pending');
         if (session.status === 'generating') {
-            const pending = document.createElement('div');
-            pending.className = 'creator-session-pending';
-            pending.textContent = 'A new performance is rendering…';
-            list.prepend(pending);
+            if (!pending) {
+                const indicator = document.createElement('div');
+                indicator.className = 'creator-session-pending';
+                indicator.textContent = 'A new performance is rendering…';
+                list.prepend(indicator);
+            }
+        } else if (pending) {
+            pending.remove();
         }
     }
 

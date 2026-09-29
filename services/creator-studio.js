@@ -63,7 +63,7 @@ const SPEECH_BEHAVIORS = Object.freeze([
 
 const CAMERA_PRESETS = Object.freeze([
     { id: 'talking_head', label: 'Talking Head', direction: 'stable eye-level talking-head framing' },
-    { id: 'phone_selfie', label: 'Phone Selfie', direction: 'close, natural phone-selfie framing with only very subtle handheld movement' },
+    { id: 'phone_selfie', label: 'Phone Selfie', direction: 'self-filmed direct-to-camera video on the creator\'s own front-facing smartphone, held at a natural arm\'s-length distance; close conversational framing, direct eye contact with the phone lens, and only subtle natural handheld movement; the phone itself stays out of view' },
     { id: 'tripod', label: 'Tripod', direction: 'steady fixed tripod framing with natural subject movement' },
     { id: 'handheld_creator', label: 'Handheld Creator', direction: 'casual handheld creator framing with gentle natural reframing' },
     { id: 'desk_camera', label: 'Desk Camera', direction: 'comfortable desk-height camera framing, intimate and steady' },
@@ -104,6 +104,19 @@ const VOICE_DEFAULTS = Object.freeze({ voiceId: '', tone: 'conversational', spee
 
 let store = null;
 
+function generatedVideoFilename(value) {
+    const raw = String(value || '').split(/[?#]/, 1)[0].split('/').pop();
+    let decoded = raw;
+    try { decoded = decodeURIComponent(raw); } catch (_) {}
+    const filename = path.basename(decoded);
+    return /\.(?:mp4|webm|avi|mov)$/i.test(filename) ? filename : '';
+}
+
+function generatedVideoUrl(filename) {
+    const safeFilename = generatedVideoFilename(filename);
+    return safeFilename ? '/generated/' + encodeURIComponent(safeFilename) : '';
+}
+
 function loadStore() {
     if (store) return store;
     try {
@@ -118,6 +131,14 @@ function loadStore() {
             if (session.content && typeof session.content === 'object') {
                 session.content.characterId = session.content.characterId || session.characterId;
                 delete session.content.creatorId;
+            }
+            if (Array.isArray(session.videos)) {
+                session.videos.forEach((video) => {
+                    if (!video || typeof video !== 'object') return;
+                    const filename = generatedVideoFilename(video.filename || video.url);
+                    video.filename = filename;
+                    video.url = generatedVideoUrl(filename);
+                });
             }
         });
     } catch (_) {
@@ -461,7 +482,7 @@ function buildContentDefaults(input, character, previousSession) {
     const styleId = matchDeliveryStyle(merged.deliveryStyle || merged.message || merged.concept, previous.deliveryStyle || 'natural');
     const contentType = inferContentType(merged.message || merged.concept || '', merged.contentType || previous.contentType || 'talking');
     const duration = Math.max(3, Math.min(15, Math.round(Number(merged.duration) || Number(previous.duration) || 15)));
-    const cameraPreset = CAMERA_PRESETS.find((x) => x.id === merged.camera || x.id === previous.camera) || CAMERA_PRESETS[0];
+    const cameraPreset = CAMERA_PRESETS.find((x) => x.id === merged.camera || x.id === previous.camera) || CAMERA_PRESETS.find((x) => x.id === 'phone_selfie');
     const cameraMotion = CAMERA_MOTIONS.find((x) => x.id === merged.cameraMotion || x.id === previous.cameraMotion) || CAMERA_MOTIONS[0];
     const rawTraits = merged.personality || previous.personality || [];
     const personality = [...new Set((Array.isArray(rawTraits) ? rawTraits : []).map((x) => clean(x, 40).toLowerCase()).filter((x) => PERSONALITY_TRAITS.includes(x)))].slice(0, 6);
@@ -657,7 +678,16 @@ function recordVideo(session, content, video) {
     result.content = content;
     result.status = 'ready';
     result.videos = Array.isArray(result.videos) ? result.videos : [];
-    result.videos.push({ id: 'creator_video_' + Date.now().toString(36), title: content.concept, url: video.url, prompt: video.prompt || '', createdAt: new Date().toISOString(), contentType: content.contentType });
+    const filename = generatedVideoFilename(video.filename || video.url);
+    result.videos.push({
+        id: 'creator_video_' + Date.now().toString(36),
+        title: content.concept,
+        filename,
+        url: generatedVideoUrl(filename),
+        prompt: video.prompt || '',
+        createdAt: new Date().toISOString(),
+        contentType: content.contentType
+    });
     result.updatedAt = new Date().toISOString();
     return result;
 }
@@ -709,5 +739,7 @@ module.exports = {
     normalizeAction,
     identityReferenceFilenames,
     recordVideo,
+    generatedVideoFilename,
+    generatedVideoUrl,
     catalog
 };
