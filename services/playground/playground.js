@@ -164,7 +164,19 @@ function buildCard(session, character) {
         identityReroll: {
             face: Boolean(canRerollIdentity && !locks.appearance),
             hair: Boolean(canRerollIdentity && !locks.hair),
-            build: Boolean(canRerollIdentity)
+            build: Boolean(canRerollIdentity),
+            traits: canRerollIdentity ? [
+                { part: 'appearance', label: 'Appearance', enabled: !locks.appearance },
+                { part: 'age', label: 'Age', enabled: true },
+                { part: 'gender', label: 'Gender', enabled: true },
+                { part: 'skin', label: 'Skin', enabled: !locks.appearance },
+                { part: 'face', label: 'Face', enabled: !locks.appearance },
+                { part: 'eyes', label: 'Eyes', enabled: !locks.appearance },
+                { part: 'brows', label: 'Brows', enabled: !locks.appearance },
+                { part: 'hair', label: 'Hair', enabled: !locks.hair },
+                { part: 'build', label: 'Build', enabled: true },
+                { part: 'feature', label: 'Feature', enabled: !locks.appearance }
+            ].filter((item) => item.enabled).map(({ part, label }) => ({ part, label })) : []
         },
         // The independent generator controls that produced a random character
         // (null for saved characters) and the deterministic seed, so the person
@@ -405,14 +417,10 @@ function again(session, options = {}) {
     const avoidOutfitSignatures = Array.isArray(session.outfitSignatures) ? session.outfitSignatures : [];
     const avoidActivityIds = Array.isArray(session.activityIds) ? session.activityIds : [];
     const avoidFaceActionIds = Array.isArray(session.faceActionIds) ? session.faceActionIds : [];
-    // A Surprise Me Again is another moment from the same character/session.
-    // A brand-new Surprise action starts a fresh identity; this in-session
-    // re-roll always pins the current character while varying the scene and face.
-    const rerollLocks = Object.assign({}, session.locks, { identity: true });
-    // "Surprise Me Again" keeps the theme and builds a new scene/outfit. The
-    // character is preserved while the Identity lock is set; otherwise a new
-    // person is cast from the same appearance/age/gender controls. (A saved
-    // character is always preserved.)
+    // Again keeps the theme and builds a new scene/outfit. A random character
+    // is recast unless the user explicitly locked Identity; saved characters
+    // remain fixed by their selected preset.
+    const rerollLocks = conceptEngine.normalizeLocks(session.locks);
     const profile = characterGen.normalizeProfile(session.characterProfile);
     const concept = conceptEngine.assembleConcept({
         theme,
@@ -640,17 +648,15 @@ function modify(session, action = {}) {
         // prompt blanked it (rerollField is guarded downstream by this check).
         concept = conceptEngine.rerollField(concept, theme, 'outfit', action.rng);
     }
-    // A targeted identity re-roll (face / hair / build) changes only those
-    // structured traits. It is available only for a structured random character
-    // and is refused while the matching attribute (or the whole identity) is
-    // locked.
+    // A targeted identity re-roll changes only its structured trait group. It
+    // is available only for a random character and is refused by matching locks.
     const identityReroll = String(action.rerollIdentity || '').trim().toLowerCase();
-    const identityParts = ['face', 'hair', 'build'];
+    const identityParts = ['appearance', 'age', 'gender', 'skin', 'face', 'eyes', 'brows', 'hair', 'build', 'feature'];
     let identityRerolled = false;
     if (identityParts.includes(identityReroll)
         && session.mode === 'random_character' && concept && concept.identity) {
         const blocked = locks.identity
-            || (identityReroll === 'face' && locks.appearance)
+            || (['appearance', 'skin', 'face', 'eyes', 'brows', 'feature'].includes(identityReroll) && locks.appearance)
             || (identityReroll === 'hair' && locks.hair);
         if (!blocked) {
             concept = conceptEngine.rerollIdentityPart(concept, identityReroll, action.rng, theme);
@@ -661,7 +667,9 @@ function modify(session, action = {}) {
     rememberActivity(session, concept);
     rememberFaceAction(session, concept);
     session.locks = locks;
-    session.characterProfile = requestedProfile;
+    session.characterProfile = identityRerolled
+        ? characterGen.normalizeProfile(concept.characterProfile || requestedProfile)
+        : requestedProfile;
     session.outfitPack = concept.outfitPack || '';
     session.outfitPackCustom = concept.outfitPackCustom || '';
     if (faceActionProvided) session.faceAction = faceActionValue.trim() || 'auto';
@@ -690,6 +698,7 @@ function modify(session, action = {}) {
     // A re-rolled identity must refresh the bound snapshot so the portrait and
     // the image request render the new person, not the previous trait set.
     if (identityRerolled) {
+        rememberIdentity(session, concept);
         session.characterSnapshot = characterStudio.normalizeCharacter({
             name: concept.name,
             identity: concept.identity,

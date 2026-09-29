@@ -1387,6 +1387,11 @@ function resolveRerollRng(input) {
     return resolveRng(input === undefined || input === null ? Math.random : input).rng;
 }
 
+function pickDifferentValue(pool, current, rng, context) {
+    const candidates = toEntries(pool).filter((entry) => entry.value !== current && isCompatible(entry, context || {}));
+    return candidates.length ? pickValue(candidates, rng, context) : current;
+}
+
 function rerollIdentityFace(identity, input) {
     if (!identity || typeof identity !== 'object') return identity;
     const rng = resolveRerollRng(input);
@@ -1436,6 +1441,140 @@ function rerollIdentityBuild(identity, input) {
     const gender = next.gender || next.presentation || '';
     next.build = pickValue(category.builds, rng, { gender });
     return refreshIdentity(next);
+}
+
+function rerollIdentitySkin(identity, input) {
+    if (!identity || typeof identity !== 'object') return identity;
+    const rng = resolveRerollRng(input);
+    const category = categoryForIdentity(identity) || fallbackCategory();
+    const next = Object.assign({}, identity);
+    const alternateSkinTones = toEntries(category.skinTones).filter((entry) => entry.value !== next.skinTone);
+    const selectedSkin = alternateSkinTones.length ? pickWeighted(alternateSkinTones, rng) : null;
+    if (selectedSkin) {
+        next.skinTone = selectedSkin.value;
+        next.skinGroup = selectedSkin.group || next.skinGroup || '';
+    }
+    next.skinUndertone = pickDifferentValue(category.skinUndertones || SKIN_UNDERTONES, next.skinUndertone, rng);
+    return refreshIdentity(next);
+}
+
+function rerollIdentityAppearance(identity, input) {
+    if (!identity || typeof identity !== 'object') return identity;
+    const rng = resolveRerollRng(input);
+    const next = Object.assign({}, identity);
+    const categoryKey = pickDifferentValue(APPEARANCE_ENTRIES, next.appearanceCategory, rng);
+    const category = APPEARANCE_CATEGORIES[categoryKey] || fallbackCategory();
+    const ageGroup = next.ageGroup || '';
+    const gender = next.gender || next.presentation || '';
+    next.appearanceCategory = categoryKey;
+    next.characterProfile = Object.assign({}, normalizeProfile(next.characterProfile), { appearance: RANDOM });
+    next.skinTone = pickValue(category.skinTones, rng);
+    next.skinGroup = (toEntries(category.skinTones).find((entry) => entry.value === next.skinTone) || {}).group || '';
+    next.skinUndertone = pickValue(category.skinUndertones || SKIN_UNDERTONES, rng);
+    next.faceShape = pickValue(category.faceShapes, rng);
+    next.faceNose = pickValue(category.faceNoses || FACE_NOSES, rng);
+    next.faceLips = pickValue(category.faceLips || FACE_LIPS, rng);
+    next.faceCheeks = pickValue(category.faceCheeks || FACE_CHEEKS, rng);
+    next.faceJaw = pickValue(category.faceJaws || FACE_JAWS, rng);
+    next.eyeColor = pickValue(category.eyeColors, rng, { skinGroup: next.skinGroup });
+    next.eyeShape = pickValue(category.eyeShapes, rng);
+    next.eyebrows = pickValue(category.eyebrows, rng);
+    next.hairColor = pickValue(category.hairColors, rng, { ageGroup });
+    next.hairTextureFamily = pickValue(category.hairTextures, rng, { ageGroup, gender });
+    next.hairTexture = pickValue(HAIR_TEXTURE_VALUES[next.hairTextureFamily] || HAIR_TEXTURE_FAMILIES, rng);
+    const hairStyleEntry = pickWeighted(category.hairStyles, rng, {
+        ageGroup, gender, texture: next.hairTextureFamily
+    });
+    next.hairStyle = hairStyleEntry.value;
+    next.hairStyleType = hairStyleEntry.type || 'adj';
+    next.hairPart = pickValue(category.hairParts || HAIR_PARTS, rng);
+    next.hairFringe = pickValue(category.hairFringes || HAIR_FRINGES, rng);
+    next.build = pickValue(category.builds, rng, { gender });
+    next.distinctiveFeature = pickValue(category.distinctiveFeatures, rng, { skinGroup: next.skinGroup, gender });
+    return refreshIdentity(next);
+}
+
+function rerollIdentityAge(identity, input) {
+    if (!identity || typeof identity !== 'object') return identity;
+    const rng = resolveRerollRng(input);
+    const next = Object.assign({}, identity);
+    const ageGroup = pickDifferentValue(AGE_GROUP_ENTRIES, next.ageGroup, rng);
+    if (!AGE_GROUPS[ageGroup]) return identity;
+    next.ageGroup = ageGroup;
+    next.age = pickValue(AGE_GROUPS[ageGroup].ages, rng);
+    next.characterProfile = Object.assign({}, normalizeProfile(next.characterProfile), { age: RANDOM });
+    return refreshIdentity(next);
+}
+
+function rerollIdentityGender(identity, input) {
+    if (!identity || typeof identity !== 'object') return identity;
+    const rng = resolveRerollRng(input);
+    const next = Object.assign({}, identity);
+    const gender = pickDifferentValue(GENDER_ENTRIES, next.gender, rng);
+    if (!GENDER_KEYS.includes(gender)) return identity;
+    next.gender = gender;
+    next.presentation = GENDER_PRESENTATION[gender] || 'person';
+    next.characterProfile = Object.assign({}, normalizeProfile(next.characterProfile), { gender: RANDOM });
+    return refreshIdentity(next);
+}
+
+function rerollIdentityFaceStructure(identity, input) {
+    if (!identity || typeof identity !== 'object') return identity;
+    const rng = resolveRerollRng(input);
+    const category = categoryForIdentity(identity) || fallbackCategory();
+    const next = Object.assign({}, identity);
+    next.faceShape = pickDifferentValue(category.faceShapes, next.faceShape, rng);
+    next.faceNose = pickDifferentValue(category.faceNoses, next.faceNose, rng);
+    next.faceLips = pickDifferentValue(category.faceLips, next.faceLips, rng);
+    next.faceCheeks = pickDifferentValue(category.faceCheeks, next.faceCheeks, rng);
+    next.faceJaw = pickDifferentValue(category.faceJaws, next.faceJaw, rng);
+    return refreshIdentity(next);
+}
+
+function rerollIdentityEyes(identity, input) {
+    if (!identity || typeof identity !== 'object') return identity;
+    const rng = resolveRerollRng(input);
+    const category = categoryForIdentity(identity) || fallbackCategory();
+    const next = Object.assign({}, identity);
+    next.eyeColor = pickDifferentValue(category.eyeColors, next.eyeColor, rng, { skinGroup: next.skinGroup });
+    next.eyeShape = pickDifferentValue(category.eyeShapes, next.eyeShape, rng);
+    return refreshIdentity(next);
+}
+
+function rerollIdentityBrows(identity, input) {
+    if (!identity || typeof identity !== 'object') return identity;
+    const rng = resolveRerollRng(input);
+    const category = categoryForIdentity(identity) || fallbackCategory();
+    const next = Object.assign({}, identity);
+    next.eyebrows = pickDifferentValue(category.eyebrows, next.eyebrows, rng);
+    return refreshIdentity(next);
+}
+
+function rerollIdentityFeature(identity, input) {
+    if (!identity || typeof identity !== 'object') return identity;
+    const rng = resolveRerollRng(input);
+    const category = categoryForIdentity(identity) || fallbackCategory();
+    const next = Object.assign({}, identity);
+    next.distinctiveFeature = pickDifferentValue(category.distinctiveFeatures, next.distinctiveFeature, rng, {
+        skinGroup: next.skinGroup,
+        gender: next.gender || next.presentation || ''
+    });
+    return refreshIdentity(next);
+}
+
+function rerollIdentityTrait(identity, trait, input) {
+    const key = String(trait || '').trim().toLowerCase();
+    if (key === 'appearance') return rerollIdentityAppearance(identity, input);
+    if (key === 'age') return rerollIdentityAge(identity, input);
+    if (key === 'gender') return rerollIdentityGender(identity, input);
+    if (key === 'skin') return rerollIdentitySkin(identity, input);
+    if (key === 'face') return rerollIdentityFaceStructure(identity, input);
+    if (key === 'eyes') return rerollIdentityEyes(identity, input);
+    if (key === 'brows') return rerollIdentityBrows(identity, input);
+    if (key === 'hair') return rerollIdentityHair(identity, input);
+    if (key === 'build') return rerollIdentityBuild(identity, input);
+    if (key === 'feature') return rerollIdentityFeature(identity, input);
+    return identity;
 }
 
 // --- Merged catalog (introspection / tests) -----------------------------------
@@ -1509,6 +1648,7 @@ module.exports = {
     rerollIdentityFace,
     rerollIdentityHair,
     rerollIdentityBuild,
+    rerollIdentityTrait,
     formatIdentity,
     formatAppearance,
     formatFace,

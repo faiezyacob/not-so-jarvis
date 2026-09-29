@@ -795,16 +795,17 @@ function rerollIdentityPart(concept, part, rng, theme) {
     const c = concept || {};
     if (!c.identity || typeof c.identity !== 'object') return concept;
     const kind = String(part || '').trim().toLowerCase();
-    let next;
-    if (kind === 'face') next = identityGen.rerollIdentityFace(c.identity, rng);
-    else if (kind === 'hair') next = identityGen.rerollIdentityHair(c.identity, rng);
-    else if (kind === 'build') next = identityGen.rerollIdentityBuild(c.identity, rng);
-    else return concept;
+    const supported = ['appearance', 'age', 'gender', 'skin', 'face', 'eyes', 'brows', 'hair', 'build', 'feature'];
+    if (!supported.includes(kind)) return concept;
+    const next = identityGen.rerollIdentityTrait(c.identity, kind, rng);
     c.identity = next;
     c.identitySignature = next.signature;
     c.subject = next.identityText;
     c.appearance = identityGen.formatAppearance(next);
     c.hair = identityGen.formatHair(next);
+    c.characterProfile = next.characterProfile || c.characterProfile;
+    c.appearanceCategory = next.appearanceCategory || c.appearanceCategory || '';
+    c.appearanceCategoryLabel = identityGen.appearanceCategoryLabel(c.appearanceCategory);
     // The human-readable title/description are derived from the subject, so
     // rebuild them or the card would keep describing the previous person.
     return theme ? finalize(c, theme) : c;

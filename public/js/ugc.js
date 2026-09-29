@@ -1272,9 +1272,33 @@ const UGCUI = (() => {
         updateBar(data);
     }
 
+    async function start() {
+        const conversationId = (typeof Conversations !== 'undefined' && Conversations.currentId)
+            ? Conversations.currentId()
+            : '';
+        const data = await fetchState(conversationId);
+        if (data) updateBar(data);
+        const project = data && data.project;
+        if (project && project.status === 'draft') {
+            send('Resume the UGC project', { type: 'resume', projectId: project.id });
+            return;
+        }
+        if (project && project.status === 'active') {
+            const messages = document.getElementById('chatMessages');
+            const cards = messages && messages.querySelectorAll('.ugc-card');
+            if (cards && cards.length) scrollToCard(messages, cards[cards.length - 1]);
+            const input = document.getElementById('chatInput');
+            if (input) input.focus();
+            return;
+        }
+        send('Create a UGC video for my product.');
+    }
+
     function init() {
         barEl = document.getElementById('ugcBar');
         if (!barEl) return;
+        const trigger = document.getElementById('ugcStudioOpen');
+        if (trigger) trigger.addEventListener('click', () => { start().catch(() => send('Create a UGC video for my product.')); });
         // The bar is refreshed by Chat.renderMessages (via hydrate) on a
         // conversation switch and by the send flow's finally block after each
         // turn, so no extra listeners are needed here.
@@ -1282,7 +1306,7 @@ const UGCUI = (() => {
     }
 
     return {
-        extract, strip, render, applyState, hydrate, refreshBar, updateBar, stageLabel, init
+        extract, strip, render, applyState, hydrate, refreshBar, updateBar, stageLabel, start, init
     };
 })();
 

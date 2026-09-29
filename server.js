@@ -96,6 +96,7 @@ const longVideoDirector = require('./services/long-video/director');
 const playground = require('./services/playground/playground');
 const ugcStudio = require('./services/ugc/studio');
 const ugcProducts = require('./services/ugc/products');
+const creatorStudio = require('./services/creator-studio');
 const characterPresets = require('./services/character-presets');
 const characterStudio = require('./services/character-studio');
 const characterIdentity = require('./services/character-identity');
@@ -928,6 +929,33 @@ async function handleAPI(req, res, urlPath) {
     // GET /api/ugc/products — the reusable product library.
     if (urlPath === '/api/ugc/products' && req.method === 'GET') {
         json(res, 200, { products: ugcProducts.list() });
+        return true;
+    }
+
+    // Creator Studio uses canonical Characters directly; only content sessions
+    // and generated videos are stored by Creator Studio.
+    if (urlPath === '/api/creator-studio/options' && req.method === 'GET') {
+        const characters = characterPresets.list().map((character) => ({
+            id: character.id,
+            name: character.name || 'Character',
+            image: character.approvedBaseImage && character.approvedBaseImage.url || '',
+            identityStatus: character.identitySheet && character.identitySheet.status || 'basic',
+            adult: creatorStudio.adultIsExplicit(character)
+        }));
+        json(res, 200, {
+            ...creatorStudio.catalog(),
+            characters
+        });
+        return true;
+    }
+
+    if (urlPath === '/api/creator-studio/state' && req.method === 'GET') {
+        const query = new URL(req.url, 'http://localhost').searchParams;
+        const conversationId = query.get('conversationId') || '';
+        const session = conversationService.canAccessConversation(conversationId, req.jarvisSession)
+            ? creatorStudio.getSession(conversationId)
+            : null;
+        json(res, 200, { session: session || null });
         return true;
     }
 
@@ -2091,7 +2119,7 @@ async function handleChatStream(req, res) {
         const forceDirector = body.forceDirector === true;
         // A card action (UGC / Director / Long Video / Playground) is a
         // self-contained turn and may carry no message text of its own.
-        const hasCardAction = Boolean(body && (body.ugcAction || body.directorAction ||
+        const hasCardAction = Boolean(body && (body.ugcAction || body.creatorStudioAction || body.directorAction ||
             body.longVideoAction || body.playgroundAction));
         if ((!message || typeof message !== 'string' || !message.trim()) && chatImages.length === 0 && !referenceImage && !hasCardAction) {
             json(res, 400, { error: 'message is required' });
@@ -2171,6 +2199,40 @@ async function handleChatStream(req, res) {
         }
         if (!activeUgcProject && ugcStudio.detectUgcIntent(routingMessage)) {
             await handleUGCStart(req, res, ugcCtx);
+            return;
+        }
+
+        // Creator Studio is a distinct talking-content workflow. Product/brand
+        // requests have already been claimed by UGC Studio above. Creator
+        // requests build structured speech/performance beats and then hand them
+        // to the normal H3 video pipeline; Playground remains image-concept work.
+        const requestedCreatorAction = creatorStudio.normalizeAction(body.creatorStudioAction);
+        const activeCreatorSession = creatorStudio.getSession(conversationId);
+        let creatorAction = requestedCreatorAction;
+        if (!creatorAction && activeCreatorSession) {
+            creatorAction = creatorStudio.classifyMessage(routingMessage, activeCreatorSession);
+        }
+        if (!creatorAction && creatorStudio.detectCreatorIntent(message, parsedCharacters.characters)) {
+            creatorAction = { type: 'generate', concept: routingMessage, message: routingMessage };
+        }
+        if (creatorAction) {
+            if (creatorAction.type === 'new_session') {
+                const text = 'Creator Studio session reset. Choose a Character and start a new idea.';
+                creatorStudio.clearSession(conversationId);
+                sseWrite(res, { chunk: text });
+                sseWrite(res, { done: true, fullReply: text });
+                res.end();
+                return;
+            }
+            const creatorCharacterId = creatorAction.characterId ||
+                (parsedCharacters.characters[0] && parsedCharacters.characters[0].id) ||
+                (activeCreatorSession && activeCreatorSession.characterId);
+            const creatorCharacter = creatorCharacterId ? characterPresets.get(creatorCharacterId) : null;
+            await handleCreatorStudioRequest(req, res, {
+                conversationId, message: routingMessage || message, rawMessage: message,
+                provider, model, think, character: creatorCharacter,
+                action: creatorAction, previousSession: activeCreatorSession
+            });
             return;
         }
 
@@ -3081,6 +3143,183 @@ function ugcRawFilename(url) {
     let name = String(url || '').split('?')[0].split('/').pop();
     try { name = decodeURIComponent(name); } catch (err) { /* keep raw */ }
     return name;
+}
+
+// Build structured creator performance and dispatch through the shared H3 path.
+async function handleCreatorStudioRequest(req, res, ctx) {
+    const { conversationId, provider, model, character, action, previousSession } = ctx;
+    try {
+        if (!character) {
+            const text = 'Creator Studio needs a saved Character. Choose one in Creator Studio or create one in the Character Playground first.';
+            sseWrite(res, { error: text });
+            res.end();
+            return;
+        }
+
+        const prior = previousSession && previousSession.characterId === character.id ? previousSession : null;
+        const message = String(ctx.message || '');
+        const dimension = action.dimension || '';
+        const requestedTraits = creatorStudio.PERSONALITY_TRAITS.filter((trait) =>
+            new RegExp('\\b' + trait.replace(/[-_]/g, '[ _-]') + '\\b', 'i').test(message)
+        );
+        const requestedDuration = videoGenerator.parseRequestedVideoDuration(message);
+        const rawRequestedDuration = longVideoDirector.parseRequestedSeconds(message);
+        const currentStyle = prior && prior.content.deliveryStyle || 'natural';
+        const input = Object.assign({}, action, {
+            characterId: character.id,
+            name: character.name,
+            message,
+            personality: Array.isArray(action.personality)
+                ? action.personality
+                : [...new Set(((prior && prior.content.personality) || []).concat(requestedTraits))],
+            voice: action.voice || (prior && prior.content.voice),
+            deliveryStyle: dimension === 'delivery'
+                ? creatorStudio.matchDeliveryStyle(message, currentStyle)
+                : action.deliveryStyle || creatorStudio.matchDeliveryStyle(message, currentStyle),
+            contentType: action.contentType || (prior && prior.content.contentType) || 'talking',
+            concept: dimension === 'script' ? (action.concept || message) : action.concept || (prior && prior.content.concept) || message,
+            duration: action.duration || requestedDuration || (prior && prior.content.duration) || 15,
+            energy: action.energy || (/\bhigh\s+energy\b/i.test(message) ? 'high' : /\blow\s+energy\b/i.test(message) ? 'low' : prior && prior.content.energy),
+            pacing: action.pacing || (/\bslow(?:er)?\b/i.test(message) ? 'slow' : /\bfast(?:er)?\b/i.test(message) ? 'fast' : prior && prior.content.pacing),
+            speechBehavior: action.speechBehavior || (/\bstory(?:telling|time)?\b/i.test(message) ? 'storytelling' : /\bconfessional\b/i.test(message) ? 'confessional' : /\bq\s*&\s*a\b/i.test(message) ? 'qa' : 'direct_to_camera'),
+            eyeContact: action.eyeContact || (creatorStudio.matchDeliveryStyle(message, currentStyle) === 'flirty' || creatorStudio.matchDeliveryStyle(message, currentStyle) === 'seductive' ? 'strong' : undefined),
+            dimension
+        });
+
+        if (dimension === 'outfit' && !action.outfit) input.outfit = 'Auto';
+        if (dimension === 'scene' && !action.scene) input.scene = 'Auto';
+        if (dimension === 'camera' && !action.camera && prior && prior.content) {
+            const previousCameraIndex = creatorStudio.CAMERA_PRESETS.findIndex((item) => item.id === prior.content.camera);
+            input.camera = creatorStudio.CAMERA_PRESETS[(previousCameraIndex + 1) % creatorStudio.CAMERA_PRESETS.length].id;
+        }
+        if (dimension === 'voice' && prior && prior.content && !action.voice) {
+            const voice = Object.assign({}, prior.content.voice || {});
+            if (/\bslower\b/i.test(message)) voice.speed = 'slow';
+            else if (/\bfaster\b/i.test(message)) voice.speed = 'fast';
+            else if (/\b(?:natural|normal)\s+(?:speed|pace)\b/i.test(message)) voice.speed = 'natural';
+            if (/\blower\s+pitch\b/i.test(message)) voice.pitch = 'low';
+            else if (/\bhigher\s+pitch\b/i.test(message)) voice.pitch = 'high';
+            if (/\bwarmer\b/i.test(message)) voice.emotion = 'warm';
+            if (/\bmore\s+playful\b/i.test(message)) voice.emotion = 'playful';
+            input.voice = voice;
+        }
+
+        if (dimension === 'outfit') {
+            input.outfit = message.replace(/^.*?\b(?:change|switch|put|dress)\b.*?\b(?:outfit|clothes|wardrobe)\b(?:\s+to)?\s*/i, '').trim() || message;
+        } else if (dimension === 'scene') {
+            input.scene = message.replace(/^.*?\b(?:change|move|set)\b.*?\b(?:scene|room|background|environment)\b(?:\s+to)?\s*/i, '').trim() || message;
+        } else if (dimension === 'camera') {
+            const camera = creatorStudio.CAMERA_PRESETS.find((item) => message.toLowerCase().includes(item.label.toLowerCase()));
+            const motion = creatorStudio.CAMERA_MOTIONS.find((item) => message.toLowerCase().includes(item.label.toLowerCase()));
+            if (camera) input.camera = camera.id;
+            if (motion) input.cameraMotion = motion.id;
+        }
+
+        sseWrite(res, { creatorStudioProgress: { label: 'Preparing Creator Studio…', percent: 10 } });
+        await vramManager.freeVRAMBeforeChat();
+        sseWrite(res, { creatorStudioProgress: { label: 'Writing the script and performance beats…', percent: 18 } });
+        const content = await creatorStudio.buildCreatorContent(input, character, {
+            previousSession: prior,
+            providers,
+            provider,
+            model
+        });
+        sseWrite(res, { creatorStudioProgress: { label: 'Locking Character identity and resolving wardrobe…', percent: 38 } });
+        const identity = resolveIdentityConditioning([character], content.userPrompt, {
+            rawPrompt: ctx.rawMessage || message,
+            defaults: false,
+            continuity: true
+        });
+        const identityReferences = creatorStudio.identityReferenceFilenames(identity);
+        if (!identity || !identity.sourceAbs || !identityReferences.length) {
+            const text = 'Creator Studio cannot find ' + character.name + '’s saved Character portrait. Saving a Character normally approves its portrait automatically; check the Character Sheet and recreate/save the Character from Creative Playground if the portrait is missing.';
+            sseWrite(res, { creatorStudioProgress: { label: text, percent: 38, state: 'failed' } });
+            sseWrite(res, { error: text });
+            res.end();
+            return;
+        }
+        sseWrite(res, { creatorStudioProgress: { label: 'Character identity reference secured.', percent: 46 } });
+
+        const structuredRequest = {
+            action: 'generate',
+            user_prompt: content.userPrompt,
+            creative_mode: 'none',
+            has_reference_image: false,
+            reference_images: identityReferences,
+            shot_plan: content.shotPlan,
+            dialogue_language: 'English',
+            requested_duration: content.duration,
+            creator_content: true,
+            creator_direction: 'Creator scene: ' + content.scene + '. Outfit: ' + content.outfit + '. Camera: ' + content.cameraDirection + ' ' + content.deliveryDirection,
+            explicit_constraints: [
+                'preserve the approved Character identity reference exactly; expressions and performance may change but facial structure and appearance may not',
+                'keep every spoken line verbatim and visibly lip-synced on camera',
+                'use restrained social-creator camera movement'
+            ],
+            parameters: {}
+        };
+
+        const session = Object.assign({}, prior || {}, {
+            id: prior && prior.id || 'creator_session_' + Date.now().toString(36),
+            characterId: character.id,
+            creatorName: character.name,
+            status: 'generating',
+            content,
+            videos: prior && Array.isArray(prior.videos) ? prior.videos.slice() : []
+        });
+        creatorStudio.setSession(conversationId, session);
+        taskState.setTask(conversationId, {
+            type: 'video',
+            operation: 'generate',
+            prompt: content.userPrompt,
+            videoMode: 'ref2va',
+            lastAction: 'Creator Studio · ' + content.recipe.name,
+            status: 'running',
+            parameters: {
+                creatorStudio: { characterId: character.id, sessionId: session.id, contentId: content.id },
+                duration: content.duration,
+                characterId: character.id,
+                characterIds: [character.id]
+            }
+        });
+
+        sseWrite(res, { creatorStudioProgress: { label: 'Preparing H3 talking-video direction…', percent: 52 } });
+        const built = await videoGenerator.buildH3VideoPrompt(structuredRequest, providers, provider, model, null, conversationId, false);
+        sseWrite(res, { creatorStudioProgress: { label: 'Submitting the creator performance to H3…', percent: 68 } });
+        await vramManager.freeVRAMBeforeImage();
+        await handleVideoGenerationStream(req, res, {
+            provider,
+            model,
+            conversationId,
+            message: ctx.rawMessage || message,
+            videoPrompt: built.prompt,
+            structuredRequest,
+            action: 'generate',
+            previousPrompt: prior && prior.content && prior.content.userPrompt || null,
+            videoMode: 'ref2va',
+            referenceImages: identityReferences,
+            duration: built.duration,
+            width: built.width,
+            height: built.height,
+            think: false,
+            creatorStudio: {
+                characterId: character.id,
+                content,
+                sessionId: session.id,
+                durationNote: Number(rawRequestedDuration) > 15
+                    ? 'Creator Studio clips use the existing H3 limit of 15 seconds; this request was fitted to a single 15-second creator clip.'
+                    : ''
+            }
+        });
+    } catch (err) {
+        const current = creatorStudio.getSession(conversationId);
+        if (current) creatorStudio.setSession(conversationId, Object.assign({}, current, { status: 'failed', error: err.message }));
+        taskState.setTask(conversationId, { status: 'failed' });
+        console.error('[creator-studio] Request failed:', err.message);
+        const text = err.message || 'Creator Studio could not prepare this video.';
+        sseWrite(res, { error: text });
+        res.end();
+    }
 }
 
 // Start a fresh UGC project from a natural-language request.
@@ -5490,16 +5729,19 @@ async function handleVideoGenerationStream(req, res, opts) {
     };
     req.on('close', onClose);
     const stopProgress = forwardComfyProgress(res);
+    const generationLabel = opts.creatorStudio
+        ? 'Creator Studio · Rendering talking video…'
+        : 'Generating video...';
     const onQueued = (position, id) => {
         queueId = id;
         sseWrite(res, { queued: { position, queueId: id } });
     };
     const onStart = () => {
-        sseWrite(res, { generating: 'Generating video...' });
+        sseWrite(res, { generating: generationLabel });
     };
 
     try {
-        sseWrite(res, { generating: 'Generating video...' });
+        sseWrite(res, { generating: generationLabel });
 
         const opts2 = { provider, model, conversationId, onQueued, onStart, label: 'video generation', kind: 'video_generation' };
         if (structuredRequest) {
@@ -5592,6 +5834,15 @@ async function handleVideoGenerationStream(req, res, opts) {
             lastAction: message || action || 'generate'
         });
 
+        if (opts.creatorStudio) {
+            const creatorSession = creatorStudio.recordVideo(
+                creatorStudio.getSession(conversationId),
+                opts.creatorStudio.content,
+                { url: finalResult.url, prompt: videoPrompt }
+            );
+            creatorStudio.setSession(conversationId, creatorSession);
+        }
+
         const summary = await taskRouter.buildSuccessReply({
             action: action || 'generate',
             prompt: videoPrompt,
@@ -5614,8 +5865,11 @@ async function handleVideoGenerationStream(req, res, opts) {
               ' · Attention ' + accel.attention +
               ' · Turbo LoRA ' + (accel.turbo ? 'on' : 'off')
             : '';
+        const creatorDurationNote = opts.creatorStudio && opts.creatorStudio.durationNote
+            ? '\n\n**Duration:** ' + opts.creatorStudio.durationNote
+            : '';
         const content =
-            summary + '\n\n' +
+            summary + creatorDurationNote + '\n\n' +
             '**Prompt:** ' + videoPrompt + accelLine + '\n\n' +
             '<video class="md-video" preload="metadata" playsinline src="' + finalResult.url + '"></video>';
 
@@ -5662,6 +5916,13 @@ async function handleVideoGenerationStream(req, res, opts) {
         }
         if (err.code !== 'generation_cancelled') {
             taskState.setTask(conversationId, { status: 'failed' });
+        }
+        if (opts.creatorStudio) {
+            const creatorSession = creatorStudio.getSession(conversationId);
+            if (creatorSession) creatorStudio.setSession(conversationId, Object.assign({}, creatorSession, {
+                status: err.code === 'generation_cancelled' ? 'cancelled' : 'failed',
+                error: err.code === 'generation_cancelled' ? '' : friendlyVideoError(err)
+            }));
         }
         sseWrite(res, { error: friendlyVideoError(err) });
         res.end();

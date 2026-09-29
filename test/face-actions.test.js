@@ -122,7 +122,7 @@ test('Surprise Me Again varies Face Actions while keeping the same character ide
         conversationId: conversationId('surprise-variety'),
         themeId: 'lifestyle-candid',
         mode: 'random_character',
-        locks: {},
+        locks: { identity: true },
         rng: characterGen.createRng(101)
     });
     const identity = session.concept.identitySignature;

@@ -268,15 +268,17 @@ test('Surprise Me Again keeps the locked character and rerolls the scene', () =>
     assert.equal(next.themeId, beforeTheme);
 });
 
-test('Surprise Me Again keeps the same character even when identity is not manually locked', () => {
+test('Surprise Me Again casts a new random character when identity is not locked', () => {
     const id = conversationId('again-unlocked');
     const session = playground.start({
         conversationId: id, themeId: 'lifestyle-candid', mode: 'random_character',
         locks: {}, rng: () => 0
     });
     const beforeSubject = session.concept.subject;
+    const beforeSeed = session.concept.characterSeed;
     const next = playground.again(session, { rng: () => 0.99 });
-    assert.equal(next.concept.subject, beforeSubject);
+    assert.notEqual(next.concept.subject, beforeSubject);
+    assert.notEqual(next.concept.characterSeed, beforeSeed);
 });
 
 test('Surprise Me Again preserves a saved character identity', () => {
@@ -1503,6 +1505,26 @@ test('face and hair re-rolls change only their own traits', () => {
     assert.equal(hair.ageGroup, identity.ageGroup);
 });
 
+test('every character trait group has a targeted re-roll', () => {
+    const identity = characterGen.generateRandomIdentity(2468);
+    for (const [index, part] of ['appearance', 'age', 'gender', 'skin', 'face', 'eyes', 'brows', 'hair', 'build', 'feature'].entries()) {
+        let next = identity;
+        for (let seed = 1; seed <= 30 && next.signature === identity.signature; seed++) {
+            next = characterGen.rerollIdentityTrait(identity, part, characterGen.createRng(index * 100 + seed));
+        }
+        assert.notEqual(next.signature, identity.signature, part + ' should produce a changed identity');
+        if (part === 'appearance') assert.notEqual(next.appearanceCategory, identity.appearanceCategory);
+        if (part === 'age') {
+            assert.notEqual(next.ageGroup, identity.ageGroup);
+            assert.equal(next.characterProfile.age, 'random');
+        }
+        if (part === 'gender') {
+            assert.notEqual(next.gender, identity.gender);
+            assert.equal(next.characterProfile.gender, 'random');
+        }
+    }
+});
+
 test('a re-roll is deterministic for the same rng', () => {
     const identity = characterGen.generateRandomIdentity(9191);
     assert.deepEqual(characterGen.rerollIdentityFace(identity, 5), characterGen.rerollIdentityFace(identity, 5));
@@ -1571,6 +1593,7 @@ test('locks block the matching identity re-roll', () => {
     assert.equal(card.identityReroll.face, false);
     assert.equal(card.identityReroll.hair, true);
     assert.equal(card.identityReroll.build, true);
+    assert.deepEqual(card.identityReroll.traits.map((item) => item.part), ['age', 'gender', 'hair', 'build']);
 
     let guard = 0;
     while (session.concept.identitySignature === signature && guard < 30) {
@@ -1610,6 +1633,24 @@ test('a face re-roll through the service regenerates only the face', () => {
     assert.equal(session.concept.characterSeed, before.characterSeed);
 });
 
+test('age and gender re-rolls update the character profile used by later rerolls', () => {
+    const id = conversationId('demographic-reroll');
+    const session = playground.start({
+        conversationId: id,
+        themeId: 'lifestyle-candid',
+        mode: 'random_character',
+        profile: { appearance: 'east_asian', age: 'adult', gender: 'woman' },
+        rng: characterGen.createRng(51)
+    });
+    playground.modify(session, { rerollIdentity: 'age', rng: characterGen.createRng(71) });
+    assert.equal(session.characterProfile.age, 'random');
+    assert.equal(session.characterProfile.appearance, 'east_asian');
+    assert.equal(session.characterProfile.gender, 'woman');
+    playground.modify(session, { rerollIdentity: 'gender', rng: characterGen.createRng(81) });
+    assert.equal(session.characterProfile.gender, 'random');
+    assert.equal(session.characterProfile.appearance, 'east_asian');
+});
+
 test('a saved character card offers no identity re-roll', () => {
     const id = conversationId('saved-reroll');
     const preset = characterPresets.create({ name: 'Fixed', identity: 'a woman with a neat bob' });
@@ -1618,6 +1659,7 @@ test('a saved character card offers no identity re-roll', () => {
     assert.equal(card.identityReroll.face, false);
     assert.equal(card.identityReroll.hair, false);
     assert.equal(card.identityReroll.build, false);
+    assert.deepEqual(card.identityReroll.traits, []);
 });
 
 test('a build re-roll through the service keeps the face and hair', () => {

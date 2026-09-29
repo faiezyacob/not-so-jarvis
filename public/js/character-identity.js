@@ -122,13 +122,20 @@ const CharacterIdentityUI = (() => {
         const baseSection = el('section', 'identity-section');
         baseSection.appendChild(el('h4', 'identity-section-title', 'Approved Character'));
         if (card.approvedBaseImage && card.approvedBaseImage.url) {
+            if (!card.approvedBaseImage.approvedAt) {
+                const approve = el('button', 'settings-browse-btn identity-approve-base', 'Approve portrait for Creator Studio');
+                approve.type = 'button';
+                approve.addEventListener('click', () => approveCurrentBase(card.characterId, approve));
+                baseSection.appendChild(approve);
+                baseSection.appendChild(el('p', 'identity-base-help', 'Approving locks this portrait as the Character’s identity reference and creates its identity sheet.'));
+            }
             baseSection.appendChild(imageFigure(
                 card.approvedBaseImage.url,
-                card.approvedBaseImage.approved ? 'Approved base image' : 'Candidate \u2014 awaiting approval',
+                card.approvedBaseImage.approvedAt ? 'Approved base image' : 'Candidate \u2014 awaiting approval',
                 'identity-base'
             ));
         } else {
-            baseSection.appendChild(el('div', 'identity-empty', 'No base image yet.'));
+            baseSection.appendChild(el('div', 'identity-empty', 'No base portrait is linked to this Character yet. You can keep this Character; Creator Studio needs a portrait attached before it can render identity-consistent video.'));
         }
         bodyEl.appendChild(baseSection);
 
@@ -170,8 +177,8 @@ const CharacterIdentityUI = (() => {
         }
     }
 
-    // The viewer is read-only: no footer actions. Character actions live on the
-    // Creative Playground card / chat.
+    // Keep the footer action-free; portrait approval is shown beside the base
+    // image where the decision is made.
     function renderFooter() {
         if (!footerEl) return;
         footerEl.innerHTML = '';
@@ -212,6 +219,59 @@ const CharacterIdentityUI = (() => {
             schedulePoll();
         } catch (e) {
             showError('Could not load this character identity.');
+        }
+    }
+
+    async function approveCurrentBase(characterId, button) {
+        if (!characterId || (button && button.disabled)) return;
+        const status = el('div', 'identity-operation-status', 'Approving this portrait and preparing the identity sheet…');
+        if (button) {
+            button.disabled = true;
+            button.after(status);
+        }
+        try {
+            const response = await fetch('/api/characters/' + encodeURIComponent(characterId) + '/identity/approve', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({})
+            });
+            if (!response.ok) {
+                const result = await response.json().catch(() => ({}));
+                throw new Error(result.error || 'Could not approve this Character portrait.');
+            }
+            const reader = response.body && response.body.getReader ? response.body.getReader() : null;
+            if (reader) {
+                const decoder = new TextDecoder();
+                let buffer = '';
+                while (true) {
+                    const part = await reader.read();
+                    if (part.done) break;
+                    buffer += decoder.decode(part.value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+                    for (const line of lines) {
+                        if (!line.startsWith('data: ')) continue;
+                        let event;
+                        try { event = JSON.parse(line.slice(6)); } catch (_) { continue; }
+                        if (event.generating) status.textContent = event.generating;
+                        if (event.identityProgress) {
+                            status.textContent = 'Rendering Character Identity Sheet · ' +
+                                (event.identityProgress.done || 0) + '/' + (event.identityProgress.total || 1);
+                        }
+                        if (event.error) throw new Error(event.error);
+                    }
+                }
+            }
+            const latest = await fetch('/api/characters/' + encodeURIComponent(characterId) + '/identity');
+            if (!latest.ok) throw new Error('Portrait was approved, but the Character Sheet could not be refreshed.');
+            const result = await latest.json();
+            currentCard = result.card;
+            renderBody(currentCard);
+            renderFooter(currentCard);
+            refreshPlaygroundCards();
+        } catch (error) {
+            status.textContent = error.message || 'Could not approve this portrait.';
+            if (button) button.disabled = false;
         }
     }
 

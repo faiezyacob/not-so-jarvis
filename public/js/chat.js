@@ -663,7 +663,31 @@ const Chat = (() => {
                 mentionIndex = i;
                 updateMentionActive();
             });
-            chatMentionPopup.appendChild(row);
+            if (item.kind === 'character') {
+                const group = document.createElement('div');
+                group.className = 'chat-mention-character-row';
+                group.appendChild(row);
+                const sheet = document.createElement('button');
+                sheet.type = 'button';
+                sheet.className = 'chat-mention-sheet';
+                sheet.textContent = 'Character Sheet';
+                sheet.title = 'Open ' + item.name + ' Character Sheet';
+                sheet.setAttribute('aria-label', 'Open ' + item.name + ' Character Sheet');
+                sheet.addEventListener('mousedown', (event) => event.preventDefault());
+                sheet.addEventListener('click', (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    mentionToken += 1;
+                    closeMentionPopup();
+                    if (window.CharacterIdentityUI && typeof window.CharacterIdentityUI.open === 'function') {
+                        window.CharacterIdentityUI.open(item.id);
+                    }
+                });
+                group.appendChild(sheet);
+                chatMentionPopup.appendChild(group);
+            } else {
+                chatMentionPopup.appendChild(row);
+            }
         });
         chatMentionPopup.hidden = false;
         updateMentionActive();
@@ -1306,6 +1330,7 @@ const Chat = (() => {
                     longVideoAction: override && override.longVideoAction ? override.longVideoAction : undefined,
                     playgroundAction: override && override.playgroundAction ? override.playgroundAction : undefined,
                     ugcAction: override && override.ugcAction ? override.ugcAction : undefined,
+                    creatorStudioAction: override && override.creatorStudioAction ? override.creatorStudioAction : undefined,
                     forceDirector: (typeof ChatDirector !== 'undefined' && ChatDirector && ChatDirector.isOn()) ? true : undefined
                 }),
                 signal: activeStreamAbort.signal
@@ -1357,6 +1382,13 @@ const Chat = (() => {
             let hadError = false;
             let generatingEl = null;
             let generatingLabel = '';
+            const reportCreatorProgress = (detail) => {
+                if (typeof window !== 'undefined') {
+                    window.dispatchEvent(new CustomEvent('creator-studio-progress', {
+                        detail: Object.assign({ conversationId }, detail || {})
+                    }));
+                }
+            };
 
             while (true) {
                 const { done, value } = await reader.read();
@@ -1369,7 +1401,14 @@ const Chat = (() => {
                 for (const line of lines) {
                     if (line.startsWith('data: ')) {
                         const data = JSON.parse(line.slice(6));
+                        if (data.creatorStudioProgress) reportCreatorProgress(Object.assign({ stage: true }, data.creatorStudioProgress));
+                        if (data.queued) reportCreatorProgress({ queued: data.queued });
+                        if (data.generating) reportCreatorProgress({ generating: data.generating });
+                        if (data.progress) reportCreatorProgress({ progress: data.progress });
+                        if (data.chunk) reportCreatorProgress({ message: data.chunk });
+                        if (data.video) reportCreatorProgress({ complete: true });
                         if (data.error) {
+                            reportCreatorProgress({ error: data.error });
                             if (generatingEl) { generatingEl.remove(); generatingEl = null; }
                             setAiContent(contentEl, data.error);
                             // An error is shown in place but must NOT be persisted

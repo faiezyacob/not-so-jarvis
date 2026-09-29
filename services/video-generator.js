@@ -1293,7 +1293,7 @@ function ensureShotDialogue(prompt, shotPlan, defaultLanguage) {
 // Deterministic full-reference document used when the director LLM fails or
 // returns a non-compliant rewrite. Mirrors the official Full-Reference Mode
 // guide's six sections.
-function buildReferenceFallbackPrompt({ shotPlan, referenceCount, durationSeconds }) {
+function buildReferenceFallbackPrompt({ shotPlan, referenceCount, durationSeconds, creatorIdentityOnly, creatorDirection }) {
     const shots = Array.isArray(shotPlan) ? shotPlan.filter(Boolean) : [];
     const refCount = Number(referenceCount) > 0 ? Number(referenceCount) : 1;
     const duration = Number(durationSeconds) > 0 ? Number(durationSeconds) : 0;
@@ -1302,25 +1302,29 @@ function buildReferenceFallbackPrompt({ shotPlan, referenceCount, durationSecond
     const appearances = shotCount > 1 ? '[Shot 1] and [Shot ' + shotCount + ']' : '[Shot 1]';
     const body = shots.length
         ? shots.map((desc, index) => {
-            const anchor = ' (the shot begins from <Picture ' + Math.min(index + 1, refCount) + '>)';
+            const anchor = creatorIdentityOnly ? '' : ' (the shot begins from <Picture ' + Math.min(index + 1, refCount) + '>)';
             if (index === 0) return '[Shot 1] ' + desc + anchor;
             const cut = duration > 0 ? (duration * index) / shots.length : index;
             return '[Shot ' + (index + 1) + '] At ' + formatCutTime(cut) + ', the shot cuts to ' + desc + anchor;
         }).join(' ')
         : '[Shot 1] The creator from <Picture 1> speaks to camera with natural, continuous motion.';
     return 'subject_definitions:\n' +
-        '<Subject 1> is the creator shown in <Picture 1>, preserving their identity, hairstyle, ' +
-        'wardrobe and the exact product and environment established by the reference frames.\n\n' +
+        (creatorIdentityOnly
+            ? '<Subject 1> is the same fictional creator shown in the approved Character identity portrait <Picture 1>. Preserve their facial identity, age, complexion, hairstyle and distinctive features; this portrait is an identity-only reference, not a scene or composition reference.\n\n'
+            : '<Subject 1> is the creator shown in <Picture 1>, preserving their identity, hairstyle, wardrobe and the exact product and environment established by the reference frames.\n\n') +
         'summary:\n' +
-        '[reference generation + keyframe completion] The target video follows the approved reference ' +
-        'frames ' + pictures + ' across ' + shotCount + ' shot(s), preserving the creator, wardrobe, ' +
-        'product and environment.\n\n' +
+        (creatorIdentityOnly
+            ? 'A personality-led talking video follows the same creator through ' + shotCount + ' ordered performance beat(s), with changing facial expressions and natural gestures.\n\n'
+            : '[reference generation + keyframe completion] The target video follows the approved reference frames ' + pictures + ' across ' + shotCount + ' shot(s), preserving the creator, wardrobe, product and environment.\n\n') +
         'retention_analysis:\n' +
-        '<Subject 1> (appears in ' + appearances + '): fully_preserved - identity, wardrobe, product ' +
-        'and setting from the references are retained.\n\n' +
+        '<Subject 1> (appears in ' + appearances + '): fully_preserved - ' +
+        (creatorIdentityOnly
+            ? 'facial identity and distinctive physical features from the identity portrait; scene, clothing and framing follow Creator Studio direction.\n\n'
+            : 'identity, wardrobe, product and setting from the references are retained.\n\n') +
         'detailed_description:\n' +
-        'The target video is a photorealistic user-generated-content phone-camera look with natural ' +
-        'lighting and handheld framing. ' + body + '\n\n' +
+        (creatorIdentityOnly
+            ? 'The target video is a personality-led social creator video. ' + String(creatorDirection || '') + ' Do not reproduce the reference portrait composition, pose, lighting or background. '
+            : 'The target video is a photorealistic user-generated-content phone-camera look with natural lighting and handheld framing. ') + body + '\n\n' +
         'overall_soundscape:\n' +
         'Ambient environmental sounds and physical action sounds matching the scene.\n\n' +
         'non_diegetic_music:\nN/A';
@@ -1329,7 +1333,7 @@ function buildReferenceFallbackPrompt({ shotPlan, referenceCount, durationSecond
 // Appended to the H3 director system prompt for reference-to-video productions.
 // Replaces the T2VA/I2VA structure with the official Full-Reference Mode
 // rewrite: six sections, <Subject N>/<Picture N> labels, detailed_description.
-function buildReferenceAddendum(count) {
+function buildReferenceAddendum(count, creatorIdentityOnly) {
     const n = Number(count) > 0 ? Number(count) : 1;
     const pictures = Array.from({ length: n }, (_, i) => '<Picture ' + (i + 1) + '>').join(', ');
     return '\n\nOVERRIDE \u2014 FULL-REFERENCE MODE (ref2va, NOT i2va):\n' +
@@ -1359,7 +1363,10 @@ function buildReferenceAddendum(count) {
         '- overall_soundscape / non_diegetic_music: as usual. Never repeat dialogue there.\n' +
         '- Preserve identity, wardrobe, colours, key objects and setting from the reference frames. ' +
         'Keep every speaker on screen with a visibly moving, lip-synced mouth and the exact spoken ' +
-        'words inside <d>[Language] ...</d>. Never drop a dialogue block.\n';
+        'words inside <d>[Language] ...</d>. Never drop a dialogue block.\n' +
+        (creatorIdentityOnly
+            ? '\nCREATOR IDENTITY REFERENCE OVERRIDE: The supplied picture is the approved single Character base portrait and is an identity source only. Preserve the same face and physical identity, but DO NOT use it as a shot keyframe and do not copy its pose, framing, background, outfit or lighting. Use the Creator Studio scene, wardrobe and camera direction for every shot; facial expressions may transition while facial structure remains unchanged.\n'
+            : '');
 }
 
 async function detectVideoIntent(message, providers, provider, model, think) {
@@ -1546,6 +1553,8 @@ function isRawRequestEcho(prompt, raw) {
 async function buildH3VideoPrompt(structuredRequest, providers, provider, model, sourceImageRawFilename, conversationId, think) {
     const { user_prompt, creative_mode, has_reference_image, previous_prompt, explicit_constraints } = structuredRequest;
     const isModify = Boolean(previous_prompt && structuredRequest.modification);
+    const creatorIdentityOnly = Boolean(structuredRequest.creator_content);
+    const creatorDirection = String(structuredRequest.creator_direction || 'Use the requested creator scene and wardrobe with restrained social-video framing.').trim();
     const shotPlan = resolveShotPlan(structuredRequest);
     const multiShot = shotPlan.length > 1;
     // Reference-to-video (ref2va): every approved scene frame is conditioned via
@@ -1622,11 +1631,12 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
     } else {
         let sourceNote;
         if (isRefMode) {
-            sourceNote =
-                'REFERENCE IMAGES: ' + refCount + ' approved reference frame(s) are provided as ' +
-                referenceImages.map((_, i) => '<Picture ' + (i + 1) + '>').join(', ') + '.\n' +
-                'Each is the keyframe anchor for its shot: <Picture 1> anchors [Shot 1], <Picture i> ' +
-                'anchors [Shot i]. Define the reusable creator/wardrobe/product/environment from them.\n';
+            sourceNote = creatorIdentityOnly
+                ? 'CHARACTER IDENTITY REFERENCE: ' + refCount + ' approved base portrait(s) are supplied as ' + referenceImages.map((_, i) => '<Picture ' + (i + 1) + '>').join(', ') + '. They identify the same creator only; they are not shot keyframes. Preserve identity, but follow the Creator Studio concept for scene, outfit, framing and lighting. Never copy portrait composition or pose.\n'
+                : 'REFERENCE IMAGES: ' + refCount + ' approved reference frame(s) are provided as ' +
+                  referenceImages.map((_, i) => '<Picture ' + (i + 1) + '>').join(', ') + '.\n' +
+                  'Each is the keyframe anchor for its shot: <Picture 1> anchors [Shot 1], <Picture i> ' +
+                  'anchors [Shot i]. Define the reusable creator/wardrobe/product/environment from them.\n';
         } else if (has_reference_image && visionAvailable) {
             sourceNote =
                 'SOURCE IMAGE: The image is attached directly below. Study it carefully.\n' +
@@ -1661,7 +1671,7 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
     // mode each shot is tied to its approved reference frame.
     if (multiShot && !isModify) {
         const planLines = shotPlan.map((desc, index) => {
-            const refNote = isRefMode
+            const refNote = isRefMode && !creatorIdentityOnly
                 ? ' (keyframe: <Picture ' + Math.min(index + 1, refCount) + '>)'
                 : '';
             return '[Shot ' + (index + 1) + '] ' + desc + refNote;
@@ -1670,7 +1680,7 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
             '\n\nSHOT PLAN (authoritative \u2014 exactly these shots, in order):\n' +
             planLines.join('\n') +
             '\nOutput exactly ' + shotPlan.length + ' shots with strictly increasing cut times.' +
-            (isRefMode ? ' Name each shot\'s <Picture i> reference in the shot text.' : '');
+            (isRefMode && !creatorIdentityOnly ? ' Name each shot\'s <Picture i> reference in the shot text.' : '');
     }
 
     const requestRaw = String(
@@ -1681,12 +1691,16 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
         shotPlan,
         hasReferenceImage: hasFirstFrameRef,
         referenceCount: isRefMode ? refCount : 0,
-        durationSeconds
+        durationSeconds,
+        creatorIdentityOnly,
+        creatorDirection
     };
     const refFallback = () => buildReferenceFallbackPrompt({
         shotPlan,
         referenceCount: refCount,
-        durationSeconds
+        durationSeconds,
+        creatorIdentityOnly,
+        creatorDirection
     });
 
     // Run the director LLM, retrying once when it returns unparseable JSON or
@@ -1713,7 +1727,7 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
             if (userMessageImages) userMsg.images = userMessageImages;
             const systemPrompt = H3_DIRECTOR_SYSTEM_PROMPT +
                 (multiShot ? H3_MULTISHOT_ADDENDUM : '') +
-                (isRefMode ? buildReferenceAddendum(refCount) : '');
+                (isRefMode ? buildReferenceAddendum(refCount, creatorIdentityOnly) : '');
             const raw = await providers.chat(provider, [
                 { role: 'system', content: systemPrompt },
                 userMsg

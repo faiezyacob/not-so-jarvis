@@ -42,9 +42,9 @@ const PlaygroundUI = (() => {
     const BUTTONS = [
         { type: 'generate', label: 'Generate Image', icon: 'image', variant: 'primary' },
         { type: 'again', label: 'Surprise Me Again', icon: 'refresh', variant: '' },
+        { type: 'save_character', label: 'Save as Character', icon: 'user', variant: '' },
         { type: 'modify', label: 'Modify Concept', icon: 'pencil', variant: '' },
         { type: 'save', label: 'Save Concept', icon: 'bookmark', variant: '' },
-        { type: 'save_character', label: 'Save as Character', icon: 'user', variant: '' },
         { type: 'retry_portrait', label: 'Retry Portrait', icon: 'refresh', variant: '' },
         { type: 'use_context', label: 'Use as Chat Context', icon: 'chat', variant: '' }
     ];
@@ -452,7 +452,7 @@ const PlaygroundUI = (() => {
             btn.addEventListener('click', () => onAction(btn, card, spec.type));
             if (spec.type === 'generate') {
                 actions.appendChild(btn);
-            } else if (spec.type === 'again' || spec.type === 'modify') {
+            } else if (spec.type === 'again' || spec.type === 'save_character') {
                 frequentActions.appendChild(btn);
             } else {
                 moreList.appendChild(btn);
@@ -463,32 +463,32 @@ const PlaygroundUI = (() => {
         el.appendChild(actions);
 
         // Targeted random-character re-rolls. A saved character's identity is
-        // fixed and a matching lock suppresses the control, so these only appear
-        // for an editable random person.
-        if (card.identityReroll && (card.identityReroll.face || card.identityReroll.hair || card.identityReroll.build)) {
+        // fixed and matching locks remove only the controls they protect.
+        const traitRerolls = card.identityReroll && Array.isArray(card.identityReroll.traits)
+            ? card.identityReroll.traits
+            : [
+                { part: 'face', label: 'Face' },
+                { part: 'hair', label: 'Hair' },
+                { part: 'build', label: 'Build' }
+            ].filter((item) => card.identityReroll && card.identityReroll[item.part]);
+        if (traitRerolls.length) {
             const reroll = document.createElement('div');
             reroll.className = 'playground-card-actions playground-card-actions--identity';
             const label = document.createElement('span');
             label.className = 'playground-card-actions-label';
-            label.textContent = 'Identity details';
+            label.textContent = 'Re-roll character traits';
             reroll.appendChild(label);
-            const spec = [
-                { part: 'face', label: 'Re-roll Face', enabled: card.identityReroll.face },
-                { part: 'hair', label: 'Re-roll Hair', enabled: card.identityReroll.hair },
-                { part: 'build', label: 'Re-roll Build', enabled: card.identityReroll.build }
-            ].filter((item) => item.enabled);
-            if (spec.length) {
-                spec.forEach((item) => {
-                    const btn = document.createElement('button');
-                    btn.type = 'button';
-                    btn.className = 'playground-btn';
-                    btn.innerHTML = iconSvg('refresh', 14) +
-                        '<span class="playground-btn-label">' + item.label + '</span>';
-                    btn.addEventListener('click', () => onAction(btn, card, 'identity_reroll', { part: item.part }));
-                    reroll.appendChild(btn);
-                });
-                el.appendChild(reroll);
-            }
+            traitRerolls.forEach((item) => {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'playground-btn';
+                btn.title = 'Re-roll character ' + item.label.toLowerCase();
+                btn.innerHTML = iconSvg('refresh', 14) +
+                    '<span class="playground-btn-label">' + item.label + '</span>';
+                btn.addEventListener('click', () => onAction(btn, card, 'identity_reroll', { part: item.part }));
+                reroll.appendChild(btn);
+            });
+            el.appendChild(reroll);
         }
 
         contentEl.appendChild(el);
@@ -559,7 +559,8 @@ const PlaygroundUI = (() => {
         }
         if (type === 'identity_reroll') {
             const requested = (meta && meta.part) || '';
-            const part = (requested === 'hair' || requested === 'build') ? requested : 'face';
+            const allowed = ['appearance', 'age', 'gender', 'skin', 'face', 'eyes', 'brows', 'hair', 'build', 'feature'];
+            const part = allowed.includes(requested) ? requested : 'face';
             lock(cardEl);
             send('Re-roll the character\u2019s ' + part, {
                 type: 'modify',
@@ -1346,7 +1347,7 @@ const PlaygroundUI = (() => {
         if (label) {
             label.classList.remove('playground-lock--disabled');
             label.title = randomMode
-                ? 'A new Surprise casts a new person; Surprise Me Again keeps this character and varies the scene.'
+                ? 'A new Surprise or Surprise Me Again casts a new person unless Identity is locked. Saved characters always stay the same.'
                 : '';
         }
     }
