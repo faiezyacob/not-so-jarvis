@@ -462,33 +462,46 @@ const PlaygroundUI = (() => {
         if (moreList.childElementCount) actions.appendChild(moreActions);
         el.appendChild(actions);
 
-        // Targeted random-character re-rolls. A saved character's identity is
-        // fixed and matching locks remove only the controls they protect.
-        const traitRerolls = card.identityReroll && Array.isArray(card.identityReroll.traits)
-            ? card.identityReroll.traits
-            : [
-                { part: 'face', label: 'Face' },
-                { part: 'hair', label: 'Hair' },
-                { part: 'build', label: 'Build' }
-            ].filter((item) => card.identityReroll && card.identityReroll[item.part]);
-        if (traitRerolls.length) {
-            const reroll = document.createElement('div');
-            reroll.className = 'playground-card-actions playground-card-actions--identity';
-            const label = document.createElement('span');
-            label.className = 'playground-card-actions-label';
-            label.textContent = 'Re-roll character traits';
-            reroll.appendChild(label);
-            traitRerolls.forEach((item) => {
-                const btn = document.createElement('button');
-                btn.type = 'button';
-                btn.className = 'playground-btn';
-                btn.title = 'Re-roll character ' + item.label.toLowerCase();
-                btn.innerHTML = iconSvg('refresh', 14) +
-                    '<span class="playground-btn-label">' + item.label + '</span>';
-                btn.addEventListener('click', () => onAction(btn, card, 'identity_reroll', { part: item.part }));
-                reroll.appendChild(btn);
+        const identityTraits = Array.isArray(card.identityTraits) ? card.identityTraits : [];
+        if (identityTraits.length) {
+            const traitPanel = document.createElement('div');
+            traitPanel.className = 'playground-character-traits';
+            const label = document.createElement('div');
+            label.className = 'playground-character-traits-title';
+            label.textContent = 'Customize character traits';
+            traitPanel.appendChild(label);
+            const hint = document.createElement('p');
+            hint.className = 'playground-character-traits-hint';
+            hint.textContent = 'Choose your traits, then click Surprise Me Again to apply.';
+            traitPanel.appendChild(hint);
+            const controls = document.createElement('div');
+            controls.className = 'playground-character-traits-grid';
+            identityTraits.forEach((trait) => {
+                const field = document.createElement('label');
+                field.className = 'playground-character-trait';
+                const name = document.createElement('span');
+                name.textContent = trait.label;
+                const select = document.createElement('select');
+                select.className = 'settings-select';
+                select.setAttribute('aria-label', 'Character ' + trait.label.toLowerCase());
+                select.dataset.traitPart = trait.part;
+                select.dataset.initialValue = trait.value;
+                (trait.options || []).forEach((item) => {
+                    const option = document.createElement('option');
+                    option.value = item.value;
+                    option.textContent = item.label;
+                    select.appendChild(option);
+                });
+                select.value = trait.value;
+                select.addEventListener('change', () => {
+                    select.closest('.playground-character-trait')
+                        .classList.toggle('playground-character-trait--pending', select.value !== select.dataset.initialValue);
+                });
+                field.append(name, select);
+                controls.appendChild(field);
             });
-            el.appendChild(reroll);
+            traitPanel.appendChild(controls);
+            el.appendChild(traitPanel);
         }
 
         contentEl.appendChild(el);
@@ -557,20 +570,6 @@ const PlaygroundUI = (() => {
             });
             return;
         }
-        if (type === 'identity_reroll') {
-            const requested = (meta && meta.part) || '';
-            const allowed = ['appearance', 'age', 'gender', 'skin', 'face', 'eyes', 'brows', 'hair', 'build', 'feature'];
-            const part = allowed.includes(requested) ? requested : 'face';
-            lock(cardEl);
-            send('Re-roll the character\u2019s ' + part, {
-                type: 'modify',
-                conceptId: card.id,
-                expectedRevision: card.revision,
-                rerollIdentity: part,
-                direction: 'Re-roll the character\u2019s ' + part
-            });
-            return;
-        }
         if (type === 'save_character') {
             saveAsCharacter(button, card);
             return;
@@ -593,7 +592,14 @@ const PlaygroundUI = (() => {
             save: 'Save this creative concept',
             use_context: 'Use this creative concept as chat context'
         };
-        send(labels[type] || type, { type, conceptId: card.id, expectedRevision: card.revision });
+        const payload = { type, conceptId: card.id, expectedRevision: card.revision };
+        if (type === 'again' && cardEl) {
+            const pendingTraits = Array.from(cardEl.querySelectorAll('.playground-character-trait select'))
+                .filter((select) => select.value !== select.dataset.initialValue)
+                .map((select) => ({ part: select.dataset.traitPart, value: select.value }));
+            if (pendingTraits.length) payload.identityTraits = pendingTraits;
+        }
+        send(labels[type] || type, payload);
     }
 
     // Saving a character creates the preset and its consolidated identity sheet
@@ -639,7 +645,7 @@ const PlaygroundUI = (() => {
             const head = cardEl.querySelector('.playground-card-head');
             if (head) head.after(status);
         }
-        cardEl.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+        cardEl.querySelectorAll('button, select').forEach((control) => { control.disabled = true; });
     }
 
     // Only disable a card when we positively know a *different* concept is the
@@ -651,7 +657,7 @@ const PlaygroundUI = (() => {
         container.querySelectorAll('.playground-card').forEach((el) => {
             const matches = el.getAttribute('data-concept-id') === activeCard.id;
             el.classList.toggle('playground-card--static', !matches);
-            el.querySelectorAll('button').forEach((b) => { b.disabled = !matches; });
+            el.querySelectorAll('button, select').forEach((control) => { control.disabled = !matches; });
         });
     }
 
@@ -1295,7 +1301,6 @@ const PlaygroundUI = (() => {
         } else {
             setCharacterChoice('', { skipLocks: true });
         }
-        // Reflect the generator controls that produced the active random person.
         if (concept.characterProfile) {
             if (appearanceSelect) appearanceSelect.value = concept.characterProfile.appearance;
             if (ageSelect) ageSelect.value = concept.characterProfile.age;
@@ -1373,8 +1378,6 @@ const PlaygroundUI = (() => {
         return profile.appearance !== 'random' || profile.age !== 'random' || profile.gender !== 'random';
     }
 
-    // Choosing an appearance/age/gender means "cast a character with it", so the
-    // Character select follows to "Random new character" for visible feedback.
     function syncCharacterMode() {
         if (!characterMenuEl) return;
         if (profileConstrained(selectedProfile()) && !characterChoice) {
@@ -1441,8 +1444,6 @@ const PlaygroundUI = (() => {
             mode = 'character';
             characterId = choice;
         } else if (profileConstrained(profile)) {
-            // A constrained profile implies a random character even if the
-            // Character select was left at "No character".
             mode = 'random_character';
         }
         const locks = selectedLocks();
@@ -1568,8 +1569,8 @@ const PlaygroundUI = (() => {
             });
         }
         if (themeSelect) themeSelect.addEventListener('change', () => { popoverDirty = true; updateSummary(); });
-        [appearanceSelect, ageSelect, genderSelect].forEach((sel) => {
-            if (sel) sel.addEventListener('change', () => { popoverDirty = true; syncCharacterMode(); });
+        [appearanceSelect, ageSelect, genderSelect].forEach((select) => {
+            if (select) select.addEventListener('change', () => { popoverDirty = true; syncCharacterMode(); });
         });
         if (promptEl) promptEl.addEventListener('input', () => { popoverDirty = true; syncPromptMode(); });
         if (outfitCustomEl) outfitCustomEl.addEventListener('input', () => { popoverDirty = true; });

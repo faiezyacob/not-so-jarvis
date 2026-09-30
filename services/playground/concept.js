@@ -1219,6 +1219,7 @@ module.exports = {
     MODES,
     CONCEPT_FIELDS,
     normalizeLocks,
+    finalize,
     randomIdentity,
     assembleConcept,
     applyChanges,

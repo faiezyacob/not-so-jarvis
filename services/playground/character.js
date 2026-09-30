@@ -1577,6 +1577,141 @@ function rerollIdentityTrait(identity, trait, input) {
     return identity;
 }
 
+function distinctTraitOptions(pool, context) {
+    const entries = toEntries(pool).filter((entry) => isCompatible(entry, context || {}));
+    const seen = new Set();
+    return entries.filter((entry) => {
+        const key = String(entry.value);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    }).map((entry) => ({ value: String(entry.value), label: String(entry.value), type: entry.type || '' }));
+}
+
+function listIdentityTraitOptions(identity) {
+    if (!identity || typeof identity !== 'object') return [];
+    const category = categoryForIdentity(identity) || fallbackCategory();
+    const context = {
+        ageGroup: identity.ageGroup || '',
+        gender: identity.gender || identity.presentation || '',
+        presentation: identity.presentation || identity.gender || '',
+        skinGroup: identity.skinGroup || '',
+        texture: identity.hairTextureFamily || ''
+    };
+    const options = [
+        {
+            part: 'skin', label: 'Skin tone', value: identity.skinTone || '',
+            options: distinctTraitOptions(category.skinTones, context)
+        },
+        {
+            part: 'face', label: 'Face shape', value: identity.faceShape || '',
+            options: distinctTraitOptions(category.faceShapes, context)
+        },
+        {
+            part: 'eyes', label: 'Eye shape', value: identity.eyeShape || '',
+            options: distinctTraitOptions(category.eyeShapes, context)
+        },
+        {
+            part: 'brows', label: 'Eyebrows', value: identity.eyebrows || '',
+            options: distinctTraitOptions(category.eyebrows, context)
+        },
+        {
+            part: 'hair', label: 'Hairstyle', value: identity.hairStyle || '',
+            options: distinctTraitOptions(category.hairStyles, context)
+        },
+        {
+            part: 'build', label: 'Build', value: identity.build || '',
+            options: distinctTraitOptions(category.builds, context)
+        },
+        {
+            part: 'feature', label: 'Distinctive feature', value: identity.distinctiveFeature || '',
+            options: distinctTraitOptions(category.distinctiveFeatures, context)
+        }
+    ];
+    return options.map((trait) => {
+        const list = trait.options || [];
+        if (trait.value && !list.some((item) => item.value === trait.value)) {
+            list.unshift({ value: trait.value, label: trait.value });
+        }
+        return Object.assign({}, trait, { options: list });
+    });
+}
+
+function setIdentityTrait(identity, part, value, input) {
+    if (!identity || typeof identity !== 'object') return identity;
+    const kind = String(part || '').trim().toLowerCase();
+    const selected = String(value === undefined || value === null ? '' : value);
+    const trait = listIdentityTraitOptions(identity).find((item) => item.part === kind);
+    if (!trait || !trait.options.some((item) => item.value === selected)) return identity;
+    const next = Object.assign({}, identity);
+    const rng = resolveRerollRng(input);
+    const category = categoryForIdentity(identity) || fallbackCategory();
+    if (kind === 'appearance') {
+        const target = APPEARANCE_CATEGORIES[selected];
+        if (!target) return identity;
+        next.appearanceCategory = selected;
+        next.characterProfile = Object.assign({}, normalizeProfile(next.characterProfile), { appearance: RANDOM });
+        const skin = pickWeighted(target.skinTones, rng);
+        next.skinTone = skin.value;
+        next.skinGroup = skin.group || '';
+        next.skinUndertone = pickValue(target.skinUndertones || SKIN_UNDERTONES, rng);
+        next.faceShape = pickValue(target.faceShapes, rng);
+        next.faceNose = pickValue(target.faceNoses || FACE_NOSES, rng);
+        next.faceLips = pickValue(target.faceLips || FACE_LIPS, rng);
+        next.faceCheeks = pickValue(target.faceCheeks || FACE_CHEEKS, rng);
+        next.faceJaw = pickValue(target.faceJaws || FACE_JAWS, rng);
+        next.eyeColor = pickValue(target.eyeColors, rng, { skinGroup: next.skinGroup });
+        next.eyeShape = pickValue(target.eyeShapes, rng);
+        next.eyebrows = pickValue(target.eyebrows, rng);
+        next.hairColor = pickValue(target.hairColors, rng, { ageGroup: next.ageGroup });
+        next.hairTextureFamily = pickValue(target.hairTextures, rng, { ageGroup: next.ageGroup, gender: next.gender });
+        next.hairTexture = pickValue(HAIR_TEXTURE_VALUES[next.hairTextureFamily] || HAIR_TEXTURE_FAMILIES, rng);
+        const style = pickWeighted(target.hairStyles, rng, {
+            ageGroup: next.ageGroup, gender: next.gender, texture: next.hairTextureFamily
+        });
+        next.hairStyle = style.value;
+        next.hairStyleType = style.type || 'adj';
+        next.hairPart = pickValue(target.hairParts || HAIR_PARTS, rng);
+        next.hairFringe = pickValue(target.hairFringes || HAIR_FRINGES, rng);
+        next.build = pickValue(target.builds, rng, { gender: next.gender });
+        next.distinctiveFeature = pickValue(target.distinctiveFeatures, rng, {
+            skinGroup: next.skinGroup, gender: next.gender
+        });
+    } else if (kind === 'age') {
+        const ageGroup = AGE_KEYS.find((key) => AGE_GROUPS[key].ages.includes(selected));
+        if (!ageGroup) return identity;
+        next.age = selected;
+        next.ageGroup = ageGroup;
+        next.characterProfile = Object.assign({}, normalizeProfile(next.characterProfile), { age: RANDOM });
+    } else if (kind === 'gender') {
+        if (!GENDER_KEYS.includes(selected)) return identity;
+        next.gender = selected;
+        next.presentation = GENDER_PRESENTATION[selected] || 'person';
+        next.characterProfile = Object.assign({}, normalizeProfile(next.characterProfile), { gender: RANDOM });
+    } else if (kind === 'skin') {
+        const skin = toEntries(category.skinTones).find((entry) => entry.value === selected);
+        if (!skin) return identity;
+        next.skinTone = selected;
+        next.skinGroup = skin.group || next.skinGroup || '';
+    } else if (kind === 'face') {
+        next.faceShape = selected;
+    } else if (kind === 'eyes') {
+        next.eyeShape = selected;
+    } else if (kind === 'brows') {
+        next.eyebrows = selected;
+    } else if (kind === 'hair') {
+        const style = toEntries(category.hairStyles).find((entry) => entry.value === selected);
+        if (!style) return identity;
+        next.hairStyle = selected;
+        next.hairStyleType = style.type || 'adj';
+    } else if (kind === 'build') {
+        next.build = selected;
+    } else if (kind === 'feature') {
+        next.distinctiveFeature = selected;
+    }
+    return refreshIdentity(next);
+}
+
 // --- Merged catalog (introspection / tests) -----------------------------------
 
 function mergePool(key) {
@@ -1649,6 +1784,8 @@ module.exports = {
     rerollIdentityHair,
     rerollIdentityBuild,
     rerollIdentityTrait,
+    listIdentityTraitOptions,
+    setIdentityTrait,
     formatIdentity,
     formatAppearance,
     formatFace,

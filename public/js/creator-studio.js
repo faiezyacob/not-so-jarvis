@@ -90,11 +90,10 @@ const CreatorStudioUI = (() => {
         characters = catalogs.characters || [];
         fillSelect($('creatorCharacterSelect'), characters, characters[0] && characters[0].id, 'Choose a Character…');
         paintCharacter();
-        renderTraits(['warm', 'casual']);
+        renderTraits(['playful']);
         fillSelect($('creatorContentType'), catalogs.contentTypes, 'talking');
-        fillSelect($('creatorDeliveryStyle'), catalogs.deliveryStyles, 'natural');
         fillSelect($('creatorSpeechBehavior'), catalogs.speechBehaviors, 'direct_to_camera');
-        fillSelect($('creatorCamera'), catalogs.cameraPresets, 'phone_selfie');
+        fillSelect($('creatorCamera'), catalogs.cameraPresets, 'front_on_eye_level');
         fillSelect($('creatorCameraMotion'), catalogs.cameraMotions, 'static');
         fillSelect($('creatorExpressionArc'), catalogs.expressionArcs, 'auto');
         fillSelect($('creatorBodyAction'), catalogs.bodyActions, 'conversational_gesture');
@@ -116,6 +115,7 @@ const CreatorStudioUI = (() => {
         if (session && characters.some((character) => character.id === session.characterId)) {
             $('creatorCharacterSelect').value = session.characterId;
             paintCharacter();
+            if (session.content) renderTraits(session.content.personality || ['playful']);
         }
         renderSession();
         if (session && session.status === 'generating') {
@@ -205,6 +205,121 @@ const CreatorStudioUI = (() => {
         caption.textContent = label || '';
     }
 
+    function suggestionState() {
+        return {
+            characterId: $('creatorCharacterSelect').value,
+            contentType: $('creatorContentType').value,
+            concept: $('creatorConcept').value.trim(),
+            personality: selectedTraits(),
+            speechBehavior: $('creatorSpeechBehavior').value,
+            duration: Number($('creatorDuration').value),
+            camera: $('creatorCamera').value,
+            cameraMotion: $('creatorCameraMotion').value,
+            expressionArc: $('creatorExpressionArc').value,
+            bodyAction: $('creatorBodyAction').value,
+            scene: $('creatorScene').value.trim() || 'Auto',
+            outfit: 'Auto',
+            outfitPack: $('creatorOutfit').value,
+            voice: {
+                voiceId: $('creatorVoice').value,
+                tone: $('creatorVoiceTone').value,
+                speed: $('creatorVoiceSpeed').value,
+                pitch: $('creatorVoicePitch').value,
+                energy: $('creatorEnergy').value,
+                emotion: $('creatorVoiceEmotion').value
+            },
+            energy: $('creatorEnergy').value,
+            pacing: $('creatorPacing').value,
+            pauseFrequency: $('creatorPauses').value,
+            eyeContact: $('creatorEyeContact').value
+        };
+    }
+
+    function closeSuggestions() {
+        const panel = $('creatorSuggestionPanel');
+        const button = $('creatorSuggestionButton');
+        if (!panel || !button) return;
+        panel.hidden = true;
+        button.setAttribute('aria-expanded', 'false');
+    }
+
+    function renderSuggestions(data) {
+        const list = $('creatorSuggestionList');
+        const based = $('creatorSuggestionBased');
+        const message = $('creatorSuggestionMessage');
+        const more = $('creatorSuggestionMore');
+        list.replaceChildren();
+        message.hidden = true;
+        based.textContent = 'Based on: ' + (data.basedOn || 'your Creator Studio selections');
+        based.hidden = false;
+        (Array.isArray(data.suggestions) ? data.suggestions : []).forEach((suggestion) => {
+            if (!suggestion || !suggestion.text) return;
+            const card = document.createElement('article');
+            card.className = 'creator-suggestion-item';
+            const text = document.createElement('p');
+            text.className = 'creator-suggestion-text';
+            text.textContent = suggestion.text;
+            card.appendChild(text);
+            if (suggestion.reason) {
+                const reason = document.createElement('span');
+                reason.className = 'creator-suggestion-reason';
+                reason.textContent = suggestion.reason;
+                card.appendChild(reason);
+            }
+            const use = document.createElement('button');
+            use.className = 'creator-suggestion-use';
+            use.type = 'button';
+            use.dataset.suggestion = suggestion.text;
+            use.textContent = 'Use this';
+            card.appendChild(use);
+            list.appendChild(card);
+        });
+        more.hidden = list.childElementCount === 0;
+    }
+
+    async function requestSuggestions() {
+        const panel = $('creatorSuggestionPanel');
+        const trigger = $('creatorSuggestionButton');
+        const more = $('creatorSuggestionMore');
+        const message = $('creatorSuggestionMessage');
+        const list = $('creatorSuggestionList');
+        const based = $('creatorSuggestionBased');
+        const conversationId = typeof Conversations !== 'undefined' && Conversations.currentId
+            ? Conversations.currentId() : '';
+        panel.hidden = false;
+        trigger.setAttribute('aria-expanded', 'true');
+        trigger.disabled = true;
+        more.disabled = true;
+        trigger.textContent = '✨ Thinking…';
+        message.textContent = 'Finding ideas for these settings…';
+        message.hidden = false;
+        list.replaceChildren();
+        based.hidden = true;
+        more.hidden = true;
+        try {
+            if (!conversationId) throw new Error('Open a conversation first.');
+            const response = await fetch('/api/creator-studio/suggestions', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ conversationId, state: suggestionState() })
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error || 'Could not generate suggestions.');
+            renderSuggestions(data);
+            if (!list.childElementCount) throw new Error('No suggestions were returned.');
+        } catch (_) {
+            list.replaceChildren();
+            based.hidden = true;
+            message.textContent = "Couldn't generate suggestions. Try again.";
+            message.hidden = false;
+            more.hidden = true;
+        } finally {
+            trigger.disabled = false;
+            more.disabled = false;
+            trigger.textContent = '✨ AI Suggestion';
+        }
+    }
+
     function onProgressEvent(event) {
         if (!event || !event.detail) return;
         const detail = event.detail;
@@ -258,6 +373,7 @@ const CreatorStudioUI = (() => {
 
     function open() {
         const overlay = $('creatorStudioOverlay');
+        closeSuggestions();
         overlay.hidden = false;
         requestAnimationFrame(() => overlay.classList.add('open'));
         setStatus('');
@@ -271,6 +387,7 @@ const CreatorStudioUI = (() => {
 
     function close() {
         const overlay = $('creatorStudioOverlay');
+        closeSuggestions();
         overlay.classList.remove('open');
         setTimeout(() => { overlay.hidden = true; }, 180);
         if (pollTimer) clearInterval(pollTimer);
@@ -287,22 +404,21 @@ const CreatorStudioUI = (() => {
                 ? Conversations.currentId()
                 : null;
             setProgress('Using ' + character.name + ' as the creator identity…', 3);
-            const style = $('creatorDeliveryStyle').value;
-            if ((style === 'flirty' || style === 'seductive') && !character.adult) {
-                throw new Error('Flirty and seductive styles require an explicitly adult Character identity.');
+            const personality = selectedTraits();
+            if (personality.includes('flirty') && !character.adult) {
+                throw new Error('Flirty presentation requires an explicitly adult Character identity.');
             }
             const concept = $('creatorConcept').value.trim();
             if (!concept) throw new Error('Add a short idea for what your creator wants to say.');
             setProgress('Building the script and performance beats…', 8);
             if (typeof Chat === 'undefined' || !Chat.sendMessage) throw new Error('Chat is not ready yet.');
             Chat.sendMessage({
-                text: 'Create a ' + style + ' ' + ($('creatorContentType').selectedOptions[0]?.textContent || 'talking') + ' for @' + character.name + ' about ' + concept + '.',
+                text: 'Create a ' + ($('creatorContentType').selectedOptions[0]?.textContent || 'talking') + ' for @' + character.name + ' about ' + concept + '.',
                 characters: [{ id: character.id }],
                 creatorStudioAction: {
                     type: 'generate', characterId: character.id, concept,
                     contentType: $('creatorContentType').value,
-                    deliveryStyle: style,
-                    personality: selectedTraits(),
+                    personality,
                     speechBehavior: $('creatorSpeechBehavior').value,
                     duration: Number($('creatorDuration').value),
                     voice: {
@@ -342,6 +458,16 @@ const CreatorStudioUI = (() => {
             paintCharacter();
         });
         $('creatorGenerate').addEventListener('click', generate);
+        $('creatorSuggestionButton').addEventListener('click', requestSuggestions);
+        $('creatorSuggestionMore').addEventListener('click', requestSuggestions);
+        $('creatorSuggestionList').addEventListener('click', (event) => {
+            const button = event.target.closest('button[data-suggestion]');
+            if (!button) return;
+            $('creatorConcept').value = button.dataset.suggestion || '';
+            $('creatorConcept').dispatchEvent(new Event('input', { bubbles: true }));
+            closeSuggestions();
+            $('creatorConcept').focus();
+        });
         $('creatorNewSession').addEventListener('click', () => {
             if (typeof Chat !== 'undefined' && Chat.sendMessage) {
                 Chat.sendMessage({ text: 'Start a new Creator Studio session.', creatorStudioAction: { type: 'new_session' } });
@@ -369,7 +495,14 @@ const CreatorStudioUI = (() => {
             });
         });
         document.addEventListener('keydown', (event) => {
-            if (event.key === 'Escape' && !$('creatorStudioOverlay').hidden) close();
+            if (event.key === 'Escape' && !$('creatorStudioOverlay').hidden) {
+                if (!$('creatorSuggestionPanel').hidden) {
+                    closeSuggestions();
+                    event.stopPropagation();
+                } else {
+                    close();
+                }
+            }
         });
         window.addEventListener('creator-studio-progress', onProgressEvent);
     }

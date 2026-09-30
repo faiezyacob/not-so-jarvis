@@ -899,13 +899,24 @@
                         <span>Content</span>
                         <select id="creatorContentType"></select>
                     </label>
-                    <label class="creator-studio-field">
-                        <span>Concept</span>
-                        <textarea id="creatorConcept" rows="3" maxlength="500" placeholder="Tell my audience about my weekend"></textarea>
-                    </label>
-                    <div class="creator-studio-row creator-studio-row--three">
-                        <label class="creator-studio-field"><span>Style</span><select id="creatorDeliveryStyle"></select></label>
-                        <label class="creator-studio-field"><span>Delivery</span><select id="creatorSpeechBehavior"></select></label>
+                    <div class="creator-studio-content-idea">
+                        <label class="creator-studio-field">
+                            <span>Concept</span>
+                            <textarea id="creatorConcept" rows="3" maxlength="500" placeholder="Tell my audience about my weekend"></textarea>
+                        </label>
+                        <div class="creator-suggestion-anchor">
+                            <button class="creator-suggestion-trigger" id="creatorSuggestionButton" type="button" aria-expanded="false" aria-controls="creatorSuggestionPanel">✨ AI Suggestion</button>
+                            <section class="creator-suggestion-panel" id="creatorSuggestionPanel" aria-label="Creator Studio content suggestions" aria-live="polite" hidden>
+                                <div class="creator-suggestion-heading">✨ AI SUGGESTION</div>
+                                <div class="creator-suggestion-based" id="creatorSuggestionBased" hidden></div>
+                                <div class="creator-suggestion-message" id="creatorSuggestionMessage" hidden></div>
+                                <div class="creator-suggestion-list" id="creatorSuggestionList"></div>
+                                <button class="creator-suggestion-more" id="creatorSuggestionMore" type="button" hidden>↻ More suggestions</button>
+                            </section>
+                        </div>
+                    </div>
+                    <div class="creator-studio-row">
+                        <label class="creator-studio-field"><span>Speech behavior</span><select id="creatorSpeechBehavior"></select></label>
                         <label class="creator-studio-field"><span>Duration</span><select id="creatorDuration"><option value="8">8 seconds</option><option value="10">10 seconds</option><option value="12">12 seconds</option><option value="15" selected>15 seconds</option></select></label>
                     </div>
                     <div class="creator-studio-row">
@@ -917,7 +928,7 @@
                     <details class="creator-studio-advanced">
                         <summary>Advanced performance</summary>
                         <div class="creator-studio-row creator-studio-row--three">
-                            <label class="creator-studio-field"><span>Camera</span><select id="creatorCamera"></select></label>
+                            <label class="creator-studio-field"><span>Camera angle</span><select id="creatorCamera"></select></label>
                             <label class="creator-studio-field"><span>Camera movement</span><select id="creatorCameraMotion"></select></label>
                             <label class="creator-studio-field"><span>Body language</span><select id="creatorBodyAction"></select></label>
                         </div>
@@ -1067,7 +1078,7 @@
                                 <select class="settings-select" id="playgroundGender"></select>
                             </label>
                         </div>
-                        <p class="playground-section-hint" id="playgroundProfileHint">These controls constrain a random character; they do not modify a saved character.</p>
+                        <p class="playground-section-hint" id="playgroundProfileHint">These controls constrain a random character; they do not modify a saved character. You can customize other generated traits from its concept card.</p>
                     </section>
 
                     <section class="playground-section">

@@ -883,6 +883,8 @@ test('card payload survives a marker round-trip', () => {
 test('normalizeAction accepts strings and objects and rejects unknown types', () => {
     assert.deepEqual(playground.normalizeAction('again').type, 'again');
     assert.equal(playground.normalizeAction({ type: 'generate', conceptId: 'x' }).conceptId, 'x');
+    assert.deepEqual(playground.normalizeAction({ type: 'again', identityTraits: [{ part: 'face', value: 'an oval face' }] }).identityTraits,
+        [{ part: 'face', value: 'an oval face' }]);
     assert.equal(playground.normalizeAction('not-a-real-action'), null);
     assert.equal(playground.normalizeAction(null), null);
 });
@@ -1590,10 +1592,7 @@ test('locks block the matching identity re-roll', () => {
     assert.equal(session.concept.identitySignature, signature, 'a locked face must not re-roll');
     assert.equal(session.concept.appearance, appearance);
     const card = playground.buildCard(session, null);
-    assert.equal(card.identityReroll.face, false);
-    assert.equal(card.identityReroll.hair, true);
-    assert.equal(card.identityReroll.build, true);
-    assert.deepEqual(card.identityReroll.traits.map((item) => item.part), ['age', 'gender', 'hair', 'build']);
+    assert.deepEqual(card.identityTraits.map((item) => item.part), ['hair', 'build']);
 
     let guard = 0;
     while (session.concept.identitySignature === signature && guard < 30) {
@@ -1656,10 +1655,7 @@ test('a saved character card offers no identity re-roll', () => {
     const preset = characterPresets.create({ name: 'Fixed', identity: 'a woman with a neat bob' });
     const session = playground.start({ conversationId: id, themeId: 'fashion-editorial', characterId: preset.id, rng: first });
     const card = playground.buildCard(session, preset);
-    assert.equal(card.identityReroll.face, false);
-    assert.equal(card.identityReroll.hair, false);
-    assert.equal(card.identityReroll.build, false);
-    assert.deepEqual(card.identityReroll.traits, []);
+    assert.deepEqual(card.identityTraits, []);
 });
 
 test('a build re-roll through the service keeps the face and hair', () => {
@@ -1689,5 +1685,30 @@ test('an identity lock blocks the build re-roll', () => {
     playground.modify(session, { rerollIdentity: 'build', rng: characterGen.createRng(3) });
     assert.equal(session.concept.identity.build, build, 'a locked identity must not re-roll the build');
     const card = playground.buildCard(session, null);
-    assert.equal(card.identityReroll.build, false);
+    assert.deepEqual(card.identityTraits, []);
+});
+
+test('trait dropdown options omit appearance, age, and gender', () => {
+    const identity = characterGen.generateRandomIdentity(201);
+    const traits = characterGen.listIdentityTraitOptions(identity);
+    assert.deepEqual(traits.map((trait) => trait.part), ['skin', 'face', 'eyes', 'brows', 'hair', 'build', 'feature']);
+});
+
+test('Surprise Me Again applies pending trait choices without changing unrelated traits', () => {
+    const id = conversationId('identity-trait-select');
+    const session = playground.start({
+        conversationId: id, themeId: 'lifestyle-candid', mode: 'random_character', rng: characterGen.createRng(202)
+    });
+    const before = Object.assign({}, session.concept.identity);
+    const faceChoice = characterGen.listIdentityTraitOptions(before)
+        .find((trait) => trait.part === 'face').options.find((option) => option.value !== before.faceShape);
+    assert.ok(faceChoice);
+    playground.again(session, {
+        identityTraits: [{ part: 'face', value: faceChoice.value }],
+        rng: characterGen.createRng(203)
+    });
+    assert.equal(session.concept.identity.faceShape, faceChoice.value);
+    assert.equal(session.concept.identity.hairStyle, before.hairStyle);
+    assert.equal(session.concept.identity.build, before.build);
+    assert.notEqual(session.concept.identitySignature, before.signature);
 });

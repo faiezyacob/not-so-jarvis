@@ -959,6 +959,49 @@ async function handleAPI(req, res, urlPath) {
         return true;
     }
 
+    if (urlPath === '/api/creator-studio/suggestions' && req.method === 'POST') {
+        let turn = null;
+        try {
+            const body = await readBody(req);
+            const conversationId = String(body && body.conversationId || '');
+            const state = body && body.state && typeof body.state === 'object' ? body.state : {};
+            if (!conversationId || !conversationService.canAccessConversation(conversationId, req.jarvisSession)) {
+                json(res, 404, { error: 'Conversation not found' });
+                return true;
+            }
+            const character = characterPresets.get(state.characterId);
+            if (!character) {
+                json(res, 400, { error: 'Choose a saved Character to get contextual suggestions.' });
+                return true;
+            }
+            const current = creatorStudio.getSession(conversationId);
+            const previousSession = current && current.characterId === character.id ? current : null;
+            const context = creatorStudio.buildContentSuggestionContext(previousSession, state, character);
+            if (creatorStudio.personalityRequiresAdult(context.personality) && !context.character.adult) {
+                json(res, 400, { error: 'Flirty suggestions require a Character whose structured identity explicitly records an adult age.' });
+                return true;
+            }
+
+            turn = await acquireTurn(res, { label: 'Creator Studio suggestions', conversationId });
+            if (!turn) return true;
+            const config = configManager.getConfig();
+            const provider = config.provider || 'ollama';
+            const model = config.model || '';
+            vramManager.rememberChatModel(provider, model);
+            await vramManager.freeVRAMBeforeChat();
+            const suggestions = await creatorStudio.generateContentSuggestions(context, providers, provider, model);
+            json(res, 200, {
+                suggestions,
+                basedOn: creatorStudio.contentSuggestionSummary(context)
+            });
+        } catch (err) {
+            if (!res.writableEnded) json(res, 502, { error: err.message || 'Could not generate suggestions.' });
+        } finally {
+            if (turn) turn.release();
+        }
+        return true;
+    }
+
     // POST /api/ugc/products — create or update a product ({ id } for update).
     if (urlPath === '/api/ugc/products' && req.method === 'POST') {
         try {
@@ -3164,7 +3207,6 @@ async function handleCreatorStudioRequest(req, res, ctx) {
         );
         const requestedDuration = videoGenerator.parseRequestedVideoDuration(message);
         const rawRequestedDuration = longVideoDirector.parseRequestedSeconds(message);
-        const currentStyle = prior && prior.content.deliveryStyle || 'natural';
         const input = Object.assign({}, action, {
             characterId: character.id,
             name: character.name,
@@ -3173,16 +3215,13 @@ async function handleCreatorStudioRequest(req, res, ctx) {
                 ? action.personality
                 : [...new Set(((prior && prior.content.personality) || []).concat(requestedTraits))],
             voice: action.voice || (prior && prior.content.voice),
-            deliveryStyle: dimension === 'delivery'
-                ? creatorStudio.matchDeliveryStyle(message, currentStyle)
-                : action.deliveryStyle || creatorStudio.matchDeliveryStyle(message, currentStyle),
             contentType: action.contentType || (prior && prior.content.contentType) || 'talking',
             concept: dimension === 'script' ? (action.concept || message) : action.concept || (prior && prior.content.concept) || message,
             duration: action.duration || requestedDuration || (prior && prior.content.duration) || 15,
             energy: action.energy || (/\bhigh\s+energy\b/i.test(message) ? 'high' : /\blow\s+energy\b/i.test(message) ? 'low' : prior && prior.content.energy),
             pacing: action.pacing || (/\bslow(?:er)?\b/i.test(message) ? 'slow' : /\bfast(?:er)?\b/i.test(message) ? 'fast' : prior && prior.content.pacing),
             speechBehavior: action.speechBehavior || (/\bstory(?:telling|time)?\b/i.test(message) ? 'storytelling' : /\bconfessional\b/i.test(message) ? 'confessional' : /\bq\s*&\s*a\b/i.test(message) ? 'qa' : 'direct_to_camera'),
-            eyeContact: action.eyeContact || (creatorStudio.matchDeliveryStyle(message, currentStyle) === 'flirty' || creatorStudio.matchDeliveryStyle(message, currentStyle) === 'seductive' ? 'strong' : undefined),
+            eyeContact: action.eyeContact || (requestedTraits.includes('flirty') ? 'strong' : undefined),
             dimension
         });
 
@@ -3209,7 +3248,7 @@ async function handleCreatorStudioRequest(req, res, ctx) {
         } else if (dimension === 'scene') {
             input.scene = message.replace(/^.*?\b(?:change|move|set)\b.*?\b(?:scene|room|background|environment)\b(?:\s+to)?\s*/i, '').trim() || message;
         } else if (dimension === 'camera') {
-            const camera = creatorStudio.CAMERA_PRESETS.find((item) => message.toLowerCase().includes(item.label.toLowerCase()));
+            const camera = creatorStudio.matchCameraPresetFromText(message);
             const motion = creatorStudio.CAMERA_MOTIONS.find((item) => message.toLowerCase().includes(item.label.toLowerCase()));
             if (camera) input.camera = camera.id;
             if (motion) input.cameraMotion = motion.id;
@@ -3240,18 +3279,35 @@ async function handleCreatorStudioRequest(req, res, ctx) {
         }
         sseWrite(res, { creatorStudioProgress: { label: 'Character identity reference secured.', percent: 46 } });
 
+        // Rebuild the canonical dialogue now that the resolved identity
+        // references are known, so the reference description names the actual
+        // <Picture N> source. This is the one authoritative object the H3 prompt
+        // builder consumes.
+        content.creatorDialogue = creatorStudio.buildCanonicalDialogue(content, character, {
+            referenceFilenames: identityReferences
+        });
+        if (process.env.JARVIS_CREATOR_DEBUG === '1') {
+            console.log(videoGenerator.formatCreatorStudioDebug(content.creatorDialogue));
+        }
+
         const structuredRequest = {
             action: 'generate',
             user_prompt: content.userPrompt,
             creative_mode: 'none',
             has_reference_image: false,
             reference_images: identityReferences,
-            shot_plan: content.shotPlan,
+            shot_plan: content.explicitMultiShot ? [] : content.shotPlan,
+            creator_performance_beats: content.performanceSequence,
+            creator_dialogue: content.creatorDialogue,
+            creator_name: content.creatorName,
+            creator_environment: content.scene,
+            creator_wardrobe: content.outfit,
+            creator_multi_shot: content.explicitMultiShot === true,
             creator_camera_direction: content.cameraDirection,
             dialogue_language: 'English',
             requested_duration: content.duration,
             creator_content: true,
-            creator_direction: 'Creator scene: ' + content.scene + '. Outfit: ' + content.outfit + '. Camera: ' + content.cameraDirection + ' ' + content.deliveryDirection,
+            creator_direction: 'Creator scene: ' + content.scene + '. Outfit: ' + content.outfit + '. Camera: ' + content.cameraDirection + ' Personality direction: ' + content.personalityDirection,
             explicit_constraints: [
                 'preserve the approved Character identity reference exactly; expressions and performance may change but facial structure and appearance may not',
                 'keep every spoken line verbatim and visibly lip-synced on camera',
@@ -4470,7 +4526,7 @@ async function handlePlaygroundAction(req, res, ctx, action, rawMessage) {
         }
 
         if (action.type === playground.ACTIONS.AGAIN) {
-            session = playground.again(session);
+            session = playground.again(session, { identityTraits: action.identityTraits });
             await runPlaygroundFaceStage(req, res, ctx, session);
             emitPlaygroundCard(res, session);
             return;

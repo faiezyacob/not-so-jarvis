@@ -606,6 +606,10 @@ const Chat = (() => {
             const row = document.createElement('button');
             row.type = 'button';
             row.className = 'chat-mention-item chat-mention-item--' + item.kind + (i === mentionIndex ? ' active' : '');
+            if (item.kind === 'character') {
+                row.className = 'chat-mention-character-select';
+                row.setAttribute('aria-label', 'Use character ' + item.name);
+            }
             if (item.kind === 'create') {
                 const plus = document.createElement('span');
                 plus.className = 'chat-mention-plus';
@@ -665,15 +669,21 @@ const Chat = (() => {
             });
             if (item.kind === 'character') {
                 const group = document.createElement('div');
-                group.className = 'chat-mention-character-row';
-                group.appendChild(row);
+                group.className = 'chat-mention-item chat-mention-item--character chat-mention-character-row' + (i === mentionIndex ? ' active' : '');
+                group.addEventListener('mouseenter', () => {
+                    mentionIndex = i;
+                    updateMentionActive();
+                });
                 const sheet = document.createElement('button');
                 sheet.type = 'button';
                 sheet.className = 'chat-mention-sheet';
-                sheet.textContent = 'Character Sheet';
+                sheet.textContent = 'Sheet';
                 sheet.title = 'Open ' + item.name + ' Character Sheet';
                 sheet.setAttribute('aria-label', 'Open ' + item.name + ' Character Sheet');
-                sheet.addEventListener('mousedown', (event) => event.preventDefault());
+                sheet.addEventListener('mousedown', (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                });
                 sheet.addEventListener('click', (event) => {
                     event.preventDefault();
                     event.stopPropagation();
@@ -683,6 +693,7 @@ const Chat = (() => {
                         window.CharacterIdentityUI.open(item.id);
                     }
                 });
+                group.appendChild(row);
                 group.appendChild(sheet);
                 chatMentionPopup.appendChild(group);
             } else {

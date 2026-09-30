@@ -1164,6 +1164,517 @@ function formatCutTime(seconds) {
     return String(minutes).padStart(2, '0') + ':' + padded;
 }
 
+function creatorPerformanceTimeline(beats, defaultLanguage) {
+    if (!Array.isArray(beats)) return [];
+    return beats.map((beat) => {
+        if (!beat || typeof beat !== 'object') return '';
+        const time = formatCutTime(beat.time);
+        const parts = [];
+        if (beat.expression) parts.push('transitions naturally to ' + String(beat.expression).trim());
+        if (beat.gaze) parts.push(String(beat.gaze).trim());
+        if (beat.body) parts.push(String(beat.body).trim());
+        let event = 'At ' + time + ', the creator ' + (parts.length ? parts.join('; ') : 'continues the performance naturally');
+        const dialogue = String(beat.dialogue || '').trim();
+        if (dialogue) {
+            event += '. The on-screen creator continues speaking: <Subject 1> (S1) says, <d>[' + (defaultLanguage || 'English') + '] ' + dialogue + '</d>';
+        }
+        return event + '.';
+    }).filter(Boolean);
+}
+
+function creatorShotHeaders(prompt) {
+    const text = String(prompt || '');
+    const header = /(?:detailed_description|integrated_multimodal_description)\s*:/i.exec(text);
+    if (!header) return [];
+    const start = header.index + header[0].length;
+    const end = findDescriptionEnd(text, start);
+    return (text.slice(start, end).match(/\[Shot\s+\d+\]/g) || []);
+}
+
+function validateCreatorContinuousShot(prompt) {
+    const headers = creatorShotHeaders(prompt);
+    return headers.length === 1 && headers[0] === '[Shot 1]';
+}
+
+function normalizeCreatorContinuousShot(prompt, performanceBeats, dialogueLanguage, cameraDirection) {
+    const text = String(prompt || '');
+    const header = /(?:detailed_description|integrated_multimodal_description)\s*:/i.exec(text);
+    if (!header) return text;
+    const start = header.index + header[0].length;
+    const end = findDescriptionEnd(text, start);
+    let body = text.slice(start, end);
+    let seenShot = false;
+    body = body.replace(/\[Shot\s+\d+\]/g, () => {
+        if (seenShot) return '';
+        seenShot = true;
+        return '[Shot 1]';
+    });
+    body = body.replace(/\b(?:the\s+)?(?:camera|shot)\s+cuts?\s+to\s+/gi, '')
+        .replace(/\bthe\s+shot\s+transitions?\s+to\s+/gi, '')
+        .replace(/\s{2,}/g, ' ');
+    if (!seenShot) body = '\n[Shot 1] ' + body.trim();
+    body = body.replace(/(\[Shot 1\])/i, '$1\n' + (
+        /smartphone|selfie/i.test(String(cameraDirection || ''))
+            ? 'The same front-facing smartphone remains at the same camera position and lens perspective; the close conversational framing, environment, lighting, wardrobe and creator identity remain consistent throughout, with only natural handheld micro-adjustments allowed.'
+            : 'The camera position and lens perspective, general framing, environment, lighting, wardrobe and creator identity remain consistent throughout this continuous recording; only natural micro-adjustments are allowed.'
+    ));
+
+    const timeline = creatorPerformanceTimeline(performanceBeats, dialogueLanguage);
+    if (timeline.length) {
+        body = body.replace(/<d>\s*(?:\[[^\]]+\]\s*)?[\s\S]*?<\/d>/gi, '');
+        body = body.replace(/\s+At\s+\d{2}:\d{2}\.\d{3},[^.!?]*(?:[.!?]|$)/g, '');
+        body = body.replace(/\s+$/, '') + '\n\n' + timeline.join('\n\n');
+    }
+    let normalized = text.slice(0, start) + body + text.slice(end);
+    const retention = /retention_analysis\s*:/i.exec(normalized);
+    if (retention) {
+        const sectionStart = retention.index + retention[0].length;
+        const nextSection = /\n\s*\n[a-z_]+\s*:/ig;
+        nextSection.lastIndex = sectionStart;
+        const next = nextSection.exec(normalized);
+        const sectionEnd = next ? next.index : normalized.length;
+        const section = normalized.slice(sectionStart, sectionEnd)
+            .replace(/(?:\[Shot\s+\d+\](?:\s*,\s*\[Shot\s+\d+\])*)/g, '[Shot 1]');
+        normalized = normalized.slice(0, sectionStart) + section + normalized.slice(sectionEnd);
+    }
+    if (!validateCreatorContinuousShot(normalized)) {
+        body = '\n[Shot 1] ' + body.replace(/\[Shot\s+\d+\]/g, '').trim();
+        normalized = text.slice(0, start) + body + text.slice(end);
+    }
+    return normalized;
+}
+
+/* === Canonical Creator Studio dialogue ======================================
+   Creator Studio dialogue is normalized once (services/creator-studio.js
+   `buildCanonicalDialogue`) and then assembled into the H3 prompt
+   deterministically here. The guide defines WHAT must be said, the dialogue is
+   the COMPLETE words, performance beats describe HOW it is expressed, and H3
+   owns WHEN everything happens. No timestamps connect dialogue and performance,
+   and no LLM sits between the authoritative speech and the H3 submission.
+   ========================================================================= */
+
+// Guide stages whose final line is expected to carry a call to action.
+const CREATOR_CTA_RE = /\b(?:tell me|let me know|would you|try it|try this|check (?:it|this) out|comment|drop a|follow|share|your thoughts|thoughts\?|go for it|keep going)\b/i;
+// H3 cut timestamps ("At 00:03.500,") never belong in a Creator Studio prompt.
+const CREATOR_TIMESTAMP_RE = /\bAt\s+\d{1,2}:\d{2}(?:\.\d{1,3})?\s*,?|\b\d{2}:\d{2}\.\d{3}\b/i;
+
+function creatorStageName(value) {
+    return String(value || '').trim().toLowerCase().replace(/\s+/g, '_');
+}
+
+function creatorStageLabel(value) {
+    return String(value || '').replace(/_/g, ' ').trim();
+}
+
+function uniqueStages(stages) {
+    const out = [];
+    (Array.isArray(stages) ? stages : []).forEach((stage) => {
+        const name = creatorStageName(stage);
+        if (name && !out.includes(name)) out.push(name);
+    });
+    return out;
+}
+
+// Copy the authoritative fields out of a structured request, accepting the
+// canonical object (new or legacy shape) when present and otherwise mapping the
+// legacy performance beats defensively (`speech` is never read as empty).
+function resolveCreatorCanonical(structuredRequest, referenceImages) {
+    const req = structuredRequest || {};
+    const provided = req.creator_dialogue;
+    const refCount = Array.isArray(referenceImages) ? referenceImages.length : 0;
+    const fallbackReference = refCount
+        ? 'the approved Character identity portrait supplied as <Picture 1>'
+        : 'the approved Character identity portrait';
+
+    if (provided && typeof provided === 'object') {
+        const creator = provided.creator && typeof provided.creator === 'object' ? provided.creator : {};
+        const shot = provided.shot && typeof provided.shot === 'object' ? provided.shot : {};
+        const guide = provided.guide && typeof provided.guide === 'object' ? provided.guide : {};
+        const dialogue = provided.dialogue && typeof provided.dialogue === 'object' ? provided.dialogue : {};
+        // New shape: { dialogue: { lines: [{ stage, label, speech }], text } }.
+        if (Array.isArray(dialogue.lines)) {
+            const lines = dialogue.lines.map((line) => {
+                const raw = line && typeof line === 'object' ? line : {};
+                const stage = creatorStageName(raw.stage) || 'beat';
+                return {
+                    stage,
+                    label: String(raw.label || creatorStageLabel(stage)).trim(),
+                    speech: String(raw.speech || '').trim()
+                };
+            });
+            const structure = uniqueStages(guide.structure && guide.structure.length ? guide.structure : lines.map((line) => line.stage));
+            return {
+                guide: {
+                    id: String(guide.id || '').trim(),
+                    name: String(guide.name || '').trim(),
+                    structure,
+                    stages: structure.map(creatorStageLabel),
+                    ctaRequired: Boolean(guide.ctaRequired),
+                    personality: Array.isArray(guide.personality) ? guide.personality.slice() : [],
+                    topic: String(guide.topic || '').trim(),
+                    talkingPoints: Array.isArray(guide.talkingPoints) ? guide.talkingPoints.slice() : []
+                },
+                creator: {
+                    name: String(creator.name || req.creator_name || '').trim(),
+                    identityDescription: String(creator.identityDescription || '').trim(),
+                    referenceDescription: String(creator.referenceDescription || fallbackReference).trim()
+                },
+                shot: {
+                    id: 'Shot 1',
+                    cameraDirection: String(shot.cameraDirection || req.creator_camera_direction || '').trim(),
+                    environment: String(shot.environment || req.creator_environment || '').trim(),
+                    wardrobe: String(shot.wardrobe || req.creator_wardrobe || '').trim()
+                },
+                dialogue: {
+                    lines,
+                    text: String(dialogue.text || lines.map((line) => line.speech).filter(Boolean).join(' ')).trim()
+                },
+                performance: (Array.isArray(provided.performance) ? provided.performance : []).map((beat) => {
+                    const raw = beat && typeof beat === 'object' ? beat : {};
+                    const stage = creatorStageName(raw.stage) || 'beat';
+                    return {
+                        stage,
+                        label: String(raw.label || creatorStageLabel(stage)).trim(),
+                        expression: String(raw.expression || '').trim(),
+                        gaze: String(raw.gaze || '').trim(),
+                        body: String(raw.body || '').trim()
+                    };
+                })
+            };
+        }
+        // Legacy shape: { dialogue: [ { stage, expression, speech, ... } ] }.
+        if (Array.isArray(provided.dialogue)) {
+            const entries = provided.dialogue.map((entry) => {
+                const raw = entry && typeof entry === 'object' ? entry : {};
+                const stage = creatorStageName(raw.stage) || 'beat';
+                return {
+                    stage,
+                    label: String(raw.label || creatorStageLabel(stage)).trim(),
+                    speech: String(raw.speech || raw.dialogue || '').trim(),
+                    expression: String(raw.expression || raw.faceAction || '').trim(),
+                    gaze: String(raw.gaze || '').trim(),
+                    body: String(raw.body || raw.gesture || '').trim()
+                };
+            });
+            const structure = uniqueStages(guide.structure && guide.structure.length ? guide.structure : entries.map((line) => line.stage));
+            return {
+                guide: {
+                    id: String(guide.id || '').trim(),
+                    name: String(guide.name || '').trim(),
+                    structure,
+                    stages: structure.map(creatorStageLabel),
+                    ctaRequired: Boolean(guide.ctaRequired),
+                    personality: Array.isArray(guide.personality) ? guide.personality.slice() : [],
+                    topic: String(guide.topic || '').trim(),
+                    talkingPoints: Array.isArray(guide.talkingPoints) ? guide.talkingPoints.slice() : []
+                },
+                creator: {
+                    name: String(creator.name || req.creator_name || '').trim(),
+                    identityDescription: String(creator.identityDescription || '').trim(),
+                    referenceDescription: String(creator.referenceDescription || fallbackReference).trim()
+                },
+                shot: {
+                    id: 'Shot 1',
+                    cameraDirection: String(shot.cameraDirection || req.creator_camera_direction || '').trim(),
+                    environment: String(shot.environment || req.creator_environment || '').trim(),
+                    wardrobe: String(shot.wardrobe || req.creator_wardrobe || '').trim()
+                },
+                dialogue: {
+                    lines: entries.map(({ stage, label, speech }) => ({ stage, label, speech })),
+                    text: entries.map((entry) => entry.speech).filter(Boolean).join(' ')
+                },
+                performance: entries.map(({ stage, label, expression, gaze, body }) => ({ stage, label, expression, gaze, body }))
+            };
+        }
+    }
+
+    const beats = Array.isArray(req.creator_performance_beats) ? req.creator_performance_beats : [];
+    const lines = beats.map((beat) => {
+        const raw = beat && typeof beat === 'object' ? beat : {};
+        const stage = creatorStageName(raw.stage) || 'beat';
+        return {
+            stage,
+            label: String(raw.label || creatorStageLabel(stage)).trim(),
+            speech: String(raw.speech || raw.dialogue || '').trim()
+        };
+    });
+    const structure = uniqueStages(lines.map((line) => line.stage));
+    return {
+        guide: {
+            id: '',
+            name: '',
+            structure,
+            stages: structure.map(creatorStageLabel),
+            ctaRequired: false,
+            personality: [],
+            topic: '',
+            talkingPoints: []
+        },
+        creator: {
+            name: String(req.creator_name || '').trim(),
+            identityDescription: String(req.creator_identity_description || '').trim(),
+            referenceDescription: String(req.creator_reference_description || fallbackReference).trim()
+        },
+        shot: {
+            id: 'Shot 1',
+            cameraDirection: String(req.creator_camera_direction || '').trim(),
+            environment: String(req.creator_environment || '').trim(),
+            wardrobe: String(req.creator_wardrobe || '').trim()
+        },
+        dialogue: {
+            lines,
+            text: lines.map((line) => line.speech).filter(Boolean).join(' ')
+        },
+        performance: beats.map((beat) => {
+            const raw = beat && typeof beat === 'object' ? beat : {};
+            const stage = creatorStageName(raw.stage) || 'beat';
+            return {
+                stage,
+                label: String(raw.label || creatorStageLabel(stage)).trim(),
+                expression: String(raw.expression || raw.faceAction || '').trim(),
+                gaze: String(raw.gaze || '').trim(),
+                body: String(raw.body || raw.gesture || '').trim()
+            };
+        })
+    };
+}
+
+// Guide + completeness validation. Required context and every guide beat must be
+// present, in order, with no dropped talking point or CTA. Timing is NOT checked
+// here because Creator Studio no longer controls timing.
+function validateCreatorDialogue(canonical) {
+    const errors = [];
+    const c = canonical && typeof canonical === 'object' ? canonical : {};
+    const guide = c.guide && typeof c.guide === 'object' ? c.guide : {};
+    const creator = c.creator && typeof c.creator === 'object' ? c.creator : {};
+    const shot = c.shot && typeof c.shot === 'object' ? c.shot : {};
+    const lines = c.dialogue && Array.isArray(c.dialogue.lines) ? c.dialogue.lines : [];
+    if (!String(creator.name || '').trim()) errors.push('creator name is missing');
+    if (!String(creator.referenceDescription || '').trim()) errors.push('creator reference description is missing');
+    if (!String(shot.cameraDirection || '').trim()) errors.push('shot camera direction is missing');
+    if (!String(shot.environment || '').trim()) errors.push('shot environment is missing');
+    if (!String(shot.wardrobe || '').trim()) errors.push('shot wardrobe is missing');
+    const structure = uniqueStages(guide.structure);
+    if (!structure.length) errors.push('guide structure is missing');
+    if (!lines.length) errors.push('dialogue is empty');
+    lines.forEach((line, index) => {
+        const label = 'dialogue ' + (index + 1);
+        if (!String(line.stage || '').trim()) errors.push(label + ' stage is missing');
+        if (!String(line.speech || '').trim()) errors.push(label + ' speech is missing');
+    });
+    // Guide compliance: every required stage present, in guide order.
+    const lineStages = lines.map((line) => creatorStageName(line.stage));
+    let cursor = -1;
+    structure.forEach((stage) => {
+        const index = lineStages.indexOf(stage, cursor + 1);
+        if (index === -1) {
+            errors.push('guide beat "' + creatorStageLabel(stage) + '" is missing or out of order');
+        } else {
+            cursor = index;
+        }
+    });
+    // Required tone/personality is recorded (only enforced when a real guide
+    // is present; a legacy beat list has no guide to comply with).
+    const hasGuide = Boolean(String(guide.id || '').trim() || String(guide.name || '').trim());
+    if (hasGuide && (!Array.isArray(guide.personality) || !guide.personality.length)) {
+        errors.push('guide personality is missing');
+    }
+    const completeText = lines.map((line) => line.speech).filter(Boolean).join(' ').toLowerCase();
+    // Required topic/talking points (only when the guide carries concrete ones).
+    const talkingPoints = (Array.isArray(guide.talkingPoints) ? guide.talkingPoints : []).filter(Boolean);
+    if (talkingPoints.length && !talkingPoints.some((point) => completeText.includes(String(point).toLowerCase()))) {
+        errors.push('no required talking point appears in the dialogue');
+    }
+    // CTA when the guide requires one.
+    if (guide.ctaRequired && !CREATOR_CTA_RE.test(completeText)) {
+        errors.push('required call to action is missing');
+    }
+    return { ok: errors.length === 0, errors };
+}
+
+// Phrases that indicate a value failed to interpolate into the prompt.
+const CREATOR_PROMPT_BAD_RE = Object.freeze([
+    { re: /\bundefined\b/i, reason: 'contains "undefined"' },
+    { re: /\bnull\b/i, reason: 'contains "null"' },
+    { re: /\[object Object\]/i, reason: 'contains "[object Object]"' },
+    { re: /\bshown in\s*,/i, reason: 'has an empty reference ("shown in ,")' },
+    { re: /\bbegins from\s+(?:as\b|,|\.)/i, reason: 'has an empty start reference ("begins from  as")' },
+    { re: /\bsays\s*:\s*\./i, reason: 'has empty dialogue ("says: .")' },
+    { re: /\bsays\s*[:,]?\s*<d>\[[^\]]*\]\s*<\/d>/i, reason: 'has an empty dialogue block' },
+    { re: /\b\w+\s*\(\s*\)/, reason: 'has an empty parenthetical (e.g. "Sofia ()")' },
+    { re: /,\s*\./, reason: 'has an empty clause (", .")' },
+    { re: /<Picture\s*>/i, reason: 'has an unnumbered picture reference' },
+    { re: /<Subject\s*>/i, reason: 'has an unnumbered subject reference' }
+]);
+
+function normalizeCreatorPromptText(text) {
+    return String(text || '').replace(/\s+/g, ' ').trim();
+}
+
+// Deterministic assembly: given the same canonical dialogue, always the same
+// prompt. It never consults an LLM, never rewrites the speech and never emits a
+// timestamp — H3 determines all timing.
+function buildCreatorStudioPrompt(canonical) {
+    const c = canonical && typeof canonical === 'object' ? canonical : {};
+    const guide = c.guide && typeof c.guide === 'object' ? c.guide : {};
+    const creator = c.creator && typeof c.creator === 'object' ? c.creator : {};
+    const shot = c.shot && typeof c.shot === 'object' ? c.shot : {};
+    const dialogue = c.dialogue && typeof c.dialogue === 'object' ? c.dialogue : {};
+    const lines = Array.isArray(dialogue.lines) ? dialogue.lines : [];
+    const performance = Array.isArray(c.performance) ? c.performance : [];
+    const language = String(c.language || 'English').trim() || 'English';
+    const name = String(creator.name || 'the creator').trim() || 'the creator';
+    const identity = String(creator.identityDescription || '').trim();
+    const reference = String(creator.referenceDescription || 'the approved Character identity portrait supplied as <Picture 1>').trim();
+    const camera = String(shot.cameraDirection || 'a steady front-facing smartphone held at a natural arm\'s length with close conversational framing').trim();
+    const environment = String(shot.environment || 'a relaxed, uncluttered everyday creator setting').trim();
+    const wardrobe = String(shot.wardrobe || 'natural, scene-appropriate clothing').trim();
+    const guideName = String(guide.name || 'Creator Studio').trim();
+    const guideStages = Array.isArray(guide.stages) && guide.stages.length
+        ? guide.stages
+        : uniqueStages(guide.structure).map(creatorStageLabel);
+    const scriptText = String(dialogue.text || lines.map((line) => line.speech).filter(Boolean).join(' ')).trim();
+
+    const subject = 'subject_definitions:\n' +
+        '<Subject 1> is ' + name + ', the fictional creator shown in ' + reference + '. ' +
+        (identity ? 'Their identity: ' + identity + '. ' : '') +
+        'Preserve their exact facial identity and facial structure, eyes, nose, lips, jawline, hairstyle, hair colour, ' +
+        'complexion and undertone, body proportions and distinctive features throughout. The portrait is an ' +
+        'identity-only reference: never use its pose, framing, background, clothing or lighting, and never generate ' +
+        'a character sheet, collage, turnaround or multi-panel reference. Creator identity is locked; only facial ' +
+        'expression and performance change across the recording.';
+
+    const selfie = /smartphone|selfie|arm'?s[- ]length/i.test(camera);
+    const summary = 'summary:\n' +
+        'A personality-led social creator video in [Shot 1]: ' + name + (selfie
+            ? ' films themself on a front-facing smartphone and'
+            : ' performs directly to camera and') +
+        ' speaks the complete script on screen in one continuous take. Every line is performed with visible, natural ' +
+        'lip synchronization and is never narrated.';
+
+    const retention = 'retention_analysis:\n' +
+        '<Subject 1> (appears in [Shot 1]): fully_preserved - facial identity, complexion, hairstyle and distinctive ' +
+        'physical features from the identity portrait; scene, wardrobe and camera framing follow the Creator Studio direction.';
+
+    const cameraBehavior = selfie
+        ? 'This is a single continuous recording: front-facing smartphone held at a natural arm\'s length, close ' +
+          'conversational framing, direct eye contact with the phone lens and only subtle natural handheld ' +
+          'micro-movement. The phone itself is never visible.'
+        : 'This is a single continuous recording with a stable camera position and a consistent lens perspective.';
+    const cameraRule = 'Camera: ' + camera + ' ' + cameraBehavior +
+        ' There are no camera cuts, no camera repositioning, no lens changes and no framing changes; the environment, ' +
+        'lighting, wardrobe and creator identity remain continuous throughout this single take.';
+
+    const setting = name + ' is in ' + environment + ', wearing ' + wardrobe + '. The environment, lighting, wardrobe, ' +
+        'camera position and creator identity remain continuous throughout this single take.';
+
+    const dialogueBlock = 'Dialogue (the complete script ' + name + ' speaks — every word below is spoken on screen with ' +
+        'visible, natural lip synchronization):\n' +
+        '<Subject 1> (S1) says: <d>[' + language + '] ' + scriptText + '</d>';
+
+    const performanceLines = (performance.length ? performance : lines).map((beat) => {
+        const label = String(beat.label || creatorStageLabel(beat.stage) || 'beat').trim();
+        const detail = [beat.expression, beat.gaze, beat.body].map((part) => String(part || '').trim()).filter(Boolean).join('; ');
+        return '- ' + label + ': ' + (detail || 'continues the performance naturally') + '.';
+    });
+    const performanceBlock = 'Performance (natural expression and body-language progression for the ' + guideName + ' ' +
+        'structure' + (guideStages.length ? ' — ' + guideStages.join(' → ') : '') + '; timing comes from the spoken dialogue, not from timestamps):\n' +
+        performanceLines.join('\n') + '\n' +
+        'All expression and body-language transitions happen naturally while the complete dialogue is spoken.';
+
+    const timingRule = 'TIMING (H3): The creator must speak the complete dialogue from beginning to end. Do not skip, ' +
+        'shorten, summarize, paraphrase, reorder or omit any dialogue. Use natural conversational pacing and pauses. ' +
+        'Determine the timing of speech, pauses and performance naturally from the dialogue. Expression changes occur ' +
+        'naturally at appropriate moments in the spoken performance rather than at predetermined timestamps.';
+
+    const detailed = 'detailed_description:\n' + setting + ' ' + cameraRule + '\n[Shot 1]\n' +
+        dialogueBlock + '\n\n' + performanceBlock + '\n\n' + timingRule;
+
+    const soundscape = 'overall_soundscape:\nNatural room tone and the creator\'s on-screen voice with exact, lip-synced ' +
+        'delivery; ambient environmental sounds matching the scene.';
+
+    const music = 'non_diegetic_music:\nN/A';
+
+    return [subject, summary, retention, detailed, soundscape, music].join('\n\n');
+}
+
+// Reject a prompt that still shows unresolved values, lost/truncated dialogue or
+// a stray timestamp instead of silently submitting it. Guide compliance was
+// already enforced on the canonical object; this verifies the assembled prompt
+// preserved every spoken line in order and added no timing.
+function validateCreatorStudioPrompt(prompt, canonical) {
+    const errors = [];
+    const text = String(prompt || '');
+    if (!text.trim()) return { ok: false, errors: ['prompt is empty'] };
+    for (const entry of CREATOR_PROMPT_BAD_RE) {
+        if (entry.re.test(text)) errors.push(entry.reason);
+    }
+    if (CREATOR_TIMESTAMP_RE.test(text)) errors.push('contains a timestamp; H3 must determine timing');
+    const headers = creatorShotHeaders(text);
+    if (headers.length !== 1 || headers[0] !== '[Shot 1]') {
+        errors.push('expected exactly one [Shot 1] header, found ' + (headers.length ? headers.join(', ') : 'none'));
+    }
+    const c = canonical && typeof canonical === 'object' ? canonical : {};
+    const lines = c.dialogue && Array.isArray(c.dialogue.lines) ? c.dialogue.lines : [];
+    const normalizedPrompt = normalizeCreatorPromptText(text);
+    let cursor = 0;
+    lines.forEach((line, index) => {
+        const label = 'dialogue ' + (index + 1);
+        const speech = normalizeCreatorPromptText(line && line.speech);
+        if (!speech) {
+            errors.push(label + ' speech is missing');
+            return;
+        }
+        const at = normalizedPrompt.indexOf(speech, cursor);
+        if (at === -1) errors.push(label + ' speech is missing, truncated or out of order');
+        else cursor = at + speech.length;
+    });
+    const completeText = lines.map((line) => line.speech).filter(Boolean).join(' ');
+    if (c.guide && c.guide.ctaRequired && !CREATOR_CTA_RE.test(completeText)) {
+        errors.push('required call to action is missing');
+    }
+    return { ok: errors.length === 0, errors };
+}
+
+// Debug output for JARVIS_CREATOR_DEBUG=1. Never shown to normal users.
+function formatCreatorStudioDebug(canonical) {
+    const c = canonical && typeof canonical === 'object' ? canonical : {};
+    const guide = c.guide && typeof c.guide === 'object' ? c.guide : {};
+    const creator = c.creator && typeof c.creator === 'object' ? c.creator : {};
+    const shot = c.shot && typeof c.shot === 'object' ? c.shot : {};
+    const lines = c.dialogue && Array.isArray(c.dialogue.lines) ? c.dialogue.lines : (Array.isArray(c.dialogue) ? c.dialogue : []);
+    const performance = Array.isArray(c.performance) ? c.performance : lines;
+    const output = [
+        'CREATOR STUDIO NORMALIZED DIALOGUE',
+        'guide:',
+        '  id: ' + (guide.id || ''),
+        '  name: ' + (guide.name || ''),
+        '  structure: ' + (Array.isArray(guide.structure) ? guide.structure.join(' -> ') : ''),
+        '  ctaRequired: ' + Boolean(guide.ctaRequired),
+        '  personality: ' + (Array.isArray(guide.personality) ? guide.personality.join(', ') : ''),
+        'creator:',
+        '  name: ' + (creator.name || ''),
+        '  identity: ' + (creator.identityDescription || ''),
+        '  reference: ' + (creator.referenceDescription || ''),
+        'shot:',
+        '  id: ' + (shot.id || ''),
+        '  camera: ' + (shot.cameraDirection || ''),
+        '  environment: ' + (shot.environment || ''),
+        '  wardrobe: ' + (shot.wardrobe || ''),
+        'dialogue (complete, no timestamps):'
+    ];
+    lines.forEach((line, index) => {
+        const raw = line && typeof line === 'object' ? line : {};
+        output.push('  ' + (index + 1) + '. [' + (raw.stage || 'beat') + '] ' + (raw.speech || ''));
+    });
+    output.push('performance:');
+    performance.forEach((beat, index) => {
+        const raw = beat && typeof beat === 'object' ? beat : {};
+        output.push('  ' + (index + 1) + '. [' + (raw.stage || 'beat') + '] ' + [raw.expression, raw.gaze, raw.body].filter(Boolean).join('; '));
+    });
+    return output.join('\n');
+}
+
 // Deterministic multi-shot H3 document used when the director LLM fails. Cut
 // times are distributed evenly across the duration (strictly increasing, inside
 // the duration), and [Shot 1] carries no timestamp.
@@ -1229,7 +1740,7 @@ function appendDialogueToShot(section, dialogue, defaultLanguage) {
 // sections) so spliced dialogue never lands inside overall_soundscape.
 function findDescriptionEnd(text, start) {
     const rest = String(text).slice(start);
-    const cut = rest.search(/\n\s*\n/);
+    const cut = rest.search(/\n\s*\n(?=[a-z_]+\s*:)/i);
     return cut === -1 ? String(text).length : start + cut;
 }
 
@@ -1321,14 +1832,18 @@ function ensureCreatorCameraDirection(prompt, cameraDirection) {
 // Deterministic full-reference document used when the director LLM fails or
 // returns a non-compliant rewrite. Mirrors the official Full-Reference Mode
 // guide's six sections.
-function buildReferenceFallbackPrompt({ shotPlan, referenceCount, durationSeconds, creatorIdentityOnly, creatorDirection }) {
+function buildReferenceFallbackPrompt({ shotPlan, referenceCount, durationSeconds, creatorIdentityOnly, creatorDirection, creatorPerformanceBeats, dialogueLanguage }) {
     const shots = Array.isArray(shotPlan) ? shotPlan.filter(Boolean) : [];
     const refCount = Number(referenceCount) > 0 ? Number(referenceCount) : 1;
     const duration = Number(durationSeconds) > 0 ? Number(durationSeconds) : 0;
     const shotCount = Math.max(1, shots.length);
     const pictures = Array.from({ length: refCount }, (_, i) => '<Picture ' + (i + 1) + '>').join(', ');
     const appearances = shotCount > 1 ? '[Shot 1] and [Shot ' + shotCount + ']' : '[Shot 1]';
-    const body = shots.length
+    const performance = creatorPerformanceTimeline(creatorPerformanceBeats, dialogueLanguage);
+    const continuousCreator = Boolean(creatorIdentityOnly && performance.length);
+    const body = continuousCreator
+        ? '[Shot 1] ' + (String(creatorDirection || '').trim() || 'The creator performs directly to camera in one continuous recording.') + '\n\n' + performance.join('\n\n')
+        : shots.length
         ? shots.map((desc, index) => {
             const anchor = creatorIdentityOnly ? '' : ' (the shot begins from <Picture ' + Math.min(index + 1, refCount) + '>)';
             if (index === 0) return '[Shot 1] ' + desc + anchor;
@@ -1342,16 +1857,18 @@ function buildReferenceFallbackPrompt({ shotPlan, referenceCount, durationSecond
             : '<Subject 1> is the creator shown in <Picture 1>, preserving their identity, hairstyle, wardrobe and the exact product and environment established by the reference frames.\n\n') +
         'summary:\n' +
         (creatorIdentityOnly
-            ? 'A personality-led talking video follows the same creator through ' + shotCount + ' ordered performance beat(s), with changing facial expressions and natural gestures.\n\n'
+            ? (continuousCreator
+                ? 'A personality-led talking video follows the same creator in one continuous shot, with timed performance beats, changing facial expressions and natural gestures.\n\n'
+                : 'A personality-led talking video follows the same creator through ' + shotCount + ' ordered performance beat(s), with changing facial expressions and natural gestures.\n\n')
             : '[reference generation + keyframe completion] The target video follows the approved reference frames ' + pictures + ' across ' + shotCount + ' shot(s), preserving the creator, wardrobe, product and environment.\n\n') +
         'retention_analysis:\n' +
-        '<Subject 1> (appears in ' + appearances + '): fully_preserved - ' +
+        '<Subject 1> (appears in ' + (continuousCreator ? '[Shot 1]' : appearances) + '): fully_preserved - ' +
         (creatorIdentityOnly
             ? 'facial identity and distinctive physical features from the identity portrait; scene, clothing and framing follow Creator Studio direction.\n\n'
             : 'identity, wardrobe, product and setting from the references are retained.\n\n') +
         'detailed_description:\n' +
         (creatorIdentityOnly
-            ? 'The target video is a personality-led social creator video. ' + String(creatorDirection || '') + ' Do not reproduce the reference portrait composition, pose, lighting or background. '
+            ? 'The target video is a personality-led social creator video. ' + String(creatorDirection || '') + ' Do not reproduce the reference portrait composition, pose, lighting or background. ' + (continuousCreator ? 'Keep the camera, lens perspective, framing, environment, lighting and wardrobe continuous throughout this single recording; allow only natural micro-adjustments. ' : '')
             : 'The target video is a photorealistic user-generated-content phone-camera look with natural lighting and handheld framing. ') + body + '\n\n' +
         'overall_soundscape:\n' +
         'Ambient environmental sounds and physical action sounds matching the scene.\n\n' +
@@ -1393,7 +1910,8 @@ function buildReferenceAddendum(count, creatorIdentityOnly) {
         'Keep every speaker on screen with a visibly moving, lip-synced mouth and the exact spoken ' +
         'words inside <d>[Language] ...</d>. Never drop a dialogue block.\n' +
         (creatorIdentityOnly
-            ? '\nCREATOR IDENTITY REFERENCE OVERRIDE: The supplied picture is the approved single Character base portrait and is an identity source only. Preserve the same face and physical identity, but DO NOT use it as a shot keyframe and do not copy its pose, framing, background, outfit or lighting. Use the Creator Studio scene, wardrobe and camera direction for every shot; facial expressions may transition while facial structure remains unchanged.\n'
+            ? '\nCREATOR IDENTITY REFERENCE OVERRIDE: The supplied picture is the approved single Character base portrait and is an identity source only. Preserve the same face and physical identity, but DO NOT use it as a shot keyframe and do not copy its pose, framing, background, outfit or lighting. Use the Creator Studio scene, wardrobe and camera direction; facial expressions may transition while facial structure remains unchanged.\n' +
+              'CONTINUOUS CREATOR SESSION RULE: Unless the user explicitly requests multiple shots/scenes, an angle cut, a location cut, a montage or another explicit transition, the detailed_description MUST contain exactly one shot header, [Shot 1]. Creator performance beats are timed events inside that one shot, never separate shots. Use multiple timestamped events such as "At 00:02.500, ..." within [Shot 1]. Keep the same smartphone, camera position, lens perspective, general framing, environment, lighting, wardrobe and identity throughout; only natural micro-adjustments are allowed. Dialogue, expression, gaze and body actions flow continuously. Do not infer cuts from performance or framing changes. When an explicit cut is requested, include only the requested scene/camera changes; performance beats still remain timed events, never individual shots.\n'
             : '');
 }
 
@@ -1583,7 +2101,20 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
     const isModify = Boolean(previous_prompt && structuredRequest.modification);
     const creatorIdentityOnly = Boolean(structuredRequest.creator_content);
     const creatorDirection = String(structuredRequest.creator_direction || 'Use the requested creator scene and wardrobe with restrained social-video framing.').trim();
-    const shotPlan = resolveShotPlan(structuredRequest);
+    const creatorPerformanceBeats = Array.isArray(structuredRequest.creator_performance_beats)
+        ? structuredRequest.creator_performance_beats
+        : [];
+    const creatorRawDirection = String((isModify && structuredRequest.modification) || user_prompt || '');
+    const explicitCreatorMultiShot = creatorIdentityOnly && (
+        structuredRequest.creator_multi_shot === true ||
+        /\b(?:cut\s+to\s+(?:(?:another|the|a)\s+)?(?:different\s+)?(?:angle|shot|close[- ]?up|scene|location|bedroom|cafe|office)|show\s+another\s+shot|change\s+(?:the\s+)?camera\s+angle|different\s+camera\s+angle|different\s+location|separate\s+scene|explicit\s+cut|multiple\s+shots?|multiple\s+scenes|montage|transition\s+to)\b/i.test(creatorRawDirection)
+    );
+    const resolvedShotPlan = resolveShotPlan(structuredRequest);
+    const shotPlan = creatorIdentityOnly && !explicitCreatorMultiShot
+        ? [creatorDirection || 'The creator performs naturally to camera in one continuous recording.']
+        : resolvedShotPlan;
+    const continuousCreator = creatorIdentityOnly && !explicitCreatorMultiShot;
+    const creatorBeatsForPrompt = continuousCreator ? creatorPerformanceBeats : [];
     const multiShot = shotPlan.length > 1;
     // Reference-to-video (ref2va): every approved scene frame is conditioned via
     // the MiniMaxH3ReferenceToVideo node and addressed as <Picture i>. This is
@@ -1601,6 +2132,10 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
     // The approved dialogue is authoritative; repair the finished prompt so the
     // exact words + language tag always reach H3 (see ensureShotDialogue).
     const finalizePrompt = (p) => {
+        if (continuousCreator) {
+            const continuous = normalizeCreatorContinuousShot(p, creatorBeatsForPrompt, dialogueLanguage, structuredRequest.creator_camera_direction);
+            return ensureCreatorCameraDirection(continuous, structuredRequest.creator_camera_direction);
+        }
         const withDialogue = ensureShotDialogue(p, shotPlan, dialogueLanguage);
         return creatorIdentityOnly
             ? ensureCreatorCameraDirection(withDialogue, structuredRequest.creator_camera_direction)
@@ -1650,6 +2185,40 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
             ? parsedFromText
             : h3DurationSeconds(videoSettings.h3Duration));
 
+    // Creator Studio: a single continuous creator recording is assembled
+    // deterministically from the canonical dialogue. The authoritative speech
+    // never passes through another LLM, so it cannot be paraphrased or truncated
+    // while the prompt is built. Missing data and malformed output are rejected
+    // rather than silently submitted.
+    if (creatorIdentityOnly && continuousCreator && !isModify) {
+        const canonical = resolveCreatorCanonical(structuredRequest, referenceImages);
+        canonical.language = dialogueLanguage || 'English';
+        const dialogueCheck = validateCreatorDialogue(canonical);
+        if (!dialogueCheck.ok) {
+            const error = new Error('Creator Studio dialogue is incomplete and was not submitted: ' + dialogueCheck.errors.join('; '));
+            error.code = 'creator_dialogue_invalid';
+            throw error;
+        }
+        const creatorPrompt = buildCreatorStudioPrompt(canonical);
+        const promptCheck = validateCreatorStudioPrompt(creatorPrompt, canonical);
+        if (!promptCheck.ok) {
+            const error = new Error('Creator Studio prompt validation failed: ' + promptCheck.errors.join('; '));
+            error.code = 'creator_prompt_invalid';
+            throw error;
+        }
+        if (process.env.JARVIS_CREATOR_DEBUG === '1') {
+            console.log(formatCreatorStudioDebug(canonical));
+            console.log('CREATOR STUDIO FINAL H3 PROMPT\n' + creatorPrompt);
+        }
+        return {
+            mode,
+            prompt: creatorPrompt,
+            duration: durationSeconds,
+            width: 1024,
+            height: 768,
+        };
+    }
+
     let userMessage;
     let userMessageImages = null;
     if (isModify) {
@@ -1693,6 +2262,9 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
             (isRefMode ? 'reference_images: ' + refCount + '\n' : '') +
             'explicit_constraints: ' + JSON.stringify(explicit_constraints || []) + '\n\n' +
             'Video duration: ' + durationSeconds + ' seconds\n' +
+            (creatorIdentityOnly && creatorPerformanceBeats.length
+                ? 'CREATOR PERFORMANCE TIMELINE (authoritative timed performance events; do not turn beats into shot cuts' + (continuousCreator ? ', all inside [Shot 1]' : ', only requested cuts are allowed') + '):\n' + creatorPerformanceTimeline(creatorPerformanceBeats, dialogueLanguage).join('\n') + '\n'
+                : '') +
             'Output ONLY the JSON described in the system prompt.';
         if (visionAvailable && sourceImageBase64) {
             userMessageImages = [sourceImageBase64];
@@ -1733,7 +2305,9 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
         referenceCount: refCount,
         durationSeconds,
         creatorIdentityOnly,
-        creatorDirection
+        creatorDirection,
+        creatorPerformanceBeats: creatorBeatsForPrompt,
+        dialogueLanguage
     });
 
     // Run the director LLM, retrying once when it returns unparseable JSON or
@@ -1752,6 +2326,9 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
               (isRefMode
                   ? ' You MUST output the full-reference sections subject_definitions, summary, ' +
                     'retention_analysis, detailed_description, overall_soundscape and non_diegetic_music.'
+                  : '') +
+              (continuousCreator
+                  ? ' This is one continuous Creator Studio recording: include exactly one [Shot 1], keep all performance and dialogue events timestamped within it, and make no cuts.'
                   : '') +
               ' Output ONLY the JSON object.'
             : '';
@@ -4068,6 +4645,15 @@ module.exports = {
     resolveShotPlan,
     countH3Shots,
     formatCutTime,
+    creatorPerformanceTimeline,
+    creatorShotHeaders,
+    validateCreatorContinuousShot,
+    normalizeCreatorContinuousShot,
+    resolveCreatorCanonical,
+    validateCreatorDialogue,
+    buildCreatorStudioPrompt,
+    validateCreatorStudioPrompt,
+    formatCreatorStudioDebug,
     buildMultiShotFallbackPrompt,
     parseShotDialogue,
     extractShotDialogues,
