@@ -26,6 +26,8 @@
    Copyright (c) 2026 not-so-jarvis.
    ============================================ */
 
+const qwenEditPrompt = require('./qwen-edit-prompt');
+
 const CHARACTER_IDENTITY_SCHEMA_VERSION = 2;
 
 // Package-level lifecycle (stored on the character preset).
@@ -605,7 +607,9 @@ function buildStandaloneConditioning(character, baseImage, scenePrompt) {
     return {
         sourceFilename: filename,
         references: [],
-        instruction: buildSceneEditInstruction(pkg, scenePrompt, source.name || 'the character'),
+        instruction: buildSceneEditInstruction(pkg, scenePrompt, source.name || 'the character', {
+            gender: source.identity && source.identity.gender
+        }),
         constraints: buildIdentityConstraints(pkg),
         characterName: source.name || 'the character'
     };
@@ -645,26 +649,26 @@ function buildIdentitySheetPrompt(character) {
 }
 
 // The identity constraints appended to a generation prompt (metadata only, no
-// scene wording). Permanent identity only.
+// scene wording). Permanent identity only, kept as one concise instruction so
+// identity preservation is never repeated across a prompt.
 function buildIdentityConstraints(value) {
     const metadata = normalizePackage(value).identityMetadata || {};
     const skin = metadata.skin || {};
     const descriptor = skinDescriptor(skin);
     const constraints = [
-        'Preserve the approved character\'s facial identity, hairstyle, skin tone and undertone, body proportions and distinctive features'
-        + (summary(metadata) ? ': ' + summary(metadata) : '')
+        'Preserve the approved character\'s ' + qwenEditPrompt.IDENTITY_PRESERVATION_CLAUSE
     ];
-    constraints.push('Preserve the character\'s underlying natural skin tone' +
-        (descriptor ? ' (' + descriptor + ')' : '') +
-        ' consistently across all exposed skin; never generate the face and body with independent skin-tone interpretations');
-    constraints.push('Treat the exposed skin as one continuous physical material under the same scene lighting, so ' +
-        'lighting affects it consistently while the underlying complexion stays constant');
-    constraints.push('The neck must visually connect the facial and body complexion, with no visible colour boundary ' +
-        'between the jaw, neck, shoulders and torso');
+    if (descriptor) {
+        constraints.push('Keep the character\'s natural skin tone and undertone (' + descriptor +
+            ') consistent across all exposed skin, from the face and neck through the body');
+    }
+    if (metadata.distinctiveFeatures && metadata.distinctiveFeatures.length) {
+        constraints.push('Keep the character\'s distinctive features: ' + metadata.distinctiveFeatures.join(', '));
+    }
     if (metadata.signatureAccessories && metadata.signatureAccessories.length) {
         constraints.push('Keep the character\'s signature accessories: ' + metadata.signatureAccessories.join(', '));
     }
-    constraints.push('Do not redesign the character or change their facial structure or hairstyle');
+    constraints.push('Do not redesign, beautify, age, de-age or reinterpret the character\'s appearance');
     return constraints;
 }
 
