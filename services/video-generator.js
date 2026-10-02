@@ -13,6 +13,7 @@
 const fs = require('fs');
 const path = require('path');
 const comfyui = require('./comfyui');
+const h3ReferencePipeline = require('./h3-reference-pipeline');
 const configManager = require('../server/config-manager');
 const generatedHistory = require('./generated-history');
 const generationQueue = require('./generation-queue');
@@ -20,6 +21,7 @@ const imageGenerator = require('./image-generator');
 const { getModelById } = require('../server/models');
 
 const GENERATED_DIR = path.join(__dirname, '..', 'data', 'generated');
+const IMAGES_DIR = path.join(__dirname, '..', 'data', 'images');
 
 // --- H3 Constants -------------------------------------------------------------
 // H3 renders on a base canvas whose short edge is 768 and whose total pixel
@@ -36,6 +38,22 @@ const H3_MAX_PIXELS = H3_BASE_SHORT_EDGE * 1344;
 const H3_SIZE_SCALES = { S: 0.5, M: 0.75, L: 1 };
 // Alias retained for callers written against the older short-side pixel name.
 const H3_IMAGE_SIZES = H3_SIZE_SCALES;
+const H3_VIDEO_ASPECT_RATIOS = Object.freeze({
+    '16:9': [16, 9],
+    '9:16': [9, 16],
+    '1:1': [1, 1],
+    '4:3': [4, 3],
+    '3:4': [3, 4],
+    '3:2': [3, 2],
+    '2:3': [2, 3],
+    '21:9': [21, 9]
+});
+
+function normalizeVideoAspectRatio(value, fallback) {
+    const requested = String(value || '').trim();
+    if (Object.prototype.hasOwnProperty.call(H3_VIDEO_ASPECT_RATIOS, requested)) return requested;
+    return fallback !== undefined ? fallback : '16:9';
+}
 
 // --- Default H3 Video Settings ------------------------------------------------
 
@@ -358,6 +376,7 @@ function normalizeFaceRefineSelect(value, fallback) {
 // matching env var is unset.
 const H3_MODEL_FILES = {
     unet: 'minimax_h3_fl2va_pruned_int8_convrot.safetensors',
+    referenceUnet: 'minimax_h3_ref2va_pruned_int8_convrot.safetensors',
     clip: 'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors',
     videoVae: 'minimax_h3_video_vae_fp16.safetensors',
     audioVae: 'minimax_h3_audio_vae_fp32.safetensors'
@@ -365,11 +384,13 @@ const H3_MODEL_FILES = {
 
 const H3_DEFAULTS = {
     h3Unet: process.env.H3_UNET || H3_MODEL_FILES.unet,
+    h3Ref2vaUnet: process.env.H3_REF2VA_UNET || process.env.H3_UNET_I2VA || H3_MODEL_FILES.referenceUnet,
     h3Clip: process.env.H3_CLIP || H3_MODEL_FILES.clip,
     h3VideoVae: process.env.H3_VIDEO_VAE || H3_MODEL_FILES.videoVae,
     h3AudioVae: process.env.H3_AUDIO_VAE || H3_MODEL_FILES.audioVae,
     h3Duration: Number(process.env.H3_DURATION) || 5,
     h3Size: process.env.H3_SIZE || 'M',
+    videoAspectRatio: normalizeVideoAspectRatio(process.env.H3_ASPECT_RATIO, '16:9'),
     // Base sampling controls for the normal H3 pipeline. h3Steps is the
     // scheduler step count; h3Cfg = 1 keeps the unguided BasicGuider path.
     h3Steps: normalizeH3Steps(process.env.H3_STEPS, H3_DEFAULT_STEPS),
@@ -403,6 +424,12 @@ const H3_DEFAULTS = {
     // back. Off by default; the VIDEO settings panel toggles it per user.
     faceRefineEnabled: String(process.env.H3_FACEREFINE_ENABLED || '').toLowerCase() === 'true' ||
         process.env.H3_FACEREFINE_ENABLED === '1',
+    // Auto-upscale: run the video upscale pipeline on every generated video.
+    // Off by default; toggled in Settings > Video. Unlike FaceRefine this is
+    // NOT fail-open's mirror — it is best-effort and keeps the base render if
+    // the upscale cannot run.
+    autoUpscaleEnabled: String(process.env.H3_AUTO_UPSCALE_ENABLED || '').toLowerCase() === 'true' ||
+        process.env.H3_AUTO_UPSCALE_ENABLED === '1',
     faceRefineDetector: process.env.H3_FACEREFINE_DETECTOR || 'face_yolov8m.pt',
     faceRefineCropFactor: envNumber('H3_FACEREFINE_CROP', 2.5),
     faceRefineDenoise: envNumber('H3_FACEREFINE_DENOISE', 0.4),
@@ -418,13 +445,14 @@ const H3_DEFAULTS = {
 };
 
 const H3_CONFIGURABLE_KEYS = [
-    'h3Unet', 'h3Clip', 'h3VideoVae', 'h3AudioVae',
-    'h3Duration', 'h3Size', 'h3Steps', 'h3Cfg', 'attentionBackend', 'firstBlockCache',
+    'h3Unet', 'h3Ref2vaUnet', 'h3Clip', 'h3VideoVae', 'h3AudioVae',
+    'h3Duration', 'h3Size', 'videoAspectRatio', 'h3Steps', 'h3Cfg', 'attentionBackend', 'firstBlockCache',
     'loras', 'loraTriggerWords',
     'h3TurboEnabled', 'h3TurboSteps', 'h3TurboLora',
     'faceRefineEnabled', 'faceRefineDetector', 'faceRefineCropFactor',
     'faceRefineDenoise', 'faceRefineSteps', 'faceRefineCanvasMode',
-    'faceRefineSelect', 'faceRefineFeather'
+    'faceRefineSelect', 'faceRefineFeather',
+    'autoUpscaleEnabled'
 ];
 
 // Shared upscale keys (canonical names in imageGeneration). Posted to
@@ -515,6 +543,16 @@ function readStillImageDimensions(filePath) {
             try { fs.closeSync(fd); } catch (_) { /* already closed */ }
         }
     }
+}
+
+function resolveVideoStillPath(filename) {
+    let name = path.basename(String(filename || '').split('?')[0]);
+    try { name = decodeURIComponent(name); } catch (_) {}
+    if (!name) return '';
+    const generated = path.join(GENERATED_DIR, name);
+    if (fs.existsSync(generated)) return generated;
+    const uploaded = path.join(IMAGES_DIR, name);
+    return fs.existsSync(uploaded) ? uploaded : '';
 }
 
 // --- Video dimension probing (no dependencies) ------------------------------
@@ -727,6 +765,12 @@ function h3Dimensions(width, height, size) {
         W: snap(nominalWidth),
         H: snap(nominalHeight),
     };
+}
+
+function h3DimensionsForAspectRatio(aspectRatio, size) {
+    const ratio = normalizeVideoAspectRatio(aspectRatio);
+    const [width, height] = H3_VIDEO_ASPECT_RATIOS[ratio];
+    return h3Dimensions(width, height, size);
 }
 
 // --- Generation lock (shared with image-generator) ---------------------------
@@ -1323,7 +1367,8 @@ function resolveCreatorCanonical(structuredRequest, referenceImages) {
                     id: 'Shot 1',
                     cameraDirection: String(shot.cameraDirection || req.creator_camera_direction || '').trim(),
                     environment: String(shot.environment || req.creator_environment || '').trim(),
-                    wardrobe: String(shot.wardrobe || req.creator_wardrobe || '').trim()
+                    wardrobe: String(shot.wardrobe || req.creator_wardrobe || '').trim(),
+                    action: String(shot.action || req.creator_action || '').trim()
                 },
                 dialogue: {
                     lines,
@@ -1377,7 +1422,8 @@ function resolveCreatorCanonical(structuredRequest, referenceImages) {
                     id: 'Shot 1',
                     cameraDirection: String(shot.cameraDirection || req.creator_camera_direction || '').trim(),
                     environment: String(shot.environment || req.creator_environment || '').trim(),
-                    wardrobe: String(shot.wardrobe || req.creator_wardrobe || '').trim()
+                    wardrobe: String(shot.wardrobe || req.creator_wardrobe || '').trim(),
+                    action: String(shot.action || req.creator_action || '').trim()
                 },
                 dialogue: {
                     lines: entries.map(({ stage, label, speech }) => ({ stage, label, speech })),
@@ -1419,7 +1465,8 @@ function resolveCreatorCanonical(structuredRequest, referenceImages) {
             id: 'Shot 1',
             cameraDirection: String(req.creator_camera_direction || '').trim(),
             environment: String(req.creator_environment || '').trim(),
-            wardrobe: String(req.creator_wardrobe || '').trim()
+            wardrobe: String(req.creator_wardrobe || '').trim(),
+            action: String(req.creator_action || '').trim()
         },
         dialogue: {
             lines,
@@ -1529,6 +1576,7 @@ function buildCreatorStudioPrompt(canonical) {
     const camera = String(shot.cameraDirection || 'a steady front-facing smartphone held at a natural arm\'s length with close conversational framing').trim();
     const environment = String(shot.environment || 'a relaxed, uncluttered everyday creator setting').trim();
     const wardrobe = String(shot.wardrobe || 'natural, scene-appropriate clothing').trim();
+    const onCameraAction = String(shot.action || '').trim();
     const guideName = String(guide.name || 'Creator Studio').trim();
     const guideStages = Array.isArray(guide.stages) && guide.stages.length
         ? guide.stages
@@ -1587,7 +1635,10 @@ function buildCreatorStudioPrompt(canonical) {
         'Determine the timing of speech, pauses and performance naturally from the dialogue. Expression changes occur ' +
         'naturally at appropriate moments in the spoken performance rather than at predetermined timestamps.';
 
-    const detailed = 'detailed_description:\n' + setting + ' ' + cameraRule + '\n[Shot 1]\n' +
+    const actionDirection = onCameraAction
+        ? 'On-camera action (visual direction only; this is NOT dialogue and must never be spoken): ' + onCameraAction + '\n'
+        : '';
+    const detailed = 'detailed_description:\n' + setting + ' ' + cameraRule + '\n' + actionDirection + '[Shot 1]\n' +
         dialogueBlock + '\n\n' + performanceBlock + '\n\n' + timingRule;
 
     const soundscape = 'overall_soundscape:\nNatural room tone and the creator\'s on-screen voice with exact, lip-synced ' +
@@ -2148,7 +2199,7 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
     if ((has_reference_image || isRefMode) && !isModify && sourceImageRawFilename) {
         const modelInfo = getModelById(model);
         if (modelInfo && modelInfo.capabilities && modelInfo.capabilities.includes('vision')) {
-            const filePath = path.join(GENERATED_DIR, sourceImageRawFilename);
+            const filePath = resolveVideoStillPath(sourceImageRawFilename);
             if (fs.existsSync(filePath)) {
                 try {
                     sourceImageBase64 = fs.readFileSync(filePath).toString('base64');
@@ -2465,7 +2516,7 @@ async function modifyH3VideoPrompt(currentPrompt, userMessage, providers, provid
     if (sourceImageRawFilename) {
         const modelInfo = getModelById(model);
         if (modelInfo && modelInfo.capabilities && modelInfo.capabilities.includes('vision')) {
-            const filePath = path.join(GENERATED_DIR, path.basename(String(sourceImageRawFilename).split('?')[0]));
+            const filePath = resolveVideoStillPath(sourceImageRawFilename);
             if (fs.existsSync(filePath)) {
                 try {
                     sourceImageBase64 = fs.readFileSync(filePath).toString('base64');
@@ -2512,6 +2563,8 @@ function effectiveVideoSettings() {
             if (key === 'h3Size') {
                 const s = String(value).trim().toUpperCase();
                 value = Object.prototype.hasOwnProperty.call(H3_IMAGE_SIZES, s) ? s : H3_DEFAULTS.h3Size;
+            } else if (key === 'videoAspectRatio') {
+                value = normalizeVideoAspectRatio(value, H3_DEFAULTS.videoAspectRatio);
             } else if (key === 'h3Steps') {
                 value = normalizeH3Steps(value, H3_DEFAULTS.h3Steps);
             } else if (key === 'h3Cfg') {
@@ -2527,6 +2580,8 @@ function effectiveVideoSettings() {
             } else if (key === 'firstBlockCache') {
                 value = normalizeFirstBlockCache(value);
             } else if (key === 'faceRefineEnabled') {
+                value = value === true || value === 1 || String(value).toLowerCase() === 'true' || String(value) === '1';
+            } else if (key === 'autoUpscaleEnabled') {
                 value = value === true || value === 1 || String(value).toLowerCase() === 'true' || String(value) === '1';
             } else if (key === 'faceRefineCanvasMode') {
                 value = normalizeFaceRefineCanvasMode(value, H3_DEFAULTS.faceRefineCanvasMode);
@@ -2656,6 +2711,8 @@ function saveVideoSettings(patch) {
         } else if (key === 'h3Size') {
             const s = String(value).trim().toUpperCase();
             if (Object.prototype.hasOwnProperty.call(H3_IMAGE_SIZES, s)) out[key] = s;
+        } else if (key === 'videoAspectRatio') {
+            out[key] = normalizeVideoAspectRatio(value, H3_DEFAULTS.videoAspectRatio);
         } else if (key === 'h3Steps') {
             out[key] = normalizeH3Steps(value, H3_DEFAULTS.h3Steps);
         } else if (key === 'h3Cfg') {
@@ -2678,6 +2735,8 @@ function saveVideoSettings(patch) {
             }
             out[key] = normalizeFirstBlockCache(value);
         } else if (key === 'faceRefineEnabled') {
+            out[key] = value === true || value === 1 || String(value).toLowerCase() === 'true' || String(value) === '1';
+        } else if (key === 'autoUpscaleEnabled') {
             out[key] = value === true || value === 1 || String(value).toLowerCase() === 'true' || String(value) === '1';
         } else if (key === 'faceRefineDetector') {
             out[key] = String(value || '').trim() || null;
@@ -2984,15 +3043,23 @@ function buildH3Graph(opts) {
         settings = {},
         firstImageName = null,
         refImageNames = [],
+        refModArtifacts = [],
+        referenceTokenBudget = 0,
         firstBlockCacheInputs = null,
     } = opts;
 
     const graph = {};
+    const hasReferenceInput =
+        (Array.isArray(refImageNames) && refImageNames.some((name) => String(name || '').trim())) ||
+        (Array.isArray(refModArtifacts) && refModArtifacts.some((ref) => ref && ref.artifactName && Number(ref.strength) > 0));
+    const activeUnet = hasReferenceInput
+        ? (settings.h3Ref2vaUnet || H3_DEFAULTS.h3Ref2vaUnet)
+        : (settings.h3Unet || H3_DEFAULTS.h3Unet);
     const turbo = normalizeH3Turbo(settings);
     graph.model = {
         class_type: 'UNETLoader',
         inputs: {
-            unet_name: settings.h3Unet || H3_DEFAULTS.h3Unet,
+            unet_name: activeUnet,
             weight_dtype: 'default',
         },
     };
@@ -3090,6 +3157,45 @@ function buildH3Graph(opts) {
         };
     }
 
+    const refMods = Array.isArray(refModArtifacts)
+        ? refModArtifacts.filter((ref) => ref && ref.artifactName && Number(ref.strength) > 0).slice(0, 8)
+        : [];
+    let conditioningNode = 'condition';
+    if (refMods.length) {
+        const loaderInputs = { show_info: false };
+        for (let slot = 1; slot <= 8; slot += 1) {
+            loaderInputs['mod_' + slot] = '(none)';
+            loaderInputs['strength_' + slot] = 1;
+            loaderInputs['copies_' + slot] = 1;
+        }
+        refMods.forEach((ref, index) => {
+            const slot = index + 1;
+            loaderInputs['mod_' + slot] = String(ref.artifactName);
+            loaderInputs['strength_' + slot] = Math.max(0, Math.min(1, Number(ref.strength) || 0));
+            loaderInputs['copies_' + slot] = 1;
+        });
+        if (referenceTokenBudget > 0) loaderInputs.max_total_tokens = Math.round(referenceTokenBudget);
+        graph.h3_refmod_loader = {
+            class_type: h3ReferencePipeline.REF_LOADER_NODE,
+            inputs: loaderInputs,
+        };
+        graph.h3_refmod_apply = {
+            class_type: h3ReferencePipeline.REF_APPLY_NODE,
+            inputs: {
+                conditioning: ['condition', 0],
+                mods: ['h3_refmod_loader', 0],
+                override: false,
+                retention: 1,
+                curve_direction: 'constant',
+                scramble_seed: -1,
+                curve_shape: 'linear',
+                curve_value: 1,
+                max_total_tokens: Math.round(referenceTokenBudget || 0),
+            },
+        };
+        conditioningNode = 'h3_refmod_apply';
+    }
+
     // Base sampling: the scheduler runs the user step count (Turbo overrides it
     // with its own step count), and the guider is unguided unless the user
     // raised CFG above 1 — then a zeroed negative drives a CFGGuider.
@@ -3111,19 +3217,19 @@ function buildH3Graph(opts) {
             class_type: 'BasicGuider',
             inputs: {
                 model: [patchedModelNode, 0],
-                conditioning: ['condition', 0],
+                conditioning: [conditioningNode, 0],
             },
         };
     } else {
         graph.negative = {
             class_type: 'ConditioningZeroOut',
-            inputs: { conditioning: ['condition', 0] },
+            inputs: { conditioning: [conditioningNode, 0] },
         };
         graph.guider = {
             class_type: 'CFGGuider',
             inputs: {
                 model: [patchedModelNode, 0],
-                positive: ['condition', 0],
+                positive: [conditioningNode, 0],
                 negative: ['negative', 0],
                 cfg: h3Cfg,
             },
@@ -3175,6 +3281,29 @@ async function validateH3Graph(info, graph) {
     // the graph). Run before the generic node scan so a missing FBCache node
     // surfaces the actionable install error instead of the generic one.
     const graphEntries = Object.entries(graph).filter(([, node]) => node && node.class_type);
+    const hasRefMods = graphEntries.some(([, node]) =>
+        node.class_type === h3ReferencePipeline.REF_LOADER_NODE ||
+        node.class_type === h3ReferencePipeline.REF_APPLY_NODE
+    );
+    if (hasRefMods) {
+        const missing = [h3ReferencePipeline.REF_LOADER_NODE, h3ReferencePipeline.REF_APPLY_NODE]
+            .filter((name) => !info || !info[name]);
+        if (missing.length) {
+            const error = new Error('The reusable H3 reference nodes disappeared after reference preparation: ' + missing.join(', ') + '. Restart ComfyUI and try again.');
+            error.code = 'h3_reference_nodes_missing';
+            error.missingNodes = missing;
+            error.installUrl = h3ReferencePipeline.REFMOD_INSTALL_URL;
+            throw error;
+        }
+        const loader = graph.h3_refmod_loader;
+        const apply = graph.h3_refmod_apply;
+        if (!loader || !apply || !Array.isArray(apply.inputs && apply.inputs.mods) || apply.inputs.mods[0] !== 'h3_refmod_loader' ||
+            !Array.isArray(apply.inputs && apply.inputs.conditioning) || apply.inputs.conditioning[0] !== 'condition') {
+            const error = new Error('The H3 reference loader/apply chain is incomplete. No video was submitted.');
+            error.code = 'h3_reference_graph_invalid';
+            throw error;
+        }
+    }
     const fbcEntries = graphEntries.filter(([, node]) => node.class_type === H3_FBCACHE_NODE);
     if (fbcEntries.length > 1) {
         const error = new Error('The H3 workflow contains more than one First Block Cache node.');
@@ -3669,6 +3798,7 @@ async function refineVideo(baseRawFilename, opts = {}) {
             source: opts.sourceImageRawFilename || null,
             refined: true,
             refinedFrom: safeName,
+            references: Array.isArray(opts.references) ? opts.references : [],
             faceRefine: {
                 detector: settings.faceRefineDetector,
                 denoise: settings.faceRefineDenoise,
@@ -3853,20 +3983,8 @@ async function generateVideo(prompt, options = {}) {
             : h3DurationSeconds(settings.h3Duration);
         const frames = h3FramesForSeconds(duration);
 
-        let videoWidth = options.width || 1024;
-        let videoHeight = options.height || 768;
-        const dimSource = useRefs ? referenceImages[0] : options.sourceImageRawFilename;
-        if ((mode === 'i2va' || mode === 'ref2va') && dimSource) {
-            const imgPath = path.join(GENERATED_DIR, dimSource);
-            const imgDims = readStillImageDimensions(imgPath);
-            if (imgDims) {
-                videoWidth = imgDims.width;
-                videoHeight = imgDims.height;
-                console.log('[video] source image aspect ratio:', imgDims.width + 'x' + imgDims.height,
-                    '-> video dimensions:', videoWidth + 'x' + videoHeight);
-            }
-        }
-        const { W, H } = h3Dimensions(videoWidth, videoHeight, settings.h3Size);
+        const { W, H } = h3DimensionsForAspectRatio(settings.videoAspectRatio, settings.h3Size);
+        console.log('[video] output aspect ratio:', settings.videoAspectRatio, '-> video dimensions:', W + 'x' + H);
 
         // Prepend trigger words from active LoRAs to the prompt. For I2VA keep
         // the <Picture 1> first-frame alignment line as the literal first line of
@@ -3890,6 +4008,25 @@ async function generateVideo(prompt, options = {}) {
             }
         }
 
+        const semanticReferences = Array.isArray(options.semanticReferences)
+            ? options.semanticReferences
+            : [];
+        const preparedReferences = await h3ReferencePipeline.prepareH3References({
+            references: semanticReferences,
+            prompt: finalPrompt,
+            mode: options.referenceGenerationMode || mode,
+            settings: Object.assign({}, settings, options.referenceSettings || {}),
+            generationContext: {
+                conversationId: options.conversationId || null,
+                studio: options.studio || null,
+                mode: options.referenceGenerationMode || mode
+            },
+            signal
+        });
+        if (preparedReferences.guidance.length) {
+            finalPrompt = h3ReferencePipeline.applyReferenceGuidance(finalPrompt, preparedReferences.guidance);
+        }
+
         let firstImageName = null;
         const uploadedInputNames = [];
         const refImageNames = [];
@@ -3898,8 +4035,9 @@ async function generateVideo(prompt, options = {}) {
                 const raw = referenceImages[i];
                 const filePath = path.join(GENERATED_DIR, raw);
                 if (!fs.existsSync(filePath)) {
-                    console.warn('[video] reference image not found:', filePath);
-                    continue;
+                    const error = new Error('A selected H3 reference image could not be found: ' + path.basename(raw));
+                    error.code = 'h3_reference_source_missing';
+                    throw error;
                 }
                 const buffer = fs.readFileSync(filePath);
                 const uploadName = 'jarvis_video_ref_' + Date.now() + '_' + i + '_' + raw;
@@ -3910,7 +4048,7 @@ async function generateVideo(prompt, options = {}) {
             }
         } else if (mode === 'i2va' && options.sourceImageRawFilename) {
             // Upload source image to ComfyUI input for LoadImage node.
-            const filePath = path.join(GENERATED_DIR, options.sourceImageRawFilename);
+            const filePath = resolveVideoStillPath(options.sourceImageRawFilename);
             if (fs.existsSync(filePath)) {
                 const buffer = fs.readFileSync(filePath);
                 const uploadName = 'jarvis_video_' + Date.now() + '_' + options.sourceImageRawFilename;
@@ -3958,6 +4096,8 @@ async function generateVideo(prompt, options = {}) {
                 settings: resolvedSettings,
                 firstImageName,
                 refImageNames,
+                refModArtifacts: preparedReferences.references,
+                referenceTokenBudget: preparedReferences.tokenBudget,
                 // Match the installed node's exact input names so required-input
                 // validation passes even if the node pack renames a field.
                 firstBlockCacheInputs: resolveFirstBlockCacheInputNames(info),
@@ -4020,6 +4160,19 @@ async function generateVideo(prompt, options = {}) {
                     mode,
                     source: options.sourceImageRawFilename || null,
                     refs: useRefs ? refImageNames.length : 0,
+                    references: preparedReferences.references.map((ref) => ({
+                        id: ref.id,
+                        type: ref.type,
+                        strength: ref.strength,
+                        mode: ref.mode,
+                        artifactHash: ref.artifactHash,
+                        referenceHash: ref.referenceHash,
+                        cache: ref.cache,
+                        tokenCount: ref.tokenCount
+                    })),
+                    omittedReferences: preparedReferences.omittedReferences,
+                    referenceTokens: preparedReferences.tokenCount,
+                    referenceTokenBudget: preparedReferences.tokenBudget,
                     acceleration,
                     ...(turboState.enabled ? {
                         turbo: { lora: turboState.loraName, strength: H3_TURBO_STRENGTH, steps: turboState.steps, scheduler: H3_TURBO_SCHEDULER }
@@ -4029,7 +4182,7 @@ async function generateVideo(prompt, options = {}) {
 
             // Optional FaceRefine post-process (runs inside this same lock;
             // fail-open — a refine failure keeps the base render).
-            return maybeFaceRefine({
+            const refinedResult = await maybeFaceRefine({
                 url: meta.file,
                 filename: basename,
                 width: W,
@@ -4039,11 +4192,16 @@ async function generateVideo(prompt, options = {}) {
                 fps: H3_FPS,
                 mode,
                 prompt: finalPrompt,
+                references: meta.video.references,
                 generationMs: meta.generationMs,
                 acceleration,
                 meta,
                 refined: false
             }, Object.assign({}, options, { signal }));
+            // Optional auto-upscale post-process (also inside this lock). Runs on
+            // the current result (refined if FaceRefine ran) and is best-effort:
+            // a failure keeps the base/refined render.
+            return maybeAutoUpscale(refinedResult, Object.assign({}, options, { signal }));
         } finally {
             for (const name of uploadedInputNames) {
                 await comfyui.deleteInputFile(name).catch(() => {});
@@ -4068,6 +4226,7 @@ async function maybeFaceRefine(baseResult, opts = {}) {
             duration: baseResult.duration,
             frames: baseResult.frames,
             sourceImageRawFilename: opts.sourceImageRawFilename || null,
+            references: baseResult.references || [],
             baseGenerationMs: baseResult.generationMs || 0,
             signal: opts.signal || null
         });
@@ -4085,6 +4244,7 @@ async function maybeFaceRefine(baseResult, opts = {}) {
             // the total job time — do not add baseResult.generationMs again.
             generationMs: refined.generationMs || (baseResult.generationMs || 0),
             acceleration: baseResult.acceleration || null,
+            references: baseResult.references || [],
             meta: refined.meta,
             refined: true
         };
@@ -4093,6 +4253,68 @@ async function maybeFaceRefine(baseResult, opts = {}) {
         // must never lose the good base render.
         console.warn('[video-generator] FaceRefine skipped/failed, keeping base video:', err.message);
         return Object.assign({}, baseResult, { refined: false, refineError: err.message });
+    }
+}
+
+async function maybeAutoUpscale(baseResult, opts = {}) {
+    // Cheap gate first: no extra ComfyUI calls when the toggle is off.
+    const settings = effectiveVideoSettings();
+    if (!settings.autoUpscaleEnabled) return baseResult;
+    // upscaleVideo runs its own withGenerationLock, so it cannot be called from
+    // inside generateVideo's lock (deadlock). The caller runs it after this
+    // lock releases, driven by the `autoUpscale: true` flag on the result.
+    return Object.assign({}, baseResult, { autoUpscale: true });
+}
+
+// Run the video upscale pipeline on a finished generation. Called by the server
+// AFTER generateVideo releases the generation lock, so the two locks never
+// nest. The source file and its history entry are kept (upscaleVideo no longer
+// deletes the original), so the result is a normal gallery-comparable pair.
+async function autoUpscaleGenerated(baseResult, options = {}) {
+    if (!baseResult || !baseResult.autoUpscale || !baseResult.filename) return baseResult;
+    if (typeof options.onProgress === 'function') {
+        try { options.onProgress('auto-upscale'); } catch { /* progress is best-effort */ }
+    }
+    try {
+        console.log('[video-generator] Auto-upscale enabled — upscaling', baseResult.filename);
+        const upscaled = await upscaleVideo(baseResult.filename, {
+            conversationId: options.conversationId || null,
+            onQueued: options.onQueued || null,
+            onStart: options.onStart || null,
+            label: options.label || 'video auto-upscale',
+            kind: options.kind || 'video_generation'
+        });
+        return Object.assign({}, baseResult, {
+            url: upscaled.url,
+            filename: upscaled.filename,
+            width: upscaled.width !== null ? upscaled.width : baseResult.width,
+            height: upscaled.height !== null ? upscaled.height : baseResult.height,
+            // upscaleVideo records its own generation time; the base render time
+            // is already folded into the pair via upscale.source metadata.
+            generationMs: (baseResult.generationMs || 0) + (upscaled.generationMs || 0),
+            meta: upscaled.meta || baseResult.meta,
+            upscale: {
+                engine: upscaled.engine,
+                resolution: upscaled.resolution,
+                scale: upscaled.scale,
+                quality: upscaled.quality,
+                profile: upscaled.profile,
+                noise: upscaled.noise,
+                originalUrl: baseResult.url,
+                originalFilename: baseResult.filename,
+                upscaledUrl: upscaled.url,
+                upscaledFilename: upscaled.filename,
+                sourceWidth: upscaled.sourceWidth || null,
+                sourceHeight: upscaled.sourceHeight || null,
+                width: upscaled.width || null,
+                height: upscaled.height || null
+            },
+            upscaled: true
+        });
+    } catch (err) {
+        // Best-effort: an auto-upscale failure must never lose the good render.
+        console.warn('[video-generator] Auto-upscale skipped/failed, keeping base video:', err.message);
+        return Object.assign({}, baseResult, { upscaleError: err.message, upscaled: false });
     }
 }
 
@@ -4510,23 +4732,11 @@ async function upscaleVideo(rawFilename, options = {}) {
             }
         });
 
-        // Video upscales replace the original: no gallery comparison, so drop
-        // the source file and its history entry once the upscaled output is
-        // safely recorded. generatedHistory.remove() also deletes the file.
-        if (safeName && safeName !== basename) {
-            try {
-                const sourceEntry = generatedHistory.list().find((e) => e.rawFilename === safeName);
-                if (sourceEntry && sourceEntry.id) {
-                    generatedHistory.remove(sourceEntry.id);
-                } else {
-                    const abs = path.join(GENERATED_DIR, safeName);
-                    if (abs.startsWith(GENERATED_DIR) && fs.existsSync(abs)) {
-                        try { fs.unlinkSync(abs); } catch (err) { /* ignore */ }
-                    }
-                }
-            } catch (err) { /* replacement is best-effort */ }
-        }
-
+        // The original video is kept alongside the upscaled output so the
+        // gallery can show them side by side (the source entry stays in
+        // generated-history and the upscale.source field links the pair).
+        // Deleting the conversation still removes both via
+        // removeConversationImages' upscale-pair cleanup.
         return {
             url: meta.file,
             filename: basename,
@@ -4671,6 +4881,8 @@ module.exports = {
     resolveFaceRefineDetector,
     refineVideo,
     maybeFaceRefine,
+    maybeAutoUpscale,
+    autoUpscaleGenerated,
     FACEREFINE_REQUIRED_NODES,
     FACEREFINE_CANVAS_MODES,
     FACEREFINE_SELECT_MODES,
@@ -4681,7 +4893,10 @@ module.exports = {
     h3FramesForSeconds,
     h3EffectiveDurationSeconds,
     h3Dimensions,
+    h3DimensionsForAspectRatio,
     h3SizeScale,
+    H3_VIDEO_ASPECT_RATIOS,
+    normalizeVideoAspectRatio,
     H3_SIZE_SCALES,
     H3_IMAGE_SIZES,
     effectiveVideoSettings,

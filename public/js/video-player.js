@@ -36,6 +36,9 @@
     function enhance(video) {
         if (!video || video.nodeName !== 'VIDEO') return null;
         if (video.dataset.jvEnhanced === '1') return video.closest('.jv-player') || null;
+        // Videos managed by a shared transport (the gallery's side-by-side
+        // video compare) opt out of the per-clip custom controls.
+        if (video.dataset.jvSkip === '1') return null;
         // Thumbnail previews are muted loops, not players.
         if (video.closest('.generated-thumb') || video.closest('.gallery-cell')) return null;
         video.dataset.jvEnhanced = '1';

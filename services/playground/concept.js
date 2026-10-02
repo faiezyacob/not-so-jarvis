@@ -15,6 +15,7 @@ const identityGen = require('./character');
 const outfitPacks = require('./outfit-packs');
 const activities = require('./activities');
 const faceActions = require('./face-actions');
+const sceneLibrary = require('../scene-library');
 
 // Lockable attribute groups. Each group maps to the concept/character field it
 // freezes during randomization.
@@ -169,6 +170,63 @@ function resolveConceptActivity(concept, options = {}) {
     concept.activityMode = selection.mode;
     if (chosen) attachActivity(concept, chosen, 'library');
     return concept;
+}
+
+// --- Shared Scene / Location ------------------------------------------------
+//
+// Scene is an independent dimension (where the subject is), separate from
+// Activity (what they are doing). It resolves to a Scene from the shared
+// Scene/Location Library so the Playground, UGC Studio and Creator Studio all
+// use the same underlying objects. An explicit selection always wins; otherwise
+// the Activity's environment recommendations drive an automatic pick. When no
+// shared scene is requested the theme's own environment wording is kept.
+
+function clearSceneFields(concept) {
+    concept.sceneId = '';
+    concept.sceneName = '';
+    concept.sceneContext = null;
+    concept.sceneReference = '';
+    concept.sceneSource = '';
+    concept.sceneMode = 'none';
+    return concept;
+}
+
+function applyScene(concept, scene, source, mode) {
+    const context = sceneLibrary.buildSceneContext(scene);
+    concept.sceneId = scene.id || '';
+    concept.sceneName = scene.name || '';
+    concept.sceneContext = context;
+    concept.sceneReference = context.referenceImage || '';
+    if (context.summary) concept.environment = context.summary;
+    concept.sceneSource = source || '';
+    concept.sceneMode = mode || 'none';
+    return concept;
+}
+
+// Resolve the concept's Scene from a raw selection: an explicit library scene
+// id, "auto" (recommended by the resolved Activity), "random", or nothing.
+function resolveConceptScene(concept, options = {}) {
+    if (!concept) return concept;
+    if (options.skip) {
+        // A locked environment or a user prompt owns the scene: only record the
+        // existing shared scene id when it is still valid.
+        const existing = concept.sceneId && sceneLibrary.get(concept.sceneId);
+        if (existing) return applyScene(concept, existing, 'continuity', 'explicit');
+        return clearSceneFields(concept);
+    }
+    const selection = String(options.selection || '').trim();
+    const rng = rngOf(options.rng);
+    if (selection && selection !== 'auto' && selection !== 'random' && selection !== 'none') {
+        const scene = sceneLibrary.get(selection) || sceneLibrary.getByName(selection);
+        if (scene) return applyScene(concept, scene, 'explicit', 'explicit');
+    }
+    if (selection === 'auto' || selection === 'random') {
+        const picked = selection === 'random'
+            ? sceneLibrary.selectRandomScene({ rng })
+            : sceneLibrary.selectSceneForActivity(concept.activityId, { rng, avoidSceneIds: options.avoidSceneIds });
+        if (picked) return applyScene(concept, picked, selection === 'random' ? 'random' : 'recommended', selection);
+    }
+    return clearSceneFields(concept);
 }
 
 // Let the activity adapt the composed outfit (footwear/accessories/comfort
@@ -461,6 +519,15 @@ function assembleConcept(input = {}) {
         activityGroupSize: 1,
         activitySource: '',
         activityMode: 'none',
+        // Shared Scene / Location resolution: the library scene id and name, its
+        // composed context, an optional environment reference image, and whether
+        // it was explicitly selected, recommended by the activity, or random.
+        sceneId: '',
+        sceneName: '',
+        sceneContext: null,
+        sceneReference: '',
+        sceneSource: '',
+        sceneMode: 'none',
         // Structured Face Action resolution (expression / mouth / eyes / head):
         // the composed action, its display label and concise description, and
         // whether it was auto-selected, explicit or matched from the user prompt.
@@ -598,6 +665,16 @@ function assembleConcept(input = {}) {
             avoidActivityIds: input.avoidActivityIds
         });
     }
+
+    // Scene / Location: an independent dimension resolved after the activity so
+    // an automatic pick can use the activity's environment recommendations. A
+    // locked environment or a user prompt owns the scene and is never overridden.
+    resolveConceptScene(concept, {
+        selection: input.sceneId || input.sceneSelection,
+        rng,
+        avoidSceneIds: input.avoidSceneIds,
+        skip: Boolean(locks.environment || userPrompt)
+    });
 
     // Outfit Pack: compose the specific outfit from the selected pack's wardrobe
     // space. A locked outfit wins, so only the pack metadata is recorded then.
@@ -1226,6 +1303,8 @@ module.exports = {
     applyOutfitPack,
     resolveConceptActivity,
     adaptConceptOutfitToActivity,
+    resolveConceptScene,
+    clearSceneFields,
     resolveConceptFaceAction,
     attachFaceAction,
     clearFaceActionFields,

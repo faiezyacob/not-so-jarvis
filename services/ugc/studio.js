@@ -22,6 +22,7 @@ const characterPresets = require('../character-presets');
 const characterGen = require('../playground/character');
 const characterIdentity = require('../character-identity');
 const outfitPacks = require('../playground/outfit-packs');
+const sceneLibrary = require('../scene-library');
 const state = require('./state');
 const products = require('./products');
 const catalog = require('./catalog');
@@ -76,6 +77,7 @@ const ACTIONS = Object.freeze({
     APPROVE_REFERENCES: 'approve_references',
     CONTINUE_DIRECTOR: 'continue_director',
     CONFIRM_DURATION: 'confirm_duration',
+    CREATE_PROJECT: 'create_project',
     SAVE_DRAFT: 'save_draft',
     EXIT: 'exit',
     RESUME: 'resume',
@@ -138,6 +140,7 @@ const ACTION_RULES = Object.freeze({
     [ACTIONS.CONTINUE_DIRECTOR]: { stages: ['reference_approval'] },
     [ACTIONS.CONFIRM_DURATION]: { stages: ['reference_approval'] },
     // Lifecycle actions are always available.
+    [ACTIONS.CREATE_PROJECT]: { stages: '*' },
     [ACTIONS.SAVE_DRAFT]: { stages: '*' },
     [ACTIONS.EXIT]: { stages: '*' },
     [ACTIONS.RESUME]: { stages: '*' },
@@ -396,12 +399,16 @@ function normalizeProject(raw) {
                 outfit: clean(raw.outfit.outfit)
             }
             : null,
+        // The environment is a Scene from the shared Scene/Location Library.
+        // Older projects stored only `{ id, label, description }`; snapshot()
+        // enriches them in place while an absent/unknown id falls back to the
+        // legacy shape so nothing is lost.
         environment: raw.environment && typeof raw.environment === 'object'
-            ? {
+            ? (sceneLibrary.snapshot(raw.environment) || {
                 id: clean(raw.environment.id, 60),
                 label: clean(raw.environment.label, 120),
                 description: clean(raw.environment.description, 300)
-            }
+            })
             : null,
         contentType: raw.contentType && typeof raw.contentType === 'object'
             ? { id: clean(raw.contentType.id, 60), label: clean(raw.contentType.label, 120) }
@@ -600,9 +607,16 @@ function mergeBrief(fallback, parsed) {
     }
     const platform = catalog.getPlatform(parsed.platform);
     if (platform) out.platform = platform.id;
-    const environment = catalog.getEnvironment(parsed.environment);
-    if (environment) out.environment = environment.id;
-    else if (parsed.environment) out.environment = clean(parsed.environment, 200);
+    // Environment resolves through the shared Scene/Location Library first, so
+    // every library scene (not just the original UGC list) can be named; the
+    // legacy catalog stays as a fallback and unrecognized prose is preserved.
+    const scene = sceneLibrary.get(parsed.environment) || sceneLibrary.detectFromText(parsed.environment);
+    if (scene) out.environment = scene.id;
+    else {
+        const environment = catalog.getEnvironment(parsed.environment);
+        if (environment) out.environment = environment.id;
+        else if (parsed.environment) out.environment = clean(parsed.environment, 200);
+    }
     return out;
 }
 
@@ -623,6 +637,10 @@ async function extractBrief(message, { provider, model, think }) {
 
 function environmentFromBrief(brief) {
     if (!brief || !brief.environment) return null;
+    // Shared library first (retains structured scene data), then the legacy
+    // catalog, then the raw wording as a custom scene.
+    const scene = sceneLibrary.get(brief.environment);
+    if (scene) return sceneLibrary.snapshot(scene);
     const entry = catalog.getEnvironment(brief.environment);
     if (entry && entry.id !== 'custom') {
         return { id: entry.id, label: entry.label, description: entry.description };
@@ -805,6 +823,114 @@ function skipCreator(project) {
     return save(project);
 }
 
+// Resolve the whole setup for the single-step flow, so a UGC project is ready
+// to run without product/creator/direction cards. Explicit selections from the
+// UGC popup always win; anything the user left unset falls back deterministically
+// (an exact library match or the name the brief extracted binds/creates a
+// facts-only product, a supplied character becomes the creator, every other
+// request rolls a creator unless it asks for product-only, and the outfit,
+// environment and content type get sensible defaults).
+function autoSetup(project, options) {
+    if (!project) return project;
+    const opts = options && typeof options === 'object' ? options : {};
+
+    // --- Product: explicit library pick, a new facts-only record, or auto ---
+    let productResolved = false;
+    if (opts.productId) {
+        selectProduct(project, opts.productId);
+        productResolved = Boolean(project.product && project.product.name);
+    }
+    if (!productResolved && opts.product && clean(opts.product.name, 120)) {
+        createProduct(project, opts.product);
+        productResolved = Boolean(project.product && project.product.name);
+    }
+    if (!productResolved) {
+        const name = clean(project.suggestedProductName) ||
+            clean(project.brief && project.brief.productName, 120);
+        if (name) {
+            const resolved = products.resolveByName(name);
+            if (resolved.product) {
+                project.product = products.snapshot(resolved.product);
+                project.suggestedProductName = '';
+                invalidateReferences(project);
+                advanceSetupStage(project);
+                save(project);
+            } else {
+                createProduct(project, {
+                    name,
+                    brand: clean(project.brief && project.brief.brand, 120),
+                    category: clean(project.brief && project.brief.productCategory, 120),
+                    description: clean(project.brief && project.brief.objective)
+                });
+            }
+        }
+        project.suggestedProductName = '';
+    }
+
+    // --- Creator: explicit character, explicit mode, or auto ---
+    const character = opts.character || null;
+    const characterId = (character && character.id) ? character.id : clean(opts.characterId, 60);
+    const creatorMode = clean(opts.creatorMode, 20);
+    if (characterId) {
+        selectCreator(project, characterId);
+    } else if (creatorMode === 'none') {
+        skipCreator(project);
+    } else if (creatorMode === 'random' || creatorMode === 'character') {
+        randomCreator(project, opts.creatorProfile);
+    } else if (!project.creator && project.creatorMode !== 'none' && !project.creatorSkipped) {
+        const request = String(project.request || '');
+        if (/\b(?:product[\s-]?only|no\s+(?:creator|person|face)|without\s+(?:a\s+)?(?:creator|person|face))\b/i.test(request)) {
+            skipCreator(project);
+        } else {
+            randomCreator(project, opts.creatorProfile);
+        }
+    }
+
+    // --- Outfit: explicit pack/custom, else character pack / detected / default ---
+    const explicitPack = clean(opts.outfitPack, 60);
+    if (explicitPack) {
+        if (outfitPacks.isCustomPack(explicitPack)) {
+            selectOutfit(project, outfitPacks.CUSTOM_PACK_ID,
+                clean(opts.outfitPackCustom) || 'a comfortable everyday outfit');
+        } else {
+            selectOutfit(project, explicitPack, '', opts.rng || Math.random);
+        }
+    } else if (!project.outfit || !project.outfit.outfit) {
+        const context = [
+            project.request,
+            project.brief && project.brief.environment,
+            project.environment && project.environment.label,
+            project.brief && project.brief.objective
+        ].filter(Boolean).join(' ');
+        const detected = outfitPacks.detectOutfitPackFromText(context);
+        const packId = (project.creator && project.creator.outfitPack) || detected || 'casual-everyday';
+        if (outfitPacks.isCustomPack(packId)) {
+            selectOutfit(project, outfitPacks.CUSTOM_PACK_ID,
+                (project.creator && project.creator.outfitPackCustom) || 'a comfortable everyday outfit');
+        } else {
+            selectOutfit(project, packId, '', opts.rng || Math.random);
+        }
+    }
+
+    // --- Environment: explicit pick/custom, else the brief's, else neutral home ---
+    const environmentId = clean(opts.environmentId, 60);
+    if (environmentId) {
+        selectEnvironment(project, environmentId, clean(opts.environmentCustom, 300));
+    } else if (!project.environment) {
+        selectEnvironment(project, 'home');
+    }
+
+    // --- Content type: explicit pick, else detected, else lifestyle ---
+    const contentTypeId = clean(opts.contentTypeId, 60);
+    if (contentTypeId) {
+        selectContentType(project, contentTypeId);
+    } else if (!project.contentType) {
+        selectContentType(project, catalog.detectContentType(project.request || '') || 'lifestyle');
+    }
+
+    return project;
+}
+
 // Resolve an Outfit Pack into a concrete outfit (never pass the pack name alone
 // to the image/video model).
 function selectOutfit(project, packId, customText, rng) {
@@ -848,9 +974,17 @@ function selectEnvironment(project, environmentId, customDescription) {
         if (!text) return project;
         project.environment = { id: 'custom', label: 'Custom', description: text };
     } else {
-        const entry = catalog.getEnvironment(environmentId);
-        if (!entry) return project;
-        project.environment = { id: entry.id, label: entry.label, description: entry.description };
+        // Resolve the selection from the shared Scene/Location Library so UGC
+        // Studio's Environment dropdown and Creator Studio's Scene dropdown use
+        // exactly the same scene objects.
+        const scene = sceneLibrary.get(environmentId) || sceneLibrary.detectFromText(environmentId);
+        if (scene) {
+            project.environment = sceneLibrary.snapshot(scene);
+        } else {
+            const entry = catalog.getEnvironment(environmentId);
+            if (!entry) return project;
+            project.environment = { id: entry.id, label: entry.label, description: entry.description };
+        }
     }
     invalidateReferences(project);
     advanceSetupStage(project);
@@ -1642,8 +1776,13 @@ async function applyNaturalEdit(project, message, { provider, model, think }) {
         visualChange = true;
     }
 
-    // 6. Environment change.
-    const envId = catalog.detectEnvironment(text);
+    // 6. Environment change (shared Scene/Location Library first, then the
+    //    legacy catalog, so every library scene can be named).
+    let envId = catalog.detectEnvironment(text);
+    if (!envId && /\b(?:environment|scene|setting|place|location|background|room)\b/i.test(text)) {
+        const scene = sceneLibrary.detectFromText(text);
+        if (scene) envId = scene.id;
+    }
     if (envId) {
         selectEnvironment(project, envId, envId === 'custom' ? text : '');
         changed.push('environment');
@@ -1790,6 +1929,10 @@ function directorProductionInput(project) {
         // sheet) condition every Director shot so the same person persists.
         identityReferences: (project.creator && Array.isArray(project.creator.identityReferences))
             ? project.creator.identityReferences.slice(0, 4)
+            : [],
+        identityCharacterId: project.creator && project.creator.characterId || '',
+        productReferences: project.product && Array.isArray(project.product.referenceImages)
+            ? project.product.referenceImages.slice(0, 6)
             : []
     };
 }
@@ -1877,7 +2020,11 @@ function buildCard(project) {
     }
     if (project.stage === STAGES.CREATIVE_DIRECTION) {
         card.outfitPacks = outfitPacks.listPacks().map((p) => ({ id: p.id, label: p.label, description: p.description }));
-        card.environments = catalog.ENVIRONMENTS.map((e) => ({ id: e.id, label: e.label }));
+        card.environments = sceneLibrary.listOptions().map((e) => ({
+            id: e.id, label: e.label, category: e.category, description: e.description
+        }));
+        // Preserve UGC Studio's "Custom" environment entry (free-text scene).
+        card.environments.push({ id: 'custom', label: 'Custom', category: 'other', description: '' });
         card.contentTypes = catalog.CONTENT_TYPES.map((c) => ({ id: c.id, label: c.label }));
     }
     return card;
@@ -1923,6 +2070,7 @@ function normalizeAction(value) {
         if (value.creator && typeof value.creator === 'object') out.creator = value.creator;
         if (value.scene && typeof value.scene === 'object') out.scene = value.scene;
         if (value.script && typeof value.script === 'object') out.script = value.script;
+        if (value.setup && typeof value.setup === 'object') out.setup = value.setup;
         if (value.direction === 'up' || value.direction === 'down') out.moveDirection = value.direction;
         if (value.sceneNumber !== undefined) out.sceneNumber = Number(value.sceneNumber);
         if (value.version !== undefined) out.projectVersion = Number(value.version);
@@ -1956,6 +2104,7 @@ module.exports = {
     selectCreator,
     randomCreator,
     skipCreator,
+    autoSetup,
     selectOutfit,
     selectEnvironment,
     selectContentType,
@@ -2005,7 +2154,7 @@ module.exports = {
     DURATION_LIMITS: prompts.DURATION_LIMITS,
     // catalog re-exports for API/UI
     listContentTypes: () => catalog.CONTENT_TYPES.slice(),
-    listEnvironments: () => catalog.ENVIRONMENTS.slice(),
+    listEnvironments: () => sceneLibrary.listOptions().concat([{ id: 'custom', label: 'Custom', category: 'other', description: '', referenceImage: '' }]),
     listPlatforms: () => catalog.PLATFORMS.slice(),
     listOutfitPacks: outfitPacks.listPacks,
     listCharacters: () => characterPresets.list(),

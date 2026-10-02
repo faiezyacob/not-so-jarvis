@@ -36,6 +36,28 @@ const CreatorStudioUI = (() => {
         return root ? Array.from(root.querySelectorAll('input:checked')).map((el) => el.value) : [];
     }
 
+    // The Scene selector reads the shared Scene/Location Library. "Auto" lets
+    // the concept decide; "Custom scene…" reveals a free-text field. An explicit
+    // library selection sends its sceneId so the exact shared Scene object is used.
+    function syncSceneCustom() {
+        const select = $('creatorScene');
+        const field = $('creatorSceneCustomField');
+        if (!select || !field) return;
+        field.hidden = select.value !== '__custom__';
+    }
+
+    function scenePayload() {
+        const select = $('creatorScene');
+        const value = select ? String(select.value || '') : '';
+        if (value === '__custom__') {
+            const custom = $('creatorSceneCustom') ? $('creatorSceneCustom').value.trim() : '';
+            return { sceneId: '', scene: custom || 'Auto' };
+        }
+        const scene = (catalogs && Array.isArray(catalogs.scenes) ? catalogs.scenes : [])
+            .find((item) => item.id === value) || null;
+        return { sceneId: value || '', scene: scene ? scene.name : 'Auto' };
+    }
+
     function renderTraits(selected) {
         const root = $('creatorPersonalityTraits');
         if (!root || !catalogs) return;
@@ -61,6 +83,8 @@ const CreatorStudioUI = (() => {
         const image = $('creatorCharacterImage');
         const name = $('creatorCharacterName');
         const identity = $('creatorCharacterIdentity');
+        const sheet = $('creatorCharacterSheet');
+        if (sheet) sheet.hidden = !character;
         if (!character) {
             image.hidden = true;
             image.removeAttribute('src');
@@ -98,6 +122,10 @@ const CreatorStudioUI = (() => {
         fillSelect($('creatorExpressionArc'), catalogs.expressionArcs, 'auto');
         fillSelect($('creatorBodyAction'), catalogs.bodyActions, 'conversational_gesture');
         fillSelect($('creatorOutfit'), catalogs.outfitPacks, '', 'Auto · Character wardrobe');
+        fillSelect($('creatorScene'), catalogs.scenes, '', 'Auto · let the concept decide');
+        const sceneSelect = $('creatorScene');
+        if (sceneSelect) sceneSelect.appendChild(option('__custom__', 'Custom scene…'));
+        syncSceneCustom();
     }
 
     async function refreshSession() {
@@ -116,6 +144,12 @@ const CreatorStudioUI = (() => {
             $('creatorCharacterSelect').value = session.characterId;
             paintCharacter();
             if (session.content) renderTraits(session.content.personality || ['playful']);
+            const sceneSelect = $('creatorScene');
+            if (sceneSelect && session.content && session.content.sceneId
+                && Array.from(sceneSelect.options).some((opt) => opt.value === session.content.sceneId)) {
+                sceneSelect.value = session.content.sceneId;
+                syncSceneCustom();
+            }
         }
         renderSession();
         if (session && session.status === 'generating') {
@@ -217,7 +251,8 @@ const CreatorStudioUI = (() => {
             cameraMotion: $('creatorCameraMotion').value,
             expressionArc: $('creatorExpressionArc').value,
             bodyAction: $('creatorBodyAction').value,
-            scene: $('creatorScene').value.trim() || 'Auto',
+            onCameraAction: $('creatorOnCameraAction').value.trim(),
+            ...scenePayload(),
             outfit: 'Auto',
             outfitPack: $('creatorOutfit').value,
             voice: {
@@ -258,7 +293,22 @@ const CreatorStudioUI = (() => {
             card.className = 'creator-suggestion-item';
             const text = document.createElement('p');
             text.className = 'creator-suggestion-text';
-            text.textContent = suggestion.text;
+            const concept = suggestion.concept || suggestion.text || '';
+            const action = suggestion.action || '';
+            const conceptLine = document.createElement('span');
+            conceptLine.className = 'creator-suggestion-part';
+            const conceptLabel = document.createElement('strong');
+            conceptLabel.textContent = 'Dialogue concept';
+            conceptLine.append(conceptLabel, document.createTextNode(' ' + concept));
+            text.appendChild(conceptLine);
+            if (action) {
+                const actionLine = document.createElement('span');
+                actionLine.className = 'creator-suggestion-part';
+                const actionLabel = document.createElement('strong');
+                actionLabel.textContent = 'On-camera action';
+                actionLine.append(actionLabel, document.createTextNode(' ' + action));
+                text.appendChild(actionLine);
+            }
             card.appendChild(text);
             if (suggestion.reason) {
                 const reason = document.createElement('span');
@@ -269,7 +319,8 @@ const CreatorStudioUI = (() => {
             const use = document.createElement('button');
             use.className = 'creator-suggestion-use';
             use.type = 'button';
-            use.dataset.suggestion = suggestion.text;
+            use.dataset.concept = concept;
+            use.dataset.action = action;
             use.textContent = 'Use this';
             card.appendChild(use);
             list.appendChild(card);
@@ -410,6 +461,7 @@ const CreatorStudioUI = (() => {
             }
             const concept = $('creatorConcept').value.trim();
             if (!concept) throw new Error('Add a short idea for what your creator wants to say.');
+            const onCameraAction = $('creatorOnCameraAction').value.trim();
             setProgress('Building the script and performance beats…', 8);
             if (typeof Chat === 'undefined' || !Chat.sendMessage) throw new Error('Chat is not ready yet.');
             Chat.sendMessage({
@@ -417,6 +469,7 @@ const CreatorStudioUI = (() => {
                 characters: [{ id: character.id }],
                 creatorStudioAction: {
                     type: 'generate', characterId: character.id, concept,
+                    onCameraAction,
                     contentType: $('creatorContentType').value,
                     personality,
                     speechBehavior: $('creatorSpeechBehavior').value,
@@ -428,7 +481,7 @@ const CreatorStudioUI = (() => {
                         pitch: $('creatorVoicePitch').value, energy: $('creatorEnergy').value,
                         emotion: $('creatorVoiceEmotion').value
                     },
-                    scene: $('creatorScene').value || 'Auto',
+                    ...scenePayload(),
                     outfit: 'Auto',
                     outfitPack: $('creatorOutfit').value,
                     camera: $('creatorCamera').value,
@@ -457,14 +510,31 @@ const CreatorStudioUI = (() => {
         $('creatorCharacterSelect').addEventListener('change', () => {
             paintCharacter();
         });
+        if ($('creatorScene')) $('creatorScene').addEventListener('change', syncSceneCustom);
+        const sheetButton = $('creatorCharacterSheet');
+        if (sheetButton) sheetButton.addEventListener('click', () => {
+            const characterId = $('creatorCharacterSelect').value;
+            if (characterId && window.CharacterIdentityUI && typeof window.CharacterIdentityUI.open === 'function') {
+                window.CharacterIdentityUI.open(characterId);
+            }
+        });
         $('creatorGenerate').addEventListener('click', generate);
-        $('creatorSuggestionButton').addEventListener('click', requestSuggestions);
+        $('creatorSuggestionButton').addEventListener('click', () => {
+            if (!$('creatorSuggestionPanel').hidden) {
+                closeSuggestions();
+                return;
+            }
+            requestSuggestions();
+        });
+        $('creatorSuggestionClose').addEventListener('click', closeSuggestions);
         $('creatorSuggestionMore').addEventListener('click', requestSuggestions);
         $('creatorSuggestionList').addEventListener('click', (event) => {
-            const button = event.target.closest('button[data-suggestion]');
+            const button = event.target.closest('button[data-concept]');
             if (!button) return;
-            $('creatorConcept').value = button.dataset.suggestion || '';
+            $('creatorConcept').value = button.dataset.concept || '';
             $('creatorConcept').dispatchEvent(new Event('input', { bubbles: true }));
+            $('creatorOnCameraAction').value = button.dataset.action || '';
+            $('creatorOnCameraAction').dispatchEvent(new Event('input', { bubbles: true }));
             closeSuggestions();
             $('creatorConcept').focus();
         });
@@ -489,7 +559,8 @@ const CreatorStudioUI = (() => {
                 characters: [{ id: session.characterId }],
                 creatorStudioAction: {
                     type: 'generate', characterId: session.characterId,
-                    dimension, concept: session.content.concept, duration: session.content.duration,
+                    dimension, concept: session.content.concept, onCameraAction: session.content.onCameraAction,
+                    duration: session.content.duration,
                     voice: dimension === 'voice' ? session.content.voice : undefined
                 }
             });

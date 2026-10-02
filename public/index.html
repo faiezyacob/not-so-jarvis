@@ -98,9 +98,9 @@
                                 <pre class="settings-log" id="setupJobLog" hidden></pre>
                             </div>
                         </div>
-                        <div class="settings-card" data-search="setup custom nodes upscale ultimatesd seedvr2 vhs rtx qwen h3 install">
+                        <div class="settings-card" data-search="setup custom nodes upscale ultimatesd seedvr2 vhs rtx qwen h3 minimax refmods references character product object install">
                             <div class="settings-card-title">CUSTOM NODES (UPSCALE INCLUDED)</div>
-                            <div class="settings-card-sub">Checked against ComfyUI's loaded nodes. Packs install with git into ComfyUI/custom_nodes/ — restart ComfyUI afterwards.</div>
+                            <div class="settings-card-sub">Checked against ComfyUI's loaded nodes. Packs install with git into ComfyUI/custom_nodes/; Python requirements install into ComfyUI's environment. Restart ComfyUI afterwards.</div>
                             <div class="settings-field">
                                 <div class="setup-list" id="setupNodes"></div>
                             </div>
@@ -574,7 +574,7 @@
                             <span class="settings-hint">Default: minimax_h3_audio_vae_fp32.safetensors</span>
                         </div>
                         </div>
-                        <div class="settings-card" data-search="video duration size attention auto comfy kitchen sage sparse output length">
+                        <div class="settings-card" data-search="video duration size aspect ratio portrait landscape square attention auto comfy kitchen sage sparse output length">
                             <div class="settings-card-title">OUTPUT</div>
                             <div class="settings-field-row">
                         <div class="settings-field">
@@ -600,6 +600,20 @@
                                 <option value="M">M (1MP)</option>
                                 <option value="L">L (1.75MP)</option>
                             </select>
+                        </div>
+                        <div class="settings-field">
+                            <label class="settings-field-label" for="videoAspectRatio">Aspect Ratio</label>
+                            <select class="settings-select" id="videoAspectRatio">
+                                <option value="16:9">16:9 Landscape</option>
+                                <option value="9:16">9:16 Portrait</option>
+                                <option value="1:1">1:1 Square</option>
+                                <option value="4:3">4:3 Landscape</option>
+                                <option value="3:4">3:4 Portrait</option>
+                                <option value="3:2">3:2 Landscape</option>
+                                <option value="2:3">2:3 Portrait</option>
+                                <option value="21:9">21:9 Ultrawide</option>
+                            </select>
+                            <span class="settings-hint">Applied to normal, UGC, Creator Studio, and reference-guided videos.</span>
                         </div>
                         <div class="settings-field">
                             <label class="settings-field-label" for="videoAttentionBackend">Attention</label>
@@ -788,6 +802,17 @@
                             <pre class="settings-log" id="videoFaceRefineLog" hidden></pre>
                         </div>
                         </div>
+                        <div class="settings-card" data-search="video upscale auto upscale super resolution seedvr2 rtx enhance resolution quality">
+                            <div class="settings-card-title">AUTO UPSCALE</div>
+                            <div class="settings-card-sub">Run the video upscale pipeline on every generated video. The original clip is kept, so the gallery can compare them side by side.</div>
+                        <div class="settings-field">
+                            <label class="settings-toggle">
+                                <span class="settings-toggle-label">Upscale every generated video</span>
+                                <input type="checkbox" id="videoAutoUpscaleEnabled">
+                            </label>
+                            <span class="settings-hint">Runs automatically after each video using the shared UPSCALE settings (engine, resolution, profile). Best-effort — a failed upscale keeps the base video.</span>
+                        </div>
+                        </div>
                         <div class="settings-card" data-search="video lora stack trigger word strength">
                             <div class="settings-card-title">LORA STACK</div>
                             <div class="settings-card-sub">Attach LoRAs to every video generation. Stacked in order (model-only), each with its own strength.</div>
@@ -840,24 +865,85 @@
                 <div>
                     <div class="creator-studio-kicker">NOT-SO-JARVIS · CONTENT TOOLS</div>
                     <h1 id="ugcStudioTitle">UGC STUDIO</h1>
-                    <p>Plan a product-led creator video, then review each step in chat.</p>
+                    <p>Set the product, creator and direction, then build the script, scene frames and final video in one step.</p>
                 </div>
                 <button class="creator-studio-close" id="ugcStudioClose" type="button" aria-label="Close UGC Studio" title="Close UGC Studio">×</button>
             </header>
             <div class="ugc-studio-body">
                 <div class="ugc-studio-form">
-                    <label class="creator-studio-field" for="ugcStudioBrief">
-                        <span>What are we making?</span>
-                        <textarea id="ugcStudioBrief" rows="4" maxlength="1200" placeholder="A relaxed TikTok unboxing for my handmade skincare brand..."></textarea>
+                    <div class="creator-studio-section-label">PRODUCT</div>
+                    <div class="creator-studio-row">
+                        <label class="creator-studio-field creator-studio-field--wide">
+                            <span>Product</span>
+                            <select id="ugcProductSelect"></select>
+                        </label>
+                    </div>
+                    <div class="creator-studio-row" id="ugcNewProductRow" hidden>
+                        <label class="creator-studio-field"><span>New product name</span><input id="ugcProductName" type="text" maxlength="120" placeholder="Glow Serum"></label>
+                        <label class="creator-studio-field"><span>Brand</span><input id="ugcProductBrand" type="text" maxlength="120" placeholder="Optional"></label>
+                    </div>
+
+                    <div class="creator-studio-section-label">CREATOR</div>
+                    <div class="creator-studio-row">
+                        <label class="creator-studio-field creator-studio-field--wide">
+                            <span>On camera</span>
+                            <select id="ugcCreatorSelect"></select>
+                        </label>
+                    </div>
+                    <div class="creator-studio-character" id="ugcCreatorPreview">
+                        <img id="ugcCreatorImage" alt="Selected creator portrait" hidden>
+                        <div>
+                            <strong id="ugcCreatorName">Random creator</strong>
+                            <span id="ugcCreatorIdentity">A new creator will be cast for this video.</span>
+                        </div>
+                        <button class="creator-sheet-btn" id="ugcCreatorSheet" type="button" hidden>Sheet</button>
+                    </div>
+                    <div class="creator-studio-row creator-studio-row--three" id="ugcCreatorProfileRow" hidden>
+                        <label class="creator-studio-field"><span>Appearance</span><select id="ugcCreatorAppearance"></select></label>
+                        <label class="creator-studio-field"><span>Age</span><select id="ugcCreatorAge"></select></label>
+                        <label class="creator-studio-field"><span>Gender</span><select id="ugcCreatorGender"></select></label>
+                    </div>
+
+                    <div class="creator-studio-section-label">CREATIVE DIRECTION</div>
+                    <div class="creator-studio-row">
+                        <label class="creator-studio-field"><span>Content type</span><select id="ugcContentType"></select></label>
+                        <label class="creator-studio-field"><span>Outfit</span><select id="ugcOutfit"></select></label>
+                    </div>
+                    <div class="creator-studio-row">
+                        <label class="creator-studio-field"><span>Custom outfit</span><input id="ugcOutfitCustom" type="text" maxlength="400" placeholder="Only if you did not pick a pack"></label>
+                        <label class="creator-studio-field"><span>Environment</span><select id="ugcEnvironment"></select></label>
+                    </div>
+                    <div class="creator-studio-row" id="ugcEnvironmentCustomRow" hidden>
+                        <label class="creator-studio-field creator-studio-field--wide"><span>Custom environment</span><input id="ugcEnvironmentCustom" type="text" maxlength="300" placeholder="e.g. a sunlit modern bathroom"></label>
+                    </div>
+
+                    <div class="creator-studio-section-label">BRIEF</div>
+                    <label class="creator-studio-field">
+                        <span>Creative direction</span>
+                        <textarea id="ugcStudioBrief" rows="3" maxlength="1200" placeholder="A relaxed TikTok unboxing for my handmade skincare brand..."></textarea>
+                        <small>Optional. Describes the idea; the fields above stay authoritative.</small>
                     </label>
-                    <p class="ugc-studio-hint">Add your product, audience, platform, or creative idea. You can fill in the details during the guided workflow.</p>
+                    <div class="creator-studio-row creator-studio-row--three">
+                        <label class="creator-studio-field"><span>Duration (s)</span><input id="ugcDuration" type="number" min="1" max="60" value="15"></label>
+                        <label class="creator-studio-field"><span>Platform</span><select id="ugcPlatform"></select></label>
+                        <label class="creator-studio-field"><span>Tone</span><input id="ugcTone" type="text" maxlength="200" placeholder="natural, upbeat"></label>
+                    </div>
+                    <div class="creator-studio-row">
+                        <label class="creator-studio-field"><span>Target audience</span><input id="ugcAudience" type="text" maxlength="300" placeholder="Optional"></label>
+                        <label class="creator-studio-field"><span>Key message</span><input id="ugcKeyMessage" type="text" maxlength="400" placeholder="Optional"></label>
+                    </div>
+                    <div class="creator-studio-row">
+                        <label class="creator-studio-field"><span>Call to action</span><input id="ugcCta" type="text" maxlength="300" placeholder="Optional"></label>
+                        <label class="creator-studio-field"><span>Additional instructions</span><input id="ugcExtra" type="text" maxlength="800" placeholder="Optional"></label>
+                    </div>
+
                     <div class="ugc-studio-current" id="ugcStudioCurrent" hidden>
                         <div class="creator-studio-section-label">CURRENT PROJECT</div>
                         <div class="ugc-studio-current-copy" id="ugcStudioCurrentCopy"></div>
                         <button class="creator-studio-new-session" id="ugcStudioReturn" type="button">Return to project</button>
                     </div>
                     <div class="creator-studio-actions">
-                        <button class="creator-studio-generate" id="ugcStudioStart" type="button">Start UGC project</button>
+                        <button class="creator-studio-generate" id="ugcStudioStart" type="button">Create UGC video</button>
                         <span class="creator-studio-status" id="ugcStudioStatus" aria-live="polite"></span>
                     </div>
                 </div>
@@ -890,6 +976,7 @@
                             <strong id="creatorCharacterName">Choose a Character</strong>
                             <span id="creatorCharacterIdentity">The Character record and approved portrait anchor identity, appearance and wardrobe.</span>
                         </div>
+                        <button class="creator-sheet-btn" id="creatorCharacterSheet" type="button" hidden>Sheet</button>
                     </div>
                     <div class="creator-studio-section-label">PERSONALITY DIRECTION · THIS VIDEO</div>
                     <div class="creator-studio-traits" id="creatorPersonalityTraits"></div>
@@ -901,13 +988,22 @@
                     </label>
                     <div class="creator-studio-content-idea">
                         <label class="creator-studio-field">
-                            <span>Concept</span>
-                            <textarea id="creatorConcept" rows="3" maxlength="500" placeholder="Tell my audience about my weekend"></textarea>
+                            <span>Dialogue concept · what the creator talks about</span>
+                            <textarea id="creatorConcept" rows="3" maxlength="500" placeholder="Share a favorite weekend moment with viewers"></textarea>
+                            <small>Used to write her spoken lines. Describe the topic or message, not a physical action.</small>
+                        </label>
+                        <label class="creator-studio-field">
+                            <span>On-camera action · what the creator does</span>
+                            <textarea id="creatorOnCameraAction" rows="2" maxlength="500" placeholder="Picks up a mug, shows it to the camera, then sets it down"></textarea>
+                            <small>Visual direction only; this will not be spoken. Add only details you want shown.</small>
                         </label>
                         <div class="creator-suggestion-anchor">
                             <button class="creator-suggestion-trigger" id="creatorSuggestionButton" type="button" aria-expanded="false" aria-controls="creatorSuggestionPanel">✨ AI Suggestion</button>
                             <section class="creator-suggestion-panel" id="creatorSuggestionPanel" aria-label="Creator Studio content suggestions" aria-live="polite" hidden>
-                                <div class="creator-suggestion-heading">✨ AI SUGGESTION</div>
+                                <div class="creator-suggestion-header">
+                                    <div class="creator-suggestion-heading">✨ AI SUGGESTION</div>
+                                    <button class="creator-suggestion-close" id="creatorSuggestionClose" type="button" aria-label="Dismiss AI suggestions" title="Dismiss">×</button>
+                                </div>
                                 <div class="creator-suggestion-based" id="creatorSuggestionBased" hidden></div>
                                 <div class="creator-suggestion-message" id="creatorSuggestionMessage" hidden></div>
                                 <div class="creator-suggestion-list" id="creatorSuggestionList"></div>
@@ -921,9 +1017,10 @@
                     </div>
                     <div class="creator-studio-row">
                         <label class="creator-studio-field"><span>Voice</span><select id="creatorVoice"><option value="">Default creator voice</option></select></label>
-                        <label class="creator-studio-field"><span>Scene</span><input id="creatorScene" type="text" value="Auto" maxlength="200"></label>
+                        <label class="creator-studio-field"><span>Scene</span><select id="creatorScene"><option value="">Auto · let the concept decide</option></select></label>
                         <label class="creator-studio-field"><span>Outfit</span><select id="creatorOutfit"></select></label>
                     </div>
+                    <label class="creator-studio-field" id="creatorSceneCustomField" hidden><span>Custom scene</span><input id="creatorSceneCustom" type="text" maxlength="200" placeholder="e.g. a sunlit loft with plants"></label>
 
                     <details class="creator-studio-advanced">
                         <summary>Advanced performance</summary>
@@ -1093,6 +1190,13 @@
                             hidden
                         >
                         <p class="playground-section-hint">&ldquo;Theme decides&rdquo; picks clothing to suit the selected scene.</p>
+                    </section>
+
+                    <section class="playground-section">
+                        <h3 class="playground-section-title">Scene</h3>
+                        <label class="settings-field-label" for="playgroundScene">Where the character is</label>
+                        <select class="settings-select" id="playgroundScene"></select>
+                        <p class="playground-section-hint">&ldquo;Theme decides&rdquo; keeps the themed location. &ldquo;Auto&rdquo; recommends a Scene from the selected activity. Scenes are shared with UGC Studio and Creator Studio.</p>
                     </section>
 
                     <section class="playground-section">

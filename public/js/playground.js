@@ -705,6 +705,11 @@ const PlaygroundUI = (() => {
     let activityCache = null;
     let activityCategories = null;
     let activityChoice = '';
+    // The shared Scene / Location selector: '', 'auto', 'random' or a scene id.
+    let sceneSelect = null;
+    let sceneCache = null;
+    let sceneCategories = null;
+    let sceneChoice = '';
     let faceActionSelect = null;
     let faceExpressionSelect = null;
     let faceMouthSelect = null;
@@ -814,6 +819,22 @@ const PlaygroundUI = (() => {
             activityCategories = [];
         }
         return activityCache;
+    }
+
+    async function loadScenes() {
+        if (sceneCache) return sceneCache;
+        try {
+            const res = await fetch('/api/scenes/options');
+            const data = await res.json();
+            sceneCache = Array.isArray(data.scenes) ? data.scenes : [];
+            sceneCategories = Array.isArray(data.categories) && data.categories.length
+                ? data.categories
+                : [];
+        } catch (e) {
+            sceneCache = [];
+            sceneCategories = [];
+        }
+        return sceneCache;
     }
 
     async function loadFaceActions() {
@@ -939,6 +960,75 @@ const PlaygroundUI = (() => {
         if (value === 'random') return 'Random';
         const activity = (activityCache || []).find((a) => a.id === value);
         return activity ? activity.label : value;
+    }
+
+    // The Scene selector mirrors the Activity selector: "Theme decides" (keep
+    // the themed location), Auto (recommended by the selected activity), Random,
+    // then the shared Scene / Location Library grouped by category.
+    function renderScenes() {
+        if (!sceneSelect) return;
+        const current = sceneChoice;
+        sceneSelect.innerHTML = '';
+        const addOption = (value, label) => {
+            const option = document.createElement('option');
+            option.value = value;
+            option.textContent = label;
+            sceneSelect.appendChild(option);
+        };
+        addOption('', 'Theme decides');
+        addOption('auto', 'Auto \u2014 recommended by activity');
+        addOption('random', 'Random scene');
+        const byId = sceneCache || [];
+        const categories = sceneCategories || [];
+        const grouped = new Set();
+        categories.forEach((category) => {
+            const items = byId.filter((scene) => scene.category === category.id);
+            if (!items.length) return;
+            const group = document.createElement('optgroup');
+            group.label = category.label;
+            items.forEach((scene) => {
+                grouped.add(scene.id);
+                const option = document.createElement('option');
+                option.value = scene.id;
+                option.textContent = scene.name || scene.label || scene.id;
+                group.appendChild(option);
+            });
+            sceneSelect.appendChild(group);
+        });
+        const ungrouped = byId.filter((scene) => !grouped.has(scene.id));
+        if (ungrouped.length) {
+            const group = document.createElement('optgroup');
+            group.label = 'Other';
+            ungrouped.forEach((scene) => {
+                const option = document.createElement('option');
+                option.value = scene.id;
+                option.textContent = scene.name || scene.label || scene.id;
+                group.appendChild(option);
+            });
+            sceneSelect.appendChild(group);
+        }
+        sceneSelect.value = current || '';
+        updateSummary();
+    }
+
+    function setSceneChoice(value) {
+        sceneChoice = value || '';
+        popoverDirty = true;
+        if (sceneSelect && sceneSelect.value !== sceneChoice) sceneSelect.value = sceneChoice;
+        updateSummary();
+    }
+
+    function selectedScene() {
+        return sceneSelect ? String(sceneSelect.value || '') : '';
+    }
+
+    function sceneSummaryLabel() {
+        const value = selectedScene();
+        if (!value) return 'Theme decides';
+        if (value === 'auto') return 'Auto';
+        if (value === 'random') return 'Random';
+        const scene = (sceneCache || []).find((s) => s.id === value);
+        return scene ? (scene.name || scene.label || value) : value;
     }
 
     function faceActionSummaryLabel() {
@@ -1252,6 +1342,8 @@ const PlaygroundUI = (() => {
             renderOutfitPacks();
             await loadActivities();
             renderActivities();
+            await loadScenes();
+            renderScenes();
             await loadFaceActions();
             renderFaceActions();
             applyActiveConcept(await loadActiveConcept());
@@ -1318,6 +1410,12 @@ const PlaygroundUI = (() => {
         activityChoice = activityMode === 'none' ? ''
             : (activityMode === 'explicit' ? (concept.activityId || (concept.concept && concept.concept.activityId) || '') : activityMode);
         if (activitySelect) activitySelect.value = activityChoice;
+        // Reflect the active shared Scene selection so it is visible and
+        // clearable before the next Surprise.
+        const sceneMode = concept.sceneMode || (concept.concept && concept.concept.sceneMode) || '';
+        sceneChoice = sceneMode === 'none' ? ''
+            : (sceneMode === 'explicit' ? (concept.sceneId || (concept.concept && concept.concept.sceneId) || '') : sceneMode);
+        if (sceneSelect) sceneSelect.value = sceneChoice;
         const activeFaceAction = concept.faceAction || null;
         const nestedFaceComponents = concept.concept && concept.concept.faceActionComponents;
         if (activeFaceAction) {
@@ -1423,9 +1521,10 @@ const PlaygroundUI = (() => {
     // primary button and kept in sync as the controls change.
     function updateSummary() {
         if (!summaryEl) return;
-        summaryEl.textContent = 'Scene: ' + selectedThemeLabel()
+        summaryEl.textContent = 'Theme: ' + selectedThemeLabel()
             + ' \u00b7 Character: ' + characterSummaryLabel()
             + ' \u00b7 Wardrobe: ' + wardrobeSummaryLabel()
+            + ' \u00b7 Scene: ' + sceneSummaryLabel()
             + ' \u00b7 Activity: ' + activitySummaryLabel()
             + ' \u00b7 Face: ' + faceActionSummaryLabel();
     }
@@ -1449,6 +1548,7 @@ const PlaygroundUI = (() => {
         const locks = selectedLocks();
         const outfit = selectedOutfit();
         const activity = selectedActivity();
+        const sceneId = selectedScene();
         const faceAction = selectedFaceAction();
         close();
         send(customPrompt ? 'Use my character with my prompt' : 'Surprise me with a creative concept', {
@@ -1461,6 +1561,7 @@ const PlaygroundUI = (() => {
             outfitPack: outfit.outfitPack,
             outfitPackCustom: outfit.outfitPackCustom,
             activity,
+            sceneId,
             faceAction: faceAction.faceAction,
             faceActionComponents: faceAction.faceActionComponents,
             customPrompt
@@ -1512,6 +1613,7 @@ const PlaygroundUI = (() => {
         outfitPacksEl = document.getElementById('playgroundOutfitPacks');
         outfitCustomEl = document.getElementById('playgroundOutfitCustom');
         activitySelect = document.getElementById('playgroundActivity');
+        sceneSelect = document.getElementById('playgroundScene');
         faceActionSelect = document.getElementById('playgroundFaceAction');
         faceExpressionSelect = document.getElementById('playgroundFaceExpression');
         faceMouthSelect = document.getElementById('playgroundFaceMouth');
@@ -1575,6 +1677,7 @@ const PlaygroundUI = (() => {
         if (promptEl) promptEl.addEventListener('input', () => { popoverDirty = true; syncPromptMode(); });
         if (outfitCustomEl) outfitCustomEl.addEventListener('input', () => { popoverDirty = true; });
         if (activitySelect) activitySelect.addEventListener('change', () => { popoverDirty = true; updateSummary(); });
+        if (sceneSelect) sceneSelect.addEventListener('change', () => { popoverDirty = true; updateSummary(); });
         if (faceActionSelect) faceActionSelect.addEventListener('change', () => {
             faceActionChoice = faceActionSelect.value || 'auto';
             faceActionComponentsDirty = faceActionChoice === 'custom';

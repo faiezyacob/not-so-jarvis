@@ -211,7 +211,7 @@ function resolveExistingSource(conversationId, message, referenceImage) {
 
 // Create the production plan for a fresh request. The brief is canonical from
 // here on; later stages are rebuilt from it, never from the raw message.
-async function createProduction({ conversationId, message, provider, model, think, referenceImage, character }) {
+async function createProduction({ conversationId, message, provider, model, think, referenceImage, character, semanticReferences }) {
     const parsedDuration = typeof videoGenerator.parseRequestedVideoDuration === 'function'
         ? videoGenerator.parseRequestedVideoDuration(message)
         : null;
@@ -232,9 +232,11 @@ async function createProduction({ conversationId, message, provider, model, thin
         sourceImage,
         originalRequest: message
     });
+    production.studio = 'director';
     if (character && Array.isArray(character.identityReferences)) {
         production.identityReferences = character.identityReferences.slice(0, 9);
     }
+    production.semanticReferences = Array.isArray(semanticReferences) ? semanticReferences.slice(0, 16) : [];
     if (sourceImage) {
         // Starting from an existing image: record it as the opening frame and
         // treat it as approved so the Director goes straight to the video stage.
@@ -257,7 +259,7 @@ async function createProduction({ conversationId, message, provider, model, thin
 // the caller owns the canonical brief and the approved opening frame, so the
 // production starts at the approval checkpoint with the frame in place. The
 // brief's shotList (built from the UGC scene plan) drives the H3 cut sequence.
-function createUgcProduction({ conversationId, brief, duration, openingFrame, originalRequest, references, identityReferences }) {
+function createUgcProduction({ conversationId, brief, duration, openingFrame, originalRequest, references, identityReferences, identityCharacterId, productReferences, semanticReferences }) {
     const production = productionPlan.create({
         conversationId,
         brief,
@@ -265,6 +267,7 @@ function createUgcProduction({ conversationId, brief, duration, openingFrame, or
         sourceImage: openingFrame ? openingFrame.filename : null,
         originalRequest: originalRequest || (brief && brief.originalRequest) || ''
     });
+    production.studio = 'ugc';
     // Every approved scene frame travels with the production so the video stage
     // can condition H3 on all of them (reference-to-video), not only <Picture 1>.
     production.references = (Array.isArray(references) ? references : [])
@@ -282,6 +285,9 @@ function createUgcProduction({ conversationId, brief, duration, openingFrame, or
         .map((name) => String(name || '').trim())
         .filter(Boolean)
         .slice(0, 9);
+    production.identityCharacterId = String(identityCharacterId || '').trim();
+    production.productReferences = Array.isArray(productReferences) ? productReferences.slice(0, 8) : [];
+    production.semanticReferences = Array.isArray(semanticReferences) ? semanticReferences.slice(0, 16) : [];
     if (openingFrame && openingFrame.filename) {
         production.image = {
             url: openingFrame.url || ('/generated/' + encodeURIComponent(openingFrame.filename)),
@@ -460,18 +466,6 @@ async function buildVideoStageRequest(production, { provider, model, think }) {
         ? production.image.rawFilename
         : null;
     const referenceImages = references.map((r) => r.filename);
-    // Identity continuity: an approved character's identity references are
-    // appended after any scene frames so every Director shot inherits the same
-    // person. The approved base image doubles as <Picture 1> when no explicit
-    // scene frame exists. User refs are preserved first; identity refs fill the
-    // remaining reference slots.
-    const identityRefs = Array.isArray(production.identityReferences)
-        ? production.identityReferences
-        : [];
-    for (const name of identityRefs) {
-        if (!name || referenceImages.includes(name) || referenceImages.length >= 9) continue;
-        referenceImages.push(name);
-    }
     if (upscaledFrame && referenceImages.length) referenceImages[0] = upscaledFrame;
     const useRefs = referenceImages.length > 0;
     const sourceImageRawFilename = useRefs
@@ -491,7 +485,8 @@ async function buildVideoStageRequest(production, { provider, model, think }) {
         previous_prompt: '',
         creative_mode: 'none',
         has_reference_image: !useRefs && Boolean(sourceImageRawFilename),
-        // Reference-to-video: every approved scene frame conditions the render.
+        // Only scene/keyframe references use native ref2va anchoring. Character,
+        // product and other reusable assets travel through the central RefMod path.
         reference_images: useRefs ? referenceImages : [],
         requested_duration: duration,
         explicit_constraints: production.brief.explicitConstraints || [],
@@ -518,6 +513,30 @@ async function buildVideoStageRequest(production, { provider, model, think }) {
         videoMode: useRefs ? 'ref2va' : (sourceImageRawFilename ? 'i2va' : 't2va'),
         sourceImageRawFilename,
         referenceImages: useRefs ? referenceImages : [],
+        semanticReferences: Array.isArray(production.semanticReferences) && production.semanticReferences.length
+            ? production.semanticReferences
+            : (Array.isArray(production.identityReferences) ? production.identityReferences : []).map((filename, index) => ({
+                id: 'character:' + (production.identityCharacterId || 'director') + (index ? ':' + index : ''),
+                entityId: production.identityCharacterId || '',
+                name: production.brief && production.brief.characterName || production.brief && production.brief.subject || 'Character',
+                type: 'character',
+                source: '/generated/' + encodeURIComponent(path.basename(String(filename || ''))),
+                mode: 'full',
+                strength: 1,
+                priority: 1,
+                required: true,
+                order: index
+            })).concat((production.productReferences || []).map((source, index) => ({
+                id: 'product:' + (production.brief && production.brief.productName || 'director') + ':' + index,
+                name: production.brief && production.brief.productName || 'Product',
+                type: 'product',
+                source,
+                mode: index === 0 ? 'full' : 'compressed',
+                strength: index === 0 ? 0.95 : 0.72,
+                priority: 3,
+                required: false,
+                order: index + 4
+            }))),
         duration: director.duration || duration,
         width: director.width,
         height: director.height

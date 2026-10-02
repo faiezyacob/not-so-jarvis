@@ -312,6 +312,8 @@ function start(input = {}) {
     // exploration" silently drop the appearance/age/gender controls.
     if (mode === 'none' && !characterGen.isRandomProfile(profile)) mode = 'random_character';
     const activitySelection = String(input.activity || '').trim();
+    // Shared Scene / Location selection ("", "auto", "random" or a library id).
+    const sceneSelection = String(input.sceneId || input.sceneSelection || '').trim();
     const concept = conceptEngine.assembleConcept({
         theme,
         mode,
@@ -330,6 +332,9 @@ function start(input = {}) {
         // The Activity Library selection ("", "auto", "random" or an id).
         activity: activitySelection,
         avoidActivityIds,
+        // The shared Scene / Location selection (independent of the activity).
+        sceneId: sceneSelection,
+        avoidSceneIds: Array.isArray(previous && previous.sceneIds) ? previous.sceneIds : [],
         // The Face Action selection ("auto", "random", a preset id, or explicit
         // expression/mouth/eyes/head components).
         faceAction: input.faceAction,
@@ -354,6 +359,7 @@ function start(input = {}) {
         outfitPack: concept.outfitPack || '',
         outfitPackCustom: concept.outfitPackCustom || '',
         activity: activitySelection,
+        sceneSelection,
         faceAction: String(input.faceAction || 'auto').trim(),
         faceActionComponents: input.faceActionComponents && typeof input.faceActionComponents === 'object'
             ? Object.assign({}, input.faceActionComponents)
@@ -448,6 +454,9 @@ function again(session, options = {}) {
         // re-roll; an auto pick re-fits the new scene.
         activity: session.activity,
         avoidActivityIds,
+        // The shared Scene selection persists across the re-roll (an explicit id
+        // stays fixed; auto/random re-picks).
+        sceneId: session.sceneSelection,
         // Auto mode varies expressions across the same locked character and
         // content style; an explicit preset remains pinned across re-rolls.
         faceAction: session.concept && session.concept.userPrompt && session.faceAction === 'auto'
@@ -587,6 +596,9 @@ function modify(session, action = {}) {
             // A popover activity selection persists; otherwise the session's.
             activity: activityProvided ? activitySelection : session.activity,
             avoidActivityIds,
+            // A popover Scene selection persists; otherwise the session's.
+            sceneId: Object.prototype.hasOwnProperty.call(action, 'sceneId')
+                ? action.sceneId : session.sceneSelection,
             faceAction: faceActionProvided ? faceActionValue
                 : (session.concept && session.concept.userPrompt && session.faceAction === 'auto'
                     && !session.faceActionComponents ? undefined : (session.faceAction || 'auto')),
@@ -612,6 +624,16 @@ function modify(session, action = {}) {
                 avoidActivityIds
             });
         }
+    }
+    // A popover Scene selection is authoritative; a typed environment change
+    // (not a library selection) owns the scene wording, so the previous shared
+    // Scene id is cleared to keep them in sync.
+    if (Object.prototype.hasOwnProperty.call(action, 'sceneId')) {
+        concept = conceptEngine.resolveConceptScene(concept, { selection: action.sceneId, rng: action.rng });
+        session.sceneSelection = String(action.sceneId || '');
+    } else if (changes && changes.environment) {
+        conceptEngine.clearSceneFields(concept);
+        session.sceneSelection = '';
     }
     if (faceActionProvided && ['auto', 'random'].includes(faceActionValue.trim().toLowerCase())) {
         conceptEngine.resolveConceptFaceAction(concept, {
@@ -1019,6 +1041,9 @@ function normalizeAction(value) {
         else if (typeof value.customOutfit === 'string') out.outfitPackCustom = value.customOutfit;
         // Activity Library selection ("", "auto", "random" or an activity id).
         if (typeof value.activity === 'string') out.activity = value.activity;
+        // Shared Scene / Location selection ("", "auto", "random" or a scene id).
+        if (typeof value.sceneId === 'string') out.sceneId = value.sceneId;
+        else if (typeof value.sceneSelection === 'string') out.sceneId = value.sceneSelection;
         // Face Action selection or an explicit component composition.
         if (typeof value.faceAction === 'string') out.faceAction = value.faceAction;
         if (value.faceActionComponents && typeof value.faceActionComponents === 'object') {

@@ -106,7 +106,7 @@
                 });
                 cell.appendChild(thumb);
             }
-            if (!isVideo(img) && img.upscale && img.upscale.source) cell.appendChild(makeCompareBadge('generated-compare-badge'));
+            if (img.upscale && img.upscale.source) cell.appendChild(makeCompareBadge('generated-compare-badge'));
             cell.appendChild(makeDeleteButton(img, cell, widgetImages));
             gridEl.appendChild(cell);
             count += 1;
@@ -205,8 +205,9 @@
     // Map original filename → the upscaled entry that references it (entries
     // recorded with an "upscale.source" field pointing at the original file).
     // Used to hide the original tile so the grid only shows the upscaled
-    // output. Videos included here too so legacy video pairs also collapse to
-    // just the upscaled video (compare UI itself stays image-only below).
+    // output. Video pairs are included too: the original video is kept on
+    // upscale, so the grid hides it and shows the upscaled clip with a
+    // compare badge.
     function upscaleChildMap(images) {
         const map = new Map();
         images.forEach((img) => {
@@ -219,22 +220,24 @@
 
     // Resolve the { original, upscaled } URLs for a gallery entry: either the
     // entry IS the upscaled one (has .upscale.source) or it has an upscaled
-    // child in the list. Returns null when no pairing exists. Videos never
-    // compare — upscales replace the original file instead.
+    // child in the list. Returns null when no pairing exists. The original
+    // entry must still be present — a legacy video upscale whose source file
+    // was deleted has no partner to compare against.
     function compareTargetFor(img, images) {
-        if (isVideo(img)) return null;
+        const list = images || [];
         if (img.upscale && img.upscale.source) {
-            const originalMeta = (images || []).find((x) =>
+            const originalMeta = list.find((x) =>
                 lastSegment(x.file) === lastSegment(img.upscale.source)) || null;
+            if (!originalMeta) return null;
             return {
-                original: '/generated/' + encodeURIComponent(lastSegment(img.upscale.source)),
+                original: originalMeta.url,
                 upscaled: img.url,
                 originalMeta: originalMeta,
                 upscaledMeta: img
             };
         }
-        const child = (images || []).find((x) =>
-            !isVideo(x) && x.upscale && x.upscale.source && lastSegment(x.upscale.source) === lastSegment(img.url));
+        const child = list.find((x) =>
+            x.upscale && x.upscale.source && lastSegment(x.upscale.source) === lastSegment(img.url));
         if (child) {
             return { original: img.url, upscaled: child.url, originalMeta: img, upscaledMeta: child };
         }
@@ -261,6 +264,10 @@
             const data = await res.json();
             const fileName = lastSegment(src);
             const images = (data.images || []).map(withUrl);
+            // Keep the module-level list fresh so openPreview can resolve the
+            // upscale partner (for the Compare button) even when this file was
+            // opened from chat before the widget's next refresh.
+            widgetImages = images;
             return images.find((img) => lastSegment(img.file) === fileName) || null;
         } catch (err) {
             return null;
@@ -577,10 +584,10 @@
         return '—';
     }
 
-    // "before → after" label for an upscaled video. The source entry is
-    // deleted on upscale, so the before-size comes from the stored upscale
-    // metadata; the after-size prefers the recorded dimensions and falls back
-    // to probedDims (the live video element's intrinsic size).
+    // "before → after" label for an upscaled video. The before-size comes from
+    // the stored upscale metadata (and the kept original entry); the after-size
+    // prefers the recorded dimensions and falls back to probedDims (the live
+    // video element's intrinsic size).
     function videoUpscaleLabel(img, probedDims) {
         const up = (img && img.upscale) || {};
         const base = (up.sourceWidth && up.sourceHeight)
@@ -1054,6 +1061,301 @@
         renderTransform();
     }
 
+    // --- Side-by-side video compare lightbox ---
+    //
+    // Video upscales keep the original, so this view plays both clips next to
+    // each other with one shared transport: play/pause/seek keep the pair in
+    // sync (progress is matched by ratio so different frame rates stay
+    // aligned). The original stays muted; the shared volume drives the
+    // upscaled clip's audio.
+
+    const VIDEO_COMPARE_PLAY =
+        '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"></path></svg>';
+    const VIDEO_COMPARE_PAUSE =
+        '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h4v14H6zM14 5h4v14h-4z"></path></svg>';
+    const VIDEO_COMPARE_VOL =
+        '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+        '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" fill="currentColor" stroke="none"></polygon>' +
+        '<path d="M15.5 8.5a5 5 0 0 1 0 7"></path><path d="M18.5 5.5a9 9 0 0 1 0 13"></path></svg>';
+    const VIDEO_COMPARE_MUTED =
+        '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+        '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" fill="currentColor" stroke="none"></polygon>' +
+        '<line x1="23" y1="9" x2="17" y2="15"></line><line x1="17" y1="9" x2="23" y2="15"></line></svg>';
+
+    function formatClock(seconds) {
+        if (!isFinite(seconds) || seconds < 0) return '0:00';
+        const total = Math.floor(seconds);
+        const m = Math.floor(total / 60);
+        const s = total % 60;
+        return m + ':' + String(s).padStart(2, '0');
+    }
+
+    function videoDimLabel(meta, probed) {
+        if (meta && meta.width && meta.height) return meta.width + ' \u00d7 ' + meta.height;
+        if (probed && probed.width && probed.height) return probed.width + ' \u00d7 ' + probed.height;
+        return '\u2014';
+    }
+
+    function openVideoCompare(pair) {
+        const overlay = document.createElement('div');
+        overlay.className = 'modal-overlay gallery-overlay compare-overlay open';
+
+        const shell = document.createElement('div');
+        shell.className = 'compare-shell compare-shell--video';
+
+        const header = document.createElement('div');
+        header.className = 'compare-header';
+        const heading = document.createElement('div');
+        heading.className = 'compare-heading';
+        const title = document.createElement('div');
+        title.className = 'compare-title';
+        title.textContent = 'VIDEO COMPARISON';
+        const dims = document.createElement('div');
+        dims.className = 'compare-dims';
+        dims.textContent = 'Original \u2194 Upscaled';
+        heading.appendChild(title);
+        heading.appendChild(dims);
+        header.appendChild(heading);
+        const closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.className = 'compare-close';
+        closeBtn.setAttribute('aria-label', 'Close');
+        closeBtn.innerHTML =
+            '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">' +
+            '<line x1="18" y1="6" x2="6" y2="18"></line>' +
+            '<line x1="6" y1="6" x2="18" y2="18"></line></svg>';
+        header.appendChild(closeBtn);
+        shell.appendChild(header);
+
+        const stage = document.createElement('div');
+        stage.className = 'video-compare-stage';
+
+        const panes = [
+            { key: 'original', label: 'Original', url: pair.original, meta: pair.originalMeta },
+            { key: 'upscaled', label: 'Upscaled', url: pair.upscaled, meta: pair.upscaledMeta }
+        ];
+        const vids = {};
+        panes.forEach((pane) => {
+            const paneEl = document.createElement('div');
+            paneEl.className = 'video-compare-pane';
+            const vid = document.createElement('video');
+            vid.src = pane.url;
+            vid.preload = 'metadata';
+            vid.playsInline = true;
+            vid.dataset.jvSkip = '1';
+            vid.muted = pane.key === 'original';
+            vid.addEventListener('error', () => {
+                paneEl.classList.add('video-compare-pane--missing');
+                if (!paneEl.querySelector('.video-compare-missing')) {
+                    const miss = document.createElement('div');
+                    miss.className = 'video-compare-missing';
+                    miss.textContent = pane.label + ' video is missing.';
+                    paneEl.appendChild(miss);
+                }
+            });
+            const tag = document.createElement('span');
+            tag.className = 'compare-tag ' + (pane.key === 'original' ? 'compare-tag--a' : 'compare-tag--b');
+            tag.textContent = pane.label;
+            const dimEl = document.createElement('span');
+            dimEl.className = 'video-compare-dims';
+            dimEl.textContent = videoDimLabel(pane.meta, null);
+            vid.addEventListener('loadedmetadata', () => {
+                dimEl.textContent = videoDimLabel(pane.meta, { width: vid.videoWidth, height: vid.videoHeight });
+            });
+            paneEl.appendChild(vid);
+            paneEl.appendChild(tag);
+            paneEl.appendChild(dimEl);
+            stage.appendChild(paneEl);
+            vids[pane.key] = vid;
+        });
+        shell.appendChild(stage);
+
+        const consoleEl = document.createElement('div');
+        consoleEl.className = 'compare-console';
+        const row = document.createElement('div');
+        row.className = 'compare-console-row video-compare-transport';
+
+        const playBtn = document.createElement('button');
+        playBtn.type = 'button';
+        playBtn.className = 'video-compare-btn';
+        playBtn.setAttribute('aria-label', 'Play');
+        playBtn.innerHTML = VIDEO_COMPARE_PLAY;
+
+        const timeEl = document.createElement('span');
+        timeEl.className = 'video-compare-time';
+        timeEl.textContent = '0:00 / 0:00';
+
+        const seek = document.createElement('input');
+        seek.type = 'range';
+        seek.className = 'video-compare-seek';
+        seek.min = '0';
+        seek.max = '1000';
+        seek.value = '0';
+        seek.step = '1';
+        seek.setAttribute('aria-label', 'Seek');
+
+        const muteBtn = document.createElement('button');
+        muteBtn.type = 'button';
+        muteBtn.className = 'video-compare-btn';
+        muteBtn.setAttribute('aria-label', 'Mute');
+        muteBtn.innerHTML = VIDEO_COMPARE_VOL;
+
+        const vol = document.createElement('input');
+        vol.type = 'range';
+        vol.className = 'video-compare-vol';
+        vol.min = '0';
+        vol.max = '100';
+        vol.value = '100';
+        vol.setAttribute('aria-label', 'Volume');
+
+        row.appendChild(playBtn);
+        row.appendChild(timeEl);
+        row.appendChild(seek);
+        row.appendChild(muteBtn);
+        row.appendChild(vol);
+        consoleEl.appendChild(row);
+
+        const hint = document.createElement('div');
+        hint.className = 'compare-hint';
+        hint.textContent = 'Both clips play in sync \u00b7 the original stays muted';
+        consoleEl.appendChild(hint);
+        shell.appendChild(consoleEl);
+
+        overlay.appendChild(shell);
+        document.body.appendChild(overlay);
+
+        const a = vids.original;
+        const b = vids.upscaled;
+        const leader = b;
+
+        function isPlaying() {
+            return !leader.paused && !leader.ended;
+        }
+
+        function syncPlayButton() {
+            const playing = isPlaying();
+            playBtn.innerHTML = playing ? VIDEO_COMPARE_PAUSE : VIDEO_COMPARE_PLAY;
+            playBtn.setAttribute('aria-label', playing ? 'Pause' : 'Play');
+        }
+
+        function syncTime() {
+            const dur = leader.duration || 0;
+            const cur = leader.currentTime || 0;
+            timeEl.textContent = formatClock(cur) + ' / ' + formatClock(dur);
+            if (dur > 0 && document.activeElement !== seek) {
+                seek.value = String(Math.round((cur / dur) * 1000));
+            }
+            seek.style.setProperty('--vc-fill', (dur > 0 ? (cur / dur) * 100 : 0) + '%');
+        }
+
+        function syncVolume() {
+            const muted = leader.muted || leader.volume === 0;
+            muteBtn.innerHTML = muted ? VIDEO_COMPARE_MUTED : VIDEO_COMPARE_VOL;
+            muteBtn.setAttribute('aria-label', muted ? 'Unmute' : 'Mute');
+            vol.value = String(leader.muted ? 0 : Math.round(leader.volume * 100));
+            vol.style.setProperty('--vc-fill', vol.value + '%');
+        }
+
+        // Match the pair by progress ratio so clips with different frame
+        // rates / durations stay visually aligned.
+        function seekBothFrom(time, source) {
+            const srcDur = source && source.duration ? source.duration : 0;
+            const ratio = srcDur > 0 ? Math.max(0, Math.min(1, time / srcDur)) : 0;
+            [a, b].forEach((vid) => {
+                const dur = vid.duration || 0;
+                const target = Math.max(0, dur > 0 ? ratio * dur : time);
+                if (Math.abs((vid.currentTime || 0) - target) > 0.08) {
+                    try { vid.currentTime = target; } catch (err) { /* not seekable yet */ }
+                }
+            });
+        }
+
+        function playBoth() {
+            seekBothFrom(leader.currentTime || 0, leader);
+            [a, b].forEach((vid) => {
+                const p = vid.play();
+                if (p && typeof p.catch === 'function') p.catch(() => {});
+            });
+        }
+
+        function pauseBoth() {
+            [a, b].forEach((vid) => vid.pause());
+        }
+
+        function togglePlay() {
+            if (isPlaying()) pauseBoth();
+            else playBoth();
+        }
+
+        leader.addEventListener('play', () => {
+            syncPlayButton();
+            a.play().catch(() => {});
+        });
+        leader.addEventListener('pause', syncPlayButton);
+        leader.addEventListener('ended', () => { pauseBoth(); syncPlayButton(); });
+        leader.addEventListener('timeupdate', () => {
+            const ratio = leader.duration ? leader.currentTime / leader.duration : 0;
+            const target = a.duration ? ratio * a.duration : leader.currentTime;
+            if (Math.abs((a.currentTime || 0) - target) > 0.3) {
+                try { a.currentTime = target; } catch (err) { /* ignore */ }
+            }
+            syncTime();
+        });
+        leader.addEventListener('loadedmetadata', syncTime);
+        leader.addEventListener('durationchange', syncTime);
+        leader.addEventListener('volumechange', syncVolume);
+
+        playBtn.addEventListener('click', togglePlay);
+        muteBtn.addEventListener('click', () => {
+            leader.muted = !leader.muted;
+            if (!leader.muted && leader.volume === 0) leader.volume = 0.5;
+        });
+        vol.addEventListener('input', () => {
+            const value = Math.max(0, Math.min(1, Number(vol.value) / 100));
+            leader.volume = value;
+            leader.muted = value <= 0;
+        });
+        seek.addEventListener('input', () => {
+            const dur = leader.duration || 0;
+            if (!dur) return;
+            seekBothFrom((Number(seek.value) / 1000) * dur, leader);
+            syncTime();
+        });
+
+        function close() {
+            document.removeEventListener('keydown', onKey);
+            [a, b].forEach((vid) => { try { vid.pause(); } catch (err) {} });
+            overlay.remove();
+        }
+
+        const onKey = (e) => {
+            const openOverlays = document.querySelectorAll('.modal-overlay.open');
+            if (openOverlays.length && openOverlays[openOverlays.length - 1] !== overlay) return;
+            const key = e.key;
+            if (key === 'Escape') { close(); return; }
+            if (key === ' ' || key === 'Spacebar') { e.preventDefault(); togglePlay(); return; }
+            if (key === 'ArrowLeft') {
+                e.preventDefault();
+                seekBothFrom(Math.max(0, (leader.currentTime || 0) - 5), leader);
+                syncTime();
+            } else if (key === 'ArrowRight') {
+                e.preventDefault();
+                seekBothFrom((leader.currentTime || 0) + 5, leader);
+                syncTime();
+            }
+        };
+        document.addEventListener('keydown', onKey);
+
+        closeBtn.addEventListener('click', close);
+        overlay.addEventListener('click', (e) => {
+            if (e.target === overlay) close();
+        });
+
+        syncPlayButton();
+        syncTime();
+        syncVolume();
+    }
+
     function formatGenerationDuration(img) {
         const ms = Number(img.generationMs);
         if (!Number.isFinite(ms) || ms <= 0) return '—';
@@ -1083,8 +1385,8 @@
     }
 
     // Find the linked partner for grouped delete (either side of an
-    // original ↔ upscaled pair). Separate from compareTargetFor so videos —
-    // which never show compare UI — still clean up their hidden original.
+    // original ↔ upscaled pair, image or video). Deleting either side removes
+    // both tiles, matching the grouped gallery tile.
     function deletePartnerFor(img, images) {
         const list = images || [];
         if (img.upscale && img.upscale.source) {
@@ -1205,15 +1507,16 @@
         if (compare) {
             const originalMeta = img.upscale ? compare.originalMeta : img;
             const upscaledMeta = img.upscale ? img : compare.upscaledMeta;
-            const baseDims = formatResolution(originalMeta);
-            const otherDims = formatResolution(upscaledMeta);
-            meta.innerHTML += '<div class="gallery-preview-row"><span class="gallery-preview-label">Upscale</span><span class="gallery-preview-value">' + escapeHtml(baseDims + ' \u2192 ' + otherDims) + '</span></div>';
+            const label = video
+                ? videoUpscaleLabel(upscaledMeta, null)
+                : (formatResolution(originalMeta) + ' \u2192 ' + formatResolution(upscaledMeta));
+            meta.innerHTML += '<div class="gallery-preview-row"><span class="gallery-preview-label">Upscale</span><span class="gallery-preview-value" data-upscale-value>' + escapeHtml(label) + '</span></div>';
         } else if (video && img.upscale) {
-            // Video upscales replace the original file (no compare UI), so
-            // show the before → after sizes from the stored upscale metadata
-            // instead. The "after" side is filled in from the video element
-            // itself once its metadata loads (covers entries recorded before
-            // dimensions were stored).
+            // Legacy video upscale whose original file is gone: there is no
+            // partner to compare against, so show the before → after sizes
+            // from the stored upscale metadata instead. The "after" side is
+            // filled in from the video element itself once its metadata loads
+            // (covers entries recorded before dimensions were stored).
             meta.innerHTML += '<div class="gallery-preview-row"><span class="gallery-preview-label">Upscale</span><span class="gallery-preview-value" data-upscale-value>' + escapeHtml(videoUpscaleLabel(img, null)) + '</span></div>';
         }
         body.appendChild(meta);
@@ -1268,7 +1571,15 @@
             compareBtn.type = 'button';
             compareBtn.className = 'modal-btn modal-btn-primary';
             compareBtn.textContent = '\u21c4 Compare';
-            compareBtn.addEventListener('click', () => openCompare(compare));
+            compareBtn.addEventListener('click', () => {
+                if (video) {
+                    const previewVid = imgWrap.querySelector('video');
+                    if (previewVid) previewVid.pause();
+                    openVideoCompare(compare);
+                } else {
+                    openCompare(compare);
+                }
+            });
             footer.appendChild(compareBtn);
         }
 
@@ -1369,7 +1680,7 @@
                 cell.textContent = 'IMG';
             }));
         }
-        if (!isVideo(img) && img.upscale && img.upscale.source) cell.appendChild(makeCompareBadge('gallery-compare-badge'));
+        if (img.upscale && img.upscale.source) cell.appendChild(makeCompareBadge('gallery-compare-badge'));
         cell.appendChild(makeDeleteButton(img, cell, images, onDeleted));
         return cell;
     }
@@ -1492,6 +1803,7 @@
     Gallery.refresh = refreshWidget;
     Gallery.openFromUrl = openFromUrl;
     Gallery.openCompare = openCompare;
+    Gallery.openVideoCompare = openVideoCompare;
 
     window.Gallery = Gallery;
 })(window, document);

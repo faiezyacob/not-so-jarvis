@@ -417,8 +417,9 @@ function renderSetupNodes(data) {
                 : (restartNeeded
                     ? '<span class="setup-badge setup-badge--missing">RESTART</span>'
                     : '<span class="setup-badge setup-badge--missing">MISSING</span>'));
-        const btn = (data.comfyAvailable && n.ready === false && n.installable && !restartNeeded)
-            ? '<button class="settings-browse-btn setup-row-btn" type="button" data-setup-node="' + escHtml(n.id) + '">Install</button>'
+        const canInstallOrRepair = data.comfyAvailable && n.ready === false && n.installable && (!restartNeeded || n.requirements);
+        const btn = canInstallOrRepair
+            ? '<button class="settings-browse-btn setup-row-btn" type="button" data-setup-node="' + escHtml(n.id) + '">' + (restartNeeded ? 'Repair dependencies' : 'Install') + '</button>'
             : '';
         const detail = restartNeeded
             ? ' — <span class="setup-warn">installed; restart ComfyUI to load</span>'
@@ -1601,6 +1602,7 @@ function initUpscaleSettings() {
 const VIDEO_SELECT_FIELDS = [
     { key: 'h3Size', id: 'videoSizeScale' },
     { key: 'h3Duration', id: 'videoDuration' },
+    { key: 'videoAspectRatio', id: 'videoAspectRatio' },
     { key: 'attentionBackend', id: 'videoAttentionBackend' },
     { key: 'h3TurboSteps', id: 'videoTurboSteps' }
 ];
@@ -1996,6 +1998,33 @@ function initVideoSettings() {
         select.addEventListener('change', () => persistSelect(key, select));
     });
 
+    // --- Auto Upscale: run the video upscale pipeline on every generation ---
+    const autoUpscaleToggle = document.getElementById('videoAutoUpscaleEnabled');
+    if (autoUpscaleToggle) {
+        autoUpscaleToggle.addEventListener('change', async () => {
+            const enabled = autoUpscaleToggle.checked;
+            setStatus(enabled ? 'Enabling auto upscale...' : 'Saving...');
+            try {
+                const res = await fetch('/api/settings/video', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ autoUpscaleEnabled: enabled })
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    setStatus('Save failed: ' + (data.error || 'Unknown error'), true);
+                    autoUpscaleToggle.checked = !enabled;
+                    return;
+                }
+                setStatus(enabled ? 'Auto upscale on — every video will be upscaled.' : 'Auto upscale off.');
+            } catch {
+                setStatus('Save failed: connection error', true);
+                autoUpscaleToggle.checked = !enabled;
+            }
+            setTimeout(() => setStatus(''), 3000);
+        });
+    }
+
     const faceRefineDetector = document.getElementById('videoFaceRefineDetector');
     if (faceRefineDetector) {
         faceRefineDetector.addEventListener('change', () => persistText('faceRefineDetector', faceRefineDetector));
@@ -2187,6 +2216,14 @@ function initVideoSettings() {
                 faceRefineToggle.checked = stored === true || stored === 1 ||
                     String(stored).toLowerCase() === 'true' || String(stored) === '1' ||
                     (stored === undefined && defaults.faceRefineEnabled === true);
+            }
+
+            const autoUpscaleToggle = document.getElementById('videoAutoUpscaleEnabled');
+            if (autoUpscaleToggle) {
+                const stored = settings.autoUpscaleEnabled;
+                autoUpscaleToggle.checked = stored === true || stored === 1 ||
+                    String(stored).toLowerCase() === 'true' || String(stored) === '1' ||
+                    (stored === undefined && defaults.autoUpscaleEnabled === true);
             }
 
             VIDEO_FACEREFINE_SELECT_FIELDS.forEach(({ key, id }) => {
@@ -3731,4 +3768,3 @@ function relativeTime(iso) {
     if (hours < 24) return hours + 'h ago';
     return Math.floor(hours / 24) + 'd ago';
 }
-

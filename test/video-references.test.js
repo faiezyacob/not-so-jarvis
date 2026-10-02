@@ -53,6 +53,39 @@ test('buildH3Graph: no references still uses MiniMaxH3ImageToVideo', () => {
     });
     assert.equal(graph.condition.class_type, 'MiniMaxH3ImageToVideo');
     assert.equal(graph.condition.inputs.first_frame[0], 'first_image');
+    assert.equal(graph.h3_refmod_loader, undefined);
+    assert.equal(graph.model.inputs.unet_name, 'minimax_h3_fl2va_pruned_int8_convrot.safetensors');
+});
+
+test('buildH3Graph: reusable RefMods apply to H3 conditioning without replacing the latent source', () => {
+    const graph = videoGenerator.buildH3Graph({
+        prompt: 'A new cafe scene.',
+        mode: 'i2va',
+        W: 768,
+        H: 1344,
+        frames: 124,
+        seed: 2,
+        settings: { h3Unet: 'fl2va.safetensors', h3Ref2vaUnet: 'ref2va.safetensors' },
+        firstImageName: 'opening.png',
+        refModArtifacts: [
+            { id: 'character:hana', artifactName: 'jarvis/character_hana_hash', strength: 1 },
+            { id: 'product:serum', artifactName: 'jarvis/product_serum_hash', strength: 0.8 }
+        ],
+        referenceTokenBudget: 5120
+    });
+    assert.equal(graph.h3_refmod_loader.class_type, 'MiniMaxH3RefModsLoader');
+    assert.equal(graph.model.inputs.unet_name, 'ref2va.safetensors');
+    assert.equal(graph.h3_refmod_loader.inputs.mod_1, 'jarvis/character_hana_hash');
+    assert.equal(graph.h3_refmod_loader.inputs.strength_2, 0.8);
+    assert.equal(graph.h3_refmod_loader.inputs.mod_3, '(none)');
+    assert.equal(graph.h3_refmod_apply.class_type, 'MiniMaxH3RefModApply');
+    assert.deepEqual(graph.h3_refmod_apply.inputs.conditioning, ['condition', 0]);
+    assert.deepEqual(graph.h3_refmod_apply.inputs.mods, ['h3_refmod_loader', 0]);
+    assert.equal(graph.h3_refmod_apply.inputs.override, false);
+    assert.equal(graph.h3_refmod_apply.inputs.scramble_seed, -1);
+    assert.deepEqual(graph.guider.inputs.conditioning, ['h3_refmod_apply', 0]);
+    assert.deepEqual(graph.sample.inputs.latent_image, ['condition', 1]);
+    assert.deepEqual(graph.first_image.inputs.image, 'opening.png');
 });
 
 // --- ensureShotDialogue ------------------------------------------------------
@@ -186,4 +219,16 @@ test('buildReferenceFallbackPrompt emits the six full-reference sections', () =>
     assert.match(p, /<Picture 1>/);
     assert.match(p, /\[Shot 2\] At 00:05\.000/);
     assert.ok(!/integrated_multimodal_description/.test(p));
+});
+
+test('reference guidance is inserted into the scene description instead of after the H3 document', () => {
+    const prompt = 'subject_definitions:\n<Subject 1> is Hana.\n\n' +
+        'detailed_description:\n[Shot 1] Hana walks into a cafe.\n\n' +
+        'overall_soundscape:\nRoom tone.\n\nnon_diegetic_music:\nN/A';
+    const result = require('../services/h3-reference-pipeline').applyReferenceGuidance(prompt, [
+        'Use the referenced character identity, but generate the requested new scene.'
+    ]);
+    assert.match(result, /detailed_description:\nUse the referenced character identity/);
+    assert.ok(result.indexOf('Use the referenced character') < result.indexOf('[Shot 1]'));
+    assert.ok(result.indexOf('Use the referenced character') < result.indexOf('overall_soundscape:'));
 });

@@ -5519,6 +5519,206 @@ a.modal-btn {
     color: var(--text-dim);
 }
 
+/* --- Side-by-side video compare --- */
+
+.compare-shell--video .video-compare-stage {
+    flex: 1;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    padding: 10px 18px;
+    background: rgba(0, 0, 0, 0.35);
+}
+
+.video-compare-pane {
+    position: relative;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #050604;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.video-compare-pane video {
+    display: block;
+    width: 100%;
+    height: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    background: #000;
+}
+
+.video-compare-pane--missing video {
+    display: none;
+}
+
+.video-compare-dims {
+    position: absolute;
+    top: 12px;
+    left: 12px;
+    z-index: 2;
+    padding: 3px 8px;
+    background: rgba(10, 12, 10, 0.78);
+    border: 1px solid var(--border-color);
+    border-radius: 5px;
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    color: var(--text-secondary);
+    pointer-events: none;
+}
+
+.video-compare-missing {
+    font-family: var(--font-mono);
+    font-size: var(--fs-sm);
+    letter-spacing: 1px;
+    color: var(--text-dim);
+}
+
+.video-compare-transport {
+    width: min(760px, 100%);
+    gap: 12px;
+}
+
+.video-compare-btn {
+    flex: 0 0 auto;
+    width: 36px;
+    height: 34px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    color: var(--text-primary);
+    cursor: pointer;
+    transition: background 0.2s ease, color 0.2s ease;
+}
+
+.video-compare-btn:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--accent);
+}
+
+.video-compare-time {
+    flex: 0 0 auto;
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    letter-spacing: 0.3px;
+    color: var(--text-dim);
+    white-space: nowrap;
+    user-select: none;
+}
+
+.video-compare-seek,
+.video-compare-vol {
+    appearance: none;
+    -webkit-appearance: none;
+    background: transparent;
+    cursor: pointer;
+    height: 16px;
+}
+
+.video-compare-seek {
+    flex: 1;
+    min-width: 40px;
+    --vc-fill: 0%;
+}
+
+.video-compare-vol {
+    flex: 0 0 auto;
+    width: 72px;
+    --vc-fill: 100%;
+}
+
+.video-compare-seek::-webkit-slider-runnable-track {
+    height: 4px;
+    border-radius: 2px;
+    background: linear-gradient(to right, var(--accent) var(--vc-fill, 0%), rgba(108, 255, 154, 0.18) var(--vc-fill, 0%));
+}
+
+.video-compare-seek::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 12px;
+    height: 12px;
+    margin-top: -4px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 2px solid #0a0c0a;
+    box-shadow: 0 0 8px rgba(108, 255, 154, 0.5);
+}
+
+.video-compare-seek::-moz-range-track {
+    height: 4px;
+    border-radius: 2px;
+    background: rgba(108, 255, 154, 0.18);
+}
+
+.video-compare-seek::-moz-range-progress {
+    height: 4px;
+    border-radius: 2px;
+    background: var(--accent);
+}
+
+.video-compare-seek::-moz-range-thumb {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 2px solid #0a0c0a;
+    box-shadow: 0 0 8px rgba(108, 255, 154, 0.5);
+}
+
+.video-compare-vol::-webkit-slider-runnable-track {
+    height: 3px;
+    border-radius: 2px;
+    background: linear-gradient(to right, var(--accent-muted) var(--vc-fill, 100%), rgba(108, 255, 154, 0.15) var(--vc-fill, 100%));
+}
+
+.video-compare-vol::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 10px;
+    height: 10px;
+    margin-top: -3.5px;
+    border-radius: 50%;
+    background: var(--text-secondary);
+    border: 1px solid #0a0c0a;
+}
+
+.video-compare-vol::-moz-range-track {
+    height: 3px;
+    border-radius: 2px;
+    background: rgba(108, 255, 154, 0.15);
+}
+
+.video-compare-vol::-moz-range-progress {
+    height: 3px;
+    border-radius: 2px;
+    background: var(--accent-muted);
+}
+
+.video-compare-vol::-moz-range-thumb {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--text-secondary);
+    border: 1px solid #0a0c0a;
+}
+
+@media (max-width: 720px) {
+    .compare-shell--video .video-compare-stage {
+        grid-template-columns: 1fr;
+    }
+
+    .video-compare-transport {
+        flex-wrap: wrap;
+    }
+}
+
 /* --- Compare badge on gallery tiles --- */
 
 .generated-compare-badge,
@@ -8400,6 +8600,10 @@ a.modal-btn {
 
 /* --- Identity viewer modal --- */
 
+/* The identity viewer opens from inside the Creator / UGC Studio overlays
+   (z-index 1200), so it must sit above them. */
+#identityOverlay { z-index: 1400; }
+
 .identity-modal {
     width: min(920px, 94vw);
     max-height: 88vh;
@@ -8774,6 +8978,7 @@ a.modal-btn {
     background-size: 12px 12px;
 }
 .creator-studio-field textarea { min-height: 76px; resize: vertical; }
+.creator-studio-field small { display: block; margin-top: 4px; color: var(--text-dim); font-size: 10px; line-height: 1.4; }
 .creator-studio-field input:focus, .creator-studio-field select:focus, .creator-studio-field textarea:focus { border-color: var(--border-focus); }
 .creator-studio-content-idea { position: relative; margin-top: 10px; }
 .creator-suggestion-anchor { position: relative; display: flex; justify-content: flex-end; margin-top: 5px; }
@@ -8782,12 +8987,17 @@ a.modal-btn {
 .creator-suggestion-trigger:disabled { opacity: .7; cursor: wait; }
 .creator-suggestion-panel { position: absolute; z-index: 30; top: calc(100% + 5px); right: 0; width: min(440px, calc(100vw - 64px)); max-height: 340px; display: flex; flex-direction: column; gap: 8px; overflow-y: auto; padding: 11px; border: 1px solid var(--border-color); border-radius: 7px; background: var(--bg-secondary); box-shadow: 0 12px 34px rgba(0, 0, 0, .42); }
 .creator-suggestion-panel[hidden] { display: none; }
+.creator-suggestion-header { display: flex; align-items: center; justify-content: space-between; }
 .creator-suggestion-heading { color: var(--accent-muted); font: 600 9px var(--font-mono); letter-spacing: .12em; }
+.creator-suggestion-close { width: 24px; height: 24px; flex: 0 0 24px; padding: 0; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--text-dim); font-size: 18px; line-height: 1; cursor: pointer; }
+.creator-suggestion-close:hover { border-color: var(--border-color); background: var(--bg-card); color: var(--text-primary); }
 .creator-suggestion-based { color: var(--text-dim); font-size: 10px; line-height: 1.4; }
 .creator-suggestion-message { color: var(--text-secondary); font-size: 11px; line-height: 1.45; }
 .creator-suggestion-list { display: grid; gap: 6px; }
 .creator-suggestion-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 5px 10px; padding: 8px 9px; border: 1px solid var(--border-color); border-radius: 5px; background: var(--bg-card); }
 .creator-suggestion-text { grid-column: 1 / -1; margin: 0; color: var(--text-primary); font-size: 11px; line-height: 1.45; }
+.creator-suggestion-part { display: block; }
+.creator-suggestion-part strong { color: var(--accent-muted); font: 600 9px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; }
 .creator-suggestion-reason { min-width: 0; color: var(--text-dim); font-size: 9px; line-height: 1.4; }
 .creator-suggestion-use { grid-column: 1 / -1; min-height: 25px; justify-self: end; padding: 3px 8px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-secondary); color: var(--text-secondary); font-size: 10px; cursor: pointer; }
 .creator-suggestion-use:hover { border-color: var(--border-focus); color: var(--accent); }
@@ -8801,6 +9011,23 @@ a.modal-btn {
 .creator-studio-character strong, .creator-studio-character span { display: block; }
 .creator-studio-character strong { color: var(--text-primary); font-size: 12px; }
 .creator-studio-character span { margin-top: 4px; color: var(--text-secondary); font-size: 10px; line-height: 1.45; }
+.creator-studio-character > div { min-width: 0; }
+
+.creator-sheet-btn {
+    margin-left: auto;
+    flex: 0 0 auto;
+    min-height: 29px;
+    padding: 4px 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 5px;
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    font-size: 10px;
+    cursor: pointer;
+    transition: color .15s ease, border-color .15s ease;
+}
+.creator-sheet-btn:hover { border-color: var(--border-focus); color: var(--accent); }
+.creator-sheet-btn[hidden] { display: none; }
 
 .creator-studio-traits { display: flex; flex-wrap: wrap; gap: 6px; margin: 3px 0 15px; }
 .creator-trait { position: relative; cursor: pointer; }
@@ -8862,7 +9089,7 @@ a.modal-btn {
     max-height: min(760px, calc(100vh - 48px));
     display: flex;
     flex-direction: column;
-    overflow: auto;
+    overflow: hidden;
     border: 1px solid var(--border-color);
     border-radius: 12px;
     background: var(--bg-secondary);
@@ -8871,7 +9098,7 @@ a.modal-btn {
     transition: transform .18s ease;
 }
 .ugc-studio-overlay.open .ugc-studio { transform: translateY(0); }
-.ugc-studio-body { padding: 22px 26px 26px; }
+.ugc-studio-body { min-height: 0; overflow: auto; padding: 22px 26px 26px; }
 .ugc-studio-form > .creator-studio-field textarea { min-height: 112px; }
 .ugc-studio-hint { margin: 8px 0 0; color: var(--text-dim); font-size: 11px; line-height: 1.55; }
 .ugc-studio-current { margin-top: 22px; padding: 13px; border: 1px solid var(--border-color); border-radius: 7px; background: var(--bg-card); }
@@ -8880,6 +9107,8 @@ a.modal-btn {
 .ugc-studio-current .creator-studio-section-label { margin-top: 0; }
 .ugc-studio-current button[hidden] { display: none; }
 .ugc-studio-form .creator-studio-actions { margin-top: 18px; }
+.ugc-studio-form .creator-studio-field--wide { grid-column: 1 / -1; }
+.ugc-studio-form .creator-studio-row[hidden] { display: none; }
 
 @media (max-width: 760px) {
     .creator-studio-overlay { padding: 8px; }

@@ -32,6 +32,25 @@ test('H3_DEFAULTS expose the base sampling controls', () => {
     assert.equal(videoGenerator.H3_DEFAULTS.h3Cfg, videoGenerator.H3_DEFAULT_CFG);
 });
 
+test('video aspect ratio defaults to landscape and normalizes supported values', () => {
+    assert.equal(videoGenerator.H3_DEFAULTS.videoAspectRatio, '16:9');
+    assert.equal(videoGenerator.normalizeVideoAspectRatio('9:16'), '9:16');
+    assert.equal(videoGenerator.normalizeVideoAspectRatio('1:1'), '1:1');
+    assert.equal(videoGenerator.normalizeVideoAspectRatio('invalid'), '16:9');
+});
+
+test('h3DimensionsForAspectRatio creates portrait, square, and landscape canvases', () => {
+    const landscape = videoGenerator.h3DimensionsForAspectRatio('16:9', 'M');
+    const portrait = videoGenerator.h3DimensionsForAspectRatio('9:16', 'M');
+    const square = videoGenerator.h3DimensionsForAspectRatio('1:1', 'M');
+
+    assert.ok(landscape.W > landscape.H);
+    assert.ok(portrait.H > portrait.W);
+    assert.equal(square.W, square.H);
+    assert.ok(Math.abs(landscape.W / landscape.H - 16 / 9) < 0.01);
+    assert.ok(Math.abs(portrait.W / portrait.H - 9 / 16) < 0.01);
+});
+
 test('buildH3Graph: default settings use the unguided BasicGuider', () => {
     const graph = videoGenerator.buildH3Graph({ prompt: 'a kite', mode: 't2va', settings: {} });
     assert.equal(graph.guider.class_type, 'BasicGuider');

@@ -83,6 +83,7 @@ test('creator performance contains varied identity-safe face actions and exact s
         characterId: 'maya-id',
         personality: ['playful', 'confident'],
         concept: 'a funny weekend story',
+        onCameraAction: 'Holds up a small prop beside her face, then turns it toward the lens.',
         contentType: 'storytelling',
         duration: 15
     }, makeCharacter('29-year-old'));
@@ -97,6 +98,8 @@ test('creator performance contains varied identity-safe face actions and exact s
     assert.match(content.userPrompt, /IDENTITY:/);
     assert.match(content.userPrompt, /PERSONALITY DIRECTION:/);
     assert.match(content.userPrompt, /ENVIRONMENT:/);
+    assert.match(content.userPrompt, /ON-CAMERA ACTION \(visual direction only; never spoken\): Holds up a small prop/);
+    assert.equal(content.creatorDialogue.shot.action, 'Holds up a small prop beside her face, then turns it toward the lens.');
     assert.equal(content.characterId, 'maya-id');
     assert.equal(content.creatorName, 'Maya');
     assert.equal(Object.hasOwn(content, 'creatorId'), false);
@@ -199,6 +202,7 @@ test('content suggestion context captures live Creator Studio controls and canon
     assert.equal(context.expressionStyle, 'Storytelling arc');
     assert.equal(context.faceAction, 'smirk');
     assert.equal(context.bodyAction, 'Lean slightly toward camera');
+    assert.equal(context.onCameraAction, '');
     assert.equal(context.environment, 'Cafe');
     assert.equal(context.outfit, 'casual-everyday');
     assert.equal(context.energy, 'medium');
@@ -228,18 +232,37 @@ test('content suggestions adapt by content type, duration, and existing content 
     assert.ok(tutorialIdeas.some((idea) => /quick|under 8 seconds|simple/i.test(idea.text)));
 });
 
+test('AI suggestions stay anchored to the selected concept and preserve its chosen action', () => {
+    const context = studio.buildContentSuggestionContext(null, {
+        concept: 'My new coffee maker',
+        contentType: 'product_review',
+        onCameraAction: 'Holds the coffee maker beside her and turns it toward the camera.'
+    }, Object.assign(makeCharacter('29-year-old'), {
+        identity: { age: '29-year-old', ageGroup: 'adult', gender: 'woman' }
+    }));
+    const suggestions = studio.normalizeContentSuggestions({ suggestions: [
+        { concept: 'Tell a funny story about a beach day.', action: 'Picks up sunglasses.' },
+        { concept: 'Share what surprised me about my coffee maker.', action: 'Gestures toward its controls.' }
+    ] }, context);
+
+    assert.equal(suggestions.some((item) => /beach day/i.test(item.concept)), false);
+    assert.ok(suggestions.every((item) => /coffee|maker/i.test(item.concept)));
+    assert.ok(suggestions.every((item) => item.action === context.onCameraAction));
+});
+
 test('suggestion generation asks the configured provider for structured ideation and recovers short output', async () => {
     const character = Object.assign(makeCharacter('29-year-old'), {
         identity: { age: '29-year-old', ageGroup: 'adult', gender: 'woman' }
     });
     const context = studio.buildContentSuggestionContext(null, {
         characterId: character.id, contentType: 'comedy', personality: ['funny', 'playful'],
-        speechBehavior: 'conversational', duration: 12, camera: 'phone_selfie', concept: '', scene: 'Bedroom'
+        speechBehavior: 'conversational', duration: 12, camera: 'phone_selfie', concept: '', scene: 'Bedroom',
+        onCameraAction: 'Holds a mug while telling the story.'
     }, character);
     let prompt = '';
     const result = await studio.generateContentSuggestions(context, {
         chat: async (_provider, messages, model, options) => {
-            prompt = messages[1].content;
+            prompt = messages.map((message) => message.content).join('\n');
             assert.equal(model, 'suggestion-test-model');
             assert.equal(options.think, false);
             return JSON.stringify({ suggestions: [
@@ -252,8 +275,12 @@ test('suggestion generation asks the configured provider for structured ideation
     assert.match(prompt, /phone selfie/i);
     assert.match(prompt, /12/);
     assert.match(prompt, /one continuous take/i);
+    assert.match(prompt, /concept is what the fictional creator will talk about/i);
+    assert.match(prompt, /action is what they physically do on camera/i);
+    assert.match(prompt, /Holds a mug while telling the story/);
     assert.ok(result.length >= 3);
     assert.equal(result[0].text, 'Tell a quick story about confidently waving back at the wrong person.');
+    assert.ok(result[0].action);
     assert.ok(result.every((item) => !/\[Shot 2\]/.test(item.text)));
 });
 
@@ -263,6 +290,7 @@ test('natural follow-ups identify and rebuild only the requested performance lay
         characterId: 'maya-id',
         personality: ['warm'],
         concept: 'weekend update',
+        onCameraAction: 'Holds a small product beside her face and turns it toward the lens.',
     }, character);
     const previous = { characterId: character.id, content: first };
     const decision = studio.classifyMessage('Make her smile more.', previous);
@@ -274,6 +302,7 @@ test('natural follow-ups identify and rebuild only the requested performance lay
         message: decision.message
     }, character, { previousSession: previous });
     assert.deepEqual(updated.script, first.script);
+    assert.equal(updated.onCameraAction, first.onCameraAction);
     assert.equal(updated.performanceBeats[0].expression, 'soft_smile');
     assert.equal(updated.performanceBeats.at(-1).expression, 'soft_smile');
     assert.equal(studio.resolveDimension('Change the camera framing'), 'camera');
@@ -314,6 +343,7 @@ test('Creator performance beats become timestamped events inside exactly one con
         characterId: 'maya-id',
         personality: ['playful'],
         concept: 'a weekend update',
+        onCameraAction: 'Holds the product beside her face and turns it toward the camera.',
         duration: 15
     }, makeCharacter('29-year-old'));
     let llmCalled = false;
@@ -331,6 +361,7 @@ test('Creator performance beats become timestamped events inside exactly one con
         creator_environment: content.scene,
         creator_wardrobe: content.outfit,
         creator_camera_direction: content.cameraDirection,
+        creator_action: content.onCameraAction,
         dialogue_language: 'English',
         requested_duration: 15,
         explicit_constraints: []
@@ -351,6 +382,8 @@ test('Creator performance beats become timestamped events inside exactly one con
     assert.match(result.prompt, /TIMING \(H3\): The creator must speak the complete dialogue from beginning to end/);
     assert.match(result.prompt, /Do not skip, shorten, summarize, paraphrase, reorder or omit any dialogue/);
     assert.match(result.prompt, /straight-on front-facing camera/i);
+    assert.match(result.prompt, /On-camera action \(visual direction only; this is NOT dialogue and must never be spoken\): Holds the product beside her face/);
+    assert.doesNotMatch(result.prompt.match(/<d>\[English\]([\s\S]*?)<\/d>/)[1], /Holds the product beside her face/);
     assert.match(result.prompt, /not above the creator and does not angle down/i);
     assert.doesNotMatch(result.prompt, /held at a natural arm's length/i);
     assert.doesNotMatch(result.prompt, /user-generated-content phone-camera/i);
@@ -544,6 +577,33 @@ test('an LLM that omits guide beats is repaired to cover every guide stage', asy
     assert.equal(content.creatorDialogue.dialogue.lines[0].speech, 'Okay, quick one about my morning.');
     assert.equal(content.creatorDialogue.dialogue.lines[3].speech, 'Try it and tell me what you think.');
     assert.ok(content.creatorDialogue.dialogue.lines[1].speech && content.creatorDialogue.dialogue.lines[2].speech);
+    assert.equal(videoGenerator.validateCreatorDialogue(content.creatorDialogue).ok, true);
+});
+
+test('a paraphrased script is repaired to retain a required topic point', async () => {
+    let scriptPrompt = '';
+    const providers = {
+        chat: async (_provider, messages) => {
+            scriptPrompt = String(messages[1] && messages[1].content || '');
+            const stages = ['hook', 'main_point', 'reaction', 'closing'];
+            return JSON.stringify({
+                segments: stages.map((stage) => ({
+                    stage,
+                    text: stage === 'closing' ? 'Tell me what you think.' : 'Here is something I wanted to share.'
+                }))
+            });
+        }
+    };
+    const content = await studio.buildCreatorContent({
+        characterId: 'maya-id',
+        personality: ['warm'],
+        concept: 'a skincare routine for dry skin',
+        contentType: 'talking',
+        duration: 15
+    }, makeCharacter('29-year-old'), { providers, provider: 'ollama', model: 'test-model' });
+    const dialogue = content.creatorDialogue.dialogue.text.toLowerCase();
+    assert.match(scriptPrompt, /required talking-point terms/i);
+    assert.ok(content.creatorDialogue.guide.talkingPoints.some((point) => dialogue.includes(point)));
     assert.equal(videoGenerator.validateCreatorDialogue(content.creatorDialogue).ok, true);
 });
 

@@ -76,6 +76,7 @@ const models = require('./server/models');
 const providerManager = require('./server/provider-manager');
 const imageGenerator = require('./services/image-generator');
 const videoGenerator = require('./services/video-generator');
+const h3ReferencePipeline = require('./services/h3-reference-pipeline');
 const faceRefine = require('./services/face-refine');
 const fbcache = require('./services/fbcache');
 const modelSetup = require('./services/model-setup');
@@ -96,6 +97,7 @@ const longVideoDirector = require('./services/long-video/director');
 const playground = require('./services/playground/playground');
 const ugcStudio = require('./services/ugc/studio');
 const ugcProducts = require('./services/ugc/products');
+const sceneLibrary = require('./services/scene-library');
 const creatorStudio = require('./services/creator-studio');
 const characterPresets = require('./services/character-presets');
 const characterStudio = require('./services/character-studio');
@@ -914,14 +916,27 @@ async function handleAPI(req, res, urlPath) {
     }
 
     // GET /api/ugc/options — the UGC Studio catalogs (content types, environments,
-    // platforms, outfit packs, saved characters). The UI never hardcodes them.
+    // platforms, outfit packs, saved characters, product library and the random
+    // creator profile controls). The UI never hardcodes them.
     if (urlPath === '/api/ugc/options' && req.method === 'GET') {
+        const profileOptions = playground.listCharacterOptions();
         json(res, 200, {
             contentTypes: ugcStudio.listContentTypes(),
             environments: ugcStudio.listEnvironments(),
             platforms: ugcStudio.listPlatforms(),
             outfitPacks: ugcStudio.listOutfitPacks().map((p) => ({ id: p.id, label: p.label, description: p.description })),
-            characters: ugcStudio.listCharacters().map((c) => ({ id: c.id, name: c.name || 'Character' }))
+            characters: characterContext.listCharacterOptions().map((c) => ({
+                id: c.id,
+                name: c.name,
+                image: c.imageUrl || '',
+                identityStatus: c.identityStatus
+            })),
+            products: ugcProducts.list().map((p) => ({ id: p.id, name: p.name || 'Product', brand: p.brand || '' })),
+            creatorProfile: {
+                appearance: profileOptions.appearance || [],
+                age: profileOptions.age || [],
+                gender: profileOptions.gender || []
+            }
         });
         return true;
     }
@@ -1025,6 +1040,55 @@ async function handleAPI(req, res, urlPath) {
     if (ugcProductDeleteMatch && req.method === 'DELETE') {
         const id = decodeURIComponent(ugcProductDeleteMatch[1]);
         const removed = ugcProducts.remove(id);
+        json(res, removed ? 200 : 404, { ok: removed });
+        return true;
+    }
+
+    // Shared Scene / Location Library. UGC Studio labels these objects
+    // "Environment" and Creator Studio labels the same objects "Scene" — one
+    // canonical source. Existing UGC environments are seeded/migrated on read.
+    if (urlPath === '/api/scenes/options' && req.method === 'GET') {
+        json(res, 200, { scenes: sceneLibrary.listOptions(), categories: sceneLibrary.listCategories() });
+        return true;
+    }
+    if (urlPath === '/api/scenes/recommend' && req.method === 'GET') {
+        const query = new URL(req.url, 'http://localhost').searchParams;
+        const activityId = query.get('activity') || '';
+        const limit = Number(query.get('limit')) || 6;
+        json(res, 200, { scenes: sceneLibrary.recommendForActivity(activityId, { limit }) });
+        return true;
+    }
+    if (urlPath === '/api/scenes' && req.method === 'GET') {
+        json(res, 200, { scenes: sceneLibrary.list(), categories: sceneLibrary.listCategories() });
+        return true;
+    }
+    if (urlPath === '/api/scenes' && req.method === 'POST') {
+        try {
+            const body = await readBody(req);
+            const scene = body && body.id
+                ? sceneLibrary.update(body.id, body)
+                : sceneLibrary.create(body);
+            if (!scene) {
+                json(res, 404, { error: 'Scene not found' });
+                return true;
+            }
+            json(res, 200, { ok: true, scene });
+        } catch (err) {
+            json(res, err.code === 'scene_invalid' ? 400 : 500, { error: err.message });
+        }
+        return true;
+    }
+    const sceneDuplicateMatch = urlPath.match(/^\/api\/scenes\/([^/]+)\/duplicate$/);
+    if (sceneDuplicateMatch && req.method === 'POST') {
+        const id = decodeURIComponent(sceneDuplicateMatch[1]);
+        const scene = sceneLibrary.duplicate(id);
+        json(res, scene ? 200 : 404, scene ? { ok: true, scene } : { error: 'Scene not found' });
+        return true;
+    }
+    const sceneDeleteMatch = urlPath.match(/^\/api\/scenes\/([^/]+)$/);
+    if (sceneDeleteMatch && req.method === 'DELETE') {
+        const id = decodeURIComponent(sceneDeleteMatch[1]);
+        const removed = sceneLibrary.remove(id);
         json(res, removed ? 200 : 404, { ok: removed });
         return true;
     }
@@ -1716,6 +1780,40 @@ function sanitizeChatImages(images) {
     });
 }
 
+function persistChatVideoImages(images) {
+    const list = Array.isArray(images) ? images : [];
+    const out = [];
+    for (const encoded of list) {
+        const buffer = Buffer.from(String(encoded || ''), 'base64');
+        let ext = '';
+        if (buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) ext = '.png';
+        else if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) ext = '.jpg';
+        else if (buffer.length >= 12 && buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WEBP') ext = '.webp';
+        if (!ext) {
+            const error = new Error('The attached video reference is not a supported PNG, JPEG or WebP image.');
+            error.code = 'h3_reference_source_invalid';
+            throw error;
+        }
+        const digest = crypto.createHash('sha256').update(buffer).digest('hex');
+        const filename = 'chatref_' + digest.slice(0, 32) + ext;
+        if (!fs.existsSync(IMAGES_DIR)) fs.mkdirSync(IMAGES_DIR, { recursive: true });
+        const filePath = path.join(IMAGES_DIR, filename);
+        if (!fs.existsSync(filePath)) fs.writeFileSync(filePath, buffer);
+        out.push({
+            id: 'image:upload:' + digest,
+            type: 'image',
+            source: '/images/' + encodeURIComponent(filename),
+            filename,
+            strength: 0.95,
+            mode: 'full',
+            priority: 2,
+            required: false,
+            order: out.length
+        });
+    }
+    return out;
+}
+
 // Validate an @-picker reference: an image filename inside data/generated.
 // Returns the bare safe filename, or null when it is missing/not an image.
 function sanitizeReferenceImage(value) {
@@ -2149,6 +2247,14 @@ async function handleChatStream(req, res) {
             Array.isArray(body.characters) && body.characters.length ? body.characters : body.characterId
         );
         const parsedCharacters = characterContext.parseCharacterMessage(message, { explicitIds: explicitCharacterIds });
+        const characterNameSet = new Set(characterPresets.list().map((character) => String(character.name || '').toLowerCase()));
+        const productMentionRegistry = ugcProducts.list().filter((product) => !characterNameSet.has(String(product.name || '').toLowerCase()));
+        const parsedRegistryReferences = h3ReferencePipeline.resolveRegistryMentions(message, [
+            { type: 'product', items: productMentionRegistry }
+        ]);
+        const mentionedProducts = parsedRegistryReferences.references
+            .map((ref) => ref.entity)
+            .filter(Boolean);
         const routingMessage = parsedCharacters.prompt && parsedCharacters.prompt.trim()
             ? parsedCharacters.prompt
             : message;
@@ -2213,6 +2319,13 @@ async function handleChatStream(req, res) {
         const ugcCtx = { conversationId, message: routingMessage, provider, model, think, characters: parsedCharacters.characters };
         const requestedUgcAction = ugcStudio.normalizeAction(body.ugcAction);
         let activeUgcProject = ugcStudio.getProject(conversationId);
+        // The popup's single-step create action carries a structured setup
+        // (product/creator/outfit/environment/content type + brief) and starts a
+        // fresh project, replacing any open one.
+        if (requestedUgcAction && requestedUgcAction.type === UGC_ACTION.CREATE_PROJECT) {
+            await handleUGCStart(req, res, ugcCtx, requestedUgcAction.setup);
+            return;
+        }
         if (requestedUgcAction) {
             await handleUGCAction(req, res, ugcCtx, activeUgcProject, requestedUgcAction);
             return;
@@ -2274,7 +2387,8 @@ async function handleChatStream(req, res) {
             await handleCreatorStudioRequest(req, res, {
                 conversationId, message: routingMessage || message, rawMessage: message,
                 provider, model, think, character: creatorCharacter,
-                action: creatorAction, previousSession: activeCreatorSession
+                action: creatorAction, previousSession: activeCreatorSession,
+                products: mentionedProducts
             });
             return;
         }
@@ -2328,7 +2442,11 @@ async function handleChatStream(req, res) {
         // Director Mode. The Director owns multi-stage productions before the
         // generic router so an approval card action or a brief change is never
         // misread as chat. Ordinary requests fall through untouched.
-        const directorCtx = { conversationId, message: routingMessage, provider, model, think, referenceImage, characters: parsedCharacters.characters };
+        const directorCtx = {
+            conversationId, message: routingMessage, provider, model, think, referenceImage,
+            characters: parsedCharacters.characters,
+            products: mentionedProducts
+        };
         const requestedDirectorAction = director.normalizeAction(body.directorAction);
         let activeProduction = director.getProduction(conversationId);
         if (requestedDirectorAction) {
@@ -2805,6 +2923,7 @@ async function handleChatStream(req, res) {
             let parameters;
             let videoMode;
             let sourceImageRawFilename;
+            let attachedVideoReferences = [];
             let directorDimensions;
 
             if (isNew && decision.structuredRequest) {
@@ -2855,6 +2974,12 @@ async function handleChatStream(req, res) {
                 const modeInfo = videoGenerator.resolveVideoMode(conversationId, message, structuredRequest, referenceImage);
                 videoMode = modeInfo.videoMode;
                 sourceImageRawFilename = modeInfo.sourceImage ? modeInfo.sourceImage.rawFilename : null;
+                attachedVideoReferences = persistChatVideoImages(chatImages);
+                if (!sourceImageRawFilename && attachedVideoReferences.length) {
+                    sourceImageRawFilename = attachedVideoReferences[0].filename;
+                    attachedVideoReferences = attachedVideoReferences.slice(1);
+                    videoMode = 'i2va';
+                }
 
                 console.log('[video] source image:', sourceImageRawFilename);
                 console.log('[video] mode:', videoMode);
@@ -2872,8 +2997,18 @@ async function handleChatStream(req, res) {
                 if (messageDuration !== null && messageDuration !== undefined) {
                     structuredRequest.requested_duration = messageDuration;
                 }
+                const namedSubject = requestCharacters.map((character) => character.name).filter(Boolean);
+                let videoUserPrompt = String(structuredRequest.user_prompt || routingMessage || message || '');
+                for (const product of mentionedProducts) {
+                    const productName = String(product.name || '').trim();
+                    if (productName) videoUserPrompt = videoUserPrompt.replace(new RegExp('@' + productName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), productName);
+                }
+                if (namedSubject.length && !namedSubject.every((name) => new RegExp('(^|[^\\w])' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![\\w])', 'i').test(videoUserPrompt))) {
+                    videoUserPrompt = 'The requested character is ' + namedSubject.join(' and ') + '. ' + videoUserPrompt;
+                }
                 const director = await videoGenerator.buildH3VideoPrompt(
                     Object.assign({}, structuredRequest, {
+                        user_prompt: videoUserPrompt,
                         has_reference_image: videoMode === 'i2va'
                     }),
                     providers,
@@ -2941,29 +3076,28 @@ async function handleChatStream(req, res) {
                 };
             }
 
-            // A character (mentioned, picked, or inherited by a continuation)
-            // conditions the H3 render on its approved identity references
-            // (reference-to-video) so identity persists across the clip. A
-            // user-provided starting frame is never replaced: when the request
-            // already has an I2VA source, that frame stays the first frame and
-            // identity is not forced into ref2va.
-            let identityReferences;
-            if (requestCharacters.length && videoMode !== 'i2va') {
-                // User @-picker references are kept alongside the character
-                // portraits so a character + image request conditions on both.
-                const conditioning = resolveIdentityConditioning(requestCharacters, message, {
-                    userReferences: referenceImages,
-                    // Video only consumes the identity references; the prompt's
-                    // creative-defaults section is never used.
-                    defaults: false
-                });
-                if (conditioning) {
-                    identityReferences = conditioning.references.map((p) => path.basename(p));
-                    const baseName = path.basename(conditioning.sourceAbs);
-                    if (baseName && !identityReferences.includes(baseName)) identityReferences.unshift(baseName);
-                    identityReferences = identityReferences.slice(0, 9);
+            // Semantic references are encoded/cached centrally, independently
+            // from scene keyframes. An explicit I2VA source remains the first
+            // frame, while the character identity is added as a separate H3 ref.
+            const semanticReferences = [];
+            if (requestCharacters.length) {
+                const conditioning = resolveIdentityConditioning(requestCharacters, message, { defaults: false });
+                if (!conditioning) {
+                    const name = requestCharacters.map((character) => character.name).filter(Boolean).join(', ');
+                    const text = 'The approved Character portrait for ' + (name || 'the selected character') + ' is missing or unavailable. I stopped before video generation so the request does not continue without that identity reference.';
+                    sseWrite(res, { error: text });
+                    res.end();
+                    return;
                 }
+                semanticReferences.push(...characterH3References(requestCharacters, conditioning));
             }
+            const sceneReferenceNames = referenceImages.filter((filename) =>
+                !sourceImageRawFilename || path.basename(String(filename || '')) !== path.basename(sourceImageRawFilename)
+            );
+            semanticReferences.push(...imageH3References(sceneReferenceNames, { order: semanticReferences.length }));
+            const attachedOrder = semanticReferences.length;
+            semanticReferences.push(...attachedVideoReferences.map((ref, index) => Object.assign({}, ref, { order: attachedOrder + index })));
+            semanticReferences.push(...productH3References(mentionedProducts, { required: true, order: semanticReferences.length }));
 
             // Set ActiveTask to running, then free VRAM for ComfyUI.
             const ctxPreviousPrompt = activeTask.prompt || null;
@@ -3008,11 +3142,9 @@ async function handleChatStream(req, res) {
                 previousPrompt: ctxPreviousPrompt,
                 videoMode,
                 sourceImageRawFilename,
-                // Reference-to-video: the character's approved identity frames
-                // condition every shot (identity continuity across the clip).
-                referenceImages: identityReferences && identityReferences.length
-                    ? identityReferences
-                    : undefined,
+                referenceImages: undefined,
+                semanticReferences,
+                studio: 'chat',
                 duration: directorDimensions ? directorDimensions.duration : undefined,
                 width: directorDimensions ? directorDimensions.width : undefined,
                 height: directorDimensions ? directorDimensions.height : undefined,
@@ -3217,6 +3349,9 @@ async function handleCreatorStudioRequest(req, res, ctx) {
             voice: action.voice || (prior && prior.content.voice),
             contentType: action.contentType || (prior && prior.content.contentType) || 'talking',
             concept: dimension === 'script' ? (action.concept || message) : action.concept || (prior && prior.content.concept) || message,
+            onCameraAction: Object.prototype.hasOwnProperty.call(action, 'onCameraAction')
+                ? action.onCameraAction
+                : prior && prior.content.onCameraAction || '',
             duration: action.duration || requestedDuration || (prior && prior.content.duration) || 15,
             energy: action.energy || (/\bhigh\s+energy\b/i.test(message) ? 'high' : /\blow\s+energy\b/i.test(message) ? 'low' : prior && prior.content.energy),
             pacing: action.pacing || (/\bslow(?:er)?\b/i.test(message) ? 'slow' : /\bfast(?:er)?\b/i.test(message) ? 'fast' : prior && prior.content.pacing),
@@ -3227,6 +3362,9 @@ async function handleCreatorStudioRequest(req, res, ctx) {
 
         if (dimension === 'outfit' && !action.outfit) input.outfit = 'Auto';
         if (dimension === 'scene' && !action.scene) input.scene = 'Auto';
+        // A typed scene change is free text, so it clears any previously
+        // selected shared Scene id; an explicit dropdown selection carries one.
+        if (dimension === 'scene') input.sceneId = action.sceneId || '';
         if (dimension === 'camera' && !action.camera && prior && prior.content) {
             const previousCameraIndex = creatorStudio.CAMERA_PRESETS.findIndex((item) => item.id === prior.content.camera);
             input.camera = creatorStudio.CAMERA_PRESETS[(previousCameraIndex + 1) % creatorStudio.CAMERA_PRESETS.length].id;
@@ -3279,10 +3417,8 @@ async function handleCreatorStudioRequest(req, res, ctx) {
         }
         sseWrite(res, { creatorStudioProgress: { label: 'Character identity reference secured.', percent: 46 } });
 
-        // Rebuild the canonical dialogue now that the resolved identity
-        // references are known, so the reference description names the actual
-        // <Picture N> source. This is the one authoritative object the H3 prompt
-        // builder consumes.
+        // Rebuild the canonical dialogue with the approved identity reference
+        // described as a visual identity source, separate from performance.
         content.creatorDialogue = creatorStudio.buildCanonicalDialogue(content, character, {
             referenceFilenames: identityReferences
         });
@@ -3295,7 +3431,7 @@ async function handleCreatorStudioRequest(req, res, ctx) {
             user_prompt: content.userPrompt,
             creative_mode: 'none',
             has_reference_image: false,
-            reference_images: identityReferences,
+            reference_images: [],
             shot_plan: content.explicitMultiShot ? [] : content.shotPlan,
             creator_performance_beats: content.performanceSequence,
             creator_dialogue: content.creatorDialogue,
@@ -3307,7 +3443,8 @@ async function handleCreatorStudioRequest(req, res, ctx) {
             dialogue_language: 'English',
             requested_duration: content.duration,
             creator_content: true,
-            creator_direction: 'Creator scene: ' + content.scene + '. Outfit: ' + content.outfit + '. Camera: ' + content.cameraDirection + ' Personality direction: ' + content.personalityDirection,
+            creator_action: content.onCameraAction,
+            creator_direction: 'Creator scene: ' + content.scene + '. Outfit: ' + content.outfit + '. On-camera action (visual only, never spoken): ' + (content.onCameraAction || 'none specified') + '. Camera: ' + content.cameraDirection + ' Personality direction: ' + content.personalityDirection,
             explicit_constraints: [
                 'preserve the approved Character identity reference exactly; expressions and performance may change but facial structure and appearance may not',
                 'keep every spoken line verbatim and visibly lip-synced on camera',
@@ -3315,6 +3452,30 @@ async function handleCreatorStudioRequest(req, res, ctx) {
             ],
             parameters: {}
         };
+        const semanticReferences = characterH3References([character], identity);
+        // A shared Scene's reference image conditions the environment (never the
+        // character identity). It rides the existing semantic-reference channel
+        // as an optional, lower-priority reference than the Character portrait.
+        if (content.sceneReference) {
+            const refPath = String(content.sceneReference).split('?')[0];
+            const sceneFilename = path.basename(refPath);
+            if (sceneFilename) {
+                const sceneSource = refPath.startsWith('/images/')
+                    ? '/images/' + encodeURIComponent(sceneFilename)
+                    : '/generated/' + encodeURIComponent(sceneFilename);
+                semanticReferences.push({
+                    id: 'scene:' + sceneFilename,
+                    type: 'image',
+                    source: sceneSource,
+                    mode: 'compressed',
+                    strength: 0.6,
+                    priority: 2,
+                    required: false,
+                    order: semanticReferences.length
+                });
+            }
+        }
+        semanticReferences.push(...productH3References(ctx.products || [], { required: true, order: semanticReferences.length }));
 
         const session = Object.assign({}, prior || {}, {
             id: prior && prior.id || 'creator_session_' + Date.now().toString(36),
@@ -3329,7 +3490,7 @@ async function handleCreatorStudioRequest(req, res, ctx) {
             type: 'video',
             operation: 'generate',
             prompt: content.userPrompt,
-            videoMode: 'ref2va',
+            videoMode: 't2va',
             lastAction: 'Creator Studio · ' + content.recipe.name,
             status: 'running',
             parameters: {
@@ -3353,8 +3514,9 @@ async function handleCreatorStudioRequest(req, res, ctx) {
             structuredRequest,
             action: 'generate',
             previousPrompt: prior && prior.content && prior.content.userPrompt || null,
-            videoMode: 'ref2va',
-            referenceImages: identityReferences,
+            videoMode: 't2va',
+            semanticReferences,
+            studio: 'creator',
             duration: built.duration,
             width: built.width,
             height: built.height,
@@ -3379,29 +3541,147 @@ async function handleCreatorStudioRequest(req, res, ctx) {
     }
 }
 
-// Start a fresh UGC project from a natural-language request.
-async function handleUGCStart(req, res, ctx) {
+// Single-step UGC creation. Instead of stopping at a brief/product/creator card
+// and walking the user through script, scene and reference approvals, this runs
+// the whole pipeline in one stream: resolve the setup automatically, write the
+// script and scene plan, render every reference frame, then hand the production
+// to Director Mode. The integrity rules still apply (facts-only copy, reference
+// fingerprints, the H3 duration cap); only the intermediate approval gates are
+// gone. A frame failure leaves the project at the reference-approval checkpoint
+// so the existing recovery card can retry it.
+async function handleUGCAutoRun(req, res, ctx, project) {
+    const { provider, model, think } = ctx;
+    try {
+        // 1. Resolve product / creator / outfit / environment / content type.
+        ugcStudio.autoSetup(project, {
+            character: Array.isArray(ctx.characters) ? ctx.characters[0] : null
+        });
+
+        // 2. Script: the LLM when available, otherwise the deterministic
+        //    facts-only fallback.
+        sseWrite(res, { generating: 'UGC Studio \u2014 writing the script\u2026' });
+        vramManager.rememberChatModel(provider, model);
+        await vramManager.freeVRAMBeforeChat();
+        await ugcStudio.generateScript(project, { provider, model, think });
+
+        // 3. Scene plan.
+        sseWrite(res, { generating: 'UGC Studio \u2014 planning the scenes\u2026' });
+        await ugcStudio.generateScenes(project, { provider, model, think });
+
+        // 4. Approve the plan server-side and render every reference frame.
+        ugcStudio.approveScenes(project);
+        const referencesOk = await handleUGCGenerateReferences(req, res, ctx, project, null, { fresh: true, silent: true });
+        if (!referencesOk || !ugcStudio.referencesComplete(project)) {
+            // Recovery: surface the reference-approval card so failed frames can
+            // be retried. The happy path never reaches here.
+            emitUGCCard(res, project);
+            return;
+        }
+
+        // 5. Approve the frames and hand the production to Director Mode, which
+        //    renders the final H3 video and emits the completion card.
+        const approval = ugcStudio.approveReferences(project);
+        if (!approval.ok) {
+            emitUGCCard(res, project);
+            return;
+        }
+        await handleUGCDirectorHandoff(req, res, ctx, project);
+    } catch (err) {
+        console.error('[ugc] auto-run failed:', err.message);
+        if (err && err.code === 'generation_cancelled') {
+            sseWrite(res, { error: 'UGC Studio \u2014 generation cancelled.' });
+            res.end();
+            return;
+        }
+        // Recoverable failure: surface the project card at its current stage so
+        // the user can retry the affected step instead of losing the project.
+        try {
+            if (project && project.scenes && project.scenes.length) {
+                emitUGCCard(res, project);
+                return;
+            }
+        } catch (e) { /* fall through to the plain error */ }
+        sseWrite(res, { error: 'UGC Studio \u2014 ' + (err.message || 'could not build this project.') });
+        res.end();
+    }
+}
+
+// Normalize the structured setup the UGC popup sends. Strings are trimmed and
+// bounded, the duration is validated, and only known creator modes survive; the
+// studio re-validates every id against its own catalogs when applying it.
+function normalizeUgcSetup(raw) {
+    const src = raw && typeof raw === 'object' ? raw : {};
+    const clamp = (value, max) => String(value === undefined || value === null ? '' : value).trim().slice(0, max || 600);
+    const setup = {
+        briefText: clamp(src.briefText, 1200),
+        objective: clamp(src.objective, 600),
+        targetAudience: clamp(src.targetAudience, 300),
+        tone: clamp(src.tone, 200),
+        keyMessage: clamp(src.keyMessage, 400),
+        callToAction: clamp(src.callToAction, 300),
+        additionalInstructions: clamp(src.additionalInstructions, 800),
+        duration: Number(src.duration) > 0 ? Math.round(Number(src.duration)) : null,
+        aspectRatio: clamp(src.aspectRatio, 12),
+        platform: clamp(src.platform, 60),
+        productId: clamp(src.productId, 60),
+        characterId: clamp(src.characterId, 60),
+        creatorMode: ['character', 'random', 'none'].includes(src.creatorMode) ? src.creatorMode : '',
+        outfitPack: clamp(src.outfitPack, 60),
+        outfitPackCustom: clamp(src.outfitPackCustom, 600),
+        environmentId: clamp(src.environmentId, 60),
+        environmentCustom: clamp(src.environmentCustom, 300),
+        contentTypeId: clamp(src.contentTypeId, 60)
+    };
+    if (src.creatorProfile && typeof src.creatorProfile === 'object') setup.creatorProfile = src.creatorProfile;
+    if (src.product && typeof src.product === 'object') setup.product = src.product;
+    return setup;
+}
+
+// Start a fresh UGC project from the popup setup (or a natural-language request)
+// and run it to video in a single step.
+async function handleUGCStart(req, res, ctx, rawSetup) {
     const { conversationId, message, provider, model, think } = ctx;
+    const setup = normalizeUgcSetup(rawSetup);
+    const request = setup.briefText || message || 'Create a UGC video for my product.';
     sseWrite(res, { generating: 'UGC Studio \u2014 building your brief\u2026' });
     try {
         vramManager.rememberChatModel(provider, model);
         await vramManager.freeVRAMBeforeChat();
-        let project = await ugcStudio.createProject({ conversationId, message, provider, model, think });
-        // A character mentioned in the brief (`@Maya`) becomes the UGC creator
-        // through the same Character Identity Package the image/video pipelines
-        // use — never a separate UGC character system.
-        const mentioned = Array.isArray(ctx.characters) ? ctx.characters : [];
-        if (mentioned.length) {
-            project = ugcStudio.selectCreator(project, mentioned[0].id) || project;
-            characterContext.setActiveCharacter(conversationId, [{ id: mentioned[0].id, name: mentioned[0].name }]);
+        let project = await ugcStudio.createProject({ conversationId, message: request, provider, model, think });
+        // Apply the popup's explicit setup. Unspecified choices fall back to the
+        // deterministic auto resolution; a mentioned character is the fallback
+        // creator (through the same Character Identity Package the image/video
+        // pipelines use, never a separate UGC character system).
+        const character = setup.characterId
+            ? characterPresets.get(setup.characterId)
+            : (Array.isArray(ctx.characters) ? ctx.characters[0] : null);
+        ugcStudio.autoSetup(project, Object.assign({}, setup, { character }));
+        if (character) {
+            characterContext.setActiveCharacter(conversationId, [{ id: character.id, name: character.name }]);
+        }
+        // Explicit brief fields from the popup override the extracted brief.
+        const briefPatch = {};
+        for (const key of ['objective', 'targetAudience', 'tone', 'keyMessage', 'callToAction', 'additionalInstructions']) {
+            if (setup[key]) briefPatch[key] = setup[key];
+        }
+        if (setup.duration) briefPatch.duration = setup.duration;
+        if (setup.platform) briefPatch.platform = setup.platform;
+        if (setup.aspectRatio) briefPatch.aspectRatio = setup.aspectRatio;
+        if (Object.keys(briefPatch).length) {
+            const edited = ugcStudio.editBrief(project, briefPatch);
+            if (edited && edited.durationInvalid) {
+                sseWrite(res, { error: 'UGC Studio \u2014 Duration must be between 1 and ' + ugcStudio.DURATION_LIMITS.max + ' seconds.' });
+                res.end();
+                return;
+            }
         }
         activityLog.record({
             type: 'generation',
             title: 'UGC project started',
-            detail: (project.product && project.product.name) || message,
+            detail: (project.product && project.product.name) || request,
             conversationId
         });
-        emitUGCCard(res, project);
+        await handleUGCAutoRun(req, res, ctx, project);
     } catch (err) {
         console.error('[ugc] start failed:', err.message);
         sseWrite(res, { error: 'UGC Studio could not start this project: ' + err.message });
@@ -3780,11 +4060,16 @@ async function dispatchUGCAction(req, res, ctx, project, action) {
 async function handleUGCGenerateReferences(req, res, ctx, project, sceneIds, options) {
     const { conversationId, provider, model, think } = ctx;
     const opts = options || {};
+    // Silent mode is used by the single-step auto-run: the whole pipeline shares
+    // one stream, so this returns instead of emitting a standalone card and
+    // ending the response.
+    const silent = opts.silent === true;
     const scenes = (project.scenes || []).slice();
     const targets = Array.isArray(sceneIds) && sceneIds.length
         ? scenes.filter((s) => sceneIds.includes(s.id))
         : scenes;
     if (!targets.length) {
+        if (silent) return false;
         sseWrite(res, { error: 'UGC Studio \u2014 There is no scene plan yet. Approve the scenes first.' });
         res.end();
         return;
@@ -3909,7 +4194,9 @@ async function handleUGCGenerateReferences(req, res, ctx, project, sceneIds, opt
             conversationId
         });
         await vramManager.freeComfyModels('ugc references');
+        if (silent) return true;
         emitUGCCard(res, project);
+        return true;
     } catch (err) {
         console.error('[ugc] reference generation failed:', err.message);
         // Recover the stage so the card stays actionable: back to reference
@@ -3920,6 +4207,7 @@ async function handleUGCGenerateReferences(req, res, ctx, project, sceneIds, opt
                 : UGC_STAGE.SCENE_REVIEW;
             ugcStudio.save(project);
         } catch (e) { /* keep the original error */ }
+        if (silent) throw err;
         const friendly = (err && (err.code === 'generation_cancelled'))
             ? 'Reference generation cancelled.'
             : friendlyImageError(err);
@@ -3962,6 +4250,23 @@ async function handleUGCDirectorHandoff(req, res, ctx, project) {
         sseWrite(res, { generating: 'UGC Studio \u2014 handing off to Director Mode\u2026' });
         vramManager.rememberChatModel(provider, model);
         await vramManager.freeVRAMBeforeChat();
+        const ugcSemanticReferences = (input.identityReferences || []).map((filename, index) => ({
+            id: 'character:' + (input.identityCharacterId || 'ugc-creator') + (index ? ':' + index : ''),
+            entityId: input.identityCharacterId || 'ugc-creator',
+            name: project.creator && project.creator.name || 'UGC creator',
+            type: 'character',
+            source: '/generated/' + encodeURIComponent(path.basename(String(filename || ''))),
+            mode: 'full',
+            strength: 1,
+            priority: 1,
+            required: true,
+            order: index
+        }));
+        ugcSemanticReferences.push(...productH3References({
+            id: project.product && project.product.id,
+            name: project.product && project.product.name,
+            referenceImages: input.productReferences
+        }, { required: true, order: ugcSemanticReferences.length }));
         const production = director.createUgcProduction({
             conversationId,
             brief: input.brief,
@@ -3971,7 +4276,10 @@ async function handleUGCDirectorHandoff(req, res, ctx, project) {
             references: input.references,
             // The approved creator's single consolidated identity image travels
             // with the production so every shot inherits the same person.
-            identityReferences: input.identityReferences
+            identityReferences: input.identityReferences,
+            identityCharacterId: input.identityCharacterId,
+            productReferences: input.productReferences,
+            semanticReferences: ugcSemanticReferences
         });
         ugcStudio.setDirectorProduction(project, production.id);
         activityLog.record({
@@ -4058,6 +4366,71 @@ function resolveRequestCharacters(message, conversationId, explicitIds, action) 
         action
     });
     return resolution.characters.map((ref) => characterPresets.get(ref.id)).filter(Boolean);
+}
+
+function characterH3References(characters, conditioning) {
+    const list = Array.isArray(characters) ? characters : (characters ? [characters] : []);
+    if (!list.length || !conditioning) return [];
+    const sources = [];
+    if (conditioning.sourceAbs) sources.push(conditioning.sourceAbs);
+    for (const source of conditioning.references || []) {
+        if (!sources.includes(source)) sources.push(source);
+    }
+    return list.map((character, index) => {
+        const source = sources[index];
+        if (!source) return null;
+        return {
+            id: 'character:' + character.id,
+            entityId: character.id,
+            name: character.name || 'Character',
+            type: 'character',
+            source,
+            strength: 1,
+            mode: 'full',
+            priority: 1,
+            required: true,
+            order: index
+        };
+    }).filter(Boolean);
+}
+
+function productH3References(products, options = {}) {
+    const list = Array.isArray(products) ? products : (products ? [products] : []);
+    const out = [];
+    let order = Number(options.order || 0);
+    for (const product of list) {
+        const urls = Array.isArray(product && product.referenceImages) ? product.referenceImages : [];
+        urls.forEach((source, index) => {
+            if (!source) return;
+            const primary = out.length === 0 && index === 0 && options.primary !== false;
+            out.push({
+                id: 'product:' + String(product.id || product.name || 'product') + (index ? ':' + index : ''),
+                entityId: product.id || product.name || '',
+                name: product.name || 'Product',
+                type: 'product',
+                source,
+                mode: primary ? 'full' : 'compressed',
+                strength: primary ? 0.95 : 0.72,
+                priority: 3,
+                required: options.required === true && index === 0,
+                order: order++
+            });
+        });
+    }
+    return out;
+}
+
+function imageH3References(filenames, options = {}) {
+    return (Array.isArray(filenames) ? filenames : []).map((filename, index) => ({
+        id: 'image:' + path.basename(String(filename || '')),
+        type: 'image',
+        source: '/generated/' + encodeURIComponent(path.basename(String(filename || ''))),
+        mode: 'full',
+        strength: index === 0 ? 0.95 : 0.85,
+        priority: 2,
+        required: false,
+        order: Number(options.order || 0) + index
+    })).filter((ref) => ref.source !== '/generated/');
 }
 
 // Resolve (or create) the character a playground identity action operates on.
@@ -4491,6 +4864,8 @@ async function handlePlaygroundAction(req, res, ctx, action, rawMessage) {
                 outfitPackCustom: action.outfitPackCustom,
                 // The shared Activity Library selection ("", "auto", "random" or id).
                 activity: action.activity,
+                // The shared Scene / Location selection ("", "auto", "random" or id).
+                sceneId: action.sceneId,
                 faceAction: action.faceAction,
                 faceActionComponents: action.faceActionComponents,
                 // The user's own prompt, used verbatim with the chosen character.
@@ -4804,10 +5179,22 @@ async function handleDirectorStart(req, res, ctx) {
         // The Director builds its own image prompt; only the identity
         // references are consumed here, not the creative-defaults section.
         const identity = resolveIdentityConditioning(characterRecords, message, { defaults: false });
+        if (characterRecords.length && !identity) {
+            const text = 'The approved Character portrait is missing or unavailable. I stopped the Director production before generating an opening frame without the requested identity reference.';
+            sseWrite(res, { error: text });
+            res.end();
+            return;
+        }
         if (contextCharacters.length) characterContext.setActiveCharacter(conversationId, contextCharacters);
+        const semanticReferences = identity ? characterH3References(characterRecords, identity) : [];
+        semanticReferences.push(...productH3References(ctx.products || [], { required: true, order: semanticReferences.length }));
         const production = await director.createProduction({
             conversationId, message, provider, model, think, referenceImage,
-            character: identity ? { identityReferences: [identity.sourceAbs && path.basename(identity.sourceAbs)].concat(identity.references.map((p) => path.basename(p))) } : null
+            character: identity ? {
+                identityCharacterId: characterRecords[0] && characterRecords[0].id,
+                identityReferences: [identity.sourceAbs && path.basename(identity.sourceAbs)].concat(identity.references.map((p) => path.basename(p)))
+            } : null,
+            semanticReferences
         });
         activityLog.record({
             type: 'generation',
@@ -4975,6 +5362,8 @@ async function runDirectorVideoStage(req, res, ctx, production) {
             videoMode: stage.videoMode,
             sourceImageRawFilename: stage.sourceImageRawFilename,
             referenceImages: stage.referenceImages,
+            semanticReferences: stage.semanticReferences,
+            studio: production.ugc ? 'ugc' : 'director',
             duration: stage.duration,
             width: stage.width,
             height: stage.height,
@@ -5769,7 +6158,7 @@ async function handleVideoGenerationStream(req, res, opts) {
     const {
         provider, model, conversationId, message, videoPrompt,
         structuredRequest, action, previousPrompt, videoMode, sourceImageRawFilename,
-        referenceImages, duration, width, height, think
+        referenceImages, semanticReferences, studio, duration, width, height, think
     } = opts;
 
     let queueId = null;
@@ -5809,11 +6198,14 @@ async function handleVideoGenerationStream(req, res, opts) {
         if (videoMode) opts2.mode = videoMode;
         if (sourceImageRawFilename) opts2.sourceImageRawFilename = sourceImageRawFilename;
         if (Array.isArray(referenceImages) && referenceImages.length) opts2.referenceImages = referenceImages;
+        if (Array.isArray(semanticReferences) && semanticReferences.length) opts2.semanticReferences = semanticReferences;
+        if (studio) opts2.studio = studio;
         if (duration) opts2.duration = duration;
         if (width) opts2.width = width;
         if (height) opts2.height = height;
         opts2.onProgress = (stage) => {
             if (stage === 'face-refine') sseWrite(res, { generating: 'Refining faces...' });
+            else if (stage === 'auto-upscale') sseWrite(res, { generating: 'Upscaling video...' });
         };
 
         console.log('[video] source image:', opts2.sourceImageRawFilename || null);
@@ -5821,9 +6213,22 @@ async function handleVideoGenerationStream(req, res, opts) {
         console.log('[video] user request:', message);
         console.log('[video] H3 director prompt generated:', videoPrompt);
 
-        const promise = videoGenerator.generateVideo(videoPrompt, opts2);
+        let promise = videoGenerator.generateVideo(videoPrompt, opts2);
         queueId = promise.queueId || null;
-        const result = await promise;
+        let result = await promise;
+
+        // Auto-upscale (Settings > Video): generateVideo flags the result, then
+        // the upscale runs here after the generation lock is released so the two
+        // generation locks never nest. Best-effort — a failure keeps the base.
+        if (result && result.autoUpscale) {
+            sseWrite(res, { generating: 'Upscaling video...' });
+            promise = videoGenerator.autoUpscaleGenerated(result, Object.assign({}, opts2, {
+                label: 'video auto-upscale',
+                kind: 'video_generation'
+            }));
+            queueId = promise.queueId || queueId;
+            result = await promise;
+        }
 
         // Manual-only upscale: the RTX 4K pass runs only when the user asks
         // ("upscale this video" -> handleVideoUpscaleStream), just like image
@@ -5885,7 +6290,8 @@ async function handleVideoGenerationStream(req, res, opts) {
                 height: finalResult.height || existingParams.height || null,
                 video: (finalResult.meta && finalResult.meta.video) || existingParams.video || null,
                 refined: Boolean(finalResult.refined),
-                refineError: finalResult.refineError || null
+                refineError: finalResult.refineError || null,
+                upscale: finalResult.upscale || existingParams.upscale || null
             }),
             status: 'completed',
             lastAction: message || action || 'generate'
@@ -5937,7 +6343,7 @@ async function handleVideoGenerationStream(req, res, opts) {
                 meta: finalResult.meta || null,
                 refined: Boolean(finalResult.refined),
                 refineError: finalResult.refineError || null,
-                upscale: null
+                upscale: finalResult.upscale || null
             }
         });
         res.end();
@@ -6128,6 +6534,18 @@ function friendlyVideoError(err) {
         case 'h3_fbcache_output_unconnected':
         case 'h3_fbcache_not_h3':
         case 'h3_fbcache_cache_conflict':
+        case 'h3_reference_nodes_missing':
+        case 'h3_reference_schema_unsupported':
+        case 'h3_reference_source_missing':
+        case 'h3_reference_source_invalid':
+        case 'h3_reference_video_unavailable':
+        case 'h3_reference_video_invalid':
+        case 'h3_reference_artifact_missing':
+        case 'h3_reference_prepare_failed':
+        case 'h3_reference_required_failed':
+        case 'h3_reference_budget_exceeded':
+        case 'h3_reference_limit_exceeded':
+        case 'h3_reference_graph_invalid':
             return err.message;
         case 'comfyui_generation_error':
         case 'comfyui_oom':

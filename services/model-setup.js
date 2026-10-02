@@ -18,11 +18,12 @@
      SeedVR2 sharp DiT + VAE ........ Comfy-Org/SeedVR2
      Ultimate SD model ... FacehugmanIII/4x_foolhardy_Remacri
 
-   Custom nodes checked against ComfyUI's /object_info (upscale included):
-     UltimateSDUpscale .... ssitu/ComfyUI_UltimateSDUpscale
-     VHS_LoadVideo ........ Kosinkadink/ComfyUI-VideoHelperSuite
-     RTXVideoSuperResolution Comfy-Org/Nvidia_RTX_Nodes_ComfyUI (NVIDIA only)
-     SeedVR2* / MiniMaxH3* / TextEncodeQwenImage21* .. ship with current ComfyUI — update hint only.
+    Custom nodes checked against ComfyUI's /object_info (upscale included):
+      UltimateSDUpscale .... ssitu/ComfyUI_UltimateSDUpscale
+      VHS_LoadVideo ........ Kosinkadink/ComfyUI-VideoHelperSuite
+      RTXVideoSuperResolution Comfy-Org/Nvidia_RTX_Nodes_ComfyUI (NVIDIA only)
+      MiniMaxH3 RefMods ...... Luisacaotica/ComfyUI-MiniMaxH3Mod
+      SeedVR2* / MiniMaxH3* / TextEncodeQwenImage21* .. ship with current ComfyUI — update hint only.
 
    Zero npm dependencies: node builtins + global fetch, streamed to disk so
    multi-GB checkpoints never sit fully in memory.
@@ -235,6 +236,13 @@ const NODE_CATALOG = [
         repo: 'https://github.com/larryvrh/ComfyUI-MiniMax-H3-Turbo',
         dir: 'ComfyUI-MiniMax-H3-Turbo', recursive: false,
         note: 'Needed for the MiniMax H3 Turbo option (4-8 step generation). Install, then restart ComfyUI.'
+    },
+    {
+        id: 'h3_refmods', label: 'MiniMax H3 reusable visual references', required: false,
+        nodes: ['MiniMaxH3RefModExtract', 'MiniMaxH3RefModsLoader', 'MiniMaxH3RefModApply'],
+        repo: 'https://github.com/Luisacaotica/ComfyUI-MiniMaxH3Mod',
+        dir: 'ComfyUI-MiniMaxH3Mod', recursive: false, requirements: true,
+        note: 'Enables cached Full/Compressed visual references for @Character, products and other assets in video generation, UGC Studio and Creator Studio. Install this pack, then restart ComfyUI. Ordinary text-only video does not need it.'
     }
 ];
 
@@ -491,6 +499,68 @@ function runCommand(exe, args, opts = {}) {
     };
 }
 
+function comfyPythonCandidates(comfyRoot) {
+    const candidates = [];
+    const add = (value) => { if (value && !candidates.includes(value)) candidates.push(value); };
+    const win = process.platform === 'win32';
+    const root = comfyRoot ? path.resolve(String(comfyRoot)) : '';
+    const parent = root ? path.dirname(root) : '';
+    if (process.env.COMFYUI_PYTHON) add(String(process.env.COMFYUI_PYTHON).trim());
+    if (root) {
+        add(win ? path.join(root, '.venv', 'Scripts', 'python.exe') : path.join(root, '.venv', 'bin', 'python3'));
+        if (!win) add(path.join(root, '.venv', 'bin', 'python'));
+        add(win ? path.join(root, 'python_embeded', 'python.exe') : path.join(root, 'python_embeded', 'bin', 'python3'));
+    }
+    if (parent) {
+        add(win ? path.join(parent, 'python_embeded', 'python.exe') : path.join(parent, 'python_embeded', 'bin', 'python3'));
+        add(win ? path.join(parent, 'standalone-env', 'python.exe') : path.join(parent, 'standalone-env', 'bin', 'python'));
+        add(win ? path.join(parent, 'standalone-env', 'Scripts', 'python.exe') : path.join(parent, 'standalone-env', 'bin', 'python3'));
+    }
+    return candidates;
+}
+
+async function findComfyPython(comfyRoot) {
+    const candidates = comfyPythonCandidates(comfyRoot);
+    try {
+        const stats = await comfyui.getSystemStats();
+        const argv = stats && stats.system && stats.system.argv;
+        if (Array.isArray(argv) && /python/i.test(String(argv[0] || ''))) {
+            const position = process.env.COMFYUI_PYTHON ? 1 : 0;
+            candidates.splice(position, 0, String(argv[0]));
+        }
+    } catch {}
+    candidates.push('python', 'py');
+    for (const exe of [...new Set(candidates)]) {
+        if (!exe || (path.isAbsolute(exe) && !fs.existsSync(exe))) continue;
+        const isPyLauncher = path.basename(exe).toLowerCase() === 'py';
+        const prefix = isPyLauncher ? ['-3'] : [];
+        const check = runCommand(exe, prefix.concat(['--version']), { timeoutMs: 30000 });
+        if (check.ok) return { exe, prefix };
+    }
+    return null;
+}
+
+async function installPackRequirements(pack, comfyRoot, packDir) {
+    if (!pack.requirements) return;
+    const requirements = path.join(packDir, 'requirements.txt');
+    if (!fs.existsSync(requirements)) {
+        throw new Error(pack.label + ' was cloned, but its requirements.txt is missing. Check the repository checkout.');
+    }
+    const python = await findComfyPython(comfyRoot);
+    if (!python) {
+        throw new Error('Could not locate ComfyUI Python to install ' + pack.label + ' dependencies. Set COMFYUI_PYTHON, or run pip install -r "' + requirements + '" with ComfyUI Python.');
+    }
+    logLine('Installing ' + pack.label + ' Python requirements with ' + python.exe + ' ...');
+    const result = runCommand(python.exe, python.prefix.concat(['-m', 'pip', 'install', '-r', requirements]), {
+        timeoutMs: 20 * 60 * 1000,
+        cwd: packDir
+    });
+    if (!result.ok) {
+        throw new Error('Could not install ' + pack.label + ' Python requirements. Run pip install -r "' + requirements + '" with ComfyUI Python. ' + (result.stderr || result.error || 'pip failed'));
+    }
+    logLine(pack.label + ' Python requirements installed.');
+}
+
 async function runNodeInstallJob(ids) {
     job.running = true;
     job.done = false;
@@ -530,6 +600,7 @@ async function runNodeInstallJob(ids) {
                 throw new Error('Could not clone ' + pack.repo + ': ' + (res.stderr || res.error || 'git failed') + '. Check your network connection.');
             }
             logLine(pack.label + ': ' + (res.ok ? 'ok.' : 'kept existing copy (' + (res.stderr || 'pull skipped') + ').') + ' ' + (pack.note || ''));
+            await installPackRequirements(pack, comfyRoot, dir);
             job.finished += 1;
         }
         job.ok = true;
@@ -714,6 +785,7 @@ async function getStatus() {
             packInstalled,
             repo: pack.repo,
             installable: Boolean(pack.repo),
+            requirements: Boolean(pack.requirements),
             nvidiaOnly: Boolean(pack.nvidiaOnly),
             note: pack.note
         });

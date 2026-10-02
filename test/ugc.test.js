@@ -1048,3 +1048,138 @@ test('natural edits apply hook shortening and product-shot changes', async () =>
     assert.ok(project.scenes.every((s) => /product/i.test(s.productVisibility)));
 });
 
+// --- Single-step auto setup --------------------------------------------------
+
+test('autoSetup resolves the whole setup in one deterministic step', () => {
+    const project = studio.normalizeProject({
+        conversationId: conversationId('auto'),
+        status: 'active',
+        stage: 'brief',
+        request: 'Create a 15-second vertical UGC video for my Glow Serum to promote it',
+        brief: { duration: 15, aspectRatio: '9:16', productName: 'Glow Serum' }
+    });
+    studio.save(project);
+    studio.autoSetup(project);
+    assert.equal(project.product.name, 'Glow Serum');
+    assert.ok(project.creator && project.creator.identity);
+    assert.ok(project.outfit && project.outfit.outfit.length > 5);
+    assert.equal(project.environment.id, 'home');
+    assert.ok(project.contentType && project.contentType.id);
+    // Setup is complete, so the project proceeds straight to the brief/script.
+    assert.equal(studio.nextSetupStage(project), studio.STAGES.BRIEF);
+    // The product is persisted facts-only, so it is reusable next time.
+    assert.ok(studio.listProducts().some((p) => p.name === 'Glow Serum'));
+});
+
+test('autoSetup keeps an explicit product-only request creator-free', () => {
+    const project = studio.normalizeProject({
+        conversationId: conversationId('auto-product-only'),
+        status: 'active',
+        stage: 'brief',
+        request: 'Make a product-only UGC video for my serum',
+        brief: { duration: 15, productName: 'Serum X' }
+    });
+    studio.save(project);
+    studio.autoSetup(project);
+    assert.equal(project.creatorMode, 'none');
+    assert.equal(project.creator, null);
+    assert.equal(prompts.isCreatorFree(project), true);
+});
+
+test('autoSetup binds a supplied character as the creator', () => {
+    const preset = characterPresets.create({
+        name: 'Nova',
+        identity: 'a woman with curly hair',
+        appearance: 'green eyes',
+        hair: 'curly hair',
+        outfitPack: 'casual-streetwear'
+    });
+    const project = studio.normalizeProject({
+        conversationId: conversationId('auto-character'),
+        status: 'active',
+        stage: 'brief',
+        request: 'Create a UGC video for my serum',
+        brief: { duration: 15, productName: 'Serum Y' }
+    });
+    studio.save(project);
+    studio.autoSetup(project, { character: preset });
+    assert.equal(project.creator.characterId, preset.id);
+    assert.equal(project.creator.name, 'Nova');
+});
+
+test('autoSetup applies explicit popup selections', () => {
+    const product = products.create({ name: 'Explicit Serum' });
+    const preset = characterPresets.create({ name: 'Iris', identity: 'a woman with short hair', appearance: 'blue eyes', hair: 'short hair' });
+    const project = studio.normalizeProject({
+        conversationId: conversationId('auto-explicit'),
+        status: 'active',
+        stage: 'brief',
+        request: 'Create a UGC video',
+        brief: { duration: 15 }
+    });
+    studio.save(project);
+    studio.autoSetup(project, {
+        productId: product.id,
+        characterId: preset.id,
+        creatorMode: 'character',
+        outfitPack: 'gym-activewear',
+        environmentId: 'cafe',
+        contentTypeId: 'unboxing'
+    });
+    assert.equal(project.product.id, product.id);
+    assert.equal(project.creator.characterId, preset.id);
+    assert.equal(project.outfit.packId, 'gym-activewear');
+    assert.equal(project.environment.id, 'cafe');
+    assert.equal(project.contentType.id, 'unboxing');
+});
+
+test('autoSetup creates a new product and honors product-only mode', () => {
+    const project = studio.normalizeProject({
+        conversationId: conversationId('auto-new-product'),
+        status: 'active',
+        stage: 'brief',
+        request: 'Create a UGC video',
+        brief: { duration: 15 }
+    });
+    studio.save(project);
+    studio.autoSetup(project, {
+        product: { name: 'Fresh Product', brand: 'Acme' },
+        creatorMode: 'none',
+        environmentId: 'custom',
+        environmentCustom: 'a sunlit bathroom',
+        contentTypeId: 'testimonial'
+    });
+    assert.equal(project.product.name, 'Fresh Product');
+    assert.equal(project.product.brand, 'Acme');
+    assert.equal(project.creatorMode, 'none');
+    assert.equal(project.environment.description, 'a sunlit bathroom');
+    assert.equal(project.contentType.id, 'testimonial');
+});
+
+test('autoSetup uses a custom outfit verbatim', () => {
+    const project = studio.normalizeProject({
+        conversationId: conversationId('auto-custom-outfit'),
+        status: 'active',
+        stage: 'brief',
+        request: 'Create a UGC video',
+        brief: { duration: 15 }
+    });
+    studio.save(project);
+    studio.autoSetup(project, {
+        product: { name: 'Custom Outfit Product' },
+        creatorMode: 'random',
+        outfitPack: 'custom',
+        outfitPackCustom: 'a yellow raincoat and black boots'
+    });
+    assert.equal(project.outfit.outfit, 'a yellow raincoat and black boots');
+});
+
+test('normalizeAction carries the create_project setup payload', () => {
+    const action = studio.normalizeAction({ type: 'create_project', setup: { briefText: 'hi', duration: 15 } });
+    assert.equal(action.type, 'create_project');
+    assert.equal(action.setup.briefText, 'hi');
+    assert.equal(studio.validateAction({ stage: 'reference_approval', status: 'active' }, 'create_project').ok, true);
+});
+
+
+

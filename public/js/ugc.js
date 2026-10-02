@@ -1246,6 +1246,7 @@ const UGCUI = (() => {
             updateBar(data);
             renderLauncherProject(data);
         });
+        populateUgcPopup().catch(() => {});
     }
 
     function close() {
@@ -1255,18 +1256,211 @@ const UGCUI = (() => {
         setTimeout(() => { overlay.hidden = true; }, 180);
     }
 
+    // --- Setup popup -----------------------------------------------------------
+    //
+    // The popup is the setup surface: product, creator, content type, outfit,
+    // environment and brief are chosen here, then one action runs the whole
+    // pipeline. The catalogs come from /api/ugc/options so the UI never
+    // hardcodes them.
+
+    let ugcOptions = null;
+
+    function selectOption(value, label) {
+        const node = document.createElement('option');
+        node.value = value;
+        node.textContent = label;
+        return node;
+    }
+
+    function fillUgcSelect(select, items, selected) {
+        if (!select) return;
+        select.replaceChildren();
+        (items || []).forEach((item) => select.appendChild(selectOption(item.value, item.label)));
+        if (selected !== undefined && selected !== null) select.value = selected;
+    }
+
+    async function loadUgcOptions() {
+        if (ugcOptions) return ugcOptions;
+        try {
+            const res = await fetch('/api/ugc/options');
+            ugcOptions = res.ok ? await res.json() : {};
+        } catch (e) {
+            ugcOptions = {};
+        }
+        return ugcOptions;
+    }
+
+    function productSelectOptions(options) {
+        const items = (options.products || []).map((p) => ({
+            value: 'product:' + p.id,
+            label: p.brand ? (p.name + ' \u00b7 ' + p.brand) : p.name
+        }));
+        items.push({ value: 'new', label: '+ New product\u2026' });
+        return items;
+    }
+
+    function creatorSelectOptions(options) {
+        const items = [{ value: 'random', label: 'Random creator' }];
+        (options.characters || []).forEach((c) => items.push({ value: 'character:' + c.id, label: c.name || 'Character' }));
+        items.push({ value: 'none', label: 'No creator \u2014 product only' });
+        return items;
+    }
+
+    function profileSelectItems(profile, key) {
+        const items = [{ value: 'random', label: 'Random' }];
+        ((profile && profile[key]) || []).forEach((item) => items.push({ value: item.value, label: item.label }));
+        return items;
+    }
+
+    // The mini portrait mirrors Creator Studio's character preview: a saved
+    // creator shows their approved portrait and identity status, while the
+    // random / product-only modes show a short explanatory label.
+    function paintUgcCreator() {
+        const select = document.getElementById('ugcCreatorSelect');
+        const image = document.getElementById('ugcCreatorImage');
+        const name = document.getElementById('ugcCreatorName');
+        const identity = document.getElementById('ugcCreatorIdentity');
+        if (!select || !image || !name || !identity) return;
+        const value = select.value;
+        const character = value.indexOf('character:') === 0
+            ? ((ugcOptions && ugcOptions.characters) || []).find((c) => c.id === value.slice('character:'.length))
+            : null;
+        const sheet = document.getElementById('ugcCreatorSheet');
+        if (sheet) sheet.hidden = !character;
+        if (value === 'none') {
+            image.hidden = true;
+            image.removeAttribute('src');
+            name.textContent = 'No creator';
+            identity.textContent = 'Product-only video, with no on-camera person.';
+            return;
+        }
+        if (!character) {
+            image.hidden = true;
+            image.removeAttribute('src');
+            name.textContent = 'Random creator';
+            identity.textContent = 'A new creator will be cast for this video.';
+            return;
+        }
+        name.textContent = character.name || 'Character';
+        const status = character.identityStatus === 'ready' ? 'Identity sheet ready'
+            : character.identityStatus === 'generating' ? 'Identity sheet generating'
+                : character.identityStatus === 'failed' ? 'Identity sheet needs attention'
+                    : 'Character identity';
+        identity.textContent = status;
+        if (character.image) {
+            image.src = character.image;
+            image.hidden = false;
+        } else {
+            image.hidden = true;
+            image.removeAttribute('src');
+        }
+    }
+
+    async function populateUgcPopup() {
+        const options = await loadUgcOptions();
+        const products = options.products || [];
+        fillUgcSelect(document.getElementById('ugcProductSelect'),
+            productSelectOptions(options), products[0] ? 'product:' + products[0].id : 'new');
+        fillUgcSelect(document.getElementById('ugcCreatorSelect'), creatorSelectOptions(options), 'random');
+        fillUgcSelect(document.getElementById('ugcContentType'),
+            (options.contentTypes || []).map((c) => ({ value: c.id, label: c.label })),
+            (options.contentTypes && options.contentTypes[0] || {}).id);
+        fillUgcSelect(document.getElementById('ugcOutfit'),
+            [{ value: 'auto', label: 'Auto' }].concat((options.outfitPacks || []).map((p) => ({ value: p.id, label: p.label }))),
+            'auto');
+        fillUgcSelect(document.getElementById('ugcEnvironment'),
+            (options.environments || []).map((e) => ({ value: e.id, label: e.label })), 'home');
+        fillUgcSelect(document.getElementById('ugcPlatform'),
+            (options.platforms || []).map((p) => ({ value: p.id, label: p.label })), 'generic');
+        const profile = options.creatorProfile || {};
+        fillUgcSelect(document.getElementById('ugcCreatorAppearance'), profileSelectItems(profile, 'appearance'), 'random');
+        fillUgcSelect(document.getElementById('ugcCreatorAge'), profileSelectItems(profile, 'age'), 'random');
+        fillUgcSelect(document.getElementById('ugcCreatorGender'), profileSelectItems(profile, 'gender'), 'random');
+        syncUgcPopupVisibility();
+        paintUgcCreator();
+    }
+
+    // Show the conditional rows (new product, random-creator controls, custom
+    // environment) so an unset field never looks required.
+    function syncUgcPopupVisibility() {
+        const product = document.getElementById('ugcProductSelect');
+        const newRow = document.getElementById('ugcNewProductRow');
+        if (newRow) newRow.hidden = !product || product.value !== 'new';
+        const creator = document.getElementById('ugcCreatorSelect');
+        const profileRow = document.getElementById('ugcCreatorProfileRow');
+        if (profileRow) profileRow.hidden = !creator || creator.value !== 'random';
+        const environment = document.getElementById('ugcEnvironment');
+        const environmentRow = document.getElementById('ugcEnvironmentCustomRow');
+        if (environmentRow) environmentRow.hidden = !environment || environment.value !== 'custom';
+    }
+
+    function collectUgcSetup() {
+        const value = (id) => {
+            const node = document.getElementById(id);
+            return node ? String(node.value || '').trim() : '';
+        };
+        const productValue = value('ugcProductSelect');
+        const creatorValue = value('ugcCreatorSelect');
+        const environmentId = value('ugcEnvironment');
+        const outfit = value('ugcOutfit');
+        const setup = {
+            briefText: value('ugcStudioBrief'),
+            objective: value('ugcStudioBrief'),
+            targetAudience: value('ugcAudience'),
+            tone: value('ugcTone'),
+            keyMessage: value('ugcKeyMessage'),
+            callToAction: value('ugcCta'),
+            additionalInstructions: value('ugcExtra'),
+            duration: Number(value('ugcDuration')) || 15,
+            platform: value('ugcPlatform'),
+            contentTypeId: value('ugcContentType'),
+            environmentId,
+            environmentCustom: environmentId === 'custom' ? value('ugcEnvironmentCustom') : '',
+            outfitPack: outfit === 'auto' ? '' : outfit,
+            outfitPackCustom: value('ugcOutfitCustom')
+        };
+        if (productValue === 'new') {
+            setup.product = { name: value('ugcProductName'), brand: value('ugcProductBrand') };
+        } else if (productValue.indexOf('product:') === 0) {
+            setup.productId = productValue.slice('product:'.length);
+        }
+        if (creatorValue === 'random') {
+            setup.creatorMode = 'random';
+            setup.creatorProfile = {
+                appearance: value('ugcCreatorAppearance'),
+                age: value('ugcCreatorAge'),
+                gender: value('ugcCreatorGender')
+            };
+        } else if (creatorValue === 'none') {
+            setup.creatorMode = 'none';
+        } else if (creatorValue.indexOf('character:') === 0) {
+            setup.creatorMode = 'character';
+            setup.characterId = creatorValue.slice('character:'.length);
+        }
+        return setup;
+    }
+
     function startFromPopup() {
-        const brief = document.getElementById('ugcStudioBrief');
         const status = document.getElementById('ugcStudioStatus');
-        const detail = brief ? brief.value.trim() : '';
-        const text = detail
-            ? 'Create a UGC video for my product. ' + detail
-            : 'Create a UGC video for my product.';
+        const setup = collectUgcSetup();
+        if (!setup.productId && (!setup.product || !setup.product.name)) {
+            const nameInput = document.getElementById('ugcProductName');
+            if (nameInput) nameInput.focus();
+            if (status) status.textContent = 'Add a product name, or pick one from your library.';
+            return;
+        }
         if (typeof Chat === 'undefined' || !Chat || typeof Chat.sendMessage !== 'function') {
             if (status) status.textContent = 'Chat is not ready yet.';
             return;
         }
-        send(text);
+        const selectedProduct = ((ugcOptions && ugcOptions.products) || [])
+            .find((p) => setup.productId && p.id === setup.productId);
+        const productName = setup.product ? setup.product.name : (selectedProduct ? selectedProduct.name : '');
+        const direction = setup.briefText || setup.keyMessage || '';
+        const text = 'Create a UGC video' + (productName ? ' for ' + productName : ' for my product') +
+            (direction ? '. ' + direction : '.');
+        if (status) status.textContent = 'Starting\u2026';
+        send(text, { type: 'create_project', setup });
         close();
     }
 
@@ -1366,6 +1560,22 @@ const UGCUI = (() => {
         if (startButton) startButton.addEventListener('click', startFromPopup);
         if (returnButton) returnButton.addEventListener('click', returnToProject);
         if (overlay) overlay.addEventListener('click', (event) => { if (event.target === overlay) close(); });
+        const productSelect = document.getElementById('ugcProductSelect');
+        if (productSelect) productSelect.addEventListener('change', syncUgcPopupVisibility);
+        const creatorSelect = document.getElementById('ugcCreatorSelect');
+        if (creatorSelect) creatorSelect.addEventListener('change', () => {
+            syncUgcPopupVisibility();
+            paintUgcCreator();
+        });
+        const creatorSheet = document.getElementById('ugcCreatorSheet');
+        if (creatorSheet) creatorSheet.addEventListener('click', () => {
+            const value = creatorSelect ? creatorSelect.value : '';
+            if (value.indexOf('character:') === 0 && window.CharacterIdentityUI && typeof window.CharacterIdentityUI.open === 'function') {
+                window.CharacterIdentityUI.open(value.slice('character:'.length));
+            }
+        });
+        const environmentSelect = document.getElementById('ugcEnvironment');
+        if (environmentSelect) environmentSelect.addEventListener('change', syncUgcPopupVisibility);
         const brief = document.getElementById('ugcStudioBrief');
         if (brief) brief.addEventListener('keydown', (event) => {
             if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') startFromPopup();

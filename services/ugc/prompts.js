@@ -12,6 +12,7 @@
 
 const catalog = require('./catalog');
 const characterGen = require('../playground/character');
+const sceneLibrary = require('../scene-library');
 
 // Resolve the demographic appearance label for a creator. Saved presets carry
 // it, but an older preset (or a caller that only stored the category key) may
@@ -573,8 +574,13 @@ function referenceConcept(project, scene) {
     if (!creatorFree && creator.appearance) lines.push('Creator facial appearance: ' + creator.appearance + '.');
     if (!creatorFree && creator.hair) lines.push('Creator hair: ' + creator.hair + '.');
     if (!creatorFree && outfit.outfit) lines.push('Outfit: ' + outfit.outfit + '.');
-    if (environment.description || environment.label) {
-        lines.push('Environment: ' + (environment.description || environment.label) + '.');
+    // The environment is a Scene from the shared Scene/Location Library; its
+    // context is composed by the one shared builder so UGC Studio, Creator
+    // Studio and the Playground describe a scene identically.
+    const sceneCtx = sceneLibrary.buildSceneContext(environment);
+    if (sceneCtx.prompt) lines.push('Environment: ' + sceneCtx.prompt + '.');
+    if (sceneCtx.referenceImage) {
+        lines.push('Match the environment, architecture, spatial layout, major furniture, props, materials and overall lighting character of the supplied scene reference image.');
     }
     const productBits = [product.name, product.brand, product.category].filter(Boolean).join(', ');
     if (productBits) lines.push('Product on camera: ' + productBits + '.');
@@ -597,6 +603,7 @@ function referenceConcept(project, scene) {
     if (!creatorFree && continuity.creatorIdentity) constraints.push('Keep the exact same creator identity across every scene');
     if (!creatorFree && continuity.outfitState) constraints.push('Keep the exact same outfit across every scene');
     if (continuity.environmentState) constraints.push('Keep the same environment across every scene');
+    if (sceneCtx.referenceImage) constraints.push('Preserve the supplied scene reference environment (architecture, spatial layout, furniture, props, materials and lighting character) without forcing its exact camera framing');
     if (!creatorFree && project.creator && project.creator.characterId) {
         constraints.push('Preserve the supplied character identity and facial features');
     }
@@ -714,7 +721,7 @@ function directorBrief(project) {
     return {
         originalRequest: project.request || '',
         subject: subjectParts.join(' '),
-        setting: environment.description || environment.label || '',
+        setting: sceneLibrary.buildSceneContext(environment).summary,
         action: scenes.length ? String(scenes[0].action || '') : '',
         mood: brief.tone || 'natural, authentic',
         visualStyle: 'photorealistic UGC phone-camera look, natural light',
