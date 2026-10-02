@@ -992,9 +992,11 @@ const DEFAULT_SETTINGS = {
     // Engine is shared with video: images run SeedVR2/Ultimate SD (an RTX
     // selection falls back to SeedVR2 for images); videos run SeedVR2/RTX (an
     // Ultimate SD selection falls back to RTX for video). RTX video upscale
-    // uses upscaleMultiplier as its scale factor. Default is RTX so video
-    // upscales stay fast; image upscales are unaffected.
-    upscaleEngine: 'rtx',
+    // uses upscaleMultiplier as its scale factor. Default is SeedVR2: the
+    // diffusion DiT upscaler yields noticeably better quality than the fast
+    // single-pass RTX path, which is a quality-first default. Choose RTX in
+    // Settings > Upscale for a faster (softer) video upscale.
+    upscaleEngine: 'seedvr2',
     upscaleMode: 'target',
     upscaleResolution: 2160,
     upscaleMultiplier: 2,
@@ -2534,6 +2536,8 @@ module.exports = {
     buildSeedVr2ImageUpscaleGraph,
     buildUltimateSdUpscaleGraph,
     seedVr2Profile,
+    listInstalledSeedVr2Checkpoints,
+    resolveSeedVr2ModelDirs,
     resolveUpscaleResolution,
     readImageDimensions,
     UPSCALE_SIGNAL_RE,

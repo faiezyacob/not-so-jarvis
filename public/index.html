@@ -454,7 +454,7 @@
                                 <option value="seedvr2">SeedVR2</option>
                                 <option value="ultimate">Ultimate SD</option>
                             </select>
-                            <span class="settings-hint">RTX is video-only and always scales by the Multiplier (images fall back to SeedVR2). SeedVR2 handles images and video; Ultimate SD is image-only. Both use the Mode setting below.</span>
+                            <span class="settings-hint">SeedVR2 is the default: a diffusion upscaler that gives the best quality for images and video. RTX is a fast single-pass video super-resolution (softer); images fall back to SeedVR2. Ultimate SD is image-only. Both SeedVR2 and Ultimate SD use the Mode setting below.</span>
                         </div>
                         <div class="settings-card" data-search="upscale mode target resolution multiplier scale">
                             <div class="settings-card-title">SCALE</div>
@@ -650,7 +650,7 @@
                                 <span class="settings-toggle-label">MiniMax H3 Turbo</span>
                                 <input type="checkbox" id="videoTurboEnabled">
                             </label>
-                            <span class="settings-hint">Off keeps the normal H3 workflow unchanged. On routes the model through the Turbo LoRA and Turbo sampler (strength 1.0, simple scheduler).</span>
+                            <span class="settings-hint">On by default. Routes the model through the Turbo LoRA and Turbo sampler (strength 1.0, simple scheduler) at the model's native canvas for the recommended quality/speed path. Off keeps the full 25-step base workflow.</span>
                         </div>
                             <div id="videoTurboOptions" hidden>
                         <div class="settings-field">
@@ -665,10 +665,16 @@
                             <span class="settings-hint">6–8 steps generally provide better quality. 4 steps is fastest but may show motion smearing during fast motion.</span>
                         </div>
                         <div class="settings-field">
-                            <label class="settings-field-label" for="videoTurboLora">Turbo LoRA</label>
+                            <label class="settings-field-label" for="videoTurboLora">Turbo LoRA (frames)</label>
                             <input type="text" class="settings-input" id="videoTurboLora"
                                 placeholder="minimax_h3_turbo_v4_step600_ema.safetensors" autocomplete="off">
-                            <span class="settings-hint">Place the LoRA in ComfyUI models/loras. Default: minimax_h3_turbo_v4_step600_ema.safetensors</span>
+                            <span class="settings-hint">Used for text-to-video and image-to-video. Place the LoRA in ComfyUI models/loras. Default: minimax_h3_turbo_v4_step600_ema.safetensors</span>
+                        </div>
+                        <div class="settings-field">
+                            <label class="settings-field-label" for="videoRefTurboLora">Turbo LoRA (reference)</label>
+                            <input type="text" class="settings-input" id="videoRefTurboLora"
+                                placeholder="minimax_h3_n_turbo_4step_v0.1_comfy_resized_avg_rank_21_bf16.safetensors" autocomplete="off">
+                            <span class="settings-hint">Used for reference-to-video (ref2va). This dedicated adapter is trained on the reference model path and gives noticeably better reference videos than the frames adapter. Default: minimax_h3_n_turbo_4step_v0.1_comfy_resized_avg_rank_21_bf16.safetensors</span>
                         </div>
                             </div>
                         </div>

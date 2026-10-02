@@ -59,19 +59,27 @@ test('h3DimensionsForAspectRatio creates portrait, square, and landscape canvase
     assert.ok(Math.abs(portrait.W / portrait.H - 9 / 16) < 0.01);
 });
 
-test('buildH3Graph: default settings use the unguided BasicGuider', () => {
-    const graph = videoGenerator.buildH3Graph({ prompt: 'a kite', mode: 't2va', settings: {} });
+test('H3 Turbo is enabled by default', () => {
+    assert.equal(videoGenerator.H3_DEFAULTS.h3TurboEnabled, true);
+    const turbo = videoGenerator.normalizeH3Turbo({});
+    assert.equal(turbo.enabled, true);
+});
+
+test('buildH3Graph: base settings use the unguided BasicGuider (Turbo off)', () => {
+    const graph = videoGenerator.buildH3Graph({
+        prompt: 'a kite', mode: 't2va', settings: { h3TurboEnabled: false }
+    });
     assert.equal(graph.guider.class_type, 'BasicGuider');
     assert.deepEqual(graph.guider.inputs.conditioning, ['condition', 0]);
     assert.equal(graph.negative, undefined);
     assert.equal(graph.scheduler.inputs.steps, videoGenerator.H3_DEFAULT_STEPS);
 });
 
-test('buildH3Graph: h3Steps drives the scheduler step count', () => {
+test('buildH3Graph: h3Steps drives the scheduler step count (Turbo off)', () => {
     const graph = videoGenerator.buildH3Graph({
         prompt: 'a kite',
         mode: 't2va',
-        settings: { h3Steps: 30 }
+        settings: { h3TurboEnabled: false, h3Steps: 30 }
     });
     assert.equal(graph.scheduler.inputs.steps, 30);
 });
@@ -80,7 +88,7 @@ test('buildH3Graph: h3Cfg above 1 switches to CFGGuider with a zeroed negative',
     const graph = videoGenerator.buildH3Graph({
         prompt: 'a kite',
         mode: 't2va',
-        settings: { h3Cfg: 3.5 }
+        settings: { h3TurboEnabled: false, h3Cfg: 3.5 }
     });
     assert.equal(graph.guider.class_type, 'CFGGuider');
     assert.equal(graph.guider.inputs.cfg, 3.5);
@@ -90,14 +98,32 @@ test('buildH3Graph: h3Cfg above 1 switches to CFGGuider with a zeroed negative',
     assert.deepEqual(graph.negative.inputs.conditioning, ['condition', 0]);
 });
 
-test('buildH3Graph: an explicit cfg of 1 stays on BasicGuider', () => {
+test('buildH3Graph: an explicit cfg of 1 stays on BasicGuider (Turbo off)', () => {
     const graph = videoGenerator.buildH3Graph({
         prompt: 'a kite',
         mode: 't2va',
-        settings: { h3Cfg: 1 }
+        settings: { h3TurboEnabled: false, h3Cfg: 1 }
     });
     assert.equal(graph.guider.class_type, 'BasicGuider');
     assert.equal(graph.negative, undefined);
+});
+
+test('buildH3Graph: reference mode uses the dedicated ref Turbo LoRA on the stock loader', () => {
+    const graph = videoGenerator.buildH3Graph({
+        prompt: 'a kite',
+        mode: 'ref2va',
+        refImageNames: ['ref1.png'],
+        settings: {}
+    });
+    // The reference adapter is a LightX2V-style checkpoint, so it loads with
+    // ComfyUI's stock LoraLoaderModelOnly (not the pack's Turbo loader).
+    assert.equal(graph.h3_turbo_lora.class_type, 'LoraLoaderModelOnly');
+    assert.equal(graph.h3_turbo_lora.inputs.lora_name, videoGenerator.H3_TURBO_DEFAULT_REFERENCE_LORA);
+});
+
+test('buildH3Graph: frames mode uses the frames Turbo LoRA', () => {
+    const graph = videoGenerator.buildH3Graph({ prompt: 'a kite', mode: 't2va', settings: {} });
+    assert.equal(graph.h3_turbo_lora.inputs.lora_name, videoGenerator.H3_TURBO_DEFAULT_LORA);
 });
 
 test('autoUpscaleEnabled defaults to off', () => {

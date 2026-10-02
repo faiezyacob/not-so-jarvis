@@ -1612,7 +1612,8 @@ const VIDEO_TEXT_FIELDS = [
     { key: 'h3Clip', id: 'videoClip' },
     { key: 'h3VideoVae', id: 'videoVae' },
     { key: 'h3AudioVae', id: 'videoAudioVae' },
-    { key: 'h3TurboLora', id: 'videoTurboLora' }
+    { key: 'h3TurboLora', id: 'videoTurboLora' },
+    { key: 'h3RefTurboLora', id: 'videoRefTurboLora' }
 ];
 
 // H3 base sampling controls (number inputs, persisted like the text fields).
@@ -1626,7 +1627,8 @@ const VIDEO_HINTS = {
     videoClip: 'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors',
     videoVae: 'minimax_h3_video_vae_fp16.safetensors',
     videoAudioVae: 'minimax_h3_audio_vae_fp32.safetensors',
-    videoTurboLora: 'minimax_h3_turbo_v4_step600_ema.safetensors'
+    videoTurboLora: 'minimax_h3_turbo_v4_step600_ema.safetensors',
+    videoRefTurboLora: 'minimax_h3_n_turbo_4step_v0.1_comfy_resized_avg_rank_21_bf16.safetensors'
 };
 
 const VIDEO_FACEREFINE_SELECT_FIELDS = [

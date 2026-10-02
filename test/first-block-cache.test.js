@@ -247,7 +247,7 @@ test('Test A: FBCache off + SageAttention matches the previous workflow', () => 
     const graph = videoGenerator.buildH3Graph({
         prompt: 'a kite over a field',
         mode: 't2va',
-        settings: baseSettings({ attentionBackend: 'sageattention' })
+        settings: baseSettings({ h3TurboEnabled: false, attentionBackend: 'sageattention' })
     });
     assert.equal(graph.h3_first_block_cache, undefined);
     assert.deepEqual(graph.sage_attention.inputs.model, ['model', 0]);
@@ -258,7 +258,7 @@ test('Test B: FBCache on + SageAttention patches the model before the attention 
     const graph = videoGenerator.buildH3Graph({
         prompt: 'a kite over a field',
         mode: 't2va',
-        settings: baseSettings({ attentionBackend: 'sageattention', firstBlockCache: fbc() })
+        settings: baseSettings({ h3TurboEnabled: false, attentionBackend: 'sageattention', firstBlockCache: fbc() })
     });
     assert.equal(graph.h3_first_block_cache.class_type, NODE);
     assert.deepEqual(graph.h3_first_block_cache.inputs.model, ['model', 0]);
@@ -308,7 +308,7 @@ test('Test E: I2VA keeps the first frame while FBCache patches the model', () =>
         prompt: '<Picture 1> a woman turns to the camera',
         mode: 'i2va',
         firstImageName: 'jarvis_video_source.png',
-        settings: baseSettings({ attentionBackend: 'sageattention', firstBlockCache: fbc() })
+        settings: baseSettings({ h3TurboEnabled: false, attentionBackend: 'sageattention', firstBlockCache: fbc() })
     });
     assert.deepEqual(graph.condition.inputs.first_frame, ['first_image', 0]);
     assert.equal(graph.first_image.inputs.image, 'jarvis_video_source.png');
@@ -322,7 +322,7 @@ test('validateH3Graph: the installed FBCache node passes and wires through', asy
     const graph = videoGenerator.buildH3Graph({
         prompt: 'a kite',
         mode: 't2va',
-        settings: baseSettings({ firstBlockCache: fbc() })
+        settings: baseSettings({ h3TurboEnabled: false, firstBlockCache: fbc() })
     });
     const info = { [NODE]: {}, UNETLoader: {}, CLIPLoader: {}, VAELoader: {}, RandomNoise: {}, KSamplerSelect: {}, MiniMaxH3ImageToVideo: {}, BasicScheduler: {}, BasicGuider: {}, SamplerCustomAdvanced: {}, VAEDecode: {}, VAEDecodeAudio: {}, CreateVideo: {}, SaveVideo: {} };
     await assert.doesNotReject(() => videoGenerator.validateH3Graph(info, graph));

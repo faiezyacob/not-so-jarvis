@@ -13,10 +13,11 @@ function baseSettings(extra) {
     return Object.assign({ h3Unet: 'base.safetensors' }, extra || {});
 }
 
-test('normalizeH3Turbo: off by default and only an explicit truthy value enables it', () => {
-    assert.equal(videoGenerator.normalizeH3Turbo({}).enabled, false);
+test('normalizeH3Turbo: on by default; an explicit false disables it', () => {
+    assert.equal(videoGenerator.normalizeH3Turbo({}).enabled, true);
     assert.equal(videoGenerator.normalizeH3Turbo({ h3TurboEnabled: false }).enabled, false);
-    assert.equal(videoGenerator.normalizeH3Turbo({ h3TurboEnabled: 'no' }).enabled, false);
+    assert.equal(videoGenerator.normalizeH3Turbo({ h3TurboEnabled: 'false' }).enabled, false);
+    assert.equal(videoGenerator.normalizeH3Turbo({ h3TurboEnabled: '0' }).enabled, false);
     assert.equal(videoGenerator.normalizeH3Turbo({ h3TurboEnabled: true }).enabled, true);
     assert.equal(videoGenerator.normalizeH3Turbo({ h3TurboEnabled: 1 }).enabled, true);
     assert.equal(videoGenerator.normalizeH3Turbo({ h3TurboEnabled: 'true' }).enabled, true);
@@ -26,6 +27,14 @@ test('normalizeH3Turbo: defaults to the recommended checkpoint and 6 steps', () 
     const turbo = videoGenerator.normalizeH3Turbo({ h3TurboEnabled: true });
     assert.equal(turbo.loraName, videoGenerator.H3_TURBO_DEFAULT_LORA);
     assert.equal(turbo.steps, videoGenerator.H3_TURBO_DEFAULT_STEPS);
+});
+
+test('normalizeH3Turbo: reference mode selects the dedicated ref adapter', () => {
+    const turbo = videoGenerator.normalizeH3Turbo({ h3TurboEnabled: true }, { reference: true });
+    assert.equal(turbo.loraName, videoGenerator.H3_TURBO_DEFAULT_REFERENCE_LORA);
+    const custom = videoGenerator.normalizeH3Turbo(
+        { h3TurboEnabled: true, h3RefTurboLora: 'custom/ref.safetensors' }, { reference: true });
+    assert.equal(custom.loraName, 'custom/ref.safetensors');
 });
 
 test('normalizeH3TurboSteps: clamps to the 4-8 range', () => {
@@ -41,7 +50,7 @@ test('buildH3Graph: Turbo off leaves the stock sampler and step count untouched'
     const graph = videoGenerator.buildH3Graph({
         prompt: 'a kite over a field',
         mode: 't2va',
-        settings: baseSettings()
+        settings: baseSettings({ h3TurboEnabled: false })
     });
     assert.equal(graph.h3_turbo_lora, undefined);
     assert.equal(graph.sampler_select.class_type, 'KSamplerSelect');
@@ -99,7 +108,7 @@ test('buildH3Graph: Turbo keeps the custom LoRA filename', () => {
 
 test('appendH3TurboLora: no-op when Turbo is off', () => {
     const graph = {};
-    assert.equal(videoGenerator.appendH3TurboLora(graph, 'model', {}), 'model');
+    assert.equal(videoGenerator.appendH3TurboLora(graph, 'model', { h3TurboEnabled: false }), 'model');
     assert.deepEqual(graph, {});
 });
 

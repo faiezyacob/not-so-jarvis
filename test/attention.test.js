@@ -111,7 +111,7 @@ test('buildH3Graph: undefined attentionBackend produces no attention node', () =
     const graph = videoGenerator.buildH3Graph({
         prompt: 'a kite over a field',
         mode: 't2va',
-        settings: { h3Unet: 'base.safetensors' }
+        settings: { h3Unet: 'base.safetensors', h3TurboEnabled: false }
     });
     assert.equal(graph.ck_attention, undefined);
     assert.equal(graph.sage_attention, undefined);

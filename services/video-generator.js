@@ -72,16 +72,28 @@ const H3_DEFAULT_CFG = Number(process.env.H3_CFG) || 1;
 
 const H3_TURBO_SAMPLER_NODE = 'MiniMaxH3TurboSampler';
 const H3_TURBO_LORA_NODE = 'MiniMaxH3TurboLoRA';
+// Optional sigma-shift MODEL patch from the Turbo pack. It rebalances the H3
+// video/audio dual schedules and is what the creator's recommended Turbo route
+// uses; ComfyUI's stock Euler sampler becomes audio-safe once the shift is
+// applied. Only emitted when the node is installed (see appendH3TurboSigmaShift).
+const H3_TURBO_SIGMA_SHIFT_NODE = 'MiniMaxH3SigmaShift';
+const H3_TURBO_SIGMA_VIDEO = 12;
+const H3_TURBO_SIGMA_AUDIO = 3;
 // The two custom nodes the Turbo path needs from the ComfyUI node pack.
 const H3_TURBO_REQUIRED_NODES = Object.freeze([H3_TURBO_LORA_NODE, H3_TURBO_SAMPLER_NODE]);
 const H3_TURBO_LORA_INSTALL_URL = 'https://github.com/larryvrh/ComfyUI-MiniMax-H3-Turbo';
 // Recommended checkpoint; only a default, so a renamed/overridden file works.
 const H3_TURBO_DEFAULT_LORA = 'minimax_h3_turbo_v4_step600_ema.safetensors';
+// Reference (ref2va) mode uses a dedicated Turbo adapter trained on the
+// reference model path. Using the frames adapter on the ref2va UNET degrades
+// output, so reference mode gets its own file (configurable).
+const H3_TURBO_DEFAULT_REFERENCE_LORA = 'minimax_h3_n_turbo_4step_v0.1_comfy_resized_avg_rank_21_bf16.safetensors';
 const H3_TURBO_STRENGTH = 1.0;
 const H3_TURBO_SCHEDULER = 'simple';
 // 4 steps is the usable minimum; past 8 it stops helping and over-sharpens.
 const H3_TURBO_STEPS = Object.freeze([4, 5, 6, 7, 8]);
 const H3_TURBO_DEFAULT_STEPS = 6;
+
 
 function normalizeH3TurboSteps(value, fallback) {
     const n = Math.round(Number(value));
@@ -108,17 +120,28 @@ function normalizeH3Cfg(value, fallback) {
 
 // Read the Turbo toggle/step/filename from a settings object. Enabled is only
 // true for an explicit truthy value so existing users stay on the normal path.
-function normalizeH3Turbo(settings) {
+function normalizeH3Turbo(settings, options) {
+    const reference = Boolean(options && options.reference);
     const source = settings || {};
     const raw = source.h3TurboEnabled;
     const enabled = raw === true || raw === 1 ||
-        String(raw).toLowerCase() === 'true' || String(raw) === '1';
-    const loraName = String(source.h3TurboLora || H3_DEFAULTS.h3TurboLora || H3_TURBO_DEFAULT_LORA).trim() ||
-        H3_TURBO_DEFAULT_LORA;
+        String(raw).toLowerCase() === 'true' || String(raw) === '1' || raw === undefined || raw === null;
+    const loraName = reference
+        ? (String(source.h3RefTurboLora || H3_DEFAULTS.h3RefTurboLora || H3_TURBO_DEFAULT_REFERENCE_LORA).trim() ||
+            H3_TURBO_DEFAULT_REFERENCE_LORA)
+        : (String(source.h3TurboLora || H3_DEFAULTS.h3TurboLora || H3_TURBO_DEFAULT_LORA).trim() ||
+            H3_TURBO_DEFAULT_LORA);
+    // ComfyUI's stock Euler sampler is audio-safe once the sigma shift is
+    // applied, so a shifted Turbo run can use KSamplerSelect instead of the
+    // pack's bespoke sampler. Resolved against /object_info at graph build.
+    const sigmaShift = source.h3TurboSigmaShift === false
+        ? false
+        : true;
     return {
         enabled,
         loraName,
-        steps: normalizeH3TurboSteps(source.h3TurboSteps, H3_TURBO_DEFAULT_STEPS)
+        steps: normalizeH3TurboSteps(source.h3TurboSteps, H3_TURBO_DEFAULT_STEPS),
+        sigmaShift
     };
 }
 
@@ -474,21 +497,32 @@ const H3_DEFAULTS = {
     h3VideoVae: process.env.H3_VIDEO_VAE || H3_MODEL_FILES.videoVae,
     h3AudioVae: process.env.H3_AUDIO_VAE || H3_MODEL_FILES.audioVae,
     h3Duration: Number(process.env.H3_DURATION) || 5,
-    h3Size: process.env.H3_SIZE || 'M',
+    // Default to the model's native canvas (L, 1.75MP). The previous M (1MP)
+    // default rendered a smaller base than the model's native resolution and
+    // looked softer; the Turbo adapters are also trained for this canvas.
+    h3Size: process.env.H3_SIZE || 'L',
     videoAspectRatio: normalizeVideoAspectRatio(process.env.H3_ASPECT_RATIO, '16:9'),
-    // Base sampling controls for the normal H3 pipeline. h3Steps is the
+    // Base sampling controls for the non-Turbo H3 pipeline. h3Steps is the
     // scheduler step count; h3Cfg = 1 keeps the unguided BasicGuider path.
     h3Steps: normalizeH3Steps(process.env.H3_STEPS, H3_DEFAULT_STEPS),
     h3Cfg: normalizeH3Cfg(process.env.H3_CFG, H3_DEFAULT_CFG),
-    // MiniMax H3 Turbo LoRA (4-8 step generation). Off by default so the
-    // normal H3 workflow is completely unchanged for existing users.
-    h3TurboEnabled: String(process.env.H3_TURBO_ENABLED || '').toLowerCase() === 'true' ||
-        process.env.H3_TURBO_ENABLED === '1',
+    // MiniMax H3 Turbo LoRA (4-8 step generation). ON by default: the distilled
+    // v4/600-EMA adapter at 6 steps on the native canvas is the creator-
+    // recommended quality path. Set H3_TURBO_ENABLED=false (or toggle it off in
+    // Settings > Video) to use the full 25-step base workflow.
+    h3TurboEnabled: String(process.env.H3_TURBO_ENABLED || 'true').toLowerCase() !== 'false' &&
+        process.env.H3_TURBO_ENABLED !== '0',
     h3TurboSteps: normalizeH3TurboSteps(process.env.H3_TURBO_STEPS, H3_TURBO_DEFAULT_STEPS),
     h3TurboLora: process.env.H3_TURBO_LORA || H3_TURBO_DEFAULT_LORA,
+    // Reference (ref2va) Turbo adapter — distinct from the frames adapter.
+    h3RefTurboLora: process.env.H3_REF_TURBO_LORA || H3_TURBO_DEFAULT_REFERENCE_LORA,
+    // Sigma shift on the Turbo path: rebalances video/audio schedules.
+    h3TurboSigmaShift: String(process.env.H3_TURBO_SIGMA_SHIFT || 'true').toLowerCase() !== 'false',
+    // SageAttention is the verified default backend. `auto` still falls back
+    // gracefully when the node is missing; set H3_ATTENTION_BACKEND to override.
     attentionBackend: H3_ATTENTION_BACKENDS.includes(process.env.H3_ATTENTION_BACKEND)
         ? process.env.H3_ATTENTION_BACKEND
-        : 'auto',
+        : 'sageattention',
     // MiniMax H3 First Block Cache (duckyshell/ComfyUI-MiniMaxH3-FirstBlockCache).
     // Off by default; the nested object mirrors the ComfyUI node's inputs so the
     // named presets can be passed straight through. Composes with every
@@ -544,7 +578,7 @@ const H3_CONFIGURABLE_KEYS = [
     'h3Unet', 'h3Ref2vaUnet', 'h3Clip', 'h3VideoVae', 'h3AudioVae',
     'h3Duration', 'h3Size', 'videoAspectRatio', 'h3Steps', 'h3Cfg', 'attentionBackend', 'firstBlockCache',
     'loras', 'loraTriggerWords',
-    'h3TurboEnabled', 'h3TurboSteps', 'h3TurboLora',
+    'h3TurboEnabled', 'h3TurboSteps', 'h3TurboLora', 'h3RefTurboLora', 'h3TurboSigmaShift',
     'faceRefineEnabled', 'faceRefineDetector', 'faceRefineCropFactor',
     'faceRefineDenoise', 'faceRefineSteps', 'faceRefineCanvasMode',
     'faceRefineSelect', 'faceRefineFeather',
@@ -2701,6 +2735,10 @@ function effectiveVideoSettings() {
                 value = normalizeH3TurboSteps(value, H3_DEFAULTS.h3TurboSteps);
             } else if (key === 'h3TurboLora') {
                 value = String(value || '').trim() || H3_DEFAULTS.h3TurboLora;
+            } else if (key === 'h3RefTurboLora') {
+                value = String(value || '').trim() || H3_DEFAULTS.h3RefTurboLora;
+            } else if (key === 'h3TurboSigmaShift') {
+                value = value !== false && String(value).toLowerCase() !== 'false' && String(value) !== '0';
             } else if (key === 'firstBlockCache') {
                 value = normalizeFirstBlockCache(value);
             } else if (key === 'faceRefineEnabled') {
@@ -2861,6 +2899,10 @@ function saveVideoSettings(patch) {
             out[key] = normalizeH3TurboSteps(value, H3_DEFAULTS.h3TurboSteps);
         } else if (key === 'h3TurboLora') {
             out[key] = String(value || '').trim() || null;
+        } else if (key === 'h3RefTurboLora') {
+            out[key] = String(value || '').trim() || null;
+        } else if (key === 'h3TurboSigmaShift') {
+            out[key] = value === true || value === 1 || String(value).toLowerCase() === 'true' || String(value) === '1';
         } else if (key === 'firstBlockCache') {
             const problems = validateFirstBlockCache(value);
             if (problems.length) {
@@ -2959,8 +3001,8 @@ function h3LoraNameMatches(choice, wanted) {
 // everything required is present. When ComfyUI reports no lora list at all the
 // file check is skipped (an empty list can mean the node pack is missing, which
 // the node check already reports).
-function resolveH3TurboAvailability(info, settings) {
-    const turbo = normalizeH3Turbo(settings);
+function resolveH3TurboAvailability(info, settings, options) {
+    const turbo = normalizeH3Turbo(settings, options);
     if (!turbo.enabled) {
         return { enabled: false, ready: true, nodesMissing: [], loraName: turbo.loraName, loraMissing: false, loraChoices: [] };
     }
@@ -2981,8 +3023,8 @@ function resolveH3TurboAvailability(info, settings) {
 
 // Fail with an actionable error instead of silently dropping back to normal H3:
 // a silent fallback would make the user's selected Turbo setting misleading.
-function assertH3TurboReady(info, settings) {
-    const state = resolveH3TurboAvailability(info, settings);
+function assertH3TurboReady(info, settings, options) {
+    const state = resolveH3TurboAvailability(info, settings, options);
     if (!state.enabled || state.ready) return state;
     if (state.nodesMissing.length) {
         const error = new Error(
@@ -3073,13 +3115,42 @@ function applyAttentionPatch(graph, baseModelNode, backend) {
     return baseModelNode;
 }
 
+// The LightX2V checkpoints use the generic diffusion_model.* LoRA layout and
+// load on ComfyUI's stock model-only loader. The creator's curated route applies
+// the sigma-shift patch to those adapters (not the default packs' Turbo LoRA),
+// rebalancing the H3 video/audio schedules so stock Euler samples audio-safely.
+const H3_TURBO_STANDARD_LOADER_LORAS = Object.freeze([
+    'minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors',
+    'minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors',
+    // The reference (ref2va) Turbo adapter is a standard-loader checkpoint too.
+    'minimax_h3_n_turbo_4step_v0.1_comfy_resized_avg_rank_21_bf16.safetensors',
+]);
+
+function h3TurboUsesStandardLoader(loraName) {
+    const base = String(loraName || '').replace(/\\/g, '/').split('/').pop().toLowerCase();
+    return H3_TURBO_STANDARD_LOADER_LORAS.some((name) => name.toLowerCase() === base);
+}
+
 // Insert the MiniMax H3 Turbo LoRA between the model loader/LoRA chain and the
-// sampler. Returns the node the attention patch and scheduler should read from.
-// Leaves the graph untouched when Turbo is off, so the normal H3 workflow is
-// byte-for-byte identical for existing users.
-function appendH3TurboLora(graph, baseModelNode, settings) {
-    const turbo = normalizeH3Turbo(settings);
+// sampler. The pack's MiniMaxH3TurboLoRA handles the frames adapters (it injects
+// the custom Turbo sampling behavior); LightX2V-style checkpoints (including the
+// reference adapter) keep ComfyUI's stock model-only loader, which understands
+// their generic diffusion_model.* layout. Returns the node the attention patch
+// and scheduler should read from. Leaves the graph untouched when Turbo is off.
+function appendH3TurboLora(graph, baseModelNode, settings, options) {
+    const turbo = normalizeH3Turbo(settings, options);
     if (!turbo.enabled) return baseModelNode;
+    if (h3TurboUsesStandardLoader(turbo.loraName)) {
+        graph.h3_turbo_lora = {
+            class_type: 'LoraLoaderModelOnly',
+            inputs: {
+                model: [baseModelNode, 0],
+                lora_name: turbo.loraName,
+                strength_model: H3_TURBO_STRENGTH,
+            },
+        };
+        return 'h3_turbo_lora';
+    }
     graph.h3_turbo_lora = {
         class_type: H3_TURBO_LORA_NODE,
         inputs: {
@@ -3090,6 +3161,27 @@ function appendH3TurboLora(graph, baseModelNode, settings) {
         },
     };
     return 'h3_turbo_lora';
+}
+
+// Insert the optional sigma-shift patch from the Turbo pack immediately after
+// the Turbo LoRA for the LightX2V (standard-loader) adapters. Only emitted when
+// the node is actually installed, so a missing optional node never fails a run.
+// Returns the node the attention patch / scheduler should read from.
+function appendH3TurboSigmaShift(graph, baseModelNode, settings, info, options) {
+    const turbo = normalizeH3Turbo(settings, options);
+    if (!turbo.enabled || !turbo.sigmaShift) return baseModelNode;
+    if (!h3TurboUsesStandardLoader(turbo.loraName)) return baseModelNode;
+    const available = Boolean(info && info[H3_TURBO_SIGMA_SHIFT_NODE]);
+    if (!available) return baseModelNode;
+    graph.h3_turbo_sigma_shift = {
+        class_type: H3_TURBO_SIGMA_SHIFT_NODE,
+        inputs: {
+            model: [baseModelNode, 0],
+            shift_video: H3_TURBO_SIGMA_VIDEO,
+            shift_audio: H3_TURBO_SIGMA_AUDIO,
+        },
+    };
+    return 'h3_turbo_sigma_shift';
 }
 
 // Other cache implementations the First Block Cache node refuses to combine
@@ -3438,16 +3530,18 @@ function buildH3Graph(opts) {
         referenceTokenBudget = 0,
         firstBlockCacheInputs = null,
         latentUpscale = null,
+        objectInfo = null,
     } = opts;
 
     const graph = {};
     const hasReferenceInput =
         (Array.isArray(refImageNames) && refImageNames.some((name) => String(name || '').trim())) ||
         (Array.isArray(refModArtifacts) && refModArtifacts.some((ref) => ref && ref.artifactName && Number(ref.strength) > 0));
+    const referenceMode = mode === 'ref2va' || hasReferenceInput;
     const activeUnet = hasReferenceInput
         ? (settings.h3Ref2vaUnet || H3_DEFAULTS.h3Ref2vaUnet)
         : (settings.h3Unet || H3_DEFAULTS.h3Unet);
-    const turbo = normalizeH3Turbo(settings);
+    const turbo = normalizeH3Turbo(settings, { reference: referenceMode });
     graph.model = {
         class_type: 'UNETLoader',
         inputs: {
@@ -3490,13 +3584,15 @@ function buildH3Graph(opts) {
     const cachedModelNode = appendFirstBlockCache(graph, 'model', settings, firstBlockCacheInputs);
     const userModelNode = appendLoraChain(graph, cachedModelNode, settings.loras);
     // Turbo LoRA sits between the user LoRA chain and the attention patch, so
-    // both the guider and the scheduler read the Turbo-adapted model.
-    const turboModelNode = appendH3TurboLora(graph, userModelNode, settings);
+    // both the guider and the scheduler read the Turbo-adapted model. The
+    // optional sigma-shift patch follows it when installed.
+    const turboModelNode = appendH3TurboLora(graph, userModelNode, settings, { reference: referenceMode });
+    const shiftedModelNode = appendH3TurboSigmaShift(graph, turboModelNode, settings, objectInfo, { reference: referenceMode });
     const attention = normalizeH3AttentionBackend(settings.attentionBackend);
-    const patchedModelNode = applyAttentionPatch(graph, turboModelNode, attention);
+    const patchedModelNode = applyAttentionPatch(graph, shiftedModelNode, attention);
     // Sparse (SLA) attention also has to shape the denoise schedule; the other
     // backends leave the scheduler on the unpatched (Turbo) chain.
-    const schedulerModelNode = attention === 'sla' ? patchedModelNode : turboModelNode;
+    const schedulerModelNode = attention === 'sla' ? patchedModelNode : shiftedModelNode;
 
     // Reference-to-video: one LoadImage per approved frame, wired into the
     // MiniMaxH3ReferenceToVideo Autogrow input. The keys are the node's own
@@ -4657,11 +4753,13 @@ async function generateVideo(prompt, options = {}) {
             }
             // Turbo is never silently skipped: a missing node pack or LoRA fails
             // the render with instructions, so the enabled setting is truthful.
-            if (normalizeH3Turbo(resolvedSettings).enabled) {
-                assertH3TurboReady(info, resolvedSettings);
+            // Reference mode checks its own dedicated adapter.
+            const turboRef = useRefs || mode === 'ref2va';
+            if (normalizeH3Turbo(resolvedSettings, { reference: turboRef }).enabled) {
+                assertH3TurboReady(info, resolvedSettings, { reference: turboRef });
                 console.log('[video-generator] H3 Turbo enabled (' +
-                    normalizeH3Turbo(resolvedSettings).steps + ' steps, ' +
-                    normalizeH3Turbo(resolvedSettings).loraName + ')');
+                    normalizeH3Turbo(resolvedSettings, { reference: turboRef }).steps + ' steps, ' +
+                    normalizeH3Turbo(resolvedSettings, { reference: turboRef }).loraName + ')');
             }
             // First Block Cache is never silently skipped either: it composes
             // with the resolved attention backend and Turbo LoRA, and a missing
@@ -4689,6 +4787,7 @@ async function generateVideo(prompt, options = {}) {
                 // validation passes even if the node pack renames a field.
                 firstBlockCacheInputs: resolveFirstBlockCacheInputNames(info),
                 latentUpscale: latentUpscalePlan,
+                objectInfo: info,
             });
 
             await validateH3Graph(info, graph);
@@ -5005,8 +5104,10 @@ function seedVr2NoiseLevel(requested) {
 }
 
 // Balanced is the baseline profile. The sharper 7B variant is only offered
-// when its checkpoint is actually installed.
-function seedVr2UpscaleProfile(settings, requestedProfile, requestedNoise) {
+// when its checkpoint is actually installed. `installedModels` is the caller's
+// authoritative ComfyUI-scan list, so a checkpoint in a nonstandard model root
+// is still detected (falling back to the legacy path scan when omitted).
+function seedVr2UpscaleProfile(settings, requestedProfile, requestedNoise, installedModels) {
     const noise = seedVr2NoiseLevel(requestedNoise);
     const balanced = {
         key: 'balanced',
@@ -5016,7 +5117,11 @@ function seedVr2UpscaleProfile(settings, requestedProfile, requestedNoise) {
         inputNoiseScale: VIDEO_UPSCALE_NOISE_LEVELS[noise]
     };
     if (requestedProfile !== 'sharp') return balanced;
-    if (!installedSeedVr2Models().includes(SEEDVR2_SHARP_DIT)) return balanced;
+    const available = Array.isArray(installedModels) ? installedModels : null;
+    const sharpInstalled = available
+        ? available.includes(SEEDVR2_SHARP_DIT)
+        : installedSeedVr2Models().includes(SEEDVR2_SHARP_DIT);
+    if (!sharpInstalled) return balanced;
     return {
         key: 'sharp',
         ditModel: SEEDVR2_SHARP_DIT,
@@ -5034,14 +5139,30 @@ function installedSeedVr2Models() {
     for (const configured of [process.env.KREA2_SEEDVR2_DIR, process.env.COMFYUI_SEEDVR2_DIR]) {
         if (configured) roots.push(path.resolve(configured));
     }
-    const commonRoots = [
-        path.join(__dirname, '..', '..', 'ComfyUI', 'models', 'seedvr2'),
-        path.join(__dirname, '..', '..', 'ComfyUI', 'models', 'SEEDVR2'),
-        path.join(process.env.APPDATA || '', 'ComfyUI', 'models', 'seedvr2'),
-        path.join(process.env.APPDATA || '', 'ComfyUI', 'models', 'SEEDVR2'),
-        path.join(process.env.USERPROFILE || '', 'ComfyUI', 'models', 'seedvr2'),
-        path.join(process.env.USERPROFILE || '', 'ComfyUI', 'models', 'SEEDVR2'),
-    ];
+    const commonRoots = [];
+    // Cached / configured ComfyUI install root: its models/seedvr2 and
+    // models/SEEDVR2 folders are the authoritative locations.
+    let configuredRoot = '';
+    try {
+        configuredRoot = String((configManager.getComfyUI() || {}).root || '').trim();
+    } catch { configuredRoot = ''; }
+    for (const root of [
+        configuredRoot,
+        process.env.COMFYUI_ROOT,
+        path.join(__dirname, '..', '..', 'ComfyUI'),
+    ]) {
+        if (!root) continue;
+        commonRoots.push(path.join(root, 'models', 'seedvr2'));
+        commonRoots.push(path.join(root, 'models', 'SEEDVR2'));
+    }
+    for (const homeRoot of [
+        path.join(process.env.APPDATA || '', 'ComfyUI'),
+        path.join(process.env.USERPROFILE || '', 'ComfyUI'),
+    ]) {
+        if (!homeRoot) continue;
+        commonRoots.push(path.join(homeRoot, 'models', 'seedvr2'));
+        commonRoots.push(path.join(homeRoot, 'models', 'SEEDVR2'));
+    }
     for (const root of commonRoots) {
         if (fs.existsSync(root)) roots.push(root);
     }
@@ -5062,7 +5183,12 @@ function buildSeedVr2VideoUpscaleGraph(videoName, options = {}) {
     // Shared upscale tuning comes from the single global upscale settings
     // (imageGeneration); per-call options (API overrides) win when present.
     const settings = Object.assign({}, imageGenerator.getDefaults(), options.settings || {});
-    const profile = seedVr2UpscaleProfile(settings, options.profile || 'sharp', options.noise || 'low');
+    const profile = seedVr2UpscaleProfile(
+        settings,
+        options.profile || 'sharp',
+        options.noise || 'low',
+        options.availableModels
+    );
     const seed = Number.isInteger(options.seed) && options.seed >= 0 ? options.seed : Math.floor(Math.random() * 2 ** 31);
     const resolution = clampToRange(options.resolution, 512, 8192, 2160);
     const preScale = clampToRange(options.preScale, 1, 4, 1);
@@ -5244,6 +5370,17 @@ async function upscaleVideo(rawFilename, options = {}) {
         let effectiveQuality = null;
         try {
             if (isSeedVr2) {
+                // Resolve the authoritative SeedVR2 checkpoint list from the
+                // real ComfyUI model root so the sharp 7B profile is detected even
+                // when the checkpoint lives outside the hardcoded legacy paths.
+                let availableModels = null;
+                try {
+                    availableModels = imageGenerator.listInstalledSeedVr2Checkpoints(
+                        await imageGenerator.resolveSeedVr2ModelDirs()
+                    );
+                } catch {
+                    availableModels = null;
+                }
                 const built = buildSeedVr2VideoUpscaleGraph(loadName, {
                     settings: upscale,
                     profile,
@@ -5252,7 +5389,8 @@ async function upscaleVideo(rawFilename, options = {}) {
                     preScale,
                     seed,
                     fps,
-                    hasAudio: true
+                    hasAudio: true,
+                    availableModels
                 });
                 graph = built.graph;
                 effectiveProfile = built.profile;
@@ -5434,6 +5572,8 @@ module.exports = {
     H3_TURBO_LORA_NODE,
     H3_TURBO_REQUIRED_NODES,
     H3_TURBO_DEFAULT_LORA,
+    H3_TURBO_DEFAULT_REFERENCE_LORA,
+    H3_TURBO_SIGMA_SHIFT_NODE,
     H3_TURBO_STRENGTH,
     H3_TURBO_SCHEDULER,
     H3_TURBO_STEPS,

@@ -31,6 +31,7 @@ function baseSettings(extra) {
         h3AudioVae: 'minimax_h3_audio_vae_fp32.safetensors',
         h3Steps: 25,
         h3Cfg: 1,
+        h3TurboEnabled: false,
         attentionBackend: 'standard',
         h3LatentUpscale: '2',
         h3LatentUpscaleModel: 'minimax_h3_latent_upscaler_3d_conv_v1_fp16.safetensors',
