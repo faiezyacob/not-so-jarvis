@@ -113,27 +113,57 @@ test('creator performance contains varied identity-safe face actions and exact s
     assert.ok(content.creatorDialogue.dialogue.lines.every((line) => line.speech.trim().length > 0));
 });
 
-test('talking-to-camera content defaults to a front-on eye-level angle and offers other perspectives', async () => {
-    const frontOn = await studio.buildCreatorContent({
+test('a custom outfit field overrides the Character wardrobe only when selected', async () => {
+    const character = Object.assign(makeCharacter('29-year-old'), {
+        outfitPack: 'lounge-home',
+        outfitPackCustom: 'a Character saved custom wardrobe'
+    });
+
+    const automatic = await studio.buildCreatorContent({
+        characterId: character.id, concept: 'a weekend update', outfit: 'Auto', outfitPack: ''
+    }, character);
+    assert.notEqual(automatic.outfit, 'a hand-picked slate jumpsuit');
+
+    const custom = await studio.buildCreatorContent({
+        characterId: character.id, concept: 'a weekend update', outfit: 'Auto',
+        outfitPack: 'custom', outfitPackCustom: 'a hand-picked slate jumpsuit'
+    }, character);
+    assert.equal(custom.outfit, 'a hand-picked slate jumpsuit');
+    assert.equal(custom.outfitSource, 'explicit');
+    assert.equal(custom.outfitPack, 'custom');
+
+    const explicitText = await studio.buildCreatorContent({
+        characterId: character.id, concept: 'a weekend update',
+        outfitPack: 'custom', outfitPackCustom: 'a hand-picked slate jumpsuit',
+        outfit: 'a crimson wrap dress'
+    }, character);
+    assert.equal(explicitText.outfit, 'a crimson wrap dress');
+});
+
+test('talking-to-camera content defaults to a smartphone selfie camera and offers other framings', async () => {
+    const selfie = await studio.buildCreatorContent({
         characterId: 'maya-id',
         concept: 'a weekend update'
     }, makeCharacter('29-year-old'));
 
-    assert.equal(frontOn.camera, 'front_on_eye_level');
-    assert.match(frontOn.cameraDirection, /straight-on front-facing camera/i);
-    assert.match(frontOn.cameraDirection, /at eye level/i);
-    assert.match(frontOn.cameraDirection, /not above the creator and does not angle down/i);
-    assert.match(frontOn.shotPlan[0], /straight-on front-facing camera/i);
+    assert.equal(selfie.camera, 'phone_selfie');
+    assert.equal(selfie.cameraStyle, 'SELFIE_SMARTPHONE_FRONT_CAMERA');
+    assert.match(selfie.cameraDirection, /chest or upper torso/i);
+    assert.match(selfie.cameraDirection, /selfie-distance|selfie distance|handheld movement/i);
+    assert.match(selfie.shotPlan[0], /chest or upper torso/i);
+    // Handheld selfies release the free hand for small conversational gestures.
+    assert.match(selfie.userPrompt, /CAMERA \/ RECORDING STYLE \(SELFIE_SMARTPHONE_FRONT_CAMERA\)/);
+    assert.match(selfie.userPrompt, /front-facing selfie camera/i);
 
     const lowAngle = await studio.buildCreatorContent({
         characterId: 'maya-id', concept: 'a weekend update', camera: 'low_angle_front'
     }, makeCharacter('29-year-old'));
-    assert.match(lowAngle.cameraDirection, /slightly below eye level and angled gently upward/i);
+    assert.match(lowAngle.cameraDirection, /slightly below eye level/i);
 
     const threeQuarter = await studio.buildCreatorContent({
         characterId: 'maya-id', concept: 'a weekend update', camera: 'three_quarter_eye_level'
     }, makeCharacter('29-year-old'));
-    assert.match(threeQuarter.cameraDirection, /subtle three-quarter view/i);
+    assert.match(threeQuarter.cameraDirection, /three-quarter selfie angle/i);
 
     const tripod = await studio.buildCreatorContent({
         characterId: 'maya-id',
@@ -141,13 +171,13 @@ test('talking-to-camera content defaults to a front-on eye-level angle and offer
         camera: 'tripod'
     }, makeCharacter('29-year-old'));
     assert.equal(tripod.camera, 'tripod');
-    assert.match(tripod.cameraDirection, /fixed tripod/i);
-    assert.doesNotMatch(tripod.cameraDirection, /selfie|front-facing smartphone/i);
+    assert.match(tripod.cameraDirection, /front-facing selfie camera/i);
 
     assert.equal(studio.resolveDimension('Change the camera angle to a front view'), 'camera');
-    assert.equal(studio.matchCameraPresetFromText('Put the camera straight in front of her'), studio.CAMERA_PRESETS[0]);
-    assert.equal(studio.matchCameraPresetFromText('Use a slightly low angle from below'), studio.CAMERA_PRESETS[1]);
-    assert.equal(studio.matchCameraPresetFromText('Make it a three-quarter view'), studio.CAMERA_PRESETS[2]);
+    assert.equal(studio.matchCameraPresetFromText('Put the camera straight in front of her'), studio.CAMERA_PRESETS.find((item) => item.id === 'front_on_eye_level'));
+    assert.equal(studio.matchCameraPresetFromText('Use a slightly low angle from below'), studio.CAMERA_PRESETS.find((item) => item.id === 'low_angle_front'));
+    assert.equal(studio.matchCameraPresetFromText('Make it a three-quarter view'), studio.CAMERA_PRESETS.find((item) => item.id === 'three_quarter_eye_level'));
+    assert.equal(studio.matchCameraPresetFromText('Shoot it as a selfie').id, 'phone_selfie');
 });
 
 test('flirty personality direction requires structured adult age', async () => {
@@ -220,8 +250,8 @@ test('content suggestions adapt by content type, duration, and existing content 
     }, character);
     const result = await studio.generateContentSuggestions(context, null);
     assert.ok(result.length >= 3 && result.length <= 5);
-    assert.match(result[0].text, /“My new coffee maker”/);
-    assert.match(result[0].text, /specific|funny|unexpected|example/i);
+    assert.ok(result.every((item) => /coffee maker/i.test(item.text)));
+    assert.equal(new Set(result.map((item) => item.text)).size, result.length);
     assert.ok(result.every((item) => !/\[Shot [2-9]\]|cinematic|shot list/i.test(item.text)));
 
     const tutorialContext = studio.buildContentSuggestionContext(null, {
@@ -248,6 +278,27 @@ test('AI suggestions stay anchored to the selected concept and preserve its chos
     assert.equal(suggestions.some((item) => /beach day/i.test(item.concept)), false);
     assert.ok(suggestions.every((item) => /coffee|maker/i.test(item.concept)));
     assert.ok(suggestions.every((item) => item.action === context.onCameraAction));
+});
+
+test('AI suggestions stay anchored to existing content while varying by rotated angle', () => {
+    const character = Object.assign(makeCharacter('29-year-old'), {
+        identity: { age: '29-year-old', ageGroup: 'adult', gender: 'woman' }
+    });
+    const makeContext = () => {
+        const context = studio.buildContentSuggestionContext(null, {
+            characterId: character.id, contentType: 'product_review', personality: ['confident'],
+            duration: 10, camera: 'phone_selfie', concept: 'My new coffee maker'
+        }, character);
+        context.suggestionAngles = studio.selectSuggestionAngles(4, []);
+        return context;
+    };
+    const first = studio.contentSuggestionFallback(makeContext());
+    const second = studio.contentSuggestionFallback(makeContext());
+    assert.ok(first.length >= 3);
+    assert.ok(first.every((item) => /coffee maker/i.test(item.text)));
+    assert.ok(second.every((item) => /coffee maker/i.test(item.text)));
+    assert.equal(new Set(first.map((item) => item.text)).size, first.length);
+    assert.notDeepEqual(first.map((item) => item.text), second.map((item) => item.text));
 });
 
 test('suggestion generation asks the configured provider for structured ideation and recovers short output', async () => {
@@ -282,6 +333,91 @@ test('suggestion generation asks the configured provider for structured ideation
     assert.equal(result[0].text, 'Tell a quick story about confidently waving back at the wrong person.');
     assert.ok(result[0].action);
     assert.ok(result.every((item) => !/\[Shot 2\]/.test(item.text)));
+});
+
+test('AI suggestions rotate through distinct angles so repeated requests do not repeat a topic', () => {
+    const first = studio.selectSuggestionAngles(4, []);
+    const second = studio.selectSuggestionAngles(4, []);
+    assert.equal(first.length, 4);
+    assert.equal(second.length, 4);
+    assert.equal(first[0].id === second[0].id, false);
+    assert.equal(new Set(first.map((angle) => angle.id)).size, 4);
+
+    const character = Object.assign(makeCharacter('29-year-old'), {
+        identity: { age: '29-year-old', ageGroup: 'adult', gender: 'woman' }
+    });
+    const context = studio.buildContentSuggestionContext(null, {
+        characterId: character.id, contentType: 'talking', personality: ['playful'], duration: 15,
+        camera: 'phone_selfie', concept: '', scene: 'Auto'
+    }, character);
+    context.suggestionAngles = studio.selectSuggestionAngles(4, []);
+    const ideas = studio.contentSuggestionFallback(context);
+    assert.equal(ideas.length, 4);
+    assert.equal(new Set(ideas.map((idea) => idea.text)).size, ideas.length);
+    assert.ok(ideas.every((idea) => idea.action));
+});
+
+test('AI suggestions avoid repeating ideas already shown to the user', () => {
+    const character = Object.assign(makeCharacter('29-year-old'), {
+        identity: { age: '29-year-old', ageGroup: 'adult', gender: 'woman' }
+    });
+    const context = studio.buildContentSuggestionContext(null, {
+        characterId: character.id, contentType: 'talking', personality: ['playful'], duration: 15,
+        camera: 'phone_selfie', concept: '', scene: 'Auto',
+        exclude: ['Share a bold, playful opinion about a small everyday moment and why you feel that way.']
+    }, character);
+    assert.equal(context.avoidSuggestions.length, 1);
+    const normalized = studio.normalizeContentSuggestions({ suggestions: [
+        { concept: 'Share a bold, playful opinion about a small everyday moment and why you feel that way.' },
+        { concept: 'Describe a tiny behind-the-scenes detail that most people never notice.' }
+    ] }, context);
+    assert.equal(normalized.some((item) => /bold, playful opinion/i.test(item.concept)), false);
+    assert.ok(normalized.some((item) => /behind-the-scenes detail/i.test(item.concept)));
+});
+
+test('AI suggestions keep returning a varied full set as the angle pool cycles', async () => {
+    const character = Object.assign(makeCharacter('29-year-old'), {
+        identity: { age: '29-year-old', ageGroup: 'adult', gender: 'woman' }
+    });
+    const avoid = [];
+    for (let i = 0; i < 8; i++) {
+        const context = studio.buildContentSuggestionContext(null, {
+            concept: 'My new coffee maker', contentType: 'product_review', personality: ['confident'],
+            duration: 10, camera: 'phone_selfie', exclude: avoid.slice(-16)
+        }, character);
+        const result = await studio.generateContentSuggestions(context, null);
+        assert.ok(result.length >= 3, 'click ' + i + ' returned ' + result.length);
+        assert.ok(result.every((item) => /coffee maker/i.test(item.text)));
+        assert.equal(new Set(result.map((item) => item.text)).size, result.length);
+        result.forEach((item) => avoid.push(item.text));
+    }
+});
+
+test('suggestion prompts ask for one distinct angle per idea and carry the avoid list', async () => {
+    const character = Object.assign(makeCharacter('29-year-old'), {
+        identity: { age: '29-year-old', ageGroup: 'adult', gender: 'woman' }
+    });
+    const context = studio.buildContentSuggestionContext(null, {
+        characterId: character.id, contentType: 'talking', personality: ['playful'], duration: 15,
+        camera: 'phone_selfie', concept: '', scene: 'Auto',
+        exclude: ['React to a small, oddly relatable annoyance about your everyday life.']
+    }, character);
+    let prompt = '';
+    await studio.generateContentSuggestions(context, {
+        chat: async (_provider, messages) => {
+            prompt = messages.map((message) => message.content).join('\n');
+            return JSON.stringify({ suggestions: [
+                { concept: 'Rank three small things about a daily routine.', action: 'Counts on her fingers.' },
+                { concept: 'Bust one common myth about getting ready in the morning.', action: 'Shakes her head playfully.' }
+            ] });
+        }
+    }, 'ollama', 'suggestion-test-model');
+    assert.match(prompt, /one suggestion per angle/i);
+    assert.match(prompt, /DIFFERENT angle/i);
+    assert.match(prompt, /already shown to the user/i);
+    assert.match(prompt, /relatable annoyance/i);
+    assert.match(prompt, /morning routines, coffee, mugs/i);
+    assert.ok(context.suggestionAngles.length >= 4);
 });
 
 test('natural follow-ups identify and rebuild only the requested performance layer', async () => {
@@ -381,11 +517,17 @@ test('Creator performance beats become timestamped events inside exactly one con
     assert.match(result.prompt, /<Subject 1> \(S1\) says: <d>\[English\]/);
     assert.match(result.prompt, /TIMING \(H3\): The creator must speak the complete dialogue from beginning to end/);
     assert.match(result.prompt, /Do not skip, shorten, summarize, paraphrase, reorder or omit any dialogue/);
-    assert.match(result.prompt, /straight-on front-facing camera/i);
+    assert.match(result.prompt, /Creator Studio camera style: SELFIE_SMARTPHONE_FRONT_CAMERA/);
+    assert.match(result.prompt, /smartphone selfie video recorded by the creator using the phone's front-facing camera/i);
+    assert.match(result.prompt, /The creator looks directly into the front-facing phone lens while speaking/i);
+    assert.match(result.prompt, /subtle natural handheld micro-movement/i);
     assert.match(result.prompt, /On-camera action \(visual direction only; this is NOT dialogue and must never be spoken\): Holds the product beside her face/);
     assert.doesNotMatch(result.prompt.match(/<d>\[English\]([\s\S]*?)<\/d>/)[1], /Holds the product beside her face/);
-    assert.match(result.prompt, /not above the creator and does not angle down/i);
-    assert.doesNotMatch(result.prompt, /held at a natural arm's length/i);
+    assert.doesNotMatch(result.prompt, /straight-on front-facing camera/i);
+    assert.doesNotMatch(result.prompt, /stable camera position/i);
+    assert.doesNotMatch(result.prompt, /level horizon/i);
+    assert.doesNotMatch(result.prompt, /no camera repositioning/i);
+    assert.doesNotMatch(result.prompt, /lens changes and no framing changes/i);
     assert.doesNotMatch(result.prompt, /user-generated-content phone-camera/i);
     assert.equal(videoGenerator.validateCreatorStudioPrompt(result.prompt, content.creatorDialogue).ok, true);
 });
@@ -653,6 +795,109 @@ test('Creator Studio permits multiple shots only for an explicit multi-shot requ
     }, providers, 'ollama', 'test-model', null, 'creator-multishot-test', false);
 
     assert.deepEqual(videoGenerator.creatorShotHeaders(result.prompt), ['[Shot 1]', '[Shot 2]']);
+});
+
+test('Creator Studio derives a natural location posture from the shot environment', () => {
+    assert.equal(studio.poseForLocation('a quiet cafe table').stance, 'sitting');
+    assert.equal(studio.poseForLocation('a bright kitchen').stance, 'standing');
+    assert.equal(studio.poseForLocation('her cozy bedroom').stance, 'sitting');
+    assert.equal(studio.poseForLocation('a generic empty void').stance, 'standing');
+    assert.equal(studio.poseForLocation('a generic empty void').id, 'default');
+});
+
+test('an explicitly requested stance overrides the location posture', () => {
+    const pose = studio.poseForLocation('her cozy bedroom', 'she wants to be standing up for this one');
+    assert.equal(pose.stance, 'standing');
+    assert.equal(pose.source, 'explicit');
+});
+
+test('Creator content anchors a location pose and the H3 prompt keeps it grounded', async () => {
+    const content = await studio.buildCreatorContent({
+        characterId: 'maya-id',
+        concept: 'a weekend update',
+        scene: 'a quiet cafe table',
+        duration: 15
+    }, makeCharacter('29-year-old'));
+    assert.equal(content.poseId, 'cafe');
+    assert.equal(content.creatorDialogue.shot.pose, content.pose);
+    assert.equal(content.creatorDialogue.shot.pose, studio.LOCATION_POSES.cafe.phrase);
+    assert.match(content.userPrompt, /POSTURE: seated at the cafe table/);
+    assert.match(content.userPrompt, /PHYSICAL BEHAVIOUR:/);
+    assert.match(content.shotPlan[0], /Posture: seated at the cafe table/);
+
+    const prompt = videoGenerator.buildCreatorStudioPrompt(content.creatorDialogue);
+    assert.ok(prompt.includes(studio.LOCATION_POSES.cafe.phrase));
+    assert.ok(prompt.includes(studio.POSTURE_CONTINUITY));
+    assert.match(prompt, /Creator Studio camera style: SELFIE_SMARTPHONE_FRONT_CAMERA/);
+    assert.doesNotMatch(prompt, /Posture \(constant/);
+    assert.equal(videoGenerator.validateCreatorStudioPrompt(prompt, content.creatorDialogue).ok, true);
+});
+
+test('a scene change moves the creator posture with the location', async () => {
+    const character = makeCharacter('29-year-old');
+    const first = await studio.buildCreatorContent({
+        characterId: 'maya-id', concept: 'a weekend update', scene: 'a quiet cafe table', duration: 15
+    }, character);
+    assert.equal(first.poseId, 'cafe');
+    const moved = await studio.buildCreatorContent({
+        characterId: 'maya-id', dimension: 'scene', scene: 'a bright kitchen',
+        message: 'Change the scene to a bright kitchen'
+    }, character, { previousSession: { characterId: character.id, content: first } });
+    assert.equal(moved.poseId, 'kitchen');
+    assert.equal(moved.pose, studio.LOCATION_POSES.kitchen.phrase);
+    assert.equal(moved.creatorDialogue.shot.pose, studio.LOCATION_POSES.kitchen.phrase);
+});
+
+test('Creator Studio selfie camera style holds across talking, activity, gesture and wider-framing scenarios', async () => {
+    const character = makeCharacter('29-year-old');
+    const scenarios = [
+        { name: 'talking in a kitchen', input: { concept: 'a quick kitchen update', scene: 'a bright kitchen' } },
+        { name: 'discussing a topic', input: { concept: 'my honest take on everyday productivity', contentType: 'talking' } },
+        { name: 'demonstrating an activity', input: { concept: 'making a simple coffee', onCameraAction: 'Demonstrates pouring a coffee on the counter.', scene: 'a bright kitchen' } },
+        { name: 'expressive hand gestures', input: { concept: 'a lively weekend story', onCameraAction: 'Uses big, expressive hand gestures while telling the story.' } },
+        { name: 'wider framing for a location', input: { concept: 'a styling update', scene: 'a spacious living room' } }
+    ];
+    for (const scenario of scenarios) {
+        const content = await studio.buildCreatorContent(Object.assign({ characterId: 'maya-id', duration: 15 }, scenario.input), character);
+        const prompt = videoGenerator.buildCreatorStudioPrompt(content.creatorDialogue);
+        assert.match(prompt, /Creator Studio camera style: SELFIE_SMARTPHONE_FRONT_CAMERA/, scenario.name);
+        assert.match(prompt, /smartphone selfie video recorded by the creator using the phone's front-facing camera/i, scenario.name);
+        assert.match(prompt, /directly into the front-facing phone lens/i, scenario.name);
+        assert.deepEqual(videoGenerator.creatorShotHeaders(prompt), ['[Shot 1]'], scenario.name);
+        assert.doesNotMatch(prompt, /\[Shot [2-9]\]/, scenario.name);
+        assert.doesNotMatch(prompt, /(?:dolly|orbit|camera tracking|push-in|pull-out|tripod commercial)/i, scenario.name);
+        assert.doesNotMatch(prompt, /(?:stable camera position|level horizon|camera remains steady|locked-off|consistent lens perspective|professional camera)/i, scenario.name);
+        assert.equal(videoGenerator.validateCreatorStudioPrompt(prompt, content.creatorDialogue).ok, true, scenario.name);
+    }
+});
+
+test('Creator Studio prevents the flying-toward-camera failure with one grounding and one distance rule', async () => {
+    const content = await studio.buildCreatorContent({
+        characterId: 'maya-id', concept: 'a weekend update', duration: 15
+    }, makeCharacter('29-year-old'));
+    const prompt = videoGenerator.buildCreatorStudioPrompt(content.creatorDialogue);
+    const distanceMentions = prompt.match(/maintains a natural selfie distance from the phone/gi) || [];
+    assert.equal(distanceMentions.length, 1);
+    assert.match(prompt, /does not suddenly approach, lunge, fly, float or rush toward the camera/i);
+    assert.match(prompt, /remains naturally grounded and comfortable while recording herself/i);
+    assert.match(prompt, /does not walk, jump, fly, float, teleport, lunge toward the phone/i);
+    assert.doesNotMatch(prompt, /(?:physically plausible|correctly placed|keeps one stable)/i);
+});
+
+test('a handheld selfie keeps the free hand for gestures while a supported phone frees both hands', async () => {
+    const handheld = await studio.buildCreatorContent({
+        characterId: 'maya-id', concept: 'a weekend update', camera: 'phone_selfie', duration: 15
+    }, makeCharacter('29-year-old'));
+    const handheldPrompt = videoGenerator.buildCreatorStudioPrompt(handheld.creatorDialogue);
+    assert.match(handheldPrompt, /gestures with the free hand while speaking/i);
+
+    const supported = await studio.buildCreatorContent({
+        characterId: 'maya-id', concept: 'a weekend update', camera: 'tripod', duration: 15
+    }, makeCharacter('29-year-old'));
+    const supportedPrompt = videoGenerator.buildCreatorStudioPrompt(supported.creatorDialogue);
+    assert.match(supportedPrompt, /both hands are free for small, natural conversational gestures/i);
+    // Never invent extra arms/hands for a phone that is held.
+    assert.doesNotMatch(handheldPrompt, /additional (?:arms|hands)|third hand|extra hands/i);
 });
 
 test.after(() => {

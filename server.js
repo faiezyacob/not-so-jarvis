@@ -79,6 +79,7 @@ const videoGenerator = require('./services/video-generator');
 const h3ReferencePipeline = require('./services/h3-reference-pipeline');
 const faceRefine = require('./services/face-refine');
 const fbcache = require('./services/fbcache');
+const h3LatentUpscale = require('./services/h3-latent-upscale');
 const modelSetup = require('./services/model-setup');
 const generatedHistory = require('./services/generated-history');
 const thumbnail = require('./services/thumbnail');
@@ -595,7 +596,18 @@ async function handleAPI(req, res, urlPath) {
             const defaults = videoGenerator.getVideoDefaults();
             const choices = await videoGenerator.getVideoModelChoices();
             const comfyAvailable = choices !== null;
-            json(res, 200, { settings, defaults, choices, comfyAvailable });
+            // Expose the latest available upscaler checkpoint so the VIDEO
+            // panel can show whether the model is installed. Never throws.
+            let latentUpscaleModelChoices = [];
+            if (comfyAvailable) {
+                try {
+                    const info = await comfyui.getObjectInfo(10000);
+                    latentUpscaleModelChoices = videoGenerator.latentUpscaleModelChoices(info);
+                } catch { latentUpscaleModelChoices = []; }
+            }
+            json(res, 200, {
+                settings, defaults, choices, comfyAvailable, latentUpscaleModelChoices
+            });
         } catch (err) {
             json(res, 500, { error: err.message });
         }
@@ -627,7 +639,16 @@ async function handleAPI(req, res, urlPath) {
             if (!fbcWasEnabled && fbcNowEnabled) {
                 firstBlockCacheInstall = fbcache.ensureAutoInstall();
             }
-            json(res, 200, { ok: true, settings, faceRefineInstall, firstBlockCacheInstall });
+            // Latent upscale: a genuine off→on transition clones the node pack
+            // in the background (the checkpoint is downloaded via Setup or
+            // manually). Non-blocking; the VIDEO panel polls the status endpoint.
+            let latentUpscaleInstall = null;
+            const latentPrevious = videoGenerator.normalizeH3LatentUpscale(previous.h3LatentUpscale);
+            const latentNow = videoGenerator.normalizeH3LatentUpscale(settings.h3LatentUpscale);
+            if (latentPrevious === 'off' && latentNow !== 'off') {
+                latentUpscaleInstall = h3LatentUpscale.ensureAutoInstall();
+            }
+            json(res, 200, { ok: true, settings, faceRefineInstall, firstBlockCacheInstall, latentUpscaleInstall });
         } catch (err) {
             json(res, 400, { error: err.message });
         }
@@ -675,6 +696,30 @@ async function handleAPI(req, res, urlPath) {
     if (urlPath === '/api/video/fbcache/install' && req.method === 'POST') {
         try {
             const started = fbcache.startInstall();
+            json(res, 200, { ok: true, install: started });
+        } catch (err) {
+            json(res, 500, { error: err.message });
+        }
+        return true;
+    }
+
+    // GET /api/video/latent-upscale/status — ComfyUI readiness for the MiniMax
+    // H3 latent upscaler (custom node + checkpoint) + install job state.
+    if (urlPath === '/api/video/latent-upscale/status' && req.method === 'GET') {
+        try {
+            json(res, 200, await h3LatentUpscale.getStatus());
+        } catch (err) {
+            json(res, 500, { error: err.message });
+        }
+        return true;
+    }
+
+    // POST /api/video/latent-upscale/install — clone the H3 Latent Upscaler node
+    // pack into ComfyUI/custom_nodes in the background. Returns immediately;
+    // poll the status endpoint for progress. Restart ComfyUI when it finishes.
+    if (urlPath === '/api/video/latent-upscale/install' && req.method === 'POST') {
+        try {
+            const started = h3LatentUpscale.startInstall();
             json(res, 200, { ok: true, install: started });
         } catch (err) {
             json(res, 500, { error: err.message });
@@ -3440,15 +3485,16 @@ async function handleCreatorStudioRequest(req, res, ctx) {
             creator_wardrobe: content.outfit,
             creator_multi_shot: content.explicitMultiShot === true,
             creator_camera_direction: content.cameraDirection,
+            creator_camera_style: content.cameraStyle,
             dialogue_language: 'English',
             requested_duration: content.duration,
             creator_content: true,
             creator_action: content.onCameraAction,
-            creator_direction: 'Creator scene: ' + content.scene + '. Outfit: ' + content.outfit + '. On-camera action (visual only, never spoken): ' + (content.onCameraAction || 'none specified') + '. Camera: ' + content.cameraDirection + ' Personality direction: ' + content.personalityDirection,
+            creator_direction: 'Creator scene: ' + content.scene + '. Outfit: ' + content.outfit + '. On-camera action (visual only, never spoken): ' + (content.onCameraAction || 'none specified') + '. Camera recording style: ' + creatorStudio.cameraStyle(content.cameraStyle).concept + ' ' + content.cameraDirection + ' Personality direction: ' + content.personalityDirection,
             explicit_constraints: [
                 'preserve the approved Character identity reference exactly; expressions and performance may change but facial structure and appearance may not',
                 'keep every spoken line verbatim and visibly lip-synced on camera',
-                'use restrained social-creator camera movement'
+                'record like a natural smartphone selfie video with only subtle handheld micro-movement and no cinematic camera operation'
             ],
             parameters: {}
         };
@@ -6206,6 +6252,11 @@ async function handleVideoGenerationStream(req, res, opts) {
         opts2.onProgress = (stage) => {
             if (stage === 'face-refine') sseWrite(res, { generating: 'Refining faces...' });
             else if (stage === 'auto-upscale') sseWrite(res, { generating: 'Upscaling video...' });
+            else if (stage === 'latent-upscale-begin') {
+                sseWrite(res, { generating: 'MiniMax H3 — generating low-resolution latent...' });
+            } else if (stage === 'latent-upscale-refine') {
+                sseWrite(res, { generating: 'Latent upscaled — high-resolution refinement...' });
+            }
         };
 
         console.log('[video] source image:', opts2.sourceImageRawFilename || null);
@@ -6291,6 +6342,8 @@ async function handleVideoGenerationStream(req, res, opts) {
                 video: (finalResult.meta && finalResult.meta.video) || existingParams.video || null,
                 refined: Boolean(finalResult.refined),
                 refineError: finalResult.refineError || null,
+                latentUpscale: (finalResult.meta && finalResult.meta.video && finalResult.meta.video.latentUpscale)
+                    || existingParams.latentUpscale || null,
                 upscale: finalResult.upscale || existingParams.upscale || null
             }),
             status: 'completed',
@@ -6343,6 +6396,7 @@ async function handleVideoGenerationStream(req, res, opts) {
                 meta: finalResult.meta || null,
                 refined: Boolean(finalResult.refined),
                 refineError: finalResult.refineError || null,
+                latentUpscale: (finalResult.meta && finalResult.meta.video && finalResult.meta.video.latentUpscale) || null,
                 upscale: finalResult.upscale || null
             }
         });
@@ -6534,6 +6588,9 @@ function friendlyVideoError(err) {
         case 'h3_fbcache_output_unconnected':
         case 'h3_fbcache_not_h3':
         case 'h3_fbcache_cache_conflict':
+        case 'h3_latent_upscale_node_missing':
+        case 'h3_latent_upscale_model_missing':
+        case 'h3_latent_upscale_graph_invalid':
         case 'h3_reference_nodes_missing':
         case 'h3_reference_schema_unsupported':
         case 'h3_reference_source_missing':

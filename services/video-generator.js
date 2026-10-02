@@ -18,6 +18,7 @@ const configManager = require('../server/config-manager');
 const generatedHistory = require('./generated-history');
 const generationQueue = require('./generation-queue');
 const imageGenerator = require('./image-generator');
+const creatorStudio = require('./creator-studio');
 const { getModelById } = require('../server/models');
 
 const GENERATED_DIR = path.join(__dirname, '..', 'data', 'generated');
@@ -371,6 +372,90 @@ function normalizeFaceRefineSelect(value, fallback) {
     return fallback !== undefined ? fallback : 'largest_face';
 }
 
+// --- MiniMax H3 Latent Upscaler (LBH-123-AI) ----------------------------------
+//
+// Optional three-stage H3 pipeline: generate a low-resolution AV latent, upscale
+// the 24-channel video latent with a learned 3D upscaler, then re-sample (refine)
+// at the target resolution before the single VAE decode. It skips the expensive
+// decode -> pixel upscale -> encode round-trip through H3's heavy VAE. It saves
+// TIME, not VRAM: the refinement still runs at the target resolution, so peak
+// memory stays close to native high-resolution generation.
+//
+// Node pack: https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler
+// Model:     https://huggingface.co/LBH-123-AI/Minimax_h3_latent_Upscaler
+//
+// The 3D upscaler is used for video (temporal coherence). The AV latent is split
+// with LTXVSeparateAVLatent (the upscaler operates on the 24-channel video latent
+// only) and re-joined with LTXVConcatAVLatent, so H3's native audio is preserved.
+
+const H3_LATENT_UPSCALE_NODE = 'MinimaxH3LatentUpscaler3D';
+const H3_LATENT_UPSCALE_SEPARATE_NODE = 'LTXVSeparateAVLatent';
+const H3_LATENT_UPSCALE_CONCAT_NODE = 'LTXVConcatAVLatent';
+const H3_LATENT_UPSCALE_REPO = 'https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler';
+const H3_LATENT_UPSCALE_DIR = 'Comfyui_Minimax_h3_latent_Upscaler';
+const H3_LATENT_UPSCALE_MODEL_DIR = 'latent_upscale_models';
+const H3_LATENT_UPSCALE_MODEL_REPO = 'LBH-123-AI/Minimax_h3_latent_Upscaler';
+const H3_LATENT_UPSCALE_DEFAULT_MODEL = 'minimax_h3_latent_upscaler_3d_conv_v1_fp16.safetensors';
+const H3_LATENT_UPSCALE_MODEL_APPROX_MB = 691;
+const H3_LATENT_UPSCALE_MODES = Object.freeze(['off', 'auto', '1.5', '2', '2.5', '3', '4']);
+const H3_LATENT_UPSCALE_SCALES = Object.freeze([1.5, 2, 2.5, 3, 4]);
+const H3_LATENT_UPSCALE_PRECISIONS = Object.freeze(['fp16', 'bf16', 'fp32']);
+const H3_LATENT_UPSCALE_DEFAULT_PRECISION = 'fp16';
+const H3_LATENT_UPSCALE_STRENGTH_MIN = 0.1;
+const H3_LATENT_UPSCALE_STRENGTH_MAX = 0.8;
+const H3_LATENT_UPSCALE_DEFAULT_STRENGTH = 0.35;
+const H3_LATENT_UPSCALE_ALIGN = 32;
+
+const H3_LATENT_UPSCALE_NODE_MISSING_MESSAGE =
+    'MiniMax H3 Latent Upscale is enabled, but the ComfyUI node "MinimaxH3LatentUpscaler3D" is not installed. ' +
+    'Install the node pack (' + H3_LATENT_UPSCALE_REPO + ') into ComfyUI/custom_nodes, restart ComfyUI, ' +
+    'then download the upscaler model into ComfyUI/models/' + H3_LATENT_UPSCALE_MODEL_DIR + '/.';
+
+// Mode is one of: off | auto | a supported scale (1.5/2/2.5/3/4 as a string).
+// Anything unrecognized falls back to auto so a stale stored value is safe.
+function normalizeH3LatentUpscale(value) {
+    if (value === undefined || value === null) return 'auto';
+    const raw = String(value).trim().toLowerCase();
+    if (!raw) return 'auto';
+    if (raw === 'off' || raw === 'false' || raw === 'disabled' || raw === 'none' || raw === '0') return 'off';
+    if (raw === 'auto' || raw === 'true' || raw === 'on') return 'auto';
+    const n = Number(raw);
+    if (Number.isFinite(n)) {
+        let best = H3_LATENT_UPSCALE_SCALES[0];
+        for (const s of H3_LATENT_UPSCALE_SCALES) {
+            if (Math.abs(s - n) < Math.abs(best - n)) best = s;
+        }
+        return String(best);
+    }
+    return 'auto';
+}
+
+// The explicit scale for a mode, or null for off/auto (auto is resolved per
+// request against the requested output size by selectH3UpscaleStrategy).
+function h3LatentUpscaleScale(value) {
+    const raw = String(value === undefined || value === null ? '' : value).trim().toLowerCase();
+    const n = Number(raw);
+    if (Number.isFinite(n) && n >= H3_LATENT_UPSCALE_SCALES[0] && n <= H3_LATENT_UPSCALE_SCALES[H3_LATENT_UPSCALE_SCALES.length - 1]) {
+        return n;
+    }
+    return null;
+}
+
+function normalizeH3LatentUpscaleStrength(value, fallback) {
+    const base = fallback !== undefined ? fallback : H3_LATENT_UPSCALE_DEFAULT_STRENGTH;
+    return clampToRange(value, H3_LATENT_UPSCALE_STRENGTH_MIN, H3_LATENT_UPSCALE_STRENGTH_MAX, base);
+}
+
+function normalizeH3LatentUpscalePrecision(value, fallback) {
+    const raw = String(value === undefined || value === null ? '' : value).trim().toLowerCase();
+    if (H3_LATENT_UPSCALE_PRECISIONS.includes(raw)) return raw;
+    return fallback !== undefined ? fallback : H3_LATENT_UPSCALE_DEFAULT_PRECISION;
+}
+
+function h3LatentUpscaleEnabled(value) {
+    return normalizeH3LatentUpscale(value) !== 'off';
+}
+
 // Published MiniMax H3 artifact filenames. These are the exact names the
 // upstream model release ships, so they are only used as defaults when the
 // matching env var is unset.
@@ -430,6 +515,17 @@ const H3_DEFAULTS = {
     // the upscale cannot run.
     autoUpscaleEnabled: String(process.env.H3_AUTO_UPSCALE_ENABLED || '').toLowerCase() === 'true' ||
         process.env.H3_AUTO_UPSCALE_ENABLED === '1',
+    // MiniMax H3 latent upscale + high-resolution refinement. Default `auto`:
+    // the strategy decides per request, and falls back to direct generation
+    // when the upscaler model is not installed. `off` keeps direct generation.
+    h3LatentUpscale: normalizeH3LatentUpscale(process.env.H3_LATENT_UPSCALE || 'auto'),
+    h3LatentUpscaleModel: process.env.H3_LATENT_UPSCALE_MODEL || H3_LATENT_UPSCALE_DEFAULT_MODEL,
+    h3LatentUpscaleStrength: normalizeH3LatentUpscaleStrength(
+        process.env.H3_LATENT_UPSCALE_STRENGTH, H3_LATENT_UPSCALE_DEFAULT_STRENGTH),
+    h3LatentUpscalePrecision: normalizeH3LatentUpscalePrecision(
+        process.env.H3_LATENT_UPSCALE_PRECISION, H3_LATENT_UPSCALE_DEFAULT_PRECISION),
+    h3LatentUpscaleTemporalChunking: String(process.env.H3_LATENT_UPSCALE_TEMPORAL_CHUNKING || '').toLowerCase() !== 'false',
+    h3LatentUpscaleForceUnload: String(process.env.H3_LATENT_UPSCALE_FORCE_UNLOAD || '').toLowerCase() !== 'false',
     faceRefineDetector: process.env.H3_FACEREFINE_DETECTOR || 'face_yolov8m.pt',
     faceRefineCropFactor: envNumber('H3_FACEREFINE_CROP', 2.5),
     faceRefineDenoise: envNumber('H3_FACEREFINE_DENOISE', 0.4),
@@ -452,7 +548,9 @@ const H3_CONFIGURABLE_KEYS = [
     'faceRefineEnabled', 'faceRefineDetector', 'faceRefineCropFactor',
     'faceRefineDenoise', 'faceRefineSteps', 'faceRefineCanvasMode',
     'faceRefineSelect', 'faceRefineFeather',
-    'autoUpscaleEnabled'
+    'autoUpscaleEnabled',
+    'h3LatentUpscale', 'h3LatentUpscaleModel', 'h3LatentUpscaleStrength',
+    'h3LatentUpscalePrecision', 'h3LatentUpscaleTemporalChunking', 'h3LatentUpscaleForceUnload'
 ];
 
 // Shared upscale keys (canonical names in imageGeneration). Posted to
@@ -1259,8 +1357,8 @@ function normalizeCreatorContinuousShot(prompt, performanceBeats, dialogueLangua
     if (!seenShot) body = '\n[Shot 1] ' + body.trim();
     body = body.replace(/(\[Shot 1\])/i, '$1\n' + (
         /smartphone|selfie/i.test(String(cameraDirection || ''))
-            ? 'The same front-facing smartphone remains at the same camera position and lens perspective; the close conversational framing, environment, lighting, wardrobe and creator identity remain consistent throughout, with only natural handheld micro-adjustments allowed.'
-            : 'The camera position and lens perspective, general framing, environment, lighting, wardrobe and creator identity remain consistent throughout this continuous recording; only natural micro-adjustments are allowed.'
+            ? 'The creator keeps recording herself on the same front-facing smartphone, with natural handheld micro-movement; the selfie framing, environment, lighting, wardrobe and creator identity remain consistent throughout, with no cinematic camera movement.'
+            : 'The general framing, environment, lighting, wardrobe and creator identity remain consistent throughout this continuous recording; only natural micro-adjustments are allowed.'
     ));
 
     const timeline = creatorPerformanceTimeline(performanceBeats, dialogueLanguage);
@@ -1365,10 +1463,14 @@ function resolveCreatorCanonical(structuredRequest, referenceImages) {
                 },
                 shot: {
                     id: 'Shot 1',
+                    cameraStyle: String(shot.cameraStyle || req.creator_camera_style || '').trim(),
                     cameraDirection: String(shot.cameraDirection || req.creator_camera_direction || '').trim(),
                     environment: String(shot.environment || req.creator_environment || '').trim(),
                     wardrobe: String(shot.wardrobe || req.creator_wardrobe || '').trim(),
-                    action: String(shot.action || req.creator_action || '').trim()
+                    action: String(shot.action || req.creator_action || '').trim(),
+                    pose: String(shot.pose || req.creator_pose || '').trim(),
+                    poseId: String(shot.poseId || req.creator_pose_id || '').trim(),
+                    poseLabel: String(shot.poseLabel || req.creator_pose_label || '').trim()
                 },
                 dialogue: {
                     lines,
@@ -1420,10 +1522,14 @@ function resolveCreatorCanonical(structuredRequest, referenceImages) {
                 },
                 shot: {
                     id: 'Shot 1',
+                    cameraStyle: String(shot.cameraStyle || req.creator_camera_style || '').trim(),
                     cameraDirection: String(shot.cameraDirection || req.creator_camera_direction || '').trim(),
                     environment: String(shot.environment || req.creator_environment || '').trim(),
                     wardrobe: String(shot.wardrobe || req.creator_wardrobe || '').trim(),
-                    action: String(shot.action || req.creator_action || '').trim()
+                    action: String(shot.action || req.creator_action || '').trim(),
+                    pose: String(shot.pose || req.creator_pose || '').trim(),
+                    poseId: String(shot.poseId || req.creator_pose_id || '').trim(),
+                    poseLabel: String(shot.poseLabel || req.creator_pose_label || '').trim()
                 },
                 dialogue: {
                     lines: entries.map(({ stage, label, speech }) => ({ stage, label, speech })),
@@ -1463,10 +1569,14 @@ function resolveCreatorCanonical(structuredRequest, referenceImages) {
         },
         shot: {
             id: 'Shot 1',
+            cameraStyle: String(req.creator_camera_style || '').trim(),
             cameraDirection: String(req.creator_camera_direction || '').trim(),
             environment: String(req.creator_environment || '').trim(),
             wardrobe: String(req.creator_wardrobe || '').trim(),
-            action: String(req.creator_action || '').trim()
+            action: String(req.creator_action || '').trim(),
+            pose: String(req.creator_pose || '').trim(),
+            poseId: String(req.creator_pose_id || '').trim(),
+            poseLabel: String(req.creator_pose_label || '').trim()
         },
         dialogue: {
             lines,
@@ -1558,9 +1668,16 @@ function normalizeCreatorPromptText(text) {
     return String(text || '').replace(/\s+/g, ' ').trim();
 }
 
+// A legible, physically plausible posture is always supplied even when a legacy
+// canonical object carries no location pose, so the model never floats limbs.
+const CREATOR_DEFAULT_POSE =
+    'standing naturally with an even weight balance, a tall but relaxed spine, shoulders down and hands resting comfortably at the sides';
+
 // Deterministic assembly: given the same canonical dialogue, always the same
 // prompt. It never consults an LLM, never rewrites the speech and never emits a
-// timestamp — H3 determines all timing.
+// timestamp — H3 determines all timing. Camera behaviour is expanded from the
+// Creator Studio camera-style registry (services/creator-studio.js), so the
+// camera concept stays separate from identity, dialogue and activity logic.
 function buildCreatorStudioPrompt(canonical) {
     const c = canonical && typeof canonical === 'object' ? canonical : {};
     const guide = c.guide && typeof c.guide === 'object' ? c.guide : {};
@@ -1573,15 +1690,23 @@ function buildCreatorStudioPrompt(canonical) {
     const name = String(creator.name || 'the creator').trim() || 'the creator';
     const identity = String(creator.identityDescription || '').trim();
     const reference = String(creator.referenceDescription || 'the approved Character identity portrait supplied as <Picture 1>').trim();
-    const camera = String(shot.cameraDirection || 'a steady front-facing smartphone held at a natural arm\'s length with close conversational framing').trim();
+    const cameraStyle = creatorStudio.cameraStyle(shot.cameraStyle);
+    const camera = String(shot.cameraDirection || '').trim();
     const environment = String(shot.environment || 'a relaxed, uncluttered everyday creator setting').trim();
     const wardrobe = String(shot.wardrobe || 'natural, scene-appropriate clothing').trim();
     const onCameraAction = String(shot.action || '').trim();
+    const pose = String(shot.pose || '').trim() || CREATOR_DEFAULT_POSE;
     const guideName = String(guide.name || 'Creator Studio').trim();
     const guideStages = Array.isArray(guide.stages) && guide.stages.length
         ? guide.stages
         : uniqueStages(guide.structure).map(creatorStageLabel);
     const scriptText = String(dialogue.text || lines.map((line) => line.speech).filter(Boolean).join(' ')).trim();
+    // A supported phone (tripod/stand/mount/hands-free) frees both hands; a
+    // handheld selfie means one hand holds the phone. Never force a specific
+    // holding pose when the scene does not call for one.
+    const phoneSupported = /\b(?:tripod|stand|mount|propped|hands[- ]?free|supported)\b/i
+        .test([camera, environment, onCameraAction, pose].filter(Boolean).join(' '));
+    const gestureRule = phoneSupported ? cameraStyle.gesturesSupported : cameraStyle.gesturesHandheld;
 
     const subject = 'subject_definitions:\n' +
         '<Subject 1> is ' + name + ', the fictional creator shown in ' + reference + '. ' +
@@ -1592,29 +1717,25 @@ function buildCreatorStudioPrompt(canonical) {
         'a character sheet, collage, turnaround or multi-panel reference. Creator identity is locked; only facial ' +
         'expression and performance change across the recording.';
 
-    const selfie = /smartphone|selfie|arm'?s[- ]length/i.test(camera);
     const summary = 'summary:\n' +
-        'A personality-led social creator video in [Shot 1]: ' + name + (selfie
-            ? ' films themself on a front-facing smartphone and'
-            : ' performs directly to camera and') +
-        ' speaks the complete script on screen in one continuous take. Every line is performed with visible, natural ' +
-        'lip synchronization and is never narrated.';
+        'A personality-led social creator video in [Shot 1]: ' + name + ' is a creator recording herself with a ' +
+        'smartphone front-facing selfie camera and speaks the complete script on screen in one continuous take. ' +
+        'Every line is performed with visible, natural lip synchronization and is never narrated.';
 
     const retention = 'retention_analysis:\n' +
         '<Subject 1> (appears in [Shot 1]): fully_preserved - facial identity, complexion, hairstyle and distinctive ' +
         'physical features from the identity portrait; scene, wardrobe and camera framing follow the Creator Studio direction.';
 
-    const cameraBehavior = selfie
-        ? 'This is a single continuous recording: front-facing smartphone held at a natural arm\'s length, close ' +
-          'conversational framing, direct eye contact with the phone lens and only subtle natural handheld ' +
-          'micro-movement. The phone itself is never visible.'
-        : 'This is a single continuous recording with a stable camera position and a consistent lens perspective.';
-    const cameraRule = 'Camera: ' + camera + ' ' + cameraBehavior +
-        ' There are no camera cuts, no camera repositioning, no lens changes and no framing changes; the environment, ' +
-        'lighting, wardrobe and creator identity remain continuous throughout this single take.';
+    const cameraBlock = 'Creator Studio camera style: ' + cameraStyle.id + '. ' + cameraStyle.concept + ' ' +
+        cameraStyle.camera + (camera ? ' Framing: ' + camera + (/[.!?]$/.test(camera) ? '' : '.') + ' ' : '') +
+        cameraStyle.handheld + ' ' + cameraStyle.framing;
 
-    const setting = name + ' is in ' + environment + ', wearing ' + wardrobe + '. The environment, lighting, wardrobe, ' +
-        'camera position and creator identity remain continuous throughout this single take.';
+    const groundedBlock = cameraStyle.grounded + ' ' + gestureRule;
+
+    const continuityRule = 'This is one continuous recording with no cuts, scene changes, camera-angle changes or ' +
+        'wardrobe or location changes.';
+
+    const setting = name + ' is in ' + environment + ', wearing ' + wardrobe + ', ' + pose + '.';
 
     const dialogueBlock = 'Dialogue (the complete script ' + name + ' speaks — every word below is spoken on screen with ' +
         'visible, natural lip synchronization):\n' +
@@ -1638,8 +1759,9 @@ function buildCreatorStudioPrompt(canonical) {
     const actionDirection = onCameraAction
         ? 'On-camera action (visual direction only; this is NOT dialogue and must never be spoken): ' + onCameraAction + '\n'
         : '';
-    const detailed = 'detailed_description:\n' + setting + ' ' + cameraRule + '\n' + actionDirection + '[Shot 1]\n' +
-        dialogueBlock + '\n\n' + performanceBlock + '\n\n' + timingRule;
+    const detailed = 'detailed_description:\n' + setting + ' ' + cameraBlock + ' ' + groundedBlock + ' ' +
+        cameraStyle.distance + ' ' + continuityRule + ' ' + cameraStyle.authenticity + '\n' +
+        actionDirection + '[Shot 1]\n' + dialogueBlock + '\n\n' + performanceBlock + '\n\n' + timingRule;
 
     const soundscape = 'overall_soundscape:\nNatural room tone and the creator\'s on-screen voice with exact, lip-synced ' +
         'delivery; ambient environmental sounds matching the scene.';
@@ -1709,9 +1831,11 @@ function formatCreatorStudioDebug(canonical) {
         '  reference: ' + (creator.referenceDescription || ''),
         'shot:',
         '  id: ' + (shot.id || ''),
+        '  cameraStyle: ' + (shot.cameraStyle || ''),
         '  camera: ' + (shot.cameraDirection || ''),
         '  environment: ' + (shot.environment || ''),
         '  wardrobe: ' + (shot.wardrobe || ''),
+        '  pose: ' + (shot.pose || ''),
         'dialogue (complete, no timestamps):'
     ];
     lines.forEach((line, index) => {
@@ -1962,7 +2086,7 @@ function buildReferenceAddendum(count, creatorIdentityOnly) {
         'words inside <d>[Language] ...</d>. Never drop a dialogue block.\n' +
         (creatorIdentityOnly
             ? '\nCREATOR IDENTITY REFERENCE OVERRIDE: The supplied picture is the approved single Character base portrait and is an identity source only. Preserve the same face and physical identity, but DO NOT use it as a shot keyframe and do not copy its pose, framing, background, outfit or lighting. Use the Creator Studio scene, wardrobe and camera direction; facial expressions may transition while facial structure remains unchanged.\n' +
-              'CONTINUOUS CREATOR SESSION RULE: Unless the user explicitly requests multiple shots/scenes, an angle cut, a location cut, a montage or another explicit transition, the detailed_description MUST contain exactly one shot header, [Shot 1]. Creator performance beats are timed events inside that one shot, never separate shots. Use multiple timestamped events such as "At 00:02.500, ..." within [Shot 1]. Keep the same smartphone, camera position, lens perspective, general framing, environment, lighting, wardrobe and identity throughout; only natural micro-adjustments are allowed. Dialogue, expression, gaze and body actions flow continuously. Do not infer cuts from performance or framing changes. When an explicit cut is requested, include only the requested scene/camera changes; performance beats still remain timed events, never individual shots.\n'
+              'CONTINUOUS CREATOR SESSION RULE: Unless the user explicitly requests multiple shots/scenes, an angle cut, a location cut, a montage or another explicit transition, the detailed_description MUST contain exactly one shot header, [Shot 1]. Creator performance beats are timed events inside that one shot, never separate shots. Use multiple timestamped events such as "At 00:02.500, ..." within [Shot 1]. Keep the same front-facing smartphone selfie framing, environment, lighting, wardrobe and identity throughout, with natural handheld micro-movement and no cinematic camera movement. Dialogue, expression, gaze and body actions flow continuously. Do not infer cuts from performance or framing changes. When an explicit cut is requested, include only the requested scene/camera changes; performance beats still remain timed events, never individual shots.\n'
             : '');
 }
 
@@ -2583,6 +2707,18 @@ function effectiveVideoSettings() {
                 value = value === true || value === 1 || String(value).toLowerCase() === 'true' || String(value) === '1';
             } else if (key === 'autoUpscaleEnabled') {
                 value = value === true || value === 1 || String(value).toLowerCase() === 'true' || String(value) === '1';
+            } else if (key === 'h3LatentUpscale') {
+                value = normalizeH3LatentUpscale(value);
+            } else if (key === 'h3LatentUpscaleModel') {
+                value = String(value || '').trim() || H3_DEFAULTS.h3LatentUpscaleModel;
+            } else if (key === 'h3LatentUpscaleStrength') {
+                value = normalizeH3LatentUpscaleStrength(value, H3_DEFAULTS.h3LatentUpscaleStrength);
+            } else if (key === 'h3LatentUpscalePrecision') {
+                value = normalizeH3LatentUpscalePrecision(value, H3_DEFAULTS.h3LatentUpscalePrecision);
+            } else if (key === 'h3LatentUpscaleTemporalChunking') {
+                value = value !== false && String(value).toLowerCase() !== 'false' && String(value) !== '0';
+            } else if (key === 'h3LatentUpscaleForceUnload') {
+                value = value !== false && String(value).toLowerCase() !== 'false' && String(value) !== '0';
             } else if (key === 'faceRefineCanvasMode') {
                 value = normalizeFaceRefineCanvasMode(value, H3_DEFAULTS.faceRefineCanvasMode);
             } else if (key === 'faceRefineSelect') {
@@ -2737,6 +2873,18 @@ function saveVideoSettings(patch) {
         } else if (key === 'faceRefineEnabled') {
             out[key] = value === true || value === 1 || String(value).toLowerCase() === 'true' || String(value) === '1';
         } else if (key === 'autoUpscaleEnabled') {
+            out[key] = value === true || value === 1 || String(value).toLowerCase() === 'true' || String(value) === '1';
+        } else if (key === 'h3LatentUpscale') {
+            out[key] = normalizeH3LatentUpscale(value);
+        } else if (key === 'h3LatentUpscaleModel') {
+            out[key] = String(value || '').trim() || null;
+        } else if (key === 'h3LatentUpscaleStrength') {
+            out[key] = normalizeH3LatentUpscaleStrength(value, H3_DEFAULTS.h3LatentUpscaleStrength);
+        } else if (key === 'h3LatentUpscalePrecision') {
+            out[key] = normalizeH3LatentUpscalePrecision(value, H3_DEFAULTS.h3LatentUpscalePrecision);
+        } else if (key === 'h3LatentUpscaleTemporalChunking') {
+            out[key] = value === true || value === 1 || String(value).toLowerCase() === 'true' || String(value) === '1';
+        } else if (key === 'h3LatentUpscaleForceUnload') {
             out[key] = value === true || value === 1 || String(value).toLowerCase() === 'true' || String(value) === '1';
         } else if (key === 'faceRefineDetector') {
             out[key] = String(value || '').trim() || null;
@@ -3032,6 +3180,249 @@ function appendFirstBlockCache(graph, baseModelNode, settings, inputNames) {
     return 'h3_first_block_cache';
 }
 
+// --- H3 latent-upscale resolution / strategy ---------------------------------
+//
+// Source and target dimensions are always H3/ComfyUI pixel dims: multiples of
+// 32 (the upscaler's align grid and the VAE spatial downsample factor), never
+// below 32. Aspect ratio is preserved by dividing both edges by the same
+// factor; the target is the source of truth, so accumulated rounding cannot
+// drift the final resolution.
+
+function snapH3UpscaleDimension(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n <= 0) return 32;
+    return Math.max(32, Math.round(n / H3_LATENT_UPSCALE_ALIGN) * H3_LATENT_UPSCALE_ALIGN);
+}
+
+// Given the requested TARGET pixel size and a scale, return the low-resolution
+// source the H3 base pass runs at, the target the upscaler reaches and the
+// effective (grid-rounded) scale. Exposed for the UI/tests.
+function calculateH3LatentUpscaleResolution(targetWidth, targetHeight, scale) {
+    const targetW = snapH3UpscaleDimension(targetWidth || 1344);
+    const targetH = snapH3UpscaleDimension(targetHeight || 768);
+    const requested = clampToRange(scale, H3_LATENT_UPSCALE_SCALES[0],
+        H3_LATENT_UPSCALE_SCALES[H3_LATENT_UPSCALE_SCALES.length - 1], 2);
+    // Never let the source reach the target: the upscaler only upscales.
+    const sourceW = Math.max(32, Math.min(snapH3UpscaleDimension(targetW / requested), targetW - H3_LATENT_UPSCALE_ALIGN));
+    const sourceH = Math.max(32, Math.min(snapH3UpscaleDimension(targetH / requested), targetH - H3_LATENT_UPSCALE_ALIGN));
+    const effective = Math.round((((targetW / sourceW) + (targetH / sourceH)) / 2) * 1000) / 1000;
+    return {
+        sourceWidth: sourceW,
+        sourceHeight: sourceH,
+        targetWidth: targetW,
+        targetHeight: targetH,
+        scale: effective
+    };
+}
+
+// Adaptive Auto mode: decide whether to use latent upscaling and at which
+// scale, from the requested output size. Pure and VRAM-agnostic today; the
+// `available` flag lets Auto fall back to direct generation when the model is
+// missing, and a future implementation can fold benchmark data in here.
+function selectH3UpscaleStrategy(opts) {
+    const mode = normalizeH3LatentUpscale(opts && opts.mode);
+    if (mode === 'off') return { use: false, scale: 0, reason: 'disabled' };
+
+    const explicitScale = h3LatentUpscaleScale(mode);
+    const available = !(opts && opts.available === false);
+
+    if (explicitScale) {
+        // An explicit scale is honoured; the caller asserts readiness so a
+        // missing model fails clearly instead of silently downgrading.
+        return { use: available, scale: explicitScale, reason: 'explicit' };
+    }
+    if (!available) return { use: false, scale: 0, reason: 'model_missing_auto' };
+
+    const w = Number(opts && opts.targetWidth) || 0;
+    const h = Number(opts && opts.targetHeight) || 0;
+    const pixels = w * h;
+    if (pixels >= 1.6e6) return { use: true, scale: 3, reason: 'auto_very_large' };
+    if (pixels >= 1.0e6) return { use: true, scale: 2.5, reason: 'auto_large' };
+    if (pixels >= 0.6e6) return { use: true, scale: 2, reason: 'auto_medium' };
+    if (pixels >= 0.4e6) return { use: true, scale: 1.5, reason: 'auto_small_plus' };
+    return { use: false, scale: 0, reason: 'auto_small' };
+}
+
+// Resolve the upscaler node's actual input keys. The current node exposes a
+// DynamicCombo (`mode` + `mode.width`/`mode.height`); older builds exposed flat
+// `width`/`height`. Both are supported so a renamed/older checkpoint still
+// validates instead of silently dropping the resize.
+function resolveH3LatentUpscaleInputNames(info) {
+    const node = info && info[H3_LATENT_UPSCALE_NODE];
+    const required = (node && node.input && node.input.required) || {};
+    const keys = Object.keys(required);
+    const find = (candidates, fallback) => {
+        for (const candidate of candidates) {
+            const hit = keys.find((key) => String(key) === candidate);
+            if (hit) return hit;
+        }
+        for (const candidate of candidates) {
+            const hit = keys.find((key) => String(key).toLowerCase() === candidate.toLowerCase());
+            if (hit) return hit;
+        }
+        return fallback;
+    };
+    return {
+        mode: find(['mode'], 'mode'),
+        width: find(['mode.width', 'width'], 'mode.width'),
+        height: find(['mode.height', 'height'], 'mode.height'),
+        scale: find(['mode.scale', 'scale'], 'mode.scale'),
+        align: find(['align'], 'align'),
+        temporalChunking: find(['enable_temporal_chunking'], 'enable_temporal_chunking'),
+        forceUnload: find(['force_unload'], 'force_unload'),
+        modelName: find(['model_name'], 'model_name'),
+        device: find(['device'], 'device'),
+        precision: find(['precision'], 'precision')
+    };
+}
+
+// Checkpoints ComfyUI reports in the upscaler's `model_name` dropdown.
+function latentUpscaleModelChoices(info) {
+    const node = info && info[H3_LATENT_UPSCALE_NODE];
+    const entry = node && node.input && node.input.required && node.input.required.model_name;
+    let options = [];
+    if (Array.isArray(entry)) {
+        if (Array.isArray(entry[0])) options = entry[0];
+        else if (entry[1] && Array.isArray(entry[1].options)) options = entry[1].options;
+    }
+    return options
+        .map((name) => String(name || '').trim())
+        .filter((name) => /\.(safetensors|pth|pt|ckpt)$/i.test(name));
+}
+
+function h3LatentUpscaleModelMatches(choice, name) {
+    const a = String(choice || '').replace(/\\/g, '/').split('/').pop().toLowerCase();
+    const b = String(name || '').replace(/\\/g, '/').split('/').pop().toLowerCase();
+    return Boolean(a) && a === b;
+}
+
+function resolveH3LatentUpscaleModel(settings, choices) {
+    const configured = String((settings && settings.h3LatentUpscaleModel) || '').trim();
+    const list = Array.isArray(choices) ? choices : [];
+    if (configured) {
+        const match = list.find((choice) => h3LatentUpscaleModelMatches(choice, configured));
+        return { name: configured, present: Boolean(match), resolved: match || null };
+    }
+    // No explicit filename: prefer the fp16 3D checkpoint, then bf16, then any.
+    const preferred = list.find((c) => /fp16/i.test(c)) ||
+        list.find((c) => /bf16/i.test(c)) ||
+        list[0] ||
+        H3_LATENT_UPSCALE_DEFAULT_MODEL;
+    return { name: preferred, present: list.length > 0, resolved: list.length ? preferred : null };
+}
+
+// Availability of the whole latent-upscale pipeline: the custom node, the AV
+// split/merge core nodes and at least one checkpoint. `explicit` distinguishes
+// a user-chosen scale (must fail clearly when unready) from `auto` (may fall
+// back to direct generation).
+function resolveH3LatentUpscaleAvailability(info, settings) {
+    const mode = normalizeH3LatentUpscale(settings && settings.h3LatentUpscale);
+    const enabled = mode !== 'off';
+    const explicit = enabled && mode !== 'auto';
+    const nodePresent = Boolean(info && info[H3_LATENT_UPSCALE_NODE]);
+    const splitPresent = Boolean(info && info[H3_LATENT_UPSCALE_SEPARATE_NODE]);
+    const concatPresent = Boolean(info && info[H3_LATENT_UPSCALE_CONCAT_NODE]);
+    const choices = latentUpscaleModelChoices(info);
+    const model = resolveH3LatentUpscaleModel(settings, choices);
+    const ready = Boolean(nodePresent && splitPresent && concatPresent && model.present);
+    return {
+        enabled,
+        mode,
+        explicit,
+        nodePresent,
+        splitPresent,
+        concatPresent,
+        modelPresent: model.present,
+        modelName: model.name,
+        choices,
+        ready,
+        scale: h3LatentUpscaleScale(mode)
+    };
+}
+
+// A missing upscaler for an explicit scale is a hard error (never silently fall
+// back to pixel-space upscaling or to direct generation). Auto mode never
+// reaches this: it is handled by the caller and falls back to direct H3.
+function assertH3LatentUpscaleReady(info, settings) {
+    const state = resolveH3LatentUpscaleAvailability(info, settings);
+    if (!state.enabled || state.ready || state.mode === 'auto') return state;
+    if (!state.nodePresent) {
+        const error = new Error(H3_LATENT_UPSCALE_NODE_MISSING_MESSAGE);
+        error.code = 'h3_latent_upscale_node_missing';
+        error.missingNodes = [H3_LATENT_UPSCALE_NODE];
+        error.installUrl = H3_LATENT_UPSCALE_REPO;
+        throw error;
+    }
+    if (!state.splitPresent || !state.concatPresent) {
+        const missing = [H3_LATENT_UPSCALE_SEPARATE_NODE, H3_LATENT_UPSCALE_CONCAT_NODE]
+            .filter((name) => !(info && info[name]));
+        const error = new Error(
+            'H3 Latent Upscale needs the ComfyUI AV latent split/merge nodes (' + missing.join(', ') +
+            '). Update ComfyUI, then try again.'
+        );
+        error.code = 'h3_latent_upscale_node_missing';
+        error.missingNodes = missing;
+        throw error;
+    }
+    const error = new Error(
+        'MiniMax H3 Latent Upscale is enabled, but the upscaler checkpoint was not found.\n\n' +
+        'Expected: ' + state.modelName + '\n' +
+        'Folder:   ComfyUI/models/' + H3_LATENT_UPSCALE_MODEL_DIR + '/ (~' +
+        H3_LATENT_UPSCALE_MODEL_APPROX_MB + ' MB for fp16/bf16)\n\n' +
+        'Download it from https://huggingface.co/' + H3_LATENT_UPSCALE_MODEL_REPO +
+        ' (Setup > Models can download it), then try again.'
+    );
+    error.code = 'h3_latent_upscale_model_missing';
+    error.modelName = state.modelName;
+    throw error;
+}
+
+// Build the plan the graph builder consumes for one request.
+function buildH3LatentUpscalePlan(opts) {
+    const scale = clampToRange(opts && opts.scale, H3_LATENT_UPSCALE_SCALES[0],
+        H3_LATENT_UPSCALE_SCALES[H3_LATENT_UPSCALE_SCALES.length - 1], 2);
+    const dims = calculateH3LatentUpscaleResolution(opts.targetWidth, opts.targetHeight, scale);
+    const model = resolveH3LatentUpscaleModel(opts.settings, latentUpscaleModelChoices(opts.info));
+    return {
+        enabled: true,
+        sourceWidth: dims.sourceWidth,
+        sourceHeight: dims.sourceHeight,
+        targetWidth: dims.targetWidth,
+        targetHeight: dims.targetHeight,
+        scale: dims.scale,
+        requestedScale: scale,
+        strength: normalizeH3LatentUpscaleStrength(opts.settings && opts.settings.h3LatentUpscaleStrength),
+        modelName: model.name,
+        precision: normalizeH3LatentUpscalePrecision(opts.settings && opts.settings.h3LatentUpscalePrecision),
+        temporalChunking: (opts.settings && opts.settings.h3LatentUpscaleTemporalChunking) !== false,
+        forceUnload: (opts.settings && opts.settings.h3LatentUpscaleForceUnload) !== false,
+        device: 'cuda',
+        inputNames: resolveH3LatentUpscaleInputNames(opts.info)
+    };
+}
+
+// Explicit output dimensions (options.width/height or "WxH" in the prompt) are
+// honoured directly, snapped to the 32px grid. Unlike the size-tier helper this
+// does not re-fit to H3's 1MP base canvas — the whole point of latent upscaling
+// is to reach resolutions above the native canvas.
+function h3ExplicitDimensions(width, height) {
+    const w = Number(width);
+    const h = Number(height);
+    if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return null;
+    return {
+        W: Math.min(4096, Math.max(32, Math.round(w / 32) * 32)),
+        H: Math.min(4096, Math.max(32, Math.round(h / 32) * 32))
+    };
+}
+
+function parseRequestedVideoResolution(width, height, text) {
+    const explicit = h3ExplicitDimensions(width, height);
+    if (explicit) return explicit;
+    const match = String(text || '').match(/\b(\d{3,4})\s*[x×]\s*(\d{3,4})\b/i);
+    if (match) return h3ExplicitDimensions(Number(match[1]), Number(match[2]));
+    return null;
+}
+
 function buildH3Graph(opts) {
     const {
         prompt,
@@ -3046,6 +3437,7 @@ function buildH3Graph(opts) {
         refModArtifacts = [],
         referenceTokenBudget = 0,
         firstBlockCacheInputs = null,
+        latentUpscale = null,
     } = opts;
 
     const graph = {};
@@ -3114,87 +3506,104 @@ function buildH3Graph(opts) {
         ? refImageNames.map((n) => String(n || '').trim()).filter(Boolean).slice(0, 9)
         : [];
     if (refNames.length) {
-        const refInputs = {};
         refNames.forEach((name, index) => {
-            const nodeId = 'ref_image_load_' + (index + 1);
-            graph[nodeId] = { class_type: 'LoadImage', inputs: { image: name } };
-            refInputs['ref_images.ref_image_' + index] = [nodeId, 0];
+            graph['ref_image_load_' + (index + 1)] = { class_type: 'LoadImage', inputs: { image: name } };
         });
-        graph.condition = {
-            class_type: 'MiniMaxH3ReferenceToVideo',
-            inputs: Object.assign({
-                clip: ['clip', 0],
-                vae: ['video_vae', 0],
-                prompt: String(prompt || ''),
-                width: W,
-                height: H,
-                length: frames,
-                ref_image_size: 'match',
-            }, refInputs),
-        };
-    } else {
-        const hasFirstFrame = mode === 'i2va' && Boolean(firstImageName);
-        if (hasFirstFrame) {
-            graph.first_image = {
-                class_type: 'LoadImage',
-                inputs: { image: firstImageName },
-            };
-        }
-
-        // MiniMaxH3ImageToVideo covers both T2V and first-frame I2V.
-        const conditionInputs = {
-            clip: ['clip', 0],
-            vae: ['video_vae', 0],
-            prompt: String(prompt || ''),
-            width: W,
-            height: H,
-            length: frames,
-        };
-        if (hasFirstFrame) conditionInputs.first_frame = ['first_image', 0];
-        graph.condition = {
-            class_type: 'MiniMaxH3ImageToVideo',
-            inputs: conditionInputs,
-        };
+    } else if (mode === 'i2va' && firstImageName) {
+        graph.first_image = { class_type: 'LoadImage', inputs: { image: firstImageName } };
     }
 
     const refMods = Array.isArray(refModArtifacts)
         ? refModArtifacts.filter((ref) => ref && ref.artifactName && Number(ref.strength) > 0).slice(0, 8)
         : [];
-    let conditioningNode = 'condition';
-    if (refMods.length) {
-        const loaderInputs = { show_info: false };
-        for (let slot = 1; slot <= 8; slot += 1) {
-            loaderInputs['mod_' + slot] = '(none)';
-            loaderInputs['strength_' + slot] = 1;
-            loaderInputs['copies_' + slot] = 1;
+
+    // Latent-upscale + refinement builds the conditioning twice from the SAME
+    // uploaded image nodes: the low-resolution generation node and the
+    // target-resolution refinement node. Sharing the LoadImage nodes means the
+    // reference/first-frame image is encoded once per H3 node but uploaded once.
+    const upscale = latentUpscale && latentUpscale.enabled ? latentUpscale : null;
+    const lowW = upscale ? upscale.sourceWidth : W;
+    const lowH = upscale ? upscale.sourceHeight : H;
+
+    // Create `condition<suffix>` (plus the reusable-refmod apply chain when
+    // present) at the given canvas size; returns the conditioning node the
+    // guider reads and the latent-producing node.
+    const buildH3Conditioning = (suffix, condW, condH) => {
+        const baseKey = 'condition' + suffix;
+        if (refNames.length) {
+            const refInputs = {};
+            refNames.forEach((name, index) => {
+                refInputs['ref_images.ref_image_' + index] = ['ref_image_load_' + (index + 1), 0];
+            });
+            graph[baseKey] = {
+                class_type: 'MiniMaxH3ReferenceToVideo',
+                inputs: Object.assign({
+                    clip: ['clip', 0],
+                    vae: ['video_vae', 0],
+                    prompt: String(prompt || ''),
+                    width: condW,
+                    height: condH,
+                    length: frames,
+                    ref_image_size: 'match',
+                }, refInputs),
+            };
+        } else {
+            const conditionInputs = {
+                clip: ['clip', 0],
+                vae: ['video_vae', 0],
+                prompt: String(prompt || ''),
+                width: condW,
+                height: condH,
+                length: frames,
+            };
+            if (mode === 'i2va' && firstImageName) conditionInputs.first_frame = ['first_image', 0];
+            graph[baseKey] = {
+                class_type: 'MiniMaxH3ImageToVideo',
+                inputs: conditionInputs,
+            };
         }
-        refMods.forEach((ref, index) => {
-            const slot = index + 1;
-            loaderInputs['mod_' + slot] = String(ref.artifactName);
-            loaderInputs['strength_' + slot] = Math.max(0, Math.min(1, Number(ref.strength) || 0));
-            loaderInputs['copies_' + slot] = 1;
-        });
-        if (referenceTokenBudget > 0) loaderInputs.max_total_tokens = Math.round(referenceTokenBudget);
-        graph.h3_refmod_loader = {
-            class_type: h3ReferencePipeline.REF_LOADER_NODE,
-            inputs: loaderInputs,
-        };
-        graph.h3_refmod_apply = {
-            class_type: h3ReferencePipeline.REF_APPLY_NODE,
-            inputs: {
-                conditioning: ['condition', 0],
-                mods: ['h3_refmod_loader', 0],
-                override: false,
-                retention: 1,
-                curve_direction: 'constant',
-                scramble_seed: -1,
-                curve_shape: 'linear',
-                curve_value: 1,
-                max_total_tokens: Math.round(referenceTokenBudget || 0),
-            },
-        };
-        conditioningNode = 'h3_refmod_apply';
-    }
+        let condNode = baseKey;
+        if (refMods.length) {
+            const loaderKey = 'h3_refmod_loader' + suffix;
+            const applyKey = 'h3_refmod_apply' + suffix;
+            const loaderInputs = { show_info: false };
+            for (let slot = 1; slot <= 8; slot += 1) {
+                loaderInputs['mod_' + slot] = '(none)';
+                loaderInputs['strength_' + slot] = 1;
+                loaderInputs['copies_' + slot] = 1;
+            }
+            refMods.forEach((ref, index) => {
+                const slot = index + 1;
+                loaderInputs['mod_' + slot] = String(ref.artifactName);
+                loaderInputs['strength_' + slot] = Math.max(0, Math.min(1, Number(ref.strength) || 0));
+                loaderInputs['copies_' + slot] = 1;
+            });
+            if (referenceTokenBudget > 0) loaderInputs.max_total_tokens = Math.round(referenceTokenBudget);
+            graph[loaderKey] = {
+                class_type: h3ReferencePipeline.REF_LOADER_NODE,
+                inputs: loaderInputs,
+            };
+            graph[applyKey] = {
+                class_type: h3ReferencePipeline.REF_APPLY_NODE,
+                inputs: {
+                    conditioning: [baseKey, 0],
+                    mods: [loaderKey, 0],
+                    override: false,
+                    retention: 1,
+                    curve_direction: 'constant',
+                    scramble_seed: -1,
+                    curve_shape: 'linear',
+                    curve_value: 1,
+                    max_total_tokens: Math.round(referenceTokenBudget || 0),
+                },
+            };
+            condNode = applyKey;
+        }
+        return { condition: baseKey, conditioning: condNode };
+    };
+
+    const lowConditioning = buildH3Conditioning('', lowW, lowH);
+    const conditioningNode = lowConditioning.conditioning;
 
     // Base sampling: the scheduler runs the user step count (Turbo overrides it
     // with its own step count), and the guider is unguided unless the user
@@ -3247,14 +3656,101 @@ function buildH3Graph(opts) {
         },
     };
 
+    // Optional three-stage latent-upscale pipeline. The low-res sample is
+    // separated into its 24-channel video latent + audio latent, the learned
+    // 3D H3 upscaler resizes the video latent to the target grid, then the AV
+    // latent is re-concatenated and refined at target resolution with the same
+    // sampler/scheduler/CFG/optimization stack. `refinementStrength` maps to
+    // BasicScheduler's `denoise` on the refinement pass (the fraction of the
+    // schedule actually run) — the standard partial-denoise (hires-fix) mechanism.
+    let finalLatentSource = 'sample';
+    if (upscale) {
+        const names = upscale.inputNames || {};
+        graph.ltxv_separate = {
+            class_type: H3_LATENT_UPSCALE_SEPARATE_NODE,
+            inputs: { av_latent: ['sample', 0] },
+        };
+        graph.h3_latent_upscale = {
+            class_type: H3_LATENT_UPSCALE_NODE,
+            inputs: {
+                latent: ['ltxv_separate', 0],
+                [names.modelName || 'model_name']: upscale.modelName,
+                [names.mode || 'mode']: 'target dimensions',
+                [names.width || 'mode.width']: upscale.targetWidth,
+                [names.height || 'mode.height']: upscale.targetHeight,
+                [names.align || 'align']: H3_LATENT_UPSCALE_ALIGN,
+                [names.temporalChunking || 'enable_temporal_chunking']: upscale.temporalChunking !== false,
+                [names.forceUnload || 'force_unload']: upscale.forceUnload !== false,
+                [names.device || 'device']: upscale.device || 'cuda',
+                [names.precision || 'precision']: upscale.precision,
+            },
+        };
+        graph.ltxv_concat = {
+            class_type: H3_LATENT_UPSCALE_CONCAT_NODE,
+            inputs: {
+                video_latent: ['h3_latent_upscale', 0],
+                audio_latent: ['ltxv_separate', 1],
+            },
+        };
+
+        const refineConditioning = buildH3Conditioning('_refine', W, H);
+        graph.noise_refine = {
+            class_type: 'RandomNoise',
+            inputs: { noise_seed: (seed + 1) >>> 0 },
+        };
+        graph.scheduler_refine = {
+            class_type: 'BasicScheduler',
+            inputs: {
+                model: [schedulerModelNode, 0],
+                scheduler: turbo.enabled ? H3_TURBO_SCHEDULER : 'simple',
+                steps: turbo.enabled ? turbo.steps : baseSteps,
+                denoise: upscale.strength,
+            },
+        };
+        if (h3Cfg === 1) {
+            graph.guider_refine = {
+                class_type: 'BasicGuider',
+                inputs: {
+                    model: [patchedModelNode, 0],
+                    conditioning: [refineConditioning.conditioning, 0],
+                },
+            };
+        } else {
+            graph.negative_refine = {
+                class_type: 'ConditioningZeroOut',
+                inputs: { conditioning: [refineConditioning.conditioning, 0] },
+            };
+            graph.guider_refine = {
+                class_type: 'CFGGuider',
+                inputs: {
+                    model: [patchedModelNode, 0],
+                    positive: [refineConditioning.conditioning, 0],
+                    negative: ['negative_refine', 0],
+                    cfg: h3Cfg,
+                },
+            };
+        }
+        graph.sample_refine = {
+            class_type: 'SamplerCustomAdvanced',
+            inputs: {
+                noise: ['noise_refine', 0],
+                guider: ['guider_refine', 0],
+                sampler: ['sampler_select', 0],
+                sigmas: ['scheduler_refine', 0],
+                latent_image: ['ltxv_concat', 0],
+            },
+        };
+        finalLatentSource = 'sample_refine';
+    }
+
     graph.decode = {
         class_type: 'VAEDecode',
-        inputs: { samples: ['sample', 0], vae: ['video_vae', 0] },
+        inputs: { samples: [finalLatentSource, 0], vae: ['video_vae', 0] },
     };
 
     graph.decode_audio = {
         class_type: 'VAEDecodeAudio',
-        inputs: { samples: ['sample', 0], vae: ['audio_vae', 0] },
+        inputs: { samples: [finalLatentSource, 0], vae: ['audio_vae', 0] },
     };
 
     graph.video = {
@@ -3348,6 +3844,57 @@ async function validateH3Graph(info, graph) {
             );
             error.code = 'h3_fbcache_cache_conflict';
             error.conflictNodes = conflicts;
+            throw error;
+        }
+    }
+
+    // H3 latent-upscale structural checks (only meaningful when the three-stage
+    // pipeline is in the graph).
+    const latentUpscaleEntries = graphEntries.filter(([, node]) => node.class_type === H3_LATENT_UPSCALE_NODE);
+    if (latentUpscaleEntries.length) {
+        if (!info || !info[H3_LATENT_UPSCALE_NODE]) {
+            const error = new Error(H3_LATENT_UPSCALE_NODE_MISSING_MESSAGE);
+            error.code = 'h3_latent_upscale_node_missing';
+            error.missingNodes = [H3_LATENT_UPSCALE_NODE];
+            error.installUrl = H3_LATENT_UPSCALE_REPO;
+            throw error;
+        }
+        const missingLatentNodes = [H3_LATENT_UPSCALE_SEPARATE_NODE, H3_LATENT_UPSCALE_CONCAT_NODE]
+            .filter((name) => !info || !info[name]);
+        if (missingLatentNodes.length) {
+            const error = new Error(
+                'H3 Latent Upscale needs the ComfyUI AV latent split/merge nodes (' +
+                missingLatentNodes.join(', ') + '). Update ComfyUI, then try again.'
+            );
+            error.code = 'h3_latent_upscale_node_missing';
+            error.missingNodes = missingLatentNodes;
+            throw error;
+        }
+        const upscaleNode = latentUpscaleEntries[0][1];
+        const latentInput = upscaleNode.inputs && upscaleNode.inputs.latent;
+        if (!Array.isArray(latentInput) || latentInput[0] !== 'ltxv_separate' || latentInput[1] !== 0) {
+            const error = new Error('The H3 latent upscaler is not wired to the separated video latent.');
+            error.code = 'h3_latent_upscale_graph_invalid';
+            throw error;
+        }
+        const concat = graph.ltxv_concat;
+        if (!concat ||
+            !Array.isArray(concat.inputs.video_latent) || concat.inputs.video_latent[0] !== 'h3_latent_upscale' ||
+            !Array.isArray(concat.inputs.audio_latent) || concat.inputs.audio_latent[0] !== 'ltxv_separate') {
+            const error = new Error('The H3 latent-upscale AV re-concatenation is incomplete.');
+            error.code = 'h3_latent_upscale_graph_invalid';
+            throw error;
+        }
+        if (!graph.sample_refine ||
+            !Array.isArray(graph.sample_refine.inputs.latent_image) ||
+            graph.sample_refine.inputs.latent_image[0] !== 'ltxv_concat') {
+            const error = new Error('The H3 high-resolution refinement pass is missing or unwired.');
+            error.code = 'h3_latent_upscale_graph_invalid';
+            throw error;
+        }
+        if (!graph.scheduler_refine || !graph.guider_refine) {
+            const error = new Error('The H3 refinement sampler/scheduler is missing.');
+            error.code = 'h3_latent_upscale_graph_invalid';
             throw error;
         }
     }
@@ -3983,7 +4530,11 @@ async function generateVideo(prompt, options = {}) {
             : h3DurationSeconds(settings.h3Duration);
         const frames = h3FramesForSeconds(duration);
 
-        const { W, H } = h3DimensionsForAspectRatio(settings.videoAspectRatio, settings.h3Size);
+        // An explicit requested size wins over the aspect/size tiers (e.g.
+        // options.width/height or "768x1152" in the prompt). Otherwise the
+        // configured aspect ratio + size tier derive it.
+        const requestedDims = parseRequestedVideoResolution(options.width, options.height, prompt);
+        const { W, H } = requestedDims || h3DimensionsForAspectRatio(settings.videoAspectRatio, settings.h3Size);
         console.log('[video] output aspect ratio:', settings.videoAspectRatio, '-> video dimensions:', W + 'x' + H);
 
         // Prepend trigger words from active LoRAs to the prompt. For I2VA keep
@@ -4068,6 +4619,42 @@ async function generateVideo(prompt, options = {}) {
             if (normalizeH3AttentionBackend(settings.attentionBackend) === 'auto') {
                 console.log('[video-generator] auto attention ->', resolvedSettings.attentionBackend);
             }
+            // Latent-upscale + refinement: resolve the strategy from the
+            // requested target size and ComfyUI availability. `auto` silently
+            // falls back to direct generation when the upscaler is missing;
+            // an explicit scale fails clearly. The first pass then generates at
+            // the low-resolution source and the refinement pass runs at W x H.
+            const latentUpscaleAvailability = resolveH3LatentUpscaleAvailability(info, resolvedSettings);
+            const upscaleStrategy = selectH3UpscaleStrategy({
+                mode: resolvedSettings.h3LatentUpscale,
+                targetWidth: W,
+                targetHeight: H,
+                available: latentUpscaleAvailability.ready
+            });
+            let latentUpscalePlan = null;
+            if (upscaleStrategy.use) {
+                if (latentUpscaleAvailability.explicit && !latentUpscaleAvailability.ready) {
+                    assertH3LatentUpscaleReady(info, resolvedSettings);
+                }
+                latentUpscalePlan = buildH3LatentUpscalePlan({
+                    targetWidth: W,
+                    targetHeight: H,
+                    scale: upscaleStrategy.scale,
+                    settings: resolvedSettings,
+                    info
+                });
+                console.log('[video-generator] H3 latent upscale: ' +
+                    latentUpscalePlan.sourceWidth + 'x' + latentUpscalePlan.sourceHeight + ' -> ' +
+                    latentUpscalePlan.targetWidth + 'x' + latentUpscalePlan.targetHeight +
+                    ' (x' + latentUpscalePlan.scale + ', refine ' + latentUpscalePlan.strength +
+                    ', ' + upscaleStrategy.reason + ')');
+            } else if (resolvedSettings.h3LatentUpscale !== 'off') {
+                console.log('[video-generator] H3 latent upscale skipped:', upscaleStrategy.reason,
+                    '(direct generation at ' + W + 'x' + H + ')');
+            }
+            if (latentUpscalePlan && typeof options.onProgress === 'function') {
+                try { options.onProgress('latent-upscale-begin'); } catch { /* progress is best-effort */ }
+            }
             // Turbo is never silently skipped: a missing node pack or LoRA fails
             // the render with instructions, so the enabled setting is truthful.
             if (normalizeH3Turbo(resolvedSettings).enabled) {
@@ -4101,9 +4688,20 @@ async function generateVideo(prompt, options = {}) {
                 // Match the installed node's exact input names so required-input
                 // validation passes even if the node pack renames a field.
                 firstBlockCacheInputs: resolveFirstBlockCacheInputNames(info),
+                latentUpscale: latentUpscalePlan,
             });
 
             await validateH3Graph(info, graph);
+
+            // Reclaim ComfyUI's transient tensors before the refinement pass.
+            // Best-effort: never fail the render over a cache flush, and never
+            // restart or kill ComfyUI.
+            if (latentUpscalePlan && typeof comfyui.softFreeMemory === 'function') {
+                await comfyui.softFreeMemory().catch(() => {});
+            }
+            if (latentUpscalePlan && typeof options.onProgress === 'function') {
+                try { options.onProgress('latent-upscale-refine'); } catch { /* best-effort */ }
+            }
 
             const pid = await comfyui.queuePrompt(graph);
             const graphUnet = graph.model && graph.model.inputs && graph.model.inputs.unet_name;
@@ -4160,6 +4758,10 @@ async function generateVideo(prompt, options = {}) {
                     mode,
                     source: options.sourceImageRawFilename || null,
                     refs: useRefs ? refImageNames.length : 0,
+                    resolution: {
+                        width: latentUpscalePlan ? latentUpscalePlan.targetWidth : W,
+                        height: latentUpscalePlan ? latentUpscalePlan.targetHeight : H
+                    },
                     references: preparedReferences.references.map((ref) => ({
                         id: ref.id,
                         type: ref.type,
@@ -4174,6 +4776,33 @@ async function generateVideo(prompt, options = {}) {
                     referenceTokens: preparedReferences.tokenCount,
                     referenceTokenBudget: preparedReferences.tokenBudget,
                     acceleration,
+                    // Which pipeline produced this clip + the latent-upscale
+                    // parameters, for debugging and benchmarking.
+                    videoPipeline: 'minimax-h3',
+                    latentUpscale: latentUpscalePlan ? {
+                        enabled: true,
+                        upscaleFactor: latentUpscalePlan.scale,
+                        sourceResolution: {
+                            width: latentUpscalePlan.sourceWidth,
+                            height: latentUpscalePlan.sourceHeight
+                        },
+                        targetResolution: {
+                            width: latentUpscalePlan.targetWidth,
+                            height: latentUpscalePlan.targetHeight
+                        },
+                        refinementStrength: latentUpscalePlan.strength,
+                        model: latentUpscalePlan.modelName,
+                        precision: latentUpscalePlan.precision,
+                        temporalChunking: latentUpscalePlan.temporalChunking !== false,
+                        strategy: upscaleStrategy.reason
+                    } : {
+                        enabled: false,
+                        upscaleFactor: 1,
+                        sourceResolution: { width: W, height: H },
+                        targetResolution: { width: W, height: H },
+                        refinementStrength: 0,
+                        strategy: upscaleStrategy.reason
+                    },
                     ...(turboState.enabled ? {
                         turbo: { lora: turboState.loraName, strength: H3_TURBO_STRENGTH, steps: turboState.steps, scheduler: H3_TURBO_SCHEDULER }
                     } : {})
@@ -4185,8 +4814,8 @@ async function generateVideo(prompt, options = {}) {
             const refinedResult = await maybeFaceRefine({
                 url: meta.file,
                 filename: basename,
-                width: W,
-                height: H,
+                width: latentUpscalePlan ? latentUpscalePlan.targetWidth : W,
+                height: latentUpscalePlan ? latentUpscalePlan.targetHeight : H,
                 duration: h3EffectiveDurationSeconds(duration),
                 frames,
                 fps: H3_FPS,
@@ -4195,6 +4824,7 @@ async function generateVideo(prompt, options = {}) {
                 references: meta.video.references,
                 generationMs: meta.generationMs,
                 acceleration,
+                latentUpscale: latentUpscalePlan,
                 meta,
                 refined: false
             }, Object.assign({}, options, { signal }));
@@ -4245,6 +4875,7 @@ async function maybeFaceRefine(baseResult, opts = {}) {
             generationMs: refined.generationMs || (baseResult.generationMs || 0),
             acceleration: baseResult.acceleration || null,
             references: baseResult.references || [],
+            latentUpscale: baseResult.latentUpscale || null,
             meta: refined.meta,
             refined: true
         };
@@ -4876,6 +5507,38 @@ module.exports = {
     modifyH3VideoPrompt,
     buildH3Graph,
     validateH3Graph,
+    H3_LATENT_UPSCALE_NODE,
+    H3_LATENT_UPSCALE_SEPARATE_NODE,
+    H3_LATENT_UPSCALE_CONCAT_NODE,
+    H3_LATENT_UPSCALE_REPO,
+    H3_LATENT_UPSCALE_DIR,
+    H3_LATENT_UPSCALE_MODEL_DIR,
+    H3_LATENT_UPSCALE_MODEL_REPO,
+    H3_LATENT_UPSCALE_DEFAULT_MODEL,
+    H3_LATENT_UPSCALE_MODEL_APPROX_MB,
+    H3_LATENT_UPSCALE_MODES,
+    H3_LATENT_UPSCALE_SCALES,
+    H3_LATENT_UPSCALE_PRECISIONS,
+    H3_LATENT_UPSCALE_DEFAULT_PRECISION,
+    H3_LATENT_UPSCALE_DEFAULT_STRENGTH,
+    H3_LATENT_UPSCALE_STRENGTH_MIN,
+    H3_LATENT_UPSCALE_STRENGTH_MAX,
+    H3_LATENT_UPSCALE_ALIGN,
+    normalizeH3LatentUpscale,
+    normalizeH3LatentUpscaleStrength,
+    normalizeH3LatentUpscalePrecision,
+    h3LatentUpscaleEnabled,
+    h3LatentUpscaleScale,
+    calculateH3LatentUpscaleResolution,
+    selectH3UpscaleStrategy,
+    buildH3LatentUpscalePlan,
+    resolveH3LatentUpscaleInputNames,
+    resolveH3LatentUpscaleModel,
+    resolveH3LatentUpscaleAvailability,
+    assertH3LatentUpscaleReady,
+    latentUpscaleModelChoices,
+    h3ExplicitDimensions,
+    parseRequestedVideoResolution,
     buildFaceRefineGraph,
     faceRefineAvailability,
     resolveFaceRefineDetector,

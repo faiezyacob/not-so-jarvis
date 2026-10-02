@@ -1692,6 +1692,7 @@ function syncVideoFbcVisibility() {
 
 let faceRefinePollTimer = null;
 let fbcInstallPollTimer = null;
+let latentUpscalePollTimer = null;
 
 function faceRefineStatusEl() {
     return document.getElementById('videoFaceRefineStatus');
@@ -1868,6 +1869,131 @@ async function refreshFbcInstallStatus() {
     }
 }
 
+// --- MiniMax H3 Latent Upscale: ComfyUI-side install / check ---
+
+function latentUpscaleStatusEl() {
+    return document.getElementById('videoLatentUpscaleStatus');
+}
+
+function latentUpscaleLogEl() {
+    return document.getElementById('videoLatentUpscaleLog');
+}
+
+function setLatentUpscaleStatus(text, isError) {
+    const el = latentUpscaleStatusEl();
+    if (!el) return;
+    el.textContent = text || '';
+    el.classList.toggle('settings-save-status--error', !!isError);
+}
+
+function setLatentUpscaleInstallStatus(text, isError) {
+    const el = document.getElementById('videoLatentUpscaleInstallStatus');
+    if (!el) return;
+    el.textContent = text || '';
+    el.classList.toggle('settings-save-status--error', !!isError);
+}
+
+function syncLatentUpscaleVisibility() {
+    const sel = document.getElementById('videoLatentUpscale');
+    const mode = sel ? sel.value : 'auto';
+    const options = document.getElementById('videoLatentUpscaleOptions');
+    if (options) options.hidden = (mode === 'off');
+    syncLatentUpscaleSizeWarning();
+}
+
+// Warn when latent upscale is on and the output size is L (1.75MP): the
+// refinement pass runs at that large target resolution, so the whole render
+// takes noticeably longer than direct H3 or a smaller size.
+function syncLatentUpscaleSizeWarning() {
+    const warning = document.getElementById('videoLatentUpscaleSizeWarning');
+    if (!warning) return;
+    const modeSel = document.getElementById('videoLatentUpscale');
+    const sizeSel = document.getElementById('videoSizeScale');
+    const mode = modeSel ? modeSel.value : 'off';
+    const size = sizeSel ? String(sizeSel.value).trim().toUpperCase() : '';
+    const show = mode !== 'off' && size === 'L';
+    warning.hidden = !show;
+    warning.textContent = show
+        ? 'Heads-up: H3 Latent Upscale is on and the video size is L (1.75MP). The high-resolution refinement runs at that full target size, so the render will take noticeably longer (and use more VRAM). Turn off H3 Latent Upscale, or reduce the video size to M/S, for a faster render.'
+        : '';
+}
+
+function renderLatentUpscaleStatus(data) {
+    if (!data) {
+        setLatentUpscaleInstallStatus('Could not check H3 Latent Upscale status.', true);
+        return;
+    }
+    const logEl = latentUpscaleLogEl();
+    const job = data.job || {};
+    if (Array.isArray(job.log) && job.log.length && logEl) {
+        logEl.hidden = false;
+        logEl.textContent = job.log.slice(-12).join('\n');
+        logEl.scrollTop = logEl.scrollHeight;
+    } else if (logEl && !job.running) {
+        logEl.hidden = true;
+    }
+    if (job.running) {
+        setLatentUpscaleInstallStatus('Installing H3 Latent Upscaler... (restart ComfyUI when done)');
+        scheduleLatentUpscalePoll();
+        return;
+    }
+    if (job.done && !job.ok && job.error) {
+        setLatentUpscaleInstallStatus('Install failed: ' + job.error, true);
+        return;
+    }
+    if (!data.comfyAvailable) {
+        setLatentUpscaleInstallStatus('ComfyUI unreachable — status unknown.', true);
+        return;
+    }
+    if (data.ready) {
+        setLatentUpscaleInstallStatus('Ready in ComfyUI (node + checkpoint installed).', false);
+        return;
+    }
+    const parts = [];
+    if (!data.nodePresent) parts.push('node pack');
+    else if (!data.splitNodePresent || !data.concatNodePresent) parts.push('AV split/merge nodes (update ComfyUI)');
+    if (!data.modelPresent) parts.push('checkpoint (~' + (data.modelApproxMB || 691) + ' MB in models/' + (data.modelDir || 'latent_upscale_models') + ')');
+    if (data.restartRequired) {
+        setLatentUpscaleInstallStatus(
+            'Node installed — restart ComfyUI to load it' +
+            (data.modelPresent ? '.' : ', and install the missing checkpoint.'),
+            true
+        );
+        return;
+    }
+    setLatentUpscaleInstallStatus(
+        parts.length
+            ? 'Missing: ' + parts.join('; ') + ' — press Install / check (downloads node + checkpoint).'
+            : 'Not installed. Press Install / check.',
+        true
+    );
+}
+
+function scheduleLatentUpscalePoll() {
+    if (latentUpscalePollTimer) return;
+    latentUpscalePollTimer = setTimeout(async () => {
+        latentUpscalePollTimer = null;
+        try {
+            const res = await fetch('/api/video/latent-upscale/status');
+            const data = await res.json().catch(() => null);
+            renderLatentUpscaleStatus(data);
+            if (data && data.job && data.job.running) scheduleLatentUpscalePoll();
+        } catch {
+            setLatentUpscaleInstallStatus('Could not check H3 Latent Upscale status.', true);
+        }
+    }, 2500);
+}
+
+async function refreshLatentUpscaleStatus() {
+    try {
+        const res = await fetch('/api/video/latent-upscale/status');
+        const data = await res.json().catch(() => null);
+        renderLatentUpscaleStatus(data);
+    } catch {
+        setLatentUpscaleInstallStatus('Could not check H3 Latent Upscale status.', true);
+    }
+}
+
 // --- Video Generation Settings ---
 
 function initVideoSettings() {
@@ -1934,6 +2060,13 @@ function initVideoSettings() {
         if (!select) return;
         select.addEventListener('change', () => persistSelect(key, select));
     });
+
+    // Changing the video size (S/M/L) can turn the L + latent-upscale warning
+    // on or off in the H3 LATENT UPSCALE card.
+    const videoSizeSelect = document.getElementById('videoSizeScale');
+    if (videoSizeSelect) {
+        videoSizeSelect.addEventListener('change', () => syncLatentUpscaleSizeWarning());
+    }
 
     VIDEO_TEXT_FIELDS.forEach(({ key, id }) => {
         const input = document.getElementById(id);
@@ -2172,6 +2305,88 @@ function initVideoSettings() {
         });
     }
 
+    // --- MiniMax H3 Latent Upscale: select + advanced fields + install ---
+    const latentUpscaleSelect = document.getElementById('videoLatentUpscale');
+    const latentUpscaleStrength = document.getElementById('videoLatentUpscaleStrength');
+    const latentUpscalePrecision = document.getElementById('videoLatentUpscalePrecision');
+    const latentUpscaleModel = document.getElementById('videoLatentUpscaleModel');
+    const latentUpscaleChunking = document.getElementById('videoLatentUpscaleTemporalChunking');
+    const latentUpscaleForceUnload = document.getElementById('videoLatentUpscaleForceUnload');
+    const saveLatentUpscale = async (payload) => {
+        setStatus('Saving...');
+        try {
+            const res = await fetch('/api/settings/video', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                setStatus('Save failed: ' + (data.error || 'Unknown error'), true);
+                return;
+            }
+            setStatus('Saved.');
+            if (latentUpscaleSelect && latentUpscaleSelect.value !== 'off') refreshLatentUpscaleStatus();
+        } catch {
+            setStatus('Save failed: connection error', true);
+        }
+        setTimeout(() => setStatus(''), 3000);
+    };
+    if (latentUpscaleSelect) {
+        latentUpscaleSelect.addEventListener('change', () => {
+            syncLatentUpscaleVisibility();
+            saveLatentUpscale({ h3LatentUpscale: latentUpscaleSelect.value });
+        });
+    }
+    if (latentUpscaleStrength) {
+        latentUpscaleStrength.addEventListener('change', () => {
+            const n = Number(latentUpscaleStrength.value);
+            if (Number.isFinite(n)) saveLatentUpscale({ h3LatentUpscaleStrength: n });
+        });
+    }
+    if (latentUpscalePrecision) {
+        latentUpscalePrecision.addEventListener('change', () => {
+            saveLatentUpscale({ h3LatentUpscalePrecision: latentUpscalePrecision.value });
+        });
+    }
+    if (latentUpscaleModel) {
+        latentUpscaleModel.addEventListener('change', () => {
+            saveLatentUpscale({ h3LatentUpscaleModel: latentUpscaleModel.value.trim() });
+        });
+    }
+    if (latentUpscaleChunking) {
+        latentUpscaleChunking.addEventListener('change', () => {
+            saveLatentUpscale({ h3LatentUpscaleTemporalChunking: latentUpscaleChunking.checked });
+        });
+    }
+    if (latentUpscaleForceUnload) {
+        latentUpscaleForceUnload.addEventListener('change', () => {
+            saveLatentUpscale({ h3LatentUpscaleForceUnload: latentUpscaleForceUnload.checked });
+        });
+    }
+    const latentUpscaleInstallBtn = document.getElementById('videoLatentUpscaleInstallBtn');
+    if (latentUpscaleInstallBtn) {
+        latentUpscaleInstallBtn.addEventListener('click', async () => {
+            setLatentUpscaleInstallStatus('Starting H3 Latent Upscaler install...');
+            try {
+                const res = await fetch('/api/video/latent-upscale/install', { method: 'POST' });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    setLatentUpscaleInstallStatus('Install failed: ' + (data.error || 'Unknown error'), true);
+                    return;
+                }
+                if (data.install && data.install.started === false) {
+                    setLatentUpscaleInstallStatus('Install already running — see log below.');
+                } else {
+                    setLatentUpscaleInstallStatus('Installing H3 Latent Upscaler... (restart ComfyUI when done)');
+                }
+                refreshLatentUpscaleStatus();
+            } catch {
+                setLatentUpscaleInstallStatus('Install failed: connection error', true);
+            }
+        });
+    }
+
     const loadSettings = async () => {
         setStatus('');
         loraStatus(loraState, '');
@@ -2281,6 +2496,40 @@ function initVideoSettings() {
             }
             syncVideoFbcVisibility();
             refreshFbcInstallStatus();
+
+            // H3 Latent Upscale: mode select + advanced fields.
+            if (latentUpscaleSelect) {
+                const stored = settings.h3LatentUpscale;
+                const def = defaults.h3LatentUpscale !== undefined && defaults.h3LatentUpscale !== null
+                    ? String(defaults.h3LatentUpscale) : 'auto';
+                const wanted = (stored !== undefined && stored !== null && stored !== '') ? String(stored) : def;
+                const hasOption = Array.from(latentUpscaleSelect.options).some((o) => o.value === wanted);
+                latentUpscaleSelect.value = hasOption ? wanted : 'auto';
+            }
+            const setLatentVal = (el, key) => {
+                if (!el) return;
+                const stored = settings[key];
+                const def = defaults[key];
+                const value = (stored !== undefined && stored !== null && stored !== '')
+                    ? stored : def;
+                if (value === undefined || value === null) return;
+                if (el.type === 'checkbox') {
+                    el.checked = value === true || String(value).toLowerCase() === 'true' || String(value) === '1';
+                } else {
+                    el.value = value;
+                }
+            };
+            setLatentVal(latentUpscaleStrength, 'h3LatentUpscaleStrength');
+            setLatentVal(latentUpscalePrecision, 'h3LatentUpscalePrecision');
+            setLatentVal(latentUpscaleChunking, 'h3LatentUpscaleTemporalChunking');
+            setLatentVal(latentUpscaleForceUnload, 'h3LatentUpscaleForceUnload');
+            if (latentUpscaleModel) {
+                const stored = settings.h3LatentUpscaleModel;
+                latentUpscaleModel.value = (stored !== undefined && stored !== null && stored !== '') ? stored : '';
+                latentUpscaleModel.placeholder = defaults.h3LatentUpscaleModel || 'minimax_h3_latent_upscaler_3d_conv_v1_fp16.safetensors';
+            }
+            syncLatentUpscaleVisibility();
+            refreshLatentUpscaleStatus();
 
             const choices = data.choices || {};
             if (choices.firstBlockCache === false) {

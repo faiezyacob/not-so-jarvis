@@ -15,6 +15,7 @@ const CreatorStudioUI = (() => {
     let generationPending = false;
     let progressPercent = 0;
     let progressConversationId = null;
+    let recentSuggestions = [];
 
     function option(value, label) {
         const node = document.createElement('option');
@@ -56,6 +57,26 @@ const CreatorStudioUI = (() => {
         const scene = (catalogs && Array.isArray(catalogs.scenes) ? catalogs.scenes : [])
             .find((item) => item.id === value) || null;
         return { sceneId: value || '', scene: scene ? scene.name : 'Auto' };
+    }
+
+    // The Outfit selector mirrors the Scene selector: "Auto" lets the Character
+    // wardrobe decide; "Custom outfit…" reveals a free-text field. Any other
+    // selection sends its Outfit Pack id.
+    function syncOutfitCustom() {
+        const select = $('creatorOutfit');
+        const field = $('creatorOutfitCustomField');
+        if (!select || !field) return;
+        field.hidden = select.value !== '__custom__';
+    }
+
+    function outfitPayload() {
+        const select = $('creatorOutfit');
+        const value = select ? String(select.value || '') : '';
+        if (value === '__custom__') {
+            const custom = $('creatorOutfitCustom') ? $('creatorOutfitCustom').value.trim() : '';
+            return { outfitPack: 'custom', outfit: custom || 'Auto', outfitPackCustom: custom };
+        }
+        return { outfitPack: value || '', outfit: 'Auto', outfitPackCustom: '' };
     }
 
     function renderTraits(selected) {
@@ -107,25 +128,69 @@ const CreatorStudioUI = (() => {
         }
     }
 
-    async function loadOptions() {
-        const response = await fetch('/api/creator-studio/options');
-        if (!response.ok) throw new Error('Creator Studio options could not be loaded.');
-        catalogs = await response.json();
-        characters = catalogs.characters || [];
+    // Every catalog-backed control is returned to its initial state here so
+    // "New" and the first open can never drift apart.
+    function applyCatalogDefaults() {
+        if (!catalogs) return;
         fillSelect($('creatorCharacterSelect'), characters, characters[0] && characters[0].id, 'Choose a Character…');
         paintCharacter();
         renderTraits(['playful']);
         fillSelect($('creatorContentType'), catalogs.contentTypes, 'talking');
         fillSelect($('creatorSpeechBehavior'), catalogs.speechBehaviors, 'direct_to_camera');
-        fillSelect($('creatorCamera'), catalogs.cameraPresets, 'front_on_eye_level');
-        fillSelect($('creatorCameraMotion'), catalogs.cameraMotions, 'static');
+        fillSelect($('creatorCamera'), catalogs.cameraPresets, 'phone_selfie');
+        fillSelect($('creatorCameraMotion'), catalogs.cameraMotions, 'subtle_handheld');
         fillSelect($('creatorExpressionArc'), catalogs.expressionArcs, 'auto');
         fillSelect($('creatorBodyAction'), catalogs.bodyActions, 'conversational_gesture');
         fillSelect($('creatorOutfit'), catalogs.outfitPacks, '', 'Auto · Character wardrobe');
+        const outfitSelect = $('creatorOutfit');
+        if (outfitSelect) outfitSelect.appendChild(option('__custom__', 'Custom outfit…'));
         fillSelect($('creatorScene'), catalogs.scenes, '', 'Auto · let the concept decide');
         const sceneSelect = $('creatorScene');
         if (sceneSelect) sceneSelect.appendChild(option('__custom__', 'Custom scene…'));
         syncSceneCustom();
+        syncOutfitCustom();
+    }
+
+    // "New" resets the whole surface: the persisted session (server-side), every
+    // typed value, catalog selections, progress and the session video list.
+    function resetForm() {
+        closeSuggestions();
+        session = null;
+        generationPending = false;
+        progressPercent = 0;
+        progressConversationId = null;
+        recentSuggestions = [];
+        if ($('creatorConcept')) $('creatorConcept').value = '';
+        if ($('creatorOnCameraAction')) $('creatorOnCameraAction').value = '';
+        if ($('creatorSceneCustom')) $('creatorSceneCustom').value = '';
+        if ($('creatorOutfitCustom')) $('creatorOutfitCustom').value = '';
+        if ($('creatorDuration')) $('creatorDuration').value = '15';
+        if ($('creatorEnergy')) $('creatorEnergy').value = 'medium';
+        if ($('creatorPacing')) $('creatorPacing').value = 'natural';
+        if ($('creatorPauses')) $('creatorPauses').value = 'medium';
+        if ($('creatorEyeContact')) $('creatorEyeContact').value = 'natural';
+        if ($('creatorVoiceTone')) $('creatorVoiceTone').value = 'conversational';
+        if ($('creatorVoiceSpeed')) $('creatorVoiceSpeed').value = 'natural';
+        if ($('creatorVoicePitch')) $('creatorVoicePitch').value = 'natural';
+        if ($('creatorVoiceEmotion')) $('creatorVoiceEmotion').value = 'warm';
+        if ($('creatorVoice')) $('creatorVoice').value = '';
+        applyCatalogDefaults();
+        const panel = $('creatorStudioProgress');
+        if (panel) panel.hidden = true;
+        const fill = $('creatorStudioProgressFill');
+        if (fill) fill.style.width = '0%';
+        const bar = $('creatorStudioProgressBar');
+        if (bar) bar.setAttribute('aria-valuenow', '0');
+        setStatus('');
+        renderSession();
+    }
+
+    async function loadOptions() {
+        const response = await fetch('/api/creator-studio/options');
+        if (!response.ok) throw new Error('Creator Studio options could not be loaded.');
+        catalogs = await response.json();
+        characters = catalogs.characters || [];
+        applyCatalogDefaults();
     }
 
     async function refreshSession() {
@@ -148,8 +213,21 @@ const CreatorStudioUI = (() => {
             if (sceneSelect && session.content && session.content.sceneId
                 && Array.from(sceneSelect.options).some((opt) => opt.value === session.content.sceneId)) {
                 sceneSelect.value = session.content.sceneId;
-                syncSceneCustom();
+            } else if (sceneSelect && session.content && session.content.scene
+                && session.content.scene !== 'Auto') {
+                sceneSelect.value = '__custom__';
+                if ($('creatorSceneCustom')) $('creatorSceneCustom').value = session.content.scene;
             }
+            syncSceneCustom();
+            const outfitSelect = $('creatorOutfit');
+            if (outfitSelect && session.content && session.content.outfitPack
+                && Array.from(outfitSelect.options).some((opt) => opt.value === session.content.outfitPack)) {
+                outfitSelect.value = session.content.outfitPack;
+            } else if (outfitSelect && session.content && session.content.outfitPack === 'custom') {
+                outfitSelect.value = '__custom__';
+                if ($('creatorOutfitCustom')) $('creatorOutfitCustom').value = session.content.outfit || '';
+            }
+            syncOutfitCustom();
         }
         renderSession();
         if (session && session.status === 'generating') {
@@ -253,8 +331,7 @@ const CreatorStudioUI = (() => {
             bodyAction: $('creatorBodyAction').value,
             onCameraAction: $('creatorOnCameraAction').value.trim(),
             ...scenePayload(),
-            outfit: 'Auto',
-            outfitPack: $('creatorOutfit').value,
+            ...outfitPayload(),
             voice: {
                 voiceId: $('creatorVoice').value,
                 tone: $('creatorVoiceTone').value,
@@ -276,6 +353,7 @@ const CreatorStudioUI = (() => {
         if (!panel || !button) return;
         panel.hidden = true;
         button.setAttribute('aria-expanded', 'false');
+        recentSuggestions = [];
     }
 
     function renderSuggestions(data) {
@@ -352,12 +430,16 @@ const CreatorStudioUI = (() => {
             const response = await fetch('/api/creator-studio/suggestions', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ conversationId, state: suggestionState() })
+                body: JSON.stringify({ conversationId, state: Object.assign({ exclude: recentSuggestions.slice(-16) }, suggestionState()) })
             });
             const data = await response.json();
             if (!response.ok) throw new Error(data.error || 'Could not generate suggestions.');
             renderSuggestions(data);
             if (!list.childElementCount) throw new Error('No suggestions were returned.');
+            (Array.isArray(data.suggestions) ? data.suggestions : []).forEach((suggestion) => {
+                const text = suggestion && (suggestion.concept || suggestion.text);
+                if (text) recentSuggestions.push(text);
+            });
         } catch (_) {
             list.replaceChildren();
             based.hidden = true;
@@ -482,8 +564,7 @@ const CreatorStudioUI = (() => {
                         emotion: $('creatorVoiceEmotion').value
                     },
                     ...scenePayload(),
-                    outfit: 'Auto',
-                    outfitPack: $('creatorOutfit').value,
+                    ...outfitPayload(),
                     camera: $('creatorCamera').value,
                     cameraMotion: $('creatorCameraMotion').value,
                     expressionArc: $('creatorExpressionArc').value,
@@ -511,6 +592,7 @@ const CreatorStudioUI = (() => {
             paintCharacter();
         });
         if ($('creatorScene')) $('creatorScene').addEventListener('change', syncSceneCustom);
+        if ($('creatorOutfit')) $('creatorOutfit').addEventListener('change', syncOutfitCustom);
         const sheetButton = $('creatorCharacterSheet');
         if (sheetButton) sheetButton.addEventListener('click', () => {
             const characterId = $('creatorCharacterSelect').value;
@@ -538,10 +620,14 @@ const CreatorStudioUI = (() => {
             closeSuggestions();
             $('creatorConcept').focus();
         });
-        $('creatorNewSession').addEventListener('click', () => {
+        $('creatorNewSession').addEventListener('click', async () => {
+            resetForm();
             if (typeof Chat !== 'undefined' && Chat.sendMessage) {
-                Chat.sendMessage({ text: 'Start a new Creator Studio session.', creatorStudioAction: { type: 'new_session' } });
-                setTimeout(() => refreshSession().catch(() => {}), 600);
+                try {
+                    await Chat.sendMessage({ text: 'Start a new Creator Studio session.', creatorStudioAction: { type: 'new_session' } });
+                } catch (_) { /* reset stays applied locally */ }
+                await refreshSession().catch(() => {});
+                if (!session) resetForm();
             }
         });
         $('creatorRegenerateLayers').addEventListener('click', (event) => {

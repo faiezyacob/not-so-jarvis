@@ -813,6 +813,69 @@
                             <span class="settings-hint">Runs automatically after each video using the shared UPSCALE settings (engine, resolution, profile). Best-effort — a failed upscale keeps the base video.</span>
                         </div>
                         </div>
+                        <div class="settings-card" data-search="video latent upscale minimax h3 refinement high resolution hires three stage acceleration speed latent_upscale_models">
+                            <div class="settings-card-title">H3 LATENT UPSCALE</div>
+                            <div class="settings-card-sub">Generate at lower resolution, upscale the H3 latent, then refine at the target resolution. Faster than generating the full-resolution video directly, while retaining H3's temporal information. This saves time, not VRAM — the refinement still runs at the target resolution.</div>
+                        <div class="settings-field">
+                            <label class="settings-field-label" for="videoLatentUpscale">H3 Latent Upscale</label>
+                            <select class="settings-select" id="videoLatentUpscale">
+                                <option value="auto" selected>Auto</option>
+                                <option value="off">Off</option>
+                                <option value="1.5">1.5×</option>
+                                <option value="2">2×</option>
+                                <option value="2.5">2.5×</option>
+                                <option value="3">3×</option>
+                                <option value="4">4×</option>
+                            </select>
+                            <span class="settings-hint">Auto picks a scale from the requested output size — direct generation for small clips, 1.5×–3× for larger ones — and falls back to direct H3 when the upscaler is not installed. An explicit scale fails clearly if the model is missing. Off always generates directly at native resolution.</span>
+                            <span class="settings-hint">Requires the H3 Latent Upscaler ComfyUI node + a ~691 MB checkpoint. Press “Install / check” to install both (restart ComfyUI when done).</span>
+                            <span class="settings-warning" id="videoLatentUpscaleSizeWarning" hidden></span>
+                            <span class="settings-save-status" id="videoLatentUpscaleStatus"></span>
+                        </div>
+                            <div id="videoLatentUpscaleOptions" hidden>
+                        <div class="settings-field">
+                            <label class="settings-field-label" for="videoLatentUpscaleStrength">Upscale refinement strength</label>
+                            <input type="number" class="settings-input" id="videoLatentUpscaleStrength" min="0.1" max="0.8" step="0.05">
+                            <span class="settings-hint">Controls how aggressively the high-resolution refinement modifies the upscaled latent (0.1–0.8). It maps to the refinement pass's denoise (the fraction of the sampling schedule actually run). Default 0.35.</span>
+                        </div>
+                        <div class="settings-field-row">
+                        <div class="settings-field">
+                            <label class="settings-field-label" for="videoLatentUpscalePrecision">Precision</label>
+                            <select class="settings-select" id="videoLatentUpscalePrecision">
+                                <option value="fp16">fp16 (recommended)</option>
+                                <option value="bf16">bf16</option>
+                                <option value="fp32">fp32</option>
+                            </select>
+                        </div>
+                        <div class="settings-field">
+                            <label class="settings-field-label" for="videoLatentUpscaleModel">Model</label>
+                            <input type="text" class="settings-input" id="videoLatentUpscaleModel"
+                                placeholder="minimax_h3_latent_upscaler_3d_conv_v1_fp16.safetensors" autocomplete="off">
+                        </div>
+                        </div>
+                        <div class="settings-field">
+                            <label class="settings-toggle">
+                                <span class="settings-toggle-label">Temporal chunking</span>
+                                <input type="checkbox" id="videoLatentUpscaleTemporalChunking">
+                            </label>
+                            <span class="settings-hint">Split long videos into temporal chunks to cap VRAM. Leave on unless the clip is short.</span>
+                        </div>
+                        <div class="settings-field">
+                            <label class="settings-toggle">
+                                <span class="settings-toggle-label">Unload upscaler after use</span>
+                                <input type="checkbox" id="videoLatentUpscaleForceUnload">
+                            </label>
+                            <span class="settings-hint">Offload the upscaler model to CPU after inference to free VRAM for the refinement pass.</span>
+                        </div>
+                            </div>
+                        <div class="settings-field">
+                            <button class="settings-browse-btn" id="videoLatentUpscaleInstallBtn" type="button">Install / check H3 Latent Upscaler (node + model)</button>
+                            <span class="settings-save-status" id="videoLatentUpscaleInstallStatus"></span>
+                        </div>
+                        <div class="settings-field">
+                            <pre class="settings-log" id="videoLatentUpscaleLog" hidden></pre>
+                        </div>
+                        </div>
                         <div class="settings-card" data-search="video lora stack trigger word strength">
                             <div class="settings-card-title">LORA STACK</div>
                             <div class="settings-card-sub">Attach LoRAs to every video generation. Stacked in order (model-only), each with its own strength.</div>
@@ -1021,6 +1084,7 @@
                         <label class="creator-studio-field"><span>Outfit</span><select id="creatorOutfit"></select></label>
                     </div>
                     <label class="creator-studio-field" id="creatorSceneCustomField" hidden><span>Custom scene</span><input id="creatorSceneCustom" type="text" maxlength="200" placeholder="e.g. a sunlit loft with plants"></label>
+                    <label class="creator-studio-field" id="creatorOutfitCustomField" hidden><span>Custom outfit</span><input id="creatorOutfitCustom" type="text" maxlength="200" placeholder="e.g. a cream knit sweater with wide-leg jeans"></label>
 
                     <details class="creator-studio-advanced">
                         <summary>Advanced performance</summary>

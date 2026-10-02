@@ -151,6 +151,21 @@ const KNOWN_FILES = {
         repo: 'FacehugmanIII/4x_foolhardy_Remacri',
         hfPath: '4x_foolhardy_Remacri.pth',
         approxMB: 67
+    },
+    'minimax_h3_latent_upscaler_3d_conv_v1_fp16.safetensors': {
+        repo: 'LBH-123-AI/Minimax_h3_latent_Upscaler',
+        hfPath: 'minimax_h3_latent_upscaler_3d_conv_v1/minimax_h3_latent_upscaler_3d_conv_v1_fp16.safetensors',
+        approxMB: 691
+    },
+    'minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors': {
+        repo: 'LBH-123-AI/Minimax_h3_latent_Upscaler',
+        hfPath: 'minimax_h3_latent_upscaler_3d_conv_v1/minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors',
+        approxMB: 691
+    },
+    'minimax_h3_latent_upscaler_3d_conv_v1_fp32.pth': {
+        repo: 'LBH-123-AI/Minimax_h3_latent_Upscaler',
+        hfPath: 'minimax_h3_latent_upscaler_3d_conv_v1/minimax_h3_latent_upscaler_3d_conv_v1_fp32.pth',
+        approxMB: 1380
     }
 };
 
@@ -182,6 +197,7 @@ const MODEL_CATALOG = [
     { id: 'h3_video_vae', group: 'video', label: 'H3 video VAE', required: true, dest: 'vae', file: { settings: 'video', key: 'h3VideoVae' }, minBytes: 100 * 1024 ** 2 },
     { id: 'h3_audio_vae', group: 'video', label: 'H3 audio VAE', required: true, dest: 'vae', file: { settings: 'video', key: 'h3AudioVae' }, minBytes: 10 * 1024 ** 2 },
     { id: 'h3_turbo_lora', group: 'video', label: 'MiniMax H3 Turbo LoRA (v4 step600 EMA)', required: false, dest: 'loras', file: { settings: 'video', key: 'h3TurboLora' }, minBytes: 100 * 1024 ** 2, note: 'Needed only when MiniMax H3 Turbo is enabled in Settings > Video.' },
+    { id: 'h3_latent_upscaler', group: 'video', label: 'MiniMax H3 Latent Upscaler 3D (fp16)', required: false, dest: 'latent_upscale_models', file: { settings: 'video', key: 'h3LatentUpscaleModel' }, minBytes: 100 * 1024 ** 2, note: 'Needed only when H3 Latent Upscale is enabled in Settings > Video. A ~691 MB learned 24-channel H3 latent upscaler (fp16/bf16; fp32 is ~1.4 GB). Optional: Auto mode falls back to direct generation when it is missing.' },
     { id: 'seedvr2_dit', group: 'upscale', label: 'SeedVR2 DiT 7B (balanced)', required: true, dest: 'seedvr2', also: ['SEEDVR2'], seen: 'seedvr2dit', file: { settings: 'image', key: 'seedvr2Dit' }, minBytes: 2 * 1024 ** 3 },
     { id: 'seedvr2_dit_sharp', group: 'upscale', label: 'SeedVR2 DiT 7B (sharp profile)', required: false, dest: 'seedvr2', also: ['SEEDVR2'], seen: 'seedvr2dit', file: 'seedvr2_ema_7b_sharp_fp8_e4m3fn_mixed_block35_fp16.safetensors', minBytes: 2 * 1024 ** 3, note: 'Same profile the sharp upscale uses. The SeedVR2 nodes auto-download it on first use; no token needed.' },
     { id: 'seedvr2_vae', group: 'upscale', label: 'SeedVR2 VAE', required: true, dest: 'seedvr2', also: ['SEEDVR2', 'vae'], seen: 'seedvr2vae', file: { settings: 'image', key: 'seedvr2Vae' }, minBytes: 10 * 1024 ** 2 },
@@ -243,6 +259,13 @@ const NODE_CATALOG = [
         repo: 'https://github.com/Luisacaotica/ComfyUI-MiniMaxH3Mod',
         dir: 'ComfyUI-MiniMaxH3Mod', recursive: false, requirements: true,
         note: 'Enables cached Full/Compressed visual references for @Character, products and other assets in video generation, UGC Studio and Creator Studio. Install this pack, then restart ComfyUI. Ordinary text-only video does not need it.'
+    },
+    {
+        id: 'h3_latent_upscaler', label: 'MiniMax H3 Latent Upscaler', required: false,
+        nodes: ['MinimaxH3LatentUpscaler3D'],
+        repo: 'https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler',
+        dir: 'Comfyui_Minimax_h3_latent_Upscaler', recursive: false,
+        note: 'Learned 24-channel H3 latent upscaler for the low-res -> latent upscale -> high-res refinement pipeline (Settings > Video > H3 LATENT UPSCALE). Install this pack, download the checkpoint into ComfyUI/models/latent_upscale_models/, then restart ComfyUI. Ordinary video does not need it.'
     }
 ];
 

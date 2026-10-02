@@ -149,6 +149,25 @@ test('Creator Studio resolves a shared Scene into its shot environment', () => {
     );
     assert.equal(content.sceneId, 'cafe');
     assert.equal(content.scene, 'a warm neighbourhood caf\u00e9');
+    // The shared Scene also drives a natural, location-appropriate posture.
+    const pose = creatorStudio.poseForLocation(content.scene);
+    assert.equal(pose.id, 'cafe');
+    assert.equal(pose.stance, 'sitting');
+});
+
+test('a shared Scene with a generic summary still resolves a location posture via its tags', async () => {
+    const character = {
+        id: 'char_pose_test',
+        name: 'Nora',
+        identity: { identityText: 'a woman with short dark hair', age: 29 },
+        identityText: 'a woman with short dark hair'
+    };
+    const content = await creatorStudio.buildCreatorContent(
+        { sceneId: 'outdoor-lifestyle', concept: 'a quick update', contentType: 'talking' },
+        character
+    );
+    assert.equal(content.poseId, 'park');
+    assert.equal(content.creatorDialogue.shot.pose, content.pose);
 });
 
 test('Creator Studio keeps free-text scenes when no shared Scene is selected', () => {

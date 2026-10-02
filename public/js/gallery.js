@@ -1366,6 +1366,19 @@
         return minutes + 'm ' + seconds + 's';
     }
 
+    // Total elapsed generation time for an entry. When the entry is part of an
+    // upscale pair, the two history rows each hold only part of the work — the
+    // base render and the upscale pass — so sum them; showing the upscaled
+    // child's own time alone makes a long render look fast.
+    function totalGenerationMs(img, compare) {
+        const own = Number(img && img.generationMs) || 0;
+        const partner = compare
+            ? (compare.originalMeta === img ? compare.upscaledMeta : compare.originalMeta)
+            : null;
+        const partnerMs = partner ? (Number(partner.generationMs) || 0) : 0;
+        return own + partnerMs;
+    }
+
     function copyPrompt(img) {
         const prompt = img.prompt || '';
         if (!prompt) return false;
@@ -1503,7 +1516,7 @@
         meta.innerHTML =
             '<div class="gallery-preview-row"><span class="gallery-preview-label">Model</span><span class="gallery-preview-value">' + escapeHtml(img.model || 'Krea2') + '</span></div>' +
             '<div class="gallery-preview-row"><span class="gallery-preview-label">Resolution</span><span class="gallery-preview-value" data-resolution-value>' + escapeHtml(formatResolution(img)) + '</span></div>' +
-            '<div class="gallery-preview-row"><span class="gallery-preview-label">Duration</span><span class="gallery-preview-value">' + escapeHtml(formatGenerationDuration(img)) + '</span></div>';
+            '<div class="gallery-preview-row"><span class="gallery-preview-label">Duration</span><span class="gallery-preview-value">' + escapeHtml(formatGenerationDuration({ generationMs: totalGenerationMs(img, compare) })) + '</span></div>';
         if (compare) {
             const originalMeta = img.upscale ? compare.originalMeta : img;
             const upscaledMeta = img.upscale ? img : compare.upscaledMeta;

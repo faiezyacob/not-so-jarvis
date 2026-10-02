@@ -255,6 +255,20 @@ async function freeModels() {
     modelsResident = false;
 }
 
+// Free ComfyUI's cached/unused memory WITHOUT unloading the resident models.
+// Used between the low-resolution generation and the high-resolution refinement
+// of the H3 latent-upscale pipeline to reclaim transient tensors (soft_empty_cache)
+// while keeping the H3 model resident for the refinement pass. Best-effort.
+async function softFreeMemory() {
+    const res = await comfyFetch('/free', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ unload_models: false, free_memory: true }),
+        timeout: 30000
+    });
+    await res.text();
+}
+
 // True when a ComfyUI job has been queued since the last successful unload.
 function hasResidentModels() {
     return modelsResident;
@@ -845,6 +859,7 @@ module.exports = {
     subscribeProgress,
     unsubscribeProgress,
     freeModels,
+    softFreeMemory,
     hasResidentModels,
     forgetResidentModels,
     interrupt,

@@ -9,6 +9,14 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+// Isolate from the live data/config.json (a running JARVIS instance may have
+// auto-upscale / other video settings toggled).
+process.env.JARVIS_CONFIG_PATH = path.join(
+    fs.mkdtempSync(path.join(os.tmpdir(), 'jarvis-video-sampling-')), 'config.json');
 
 const videoGenerator = require('../services/video-generator');
 
@@ -90,4 +98,21 @@ test('buildH3Graph: an explicit cfg of 1 stays on BasicGuider', () => {
     });
     assert.equal(graph.guider.class_type, 'BasicGuider');
     assert.equal(graph.negative, undefined);
+});
+
+test('autoUpscaleEnabled defaults to off', () => {
+    assert.equal(videoGenerator.H3_DEFAULTS.autoUpscaleEnabled, false);
+});
+
+test('maybeAutoUpscale: off leaves the result unmodified', async () => {
+    const base = { url: '/generated/a.mp4', filename: 'a.mp4' };
+    const result = await videoGenerator.maybeAutoUpscale(base, {});
+    assert.equal(result.autoUpscale, undefined);
+    assert.equal(result.url, '/generated/a.mp4');
+});
+
+test('autoUpscaleGenerated: a result without the flag is returned untouched', async () => {
+    const base = { url: '/generated/a.mp4', filename: 'a.mp4' };
+    const result = await videoGenerator.autoUpscaleGenerated(base, {});
+    assert.equal(result, base);
 });

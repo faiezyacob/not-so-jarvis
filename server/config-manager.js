@@ -6,7 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const CONFIG_PATH = path.join(__dirname, '..', 'data', 'config.json');
+const CONFIG_PATH = process.env.JARVIS_CONFIG_PATH || path.join(__dirname, '..', 'data', 'config.json');
 const DEFAULT_CONFIG = {
     provider: 'ollama',
     model: 'llama3.2',
