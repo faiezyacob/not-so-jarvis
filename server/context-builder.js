@@ -51,11 +51,13 @@ function getRelevantMessages(conversationId, query) {
 // the assistant message. It is UI state, not conversation content, so strip it
 // before the message reaches the chat model. The same applies to the
 // [[longvideo:{...}]] storyboard marker, the [[playground:{...}]] concept
-// marker, and the [[prompt-suggestion]] marker left by prompt-writing replies.
+// marker, the [[creator-frame:{...}]] Creator Studio frame-approval marker, and
+// the [[prompt-suggestion]] marker left by prompt-writing replies.
 const DIRECTOR_MARKER_RE = /\n*\[\[director:\{[^\n]*?\}\]\]/g;
 const LONG_VIDEO_MARKER_RE = /\n*\[\[longvideo:\{[^\n]*?\}\]\]/g;
 const PLAYGROUND_MARKER_RE = /\n*\[\[playground:\{[^\n]*?\}\]\]/g;
 const UGC_MARKER_RE = /\n*\[\[ugc:\{[^\n]*?\}\]\]/g;
+const CREATOR_FRAME_MARKER_RE = /\n*\[\[creator-frame:\{[^\n]*?\}\]\]/g;
 const PROMPT_SUGGESTION_MARKER_RE = /\n*\[\[prompt-suggestion\]\]/g;
 
 function stripDirectorMarkers(content) {
@@ -64,6 +66,7 @@ function stripDirectorMarkers(content) {
         .replace(LONG_VIDEO_MARKER_RE, '')
         .replace(PLAYGROUND_MARKER_RE, '')
         .replace(UGC_MARKER_RE, '')
+        .replace(CREATOR_FRAME_MARKER_RE, '')
         .replace(PROMPT_SUGGESTION_MARKER_RE, '')
         .trim();
 }

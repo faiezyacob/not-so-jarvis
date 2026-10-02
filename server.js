@@ -3452,21 +3452,66 @@ async function handleCreatorStudioRequest(req, res, ctx) {
             if (motion) input.cameraMotion = motion.id;
         }
 
+        // The opening frame must be reviewed before any H3 GPU time: generate it,
+        // show it in an approval card (the frame render is hidden from the
+        // gallery), and only render the video after "Create Video". A later
+        // "Regenerate Frame" makes a fresh frame and returns to the checkpoint.
+        const isCreateVideo = action.type === 'create_video';
+        const isRegenerateFrame = action.type === 'regenerate_frame';
+
+        if (isCreateVideo) {
+            const frame = prior && prior.frame;
+            if (!frame || !frame.filename) {
+                const text = 'Creator Studio — There is no opening frame to animate. Regenerate the starting frame first.';
+                sseWrite(res, { chunk: text });
+                sseWrite(res, { done: true, fullReply: text });
+                res.end();
+                return;
+            }
+            await runCreatorStudioVideoStage(req, res, ctx, {
+                conversationId, character, prior, frame,
+                durationNote: Number(rawRequestedDuration) > 15
+                    ? 'Creator Studio clips use the existing H3 limit of 15 seconds; this request was fitted to a single 15-second creator clip.'
+                    : ''
+            });
+            return;
+        }
+
         sseWrite(res, { creatorStudioProgress: { label: 'Preparing Creator Studio…', percent: 10 } });
         await vramManager.freeVRAMBeforeChat();
         sseWrite(res, { creatorStudioProgress: { label: 'Writing the script and performance beats…', percent: 18 } });
-        const content = await creatorStudio.buildCreatorContent(input, character, {
-            previousSession: prior,
-            providers,
-            provider,
-            model
-        });
+        const content = (isRegenerateFrame && prior && prior.content)
+            ? prior.content
+            : await creatorStudio.buildCreatorContent(input, character, {
+                previousSession: prior,
+                providers,
+                provider,
+                model
+            });
         sseWrite(res, { creatorStudioProgress: { label: 'Locking Character identity and resolving wardrobe…', percent: 38 } });
-        const identity = resolveIdentityConditioning([character], content.userPrompt, {
-            rawPrompt: ctx.rawMessage || message,
-            defaults: false,
-            continuity: true
+        // The starting frame is standalone: it is planned ONLY from the Creator
+        // Studio settings the user supplied (content, camera, wardrobe, location,
+        // duration) and never from chat history, a previous prompt or the active
+        // task. A regenerate reuses the stored plan so only the seed changes.
+        const framePlan = (isRegenerateFrame && prior && prior.content && prior.content.framePlan)
+            ? prior.content.framePlan
+            : await creatorStudio.generateFramePlan(content, character, providers, provider, model);
+        content.framePlan = framePlan;
+        if (process.env.JARVIS_CREATOR_DEBUG === '1') {
+            console.log('[creator-studio] frame plan (' + framePlan.source + '): ' + JSON.stringify(framePlan));
+        }
+        const frameScenePrompt = creatorStudio.buildFramePrompt(content, character, framePlan);
+        const identity = resolveIdentityConditioning([character], frameScenePrompt, {
+            defaults: false
         });
+        // Qwen Image Edit reproduces the reference portrait's framing unless the
+        // requested camera is pushed to the front and back of the instruction.
+        if (identity && identity.instruction) {
+            identity.instruction = creatorStudio.frameInstruction(
+                identity.instruction,
+                creatorStudio.buildFrameCameraDirective(content)
+            );
+        }
         const identityReferences = creatorStudio.identityReferenceFilenames(identity);
         if (!identity || !identity.sourceAbs || !identityReferences.length) {
             const text = 'Creator Studio cannot find ' + character.name + '’s saved Character portrait. Saving a Character normally approves its portrait automatically; check the Character Sheet and recreate/save the Character from Creative Playground if the portrait is missing.';
@@ -3480,24 +3525,86 @@ async function handleCreatorStudioRequest(req, res, ctx) {
         // H3 is image-to-video only: Qwen Image 2.1 first resolves the creator
         // identity, scene, wardrobe, posture and camera into ONE opening frame;
         // H3 then animates it. The identity reference never reaches H3 directly.
-        sseWrite(res, { creatorStudioProgress: { label: 'Creating initial frame…', percent: 50 } });
+        sseWrite(res, { creatorStudioProgress: { label: isRegenerateFrame ? 'Regenerating starting frame…' : 'Creating initial frame…', percent: 52 } });
         await vramManager.freeVRAMBeforeImage();
         const genSettings = imageGenerator.effectiveSettings();
+        // Render the opening frame at the configured VIDEO aspect ratio so the
+        // chosen framing (portrait selfie, landscape, etc.) actually fits the
+        // finished clip — the H3 stage animates this frame at its own ratio.
+        const videoSettings = videoGenerator.effectiveVideoSettings();
+        const frameDims = videoGenerator.h3DimensionsForAspectRatio(
+            videoSettings.videoAspectRatio,
+            videoSettings.h3Size
+        );
+        // "Regenerate Frame" always draws a fresh seed, even under a fixed-seed
+        // IMAGE setting, so the user actually gets a different starting image.
+        const frameSeed = isRegenerateFrame
+            ? Math.floor(Math.random() * 2 ** 32)
+            : imageGenerator.resolveSeed(genSettings, null);
         const openingFrame = await imageGenerator.editImage(identity.sourceAbs, identity.instruction, {
             references: identity.references,
-            width: genSettings.width,
-            height: genSettings.height,
+            width: frameDims.W,
+            height: frameDims.H,
             provider, model, conversationId,
-            seed: imageGenerator.resolveSeed(genSettings, null),
+            seed: frameSeed,
             label: 'creator opening frame',
-            kind: 'image_generation'
+            kind: 'image_generation',
+            // The starting frame is internal media: it lives on the Creator
+            // Studio card, never in the public gallery.
+            hidden: true
         });
-        sseWrite(res, { creatorStudioProgress: { label: 'Generating video…', percent: 62 } });
 
-        // Rebuild the canonical dialogue describing the opening frame as the
+        const session = creatorStudio.createOpeningFrame(prior, content, {
+            filename: openingFrame.filename,
+            url: openingFrame.url,
+            prompt: identity.instruction,
+            seed: openingFrame.seed
+        });
+        session.creatorName = character.name;
+        creatorStudio.setSession(conversationId, session);
+        taskState.setTask(conversationId, {
+            type: 'image',
+            operation: 'generate',
+            prompt: content.userPrompt,
+            lastAction: 'Creator Studio · ' + content.recipe.name,
+            status: 'completed'
+        });
+
+        // The frame-approval card renders the starting frame itself, so the
+        // reply carries only the marker (never a duplicate markdown image).
+        const frameCard = creatorStudio.frameMarker(session);
+        const intro = '**Creator Studio** — Starting frame ready.\n\n' +
+            'This is the frame H3 will animate. **Create Video** when you are happy with it, or **Regenerate Frame** for a different starting image.';
+        const reply = intro + frameCard;
+        sseWrite(res, { creatorStudioProgress: { label: 'Starting frame ready — waiting for your approval.', percent: 60, state: 'complete' } });
+        sseWrite(res, { creatorStudioFrame: { sessionId: session.id, frame: session.frame, content, status: session.status } });
+        sseWrite(res, { chunk: reply });
+        sseWrite(res, { done: true, fullReply: reply });
+        res.end();
+        return;
+    } catch (err) {
+        const current = creatorStudio.getSession(conversationId);
+        if (current) creatorStudio.setSession(conversationId, Object.assign({}, current, { status: 'failed', error: err.message }));
+        taskState.setTask(conversationId, { status: 'failed' });
+        console.error('[creator-studio] Request failed:', err.message);
+        const text = err.message || 'Creator Studio could not prepare this video.';
+        sseWrite(res, { error: text });
+        res.end();
+    }
+}
+
+// Animate the approved Creator Studio opening frame with H3. Called after the
+// user clicks "Create Video"; the frame already carries the character identity,
+// scene, wardrobe, posture and camera, so H3 only animates it.
+async function runCreatorStudioVideoStage(req, res, ctx, { conversationId, character, prior, frame, durationNote }) {
+    const { provider, model } = ctx;
+    const content = prior.content;
+    const session = prior;
+    try {
+        // Rebuild the canonical dialogue describing the approved frame as the
         // visual source of truth, separate from performance.
         content.creatorDialogue = creatorStudio.buildCanonicalDialogue(content, character, {
-            referenceFilenames: [openingFrame.filename]
+            referenceFilenames: [frame.filename]
         });
         if (process.env.JARVIS_CREATOR_DEBUG === '1') {
             console.log(videoGenerator.formatCreatorStudioDebug(content.creatorDialogue));
@@ -3529,46 +3636,40 @@ async function handleCreatorStudioRequest(req, res, ctx) {
             ],
             parameters: {}
         };
-        const session = Object.assign({}, prior || {}, {
-            id: prior && prior.id || 'creator_session_' + Date.now().toString(36),
-            characterId: character.id,
-            creatorName: character.name,
-            status: 'generating',
-            content,
-            videos: prior && Array.isArray(prior.videos) ? prior.videos.slice() : []
-        });
-        creatorStudio.setSession(conversationId, session);
+
+        const running = Object.assign({}, session, { status: 'generating', error: '' });
+        creatorStudio.setSession(conversationId, running);
         taskState.setTask(conversationId, {
             type: 'video',
             operation: 'generate',
             prompt: content.userPrompt,
             videoMode: 'i2va',
-            sourceImage: openingFrame.filename,
+            sourceImage: frame.filename,
             lastAction: 'Creator Studio · ' + content.recipe.name,
             status: 'running',
             parameters: {
-                creatorStudio: { characterId: character.id, sessionId: session.id, contentId: content.id },
+                creatorStudio: { characterId: character.id, sessionId: running.id, contentId: content.id },
                 duration: content.duration,
                 characterId: character.id,
                 characterIds: [character.id]
             }
         });
 
-        sseWrite(res, { creatorStudioProgress: { label: 'Preparing H3 talking-video direction…', percent: 68 } });
-        const built = await videoGenerator.buildH3VideoPrompt(structuredRequest, providers, provider, model, openingFrame.filename, conversationId, false);
-        sseWrite(res, { creatorStudioProgress: { label: 'Submitting the creator performance to H3…', percent: 80 } });
+        sseWrite(res, { creatorStudioProgress: { label: 'Preparing H3 talking-video direction…', percent: 72 } });
+        const built = await videoGenerator.buildH3VideoPrompt(structuredRequest, providers, provider, model, frame.filename, conversationId, false);
+        sseWrite(res, { creatorStudioProgress: { label: 'Submitting the creator performance to H3…', percent: 84 } });
         await vramManager.freeVRAMBeforeImage();
         await handleVideoGenerationStream(req, res, {
             provider,
             model,
             conversationId,
-            message: ctx.rawMessage || message,
+            message: ctx.rawMessage || ctx.message || '',
             videoPrompt: built.prompt,
             structuredRequest,
             action: 'generate',
-            previousPrompt: prior && prior.content && prior.content.userPrompt || null,
+            previousPrompt: content.userPrompt || null,
             videoMode: 'i2va',
-            sourceImageRawFilename: openingFrame.filename,
+            sourceImageRawFilename: frame.filename,
             studio: 'creator',
             duration: built.duration,
             width: built.width,
@@ -3577,19 +3678,16 @@ async function handleCreatorStudioRequest(req, res, ctx) {
             creatorStudio: {
                 characterId: character.id,
                 content,
-                sessionId: session.id,
-                durationNote: Number(rawRequestedDuration) > 15
-                    ? 'Creator Studio clips use the existing H3 limit of 15 seconds; this request was fitted to a single 15-second creator clip.'
-                    : ''
+                sessionId: running.id,
+                durationNote: durationNote || ''
             }
         });
     } catch (err) {
         const current = creatorStudio.getSession(conversationId);
         if (current) creatorStudio.setSession(conversationId, Object.assign({}, current, { status: 'failed', error: err.message }));
         taskState.setTask(conversationId, { status: 'failed' });
-        console.error('[creator-studio] Request failed:', err.message);
-        const text = err.message || 'Creator Studio could not prepare this video.';
-        sseWrite(res, { error: text });
+        console.error('[creator-studio] Video stage failed:', err.message);
+        sseWrite(res, { error: err.message || 'Creator Studio could not render this video.' });
         res.end();
     }
 }

@@ -17,11 +17,119 @@ const CreatorStudioUI = (() => {
     let progressConversationId = null;
     let recentSuggestions = [];
 
+    // The opening-frame approval card persists as a [[creator-frame:{...}]]
+    // marker in the assistant message, so it survives a reload and stays
+    // actionable until the user creates the video or starts a new session.
+    const FRAME_MARKER_RE = /\[\[creator-frame:(\{[^\n]*?\})\]\]/g;
+
     function option(value, label) {
         const node = document.createElement('option');
         node.value = value;
         node.textContent = label;
         return node;
+    }
+
+    // Pull [[creator-frame:{...}]] markers out of persisted markdown.
+    function extract(markdown) {
+        const cards = [];
+        const text = String(markdown === undefined || markdown === null ? '' : markdown)
+            .replace(FRAME_MARKER_RE, (match, json) => {
+                try {
+                    const data = JSON.parse(json);
+                    if (data && data.url) cards.push(data);
+                } catch (_) { /* ignore malformed markers */ }
+                return '';
+            });
+        return { text, cards };
+    }
+
+    function strip(markdown) {
+        return extract(markdown).text;
+    }
+
+    // Render the frame approval card with "Create Video" / "Regenerate Frame".
+    function render(contentEl, card) {
+        const el = document.createElement('div');
+        el.className = 'creator-frame-card';
+        el.setAttribute('data-frame-id', card.frameId || '');
+
+        const head = document.createElement('div');
+        head.className = 'creator-frame-head';
+        const title = document.createElement('span');
+        title.className = 'creator-frame-title';
+        title.textContent = 'Creator Studio · Starting frame';
+        head.appendChild(title);
+        el.appendChild(head);
+
+        if (card.url) {
+            const img = document.createElement('img');
+            img.className = 'creator-frame-image';
+            img.src = card.url;
+            img.alt = 'Creator Studio starting frame';
+            img.loading = 'lazy';
+            el.appendChild(img);
+        }
+
+        const actions = document.createElement('div');
+        actions.className = 'creator-frame-actions';
+        const create = document.createElement('button');
+        create.type = 'button';
+        create.className = 'creator-btn creator-btn--primary';
+        create.textContent = 'Create Video';
+        create.addEventListener('click', () => {
+            lock(el);
+            send('Create the creator video', { type: 'create_video', sessionId: card.sessionId });
+        });
+        const regen = document.createElement('button');
+        regen.type = 'button';
+        regen.className = 'creator-btn';
+        regen.textContent = 'Regenerate Frame';
+        regen.addEventListener('click', () => {
+            lock(el);
+            send('Regenerate the starting frame', { type: 'regenerate_frame', sessionId: card.sessionId });
+        });
+        actions.append(create, regen);
+        el.appendChild(actions);
+
+        contentEl.appendChild(el);
+    }
+
+    function send(text, creatorStudioAction) {
+        if (typeof Chat !== 'undefined' && Chat && typeof Chat.sendMessage === 'function') {
+            Chat.sendMessage({ text, creatorStudioAction });
+        }
+    }
+
+    function lock(card) {
+        if (!card) return;
+        card.querySelectorAll('button').forEach((button) => { button.disabled = true; });
+    }
+
+    // Only the card whose frame is still awaiting approval keeps working
+    // buttons; every stale/consumed frame card becomes a static record.
+    function applyState(container, session) {
+        if (!container) return;
+        const actionable = Boolean(session && session.status === 'awaiting_frame_approval' && session.frame);
+        const activeFrameId = actionable ? session.frame.id : '';
+        container.querySelectorAll('.creator-frame-card').forEach((el) => {
+            const matches = actionable && el.getAttribute('data-frame-id') === activeFrameId;
+            el.querySelectorAll('button').forEach((button) => { button.disabled = !matches; });
+        });
+    }
+
+    async function hydrate(container, conversationId) {
+        if (!container) return;
+        if (!conversationId) {
+            applyState(container, null);
+            return;
+        }
+        try {
+            const res = await fetch('/api/creator-studio/state?conversationId=' + encodeURIComponent(conversationId));
+            const data = await res.json();
+            applyState(container, data.session || null);
+        } catch (_) {
+            applyState(container, null);
+        }
     }
 
     function fillSelect(select, items, selected, includeAuto) {
@@ -206,6 +314,9 @@ const CreatorStudioUI = (() => {
                 generationPending = true;
                 setProgress('Creator Studio video is rendering…', Math.max(progressPercent, 68));
             }
+        } else if (session && session.status === 'awaiting_frame_approval') {
+            generationPending = false;
+            setProgress('Starting frame ready — use the card in chat to create the video or regenerate it.', 60, 'complete');
         } else if (session && session.status === 'failed') {
             generationPending = false;
             setProgress(session.error || 'Generation failed.', progressPercent, 'failed');
@@ -435,6 +546,11 @@ const CreatorStudioUI = (() => {
             if (currentConversationId && detail.conversationId !== currentConversationId) return;
             progressConversationId = detail.conversationId;
         }
+        if (detail.frameReady) {
+            generationPending = false;
+            setProgress('Starting frame ready — waiting for your approval.', 60, 'complete');
+            return;
+        }
         if (detail.stage) {
             generationPending = true;
             setProgress(detail.label, detail.percent, detail.state);
@@ -634,5 +750,9 @@ const CreatorStudioUI = (() => {
     }
 
     document.addEventListener('DOMContentLoaded', bind);
-    return { open, close, refresh: refreshSession };
+    return { open, close, refresh: refreshSession, extract, strip, render, applyState, hydrate };
 })();
+
+// `chat.js` reaches UI modules through the `window` namespace (like DirectorUI
+// and UGCUI), so the Creator Studio module must be exported explicitly.
+window.CreatorStudioUI = CreatorStudioUI;

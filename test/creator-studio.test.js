@@ -44,6 +44,162 @@ test('Creator Studio drops legacy profiles and keeps the canonical Character on 
     assert.equal(session.videos[0].url, '/generated/old%20clip.mp4');
 });
 
+test('Creator Studio opening frame is a stored checkpoint with a persisted marker', () => {
+    const session = studio.createOpeningFrame(null, { characterId: 'maya-id', concept: 'weekend update' }, {
+        filename: 'frame one.png', url: '/generated/frame%20one.png', prompt: 'identity', seed: 42
+    });
+    assert.equal(session.status, 'awaiting_frame_approval');
+    assert.equal(session.frame.filename, 'frame one.png');
+    assert.equal(session.frame.url, '/generated/frame%20one.png');
+    assert.equal(session.frame.seed, 42);
+    const marker = studio.frameMarker(session);
+    assert.match(marker, /\[\[creator-frame:\{/);
+    const parsed = JSON.parse(marker.match(/\[\[creator-frame:(\{[^\n]*?\})\]\]/)[1]);
+    assert.equal(parsed.frameId, session.frame.id);
+    assert.equal(parsed.sessionId, session.id);
+    assert.equal(parsed.status, 'awaiting_frame_approval');
+});
+
+test('buildFrameDirection turns the chosen camera into an explicit first-frame framing directive', () => {
+    const low = studio.buildFrameDirection({ camera: 'low_angle_front' });
+    assert.match(low, /FIRST FRAME FRAMING/);
+    assert.match(low, /slightly below eye level/i);
+    assert.match(low, /Do not default to a front-on/i);
+
+    const tripod = studio.buildFrameDirection({ camera: 'tripod' });
+    assert.match(tripod, /supported, not held/i);
+
+    const close = studio.buildFrameDirection({ camera: 'close_talking_head' });
+    assert.match(close, /close selfie-camera framing/i);
+
+    // An unknown camera falls back to the default preset without throwing.
+    assert.match(studio.buildFrameDirection({ camera: 'nope' }), /FIRST FRAME FRAMING/);
+    assert.match(studio.buildFrameDirection(null), /FIRST FRAME FRAMING/);
+});
+
+test('the standalone frame plan derives from the Creator Studio settings and scales with duration', () => {
+    const short = studio.buildFramePlan({
+        concept: 'my new coffee maker',
+        camera: 'low_angle_front',
+        scene: 'a bright kitchen',
+        outfit: 'a cream knit sweater',
+        duration: 5,
+        performanceBeats: [{ expression: 'a curious look', gesture: 'turns the mug toward the lens' }]
+    });
+    assert.equal(short.source, 'deterministic');
+    assert.equal(short.premise, 'my new coffee maker');
+    assert.equal(short.camera, 'low_angle_front');
+    assert.equal(short.durationBand, 'short');
+    assert.equal(short.duration, 5);
+    assert.match(short.openingMoment, /curious|mug|speaking/i);
+    assert.equal(short.wardrobe, 'a cream knit sweater');
+    assert.equal(short.setting, 'a bright kitchen');
+
+    const long = studio.buildFramePlan({ concept: 'a weekend update', duration: 30 });
+    assert.equal(long.durationBand, 'long');
+    assert.equal(long.duration, 30);
+    assert.match(long.durationGuidance, /longer single-take/i);
+});
+
+test('buildFramePrompt is a standalone still-frame brief that respects content, camera, outfit and location', async () => {
+    const character = makeCharacter('29-year-old');
+    const content = await studio.buildCreatorContent({
+        characterId: 'maya-id',
+        concept: 'my honest take on morning routines',
+        camera: 'close_talking_head',
+        scene: 'a quiet cafe table',
+        outfitPack: 'custom',
+        outfitPackCustom: 'a sage linen shirt',
+        duration: 8
+    }, character);
+    const prompt = studio.buildFramePrompt(content, character, studio.buildFramePlan(content));
+
+    assert.match(prompt, /OPENING FRAME/);
+    assert.match(prompt, /WHAT THE VIDEO IS ABOUT: my honest take on morning routines/);
+    assert.match(prompt, /SETTING \/ LOCATION: a quiet cafe table/);
+    assert.match(prompt, /WARDROBE: a sage linen shirt/);
+    assert.match(prompt, /8-second creator video/);
+    assert.match(prompt, /POSTURE: seated at the cafe table/);
+    // A still frame must never carry spoken dialogue or scripted beats.
+    assert.doesNotMatch(prompt, /<d>\[English\]/);
+    assert.doesNotMatch(prompt, /DIALOGUE:/);
+    assert.doesNotMatch(prompt, /\[Shot [0-9]\]/);
+
+    // The camera directive is separate, explicit, and confirms the requested
+    // preset instead of a front-on portrait.
+    const directive = studio.buildFrameCameraDirective(content);
+    assert.match(directive, /Recompose the shot to exactly match the Close Talking Head camera/i);
+    assert.match(directive, /close selfie-camera framing/i);
+    assert.match(directive, /must visibly change from the reference portrait/i);
+});
+
+test('frameInstruction leads and trails the final edit prompt with the camera directive', () => {
+    const content = { camera: 'phone_selfie', cameraStyle: 'SELFIE_SMARTPHONE_FRONT_CAMERA' };
+    const directive = studio.buildFrameCameraDirective(content);
+    const wrapped = studio.frameInstruction('IDENTITY: keep the same person shown in image 1.', directive);
+    assert.ok(wrapped.startsWith('SHOT / CAMERA — highest priority'));
+    assert.match(wrapped, /Phone Selfie camera/);
+    assert.match(wrapped, /front-facing phone-camera character/i);
+    assert.match(wrapped, /mildly wide selfie lens/i);
+    assert.match(wrapped, /FINAL REMINDER/);
+    assert.ok(wrapped.indexOf('IDENTITY:') > wrapped.indexOf('SHOT / CAMERA'));
+    // A missing camera directive leaves the instruction untouched.
+    assert.equal(studio.frameInstruction('BASE', ''), 'BASE');
+});
+
+test('generateFramePlan refines the premise from the LLM but rejects production jargon', async () => {
+    const character = makeCharacter('29-year-old');
+    let systemPrompt = '';
+    const planned = await studio.generateFramePlan({
+        concept: 'a coffee maker', camera: 'phone_selfie', scene: 'a bright kitchen',
+        outfit: 'a cream knit sweater', duration: 10
+    }, character, {
+        chat: async (_provider, messages, model, options) => {
+            systemPrompt = messages[0].content;
+            assert.equal(model, 'frame-test-model');
+            assert.equal(options.think, false);
+            return JSON.stringify({
+                premise: 'An honest first impression of a coffee maker she actually uses.',
+                opening_moment: 'She holds the mug up at selfie distance and begins speaking.',
+                composition: '[Shot 1] At 00:02.000, cut to a close-up.'
+            });
+        }
+    }, 'ollama', 'frame-test-model');
+
+    assert.match(systemPrompt, /opening-frame director/i);
+    assert.match(systemPrompt, /Return valid JSON only/);
+    assert.equal(planned.source, 'planned');
+    assert.match(planned.premise, /coffee maker she actually uses/i);
+    assert.match(planned.openingMoment, /selfie distance/i);
+    // The invalid composition is rejected and replaced by the deterministic one.
+    assert.doesNotMatch(planned.composition, /Shot 1|00:02/);
+
+    const fallback = await studio.generateFramePlan(
+        { concept: 'a coffee maker', camera: 'phone_selfie', duration: 10 },
+        character,
+        { chat: async () => 'not json at all' },
+        'ollama', 'frame-test-model'
+    );
+    assert.equal(fallback.source, 'deterministic');
+    assert.equal(fallback.premise, 'a coffee maker');
+});
+
+test('normalizeAction accepts the Creator Studio frame actions', () => {
+    assert.deepEqual(studio.normalizeAction({ type: 'create_video' }), { type: 'create_video' });
+    assert.deepEqual(studio.normalizeAction({ type: 'regenerate_frame' }), { type: 'regenerate_frame' });
+    assert.equal(studio.normalizeAction({ type: 'bogus' }), null);
+});
+
+test('recordVideo consumes the opening frame so the approval card goes stale', () => {
+    const session = studio.createOpeningFrame(null, { characterId: 'maya-id', concept: 'c' }, {
+        filename: 'a.png', url: '/generated/a.png'
+    });
+    const ready = studio.recordVideo(session, session.content, { filename: 'clip.mp4', url: '/generated/clip.mp4' });
+    assert.equal(ready.status, 'ready');
+    assert.equal(ready.frame, null);
+    assert.equal(ready.videos.length, 1);
+});
+
 test('recordVideo stores a canonical generated-media URL and filename', () => {
     const session = studio.recordVideo(null, {
         characterId: 'maya-id', concept: 'weekend update', contentType: 'talking'

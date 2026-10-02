@@ -457,6 +457,14 @@ function generatedVideoUrl(filename) {
     return safeFilename ? '/generated/' + encodeURIComponent(safeFilename) : '';
 }
 
+function generatedImageUrl(value) {
+    const raw = String(value || '').split(/[?#]/, 1)[0].split('/').pop();
+    let decoded = raw;
+    try { decoded = decodeURIComponent(raw); } catch (_) {}
+    const filename = path.basename(decoded);
+    return filename ? '/generated/' + encodeURIComponent(filename) : '';
+}
+
 function loadStore() {
     if (store) return store;
     try {
@@ -1684,7 +1692,201 @@ async function buildCreatorContent(input, character, options = {}) {
 
 function normalizeAction(input) {
     const src = input && typeof input === 'object' ? input : {};
-    return src.type === 'generate' || src.type === 'new_session' ? src : null;
+    return src.type === 'generate' || src.type === 'new_session' ||
+        src.type === 'regenerate_frame' || src.type === 'create_video' ? src : null;
+}
+
+// The explicit first-frame framing directive for the Qwen opening-frame render.
+// The H3 prompt expands the camera style for motion; the opening frame needs its
+// own concrete framing instruction or Qwen keeps the identity portrait's
+// front-on composition regardless of the camera the user chose.
+function buildFrameDirection(content) {
+    const c = content && typeof content === 'object' ? content : {};
+    const preset = CAMERA_PRESETS.find((item) => item.id === c.camera) || CAMERA_PRESETS[0];
+    const framingText = 'FIRST FRAME FRAMING (must match the selected camera): This image is the exact first ' +
+        'frame of the video, so its shot size, camera height, angle and distance must already match the ' +
+        'selected camera setup. ' + preset.direction + '. ' +
+        (preset.id === 'tripod' || preset.id === 'desk_camera'
+            ? 'The phone is supported, not held, so the hands are free. '
+            : 'The phone is held by the creator at a natural selfie distance. ') +
+        'Do not default to a front-on, centred, eye-level portrait: unless the selected camera is front-on eye ' +
+        'level, show the requested angle and framing. Keep the creator looking toward the phone lens. ' +
+        'Preserve identity, wardrobe and environment exactly as specified.';
+    return framingText;
+}
+
+/* === Standalone opening-frame plan ==========================================
+   The starting frame is planned ONLY from the Creator Studio settings the user
+   supplied (content, camera, wardrobe, location, duration, personality). It is
+   self-contained: it never reads conversation history, a previous prompt or the
+   active chat task. The planner produces what the video is about (sized to the
+   duration), the opening moment and the first-frame composition; the prompt
+   builder folds those together with the deterministic camera / setting /
+   wardrobe facts into the scene text handed to the Qwen editor.
+   =========================================================================== */
+
+function frameDurationBand(value) {
+    const seconds = Math.max(3, Math.min(60, Math.round(Number(value) || 15)));
+    if (seconds <= 8) {
+        return { id: 'short', seconds, guidance: 'a short clip, so the first frame carries one simple, instantly readable subject' };
+    }
+    if (seconds <= 20) {
+        return { id: 'medium', seconds, guidance: 'a short single-take clip, so the first frame sets up one clear throughline' };
+    }
+    return { id: 'long', seconds, guidance: 'a longer single-take clip, so the first frame stays simple and uncluttered while the take develops' };
+}
+
+// Deterministic fallback plan. Nothing is invented: every line comes from the
+// resolved Creator Studio content (which itself came from the user's input).
+function buildFramePlan(content) {
+    const c = content && typeof content === 'object' ? content : {};
+    const preset = CAMERA_PRESETS.find((item) => item.id === c.camera) || CAMERA_PRESETS[0];
+    const band = frameDurationBand(c.duration);
+    const firstBeat = Array.isArray(c.performanceBeats) && c.performanceBeats.length ? c.performanceBeats[0] : null;
+    const action = clean(c.onCameraAction, 300);
+    const pose = clean(c.pose, 400);
+    return {
+        source: 'deterministic',
+        premise: clean(c.concept, 240) || 'a personal update for the audience',
+        openingMoment: action || clean(firstBeat && firstBeat.gesture, 300) || 'the creator settles and begins speaking directly to the camera',
+        composition: pose ? `${pose}, framed for the selected camera so the creator and the setting are both readable` : 'the creator and the setting are both readable in a single frame',
+        framing: preset.direction,
+        setting: clean(c.scene, 200) || 'a relaxed, uncluttered everyday setting',
+        wardrobe: clean(c.outfit, 200) || 'the character\'s own wardrobe',
+        expression: firstBeat ? clean(firstBeat.expression || firstBeat.faceAction, 300) : '',
+        pose,
+        camera: preset.id,
+        cameraLabel: preset.label,
+        duration: band.seconds,
+        durationBand: band.id,
+        durationGuidance: band.guidance
+    };
+}
+
+// A planned field must read as plain visual prose: no shot numbers, timestamps,
+// dialogue or production jargon ever belong in a still-frame description.
+function sanitizeFramePlanText(value, limit) {
+    const text = clean(value, limit).replace(/\s+/g, ' ');
+    if (!text) return '';
+    if (/\[\s*shot\s*\d+/i.test(text)) return '';
+    if (/\b\d{1,2}:\d{2}(?:[.,]\d{3})?\b/.test(text)) return '';
+    if (/\b(?:timestamp|shot list|voiceover|narration|subtitles?|captions?|on-screen text)\b/i.test(text)) return '';
+    return text;
+}
+
+// Plan the opening frame with the chat model using ONLY the supplied settings.
+// The deterministic plan is the always-valid baseline; the LLM may only refine
+// the premise / opening moment / composition, and any malformed output falls
+// back. The call is standalone: no conversation context is sent.
+async function generateFramePlan(content, character, providers, provider, model) {
+    const base = buildFramePlan(content);
+    if (!providers || typeof providers.chat !== 'function') return base;
+    const band = frameDurationBand(base.duration);
+    const system = 'You are Creator Studio\'s opening-frame director. You plan the very first frame of a single ' +
+        'continuous creator talking-video using ONLY the supplied settings. You do not continue any conversation, ' +
+        'you do not use outside context, and you never change or invent the character\'s identity, age or appearance. ' +
+        'Return valid JSON only: {"premise":"...","opening_moment":"...","composition":"..."}. ' +
+        'premise is one clear sentence describing what this video is about, faithful to the supplied concept and sized ' +
+        'to the duration (' + band.guidance + '). ' +
+        'opening_moment is what the creator is visibly doing and feeling in the very first seconds — a natural ' +
+        'start-of-take moment, not the middle or the end. ' +
+        'composition is how the single still frame is composed: shot size and where the creator sits in frame, ' +
+        'consistent with the selected camera, keeping the environment readable. ' +
+        'Respect the selected content type, camera, wardrobe and location exactly. Describe only the visible first ' +
+        'frame. Never write dialogue, spoken lines, captions, timestamps, camera moves, a shot list or [Shot N]. ' +
+        'Never introduce clothing or a scene that was not supplied.';
+    const user = 'Creator Studio settings (JSON):\n' + JSON.stringify({
+        content_type: clean(content && content.recipe && content.recipe.name, 80) || 'Talking to Camera',
+        concept: clean(base.premise, 240),
+        duration_seconds: band.seconds,
+        duration_band: band.id,
+        personality: Array.isArray(content && content.personality) ? content.personality.slice(0, 6) : [],
+        speech_behavior: clean(content && content.speechBehavior, 60),
+        camera: { id: base.camera, label: base.cameraLabel, direction: base.framing },
+        on_camera_action: clean(content && content.onCameraAction, 300),
+        environment: base.setting,
+        wardrobe: base.wardrobe,
+        posture: base.pose
+    }) + '\n\nReturn the JSON object with premise, opening_moment and composition only.';
+    try {
+        const raw = await providers.chat(provider, [
+            { role: 'system', content: system },
+            { role: 'user', content: user }
+        ], model, { think: false, temperature: 0.4 });
+        const parsed = parseJsonObject(raw);
+        if (!parsed) return base;
+        const premise = sanitizeFramePlanText(parsed.premise || parsed.concept, 240);
+        const openingMoment = sanitizeFramePlanText(parsed.opening_moment || parsed.openingMoment, 300);
+        const composition = sanitizeFramePlanText(parsed.composition, 300);
+        return Object.assign({}, base, {
+            source: 'planned',
+            premise: premise || base.premise,
+            openingMoment: openingMoment || base.openingMoment,
+            composition: composition || base.composition
+        });
+    } catch (_) {
+        return base;
+    }
+}
+
+// The camera directive is the ONE part of an opening-frame prompt that Qwen
+// Image Edit resists: its reference image is the front-on approved portrait, so
+// a framing sentence buried after the identity block is treated as a weak
+// suggestion and the model reproduces the portrait's composition. The directive
+// therefore carries the requested camera as a direct recompose instruction plus
+// the concrete visual hallmarks of a front-facing phone selfie, so it cannot be
+// satisfied by a studio headshot. `frameInstruction` leads and trails the final
+// instruction with it for salience.
+function buildFrameCameraDirective(content) {
+    const c = content && typeof content === 'object' ? content : {};
+    const preset = CAMERA_PRESETS.find((item) => item.id === c.camera) || CAMERA_PRESETS[0];
+    const supported = preset.id === 'tripod' || preset.id === 'desk_camera';
+    const parts = [
+        'Recompose the shot to exactly match the ' + preset.label + ' camera: ' + preset.direction + '.',
+        supported
+            ? 'The phone is supported, not held, so both hands are free.'
+            : 'The phone is held by the creator at selfie distance, so one hand may be partly visible holding it.',
+        'The shot size, camera height, angle and distance must visibly change from the reference portrait; do not keep the reference\'s front-on, centred, eye-level headshot framing unless that is this exact camera.'
+    ];
+    if ((c.cameraStyle || DEFAULT_CAMERA_STYLE) === DEFAULT_CAMERA_STYLE) {
+        parts.push('Render real front-facing phone-camera character: a mildly wide selfie lens (the face is very slightly closer to the lens than the body), direct gaze into the phone lens, and framing that shows roughly the chest or upper torso so the location behind the creator is readable.');
+    }
+    return parts.join(' ');
+}
+
+// Place the camera directive at both ends of the final instruction: the encoder
+// reads it first (before the identity block) and it is re-asserted last, so it
+// is never diluted by the long identity/skin-tone text.
+function frameInstruction(instruction, cameraDirective) {
+    const base = String(instruction || '').trim();
+    const camera = String(cameraDirective || '').trim();
+    if (!camera) return base;
+    return 'SHOT / CAMERA — highest priority, apply this framing to the whole image: ' + camera + ' ' +
+        base + ' ' +
+        'FINAL REMINDER — the camera is the ' + camera + ' Recompose the frame, do not reproduce the reference portrait\'s framing.';
+}
+
+// Compose the standalone scene text for the opening frame from the plan plus
+// the deterministic setting / wardrobe facts. The camera framing is carried
+// separately by buildFrameCameraDirective/frameInstruction. Every clause is
+// drawn from the user's own Creator Studio selections.
+function buildFramePrompt(content, character, plan) {
+    const c = content && typeof content === 'object' ? content : {};
+    const p = plan && typeof plan === 'object' ? plan : buildFramePlan(c);
+    const band = frameDurationBand(p.duration || c.duration);
+    const name = clean((character && character.name) || c.creatorName, 80) || 'the creator';
+    return [
+        'OPENING FRAME — the exact first frame of a single continuous ' + band.seconds + '-second creator video.',
+        'WHAT THE VIDEO IS ABOUT: ' + p.premise + '.',
+        'FIRST-FRAME MOMENT: ' + p.openingMoment + '. This is the beginning of the take, not the middle or the end.',
+        'SETTING / LOCATION: ' + p.setting + '.',
+        'WARDROBE: ' + p.wardrobe + '.',
+        'POSTURE: ' + (p.pose || 'a natural, comfortable posture suited to the setting') + '.',
+        'COMPOSITION: ' + p.composition + '.',
+        'EXPRESSION: ' + (p.expression || 'a natural, relaxed, camera-aware expression') + '.',
+        'DURATION: ' + band.guidance + '.',
+        'This is the still first frame: ' + name + ' is mid-conversation at the very start of the take, looking toward the phone lens, mouth visible and ready to speak. No dialogue text, captions, subtitles, shot numbers or on-screen words anywhere in the image.'
+    ].join('\n');
 }
 
 function identityReferenceFilenames(identity) {
@@ -1696,11 +1898,46 @@ function identityReferenceFilenames(identity) {
     return [...new Set([source, ...references].filter(Boolean))].slice(0, 9);
 }
 
+// The opening frame awaiting the user's approval. It is generated (and
+// regenerated) before any H3 time is spent; the frame render is marked hidden
+// in the gallery, so it only ever appears in this card.
+function createOpeningFrame(session, content, frame) {
+    const result = session || { id: 'creator_session_' + Date.now().toString(36), videos: [] };
+    result.characterId = content.characterId;
+    result.content = content;
+    result.status = 'awaiting_frame_approval';
+    result.frame = {
+        id: 'creator_frame_' + Date.now().toString(36),
+        filename: frame.filename,
+        url: generatedImageUrl(frame.filename || frame.url),
+        prompt: frame.prompt || '',
+        seed: Number.isFinite(Number(frame.seed)) ? Number(frame.seed) : null,
+        createdAt: new Date().toISOString()
+    };
+    result.videos = Array.isArray(result.videos) ? result.videos : [];
+    result.updatedAt = new Date().toISOString();
+    return result;
+}
+
+// Persisted assistant-message marker the UI turns into the frame approval card.
+function frameMarker(session) {
+    if (!session || !session.frame || !session.frame.filename) return '';
+    return '\n\n[[creator-frame:' + JSON.stringify({
+        sessionId: session.id,
+        frameId: session.frame.id,
+        url: session.frame.url,
+        status: session.status
+    }) + ']]';
+}
+
 function recordVideo(session, content, video) {
     const result = session || { id: 'creator_session_' + Date.now().toString(36), videos: [] };
     result.characterId = content.characterId;
     result.content = content;
     result.status = 'ready';
+    // The opening frame has been consumed by the finished video; drop it so the
+    // approval card can no longer start another render for this frame.
+    result.frame = null;
     result.videos = Array.isArray(result.videos) ? result.videos : [];
     const filename = generatedVideoFilename(video.filename || video.url);
     result.videos.push({
@@ -1792,6 +2029,16 @@ module.exports = {
     buildCreatorContent,
     normalizeAction,
     identityReferenceFilenames,
+    createOpeningFrame,
+    frameMarker,
+    buildFrameDirection,
+    frameDurationBand,
+    buildFramePlan,
+    sanitizeFramePlanText,
+    generateFramePlan,
+    buildFrameCameraDirective,
+    frameInstruction,
+    buildFramePrompt,
     recordVideo,
     generatedVideoFilename,
     generatedVideoUrl,

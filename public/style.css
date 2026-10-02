@@ -2028,6 +2028,7 @@ details.settings-card[open] summary.settings-card-title::after {
 }
 
 .chat-generated-prompt--collapsed {
+    margin-bottom: 10px;
     max-height: calc(1.7em * 2);
     overflow: hidden;
 }
@@ -9069,6 +9070,16 @@ a.modal-btn {
 .creator-session-video-error { padding: 14px 10px; color: var(--text-secondary); font-size: 11px; }
 .creator-session-pending { padding: 10px; border-radius: 5px; background: var(--accent-faint); color: var(--accent); font-size: 11px; }
 .creator-studio-session-note { margin-top: 16px; color: var(--text-dim); font-size: 11px; line-height: 1.6; }
+
+.creator-frame-card { display: grid; gap: 9px; margin-top: 10px; padding: 11px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-card); }
+.creator-frame-head { display: flex; align-items: center; justify-content: space-between; }
+.creator-frame-title { color: var(--accent-muted); font: 600 10px var(--font-mono); letter-spacing: .1em; text-transform: uppercase; }
+.creator-frame-image { display: block; width: 100%; max-height: 420px; object-fit: contain; border: 1px solid var(--border-color); border-radius: 6px; background: #050505; }
+.creator-frame-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.creator-btn { min-height: 30px; padding: 5px 12px; border: 1px solid var(--border-color); border-radius: 5px; background: var(--bg-secondary); color: var(--text-secondary); font-size: 11px; cursor: pointer; transition: color .15s ease, border-color .15s ease, background .15s ease; }
+.creator-btn:hover:not(:disabled) { border-color: var(--border-focus); color: var(--accent); }
+.creator-btn:disabled { opacity: .55; cursor: default; }
+.creator-btn--primary { border-color: var(--border-focus); background: var(--accent-faint); color: var(--accent); }
 
 .ugc-studio-overlay {
     position: fixed;

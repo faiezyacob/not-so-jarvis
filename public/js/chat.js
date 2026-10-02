@@ -914,32 +914,53 @@ const Chat = (() => {
         }
     }
 
+    // Collapse a generated prompt to a couple of lines with a "Show more"
+    // toggle, exactly like image prompts — video prompts (H3 / Creator Studio)
+    // included. A long prompt can span several markdown paragraphs because blank
+    // lines each become a paragraph, so the whole block from the "**Prompt:**"
+    // label up to the generated media is collapsed together.
     function attachGeneratedPromptDisclosure(container) {
-        if (!container.querySelector('img.md-image')) return;
+        if (!container.querySelector('img.md-image, video')) return;
         const paragraphs = Array.from(container.querySelectorAll('p.md-paragraph'));
         paragraphs.forEach((paragraph) => {
             const label = paragraph.querySelector('strong');
             if (!label || label.textContent.trim().toLowerCase() !== 'prompt:') return;
             const siblings = Array.from(paragraph.parentNode.children);
-            const followsImage = siblings
-                .slice(siblings.indexOf(paragraph) + 1)
-                .some((element) => element.querySelector && element.querySelector('img.md-image'));
-            if (!followsImage) return;
+            const startIndex = siblings.indexOf(paragraph);
+            const block = [];
+            let followsMedia = false;
+            for (let i = startIndex; i < siblings.length; i++) {
+                const element = siblings[i];
+                const isMedia = element !== paragraph && element.querySelector
+                    && (element.querySelector('img.md-image') || element.matches('video'));
+                if (isMedia) { followsMedia = true; break; }
+                // Everything from the label up to the media belongs to the
+                // prompt, including markdown lists and code blocks.
+                block.push(element);
+            }
+            if (!followsMedia || !block.length) return;
 
-            paragraph.classList.add('chat-generated-prompt--collapsed');
+            // Wrap the whole prompt block so the height limit applies to the
+            // block as a whole (a few lines), not a couple of lines per paragraph.
+            const wrapper = document.createElement('div');
+            wrapper.className = 'chat-generated-prompt chat-generated-prompt--collapsed';
+            block[0].parentNode.insertBefore(wrapper, block[0]);
+            block.forEach((element) => wrapper.appendChild(element));
+
             const toggle = document.createElement('button');
             toggle.type = 'button';
             toggle.className = 'chat-generated-prompt-toggle';
             toggle.textContent = 'Show more';
             toggle.setAttribute('aria-expanded', 'false');
             toggle.addEventListener('click', () => {
-                const expanded = paragraph.classList.toggle('chat-generated-prompt--expanded');
-                paragraph.classList.toggle('chat-generated-prompt--collapsed', !expanded);
+                const expanded = !wrapper.classList.contains('chat-generated-prompt--expanded');
+                wrapper.classList.toggle('chat-generated-prompt--expanded', expanded);
+                wrapper.classList.toggle('chat-generated-prompt--collapsed', !expanded);
                 toggle.textContent = expanded ? 'Show less' : 'Show more';
                 toggle.setAttribute('aria-expanded', String(expanded));
             });
-            paragraph.insertAdjacentElement('afterend', toggle);
-            if (paragraph.scrollHeight <= paragraph.clientHeight + 1) toggle.hidden = true;
+            wrapper.insertAdjacentElement('afterend', toggle);
+            if (wrapper.scrollHeight <= wrapper.clientHeight + 1) toggle.hidden = true;
         });
     }
 
@@ -980,7 +1001,12 @@ const Chat = (() => {
         const ugcParsed = (window.UGCUI && typeof window.UGCUI.extract === 'function')
             ? window.UGCUI.extract(playgroundParsed.text)
             : { text: playgroundParsed.text, cards: [] };
-        contentEl.innerHTML = Markdown.parse(ugcParsed.text);
+        // Creator Studio opening-frame approval persists as a [[creator-frame:...]]
+        // marker and renders as an interactive card (Create Video / Regenerate).
+        const creatorFrameParsed = (window.CreatorStudioUI && typeof window.CreatorStudioUI.extract === 'function')
+            ? window.CreatorStudioUI.extract(ugcParsed.text)
+            : { text: ugcParsed.text, cards: [] };
+        contentEl.innerHTML = Markdown.parse(creatorFrameParsed.text);
         if (streaming) return;
         collapseUpscalePairs(contentEl);
         attachGeneratedPromptDisclosure(contentEl);
@@ -1001,6 +1027,9 @@ const Chat = (() => {
         }
         if (window.UGCUI && typeof window.UGCUI.render === 'function') {
             ugcParsed.cards.forEach((card) => window.UGCUI.render(contentEl, card));
+        }
+        if (window.CreatorStudioUI && typeof window.CreatorStudioUI.render === 'function') {
+            creatorFrameParsed.cards.forEach((card) => window.CreatorStudioUI.render(contentEl, card));
         }
     }
 
@@ -1120,6 +1149,9 @@ const Chat = (() => {
         }
         if (window.UGCUI && typeof window.UGCUI.hydrate === 'function') {
             window.UGCUI.hydrate(chatMessagesEl, Conversations.currentId());
+        }
+        if (window.CreatorStudioUI && typeof window.CreatorStudioUI.hydrate === 'function') {
+            window.CreatorStudioUI.hydrate(chatMessagesEl, Conversations.currentId());
         }
 
         chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
@@ -1415,6 +1447,7 @@ const Chat = (() => {
                     if (line.startsWith('data: ')) {
                         const data = JSON.parse(line.slice(6));
                         if (data.creatorStudioProgress) reportCreatorProgress(Object.assign({ stage: true }, data.creatorStudioProgress));
+                        if (data.creatorStudioFrame) reportCreatorProgress({ frameReady: true });
                         if (data.queued) reportCreatorProgress({ queued: data.queued });
                         if (data.generating) reportCreatorProgress({ generating: data.generating });
                         if (data.progress) reportCreatorProgress({ progress: data.progress });
@@ -1622,6 +1655,9 @@ const Chat = (() => {
                     }
                     if (window.UGCUI && typeof window.UGCUI.strip === 'function') {
                         spoken = window.UGCUI.strip(spoken);
+                    }
+                    if (window.CreatorStudioUI && typeof window.CreatorStudioUI.strip === 'function') {
+                        spoken = window.CreatorStudioUI.strip(spoken);
                     }
                     if (window.ChatSuggestions && typeof window.ChatSuggestions.strip === 'function') {
                         spoken = window.ChatSuggestions.strip(spoken);
