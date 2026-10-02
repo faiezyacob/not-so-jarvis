@@ -1458,6 +1458,15 @@ function rerollIdentitySkin(identity, input) {
     return refreshIdentity(next);
 }
 
+function rerollIdentityUndertone(identity, input) {
+    if (!identity || typeof identity !== 'object') return identity;
+    const rng = resolveRerollRng(input);
+    const category = categoryForIdentity(identity) || fallbackCategory();
+    const next = Object.assign({}, identity);
+    next.skinUndertone = pickDifferentValue(category.skinUndertones || SKIN_UNDERTONES, next.skinUndertone, rng);
+    return refreshIdentity(next);
+}
+
 function rerollIdentityAppearance(identity, input) {
     if (!identity || typeof identity !== 'object') return identity;
     const rng = resolveRerollRng(input);
@@ -1568,6 +1577,7 @@ function rerollIdentityTrait(identity, trait, input) {
     if (key === 'age') return rerollIdentityAge(identity, input);
     if (key === 'gender') return rerollIdentityGender(identity, input);
     if (key === 'skin') return rerollIdentitySkin(identity, input);
+    if (key === 'undertone') return rerollIdentityUndertone(identity, input);
     if (key === 'face') return rerollIdentityFaceStructure(identity, input);
     if (key === 'eyes') return rerollIdentityEyes(identity, input);
     if (key === 'brows') return rerollIdentityBrows(identity, input);
@@ -1602,6 +1612,10 @@ function listIdentityTraitOptions(identity) {
         {
             part: 'skin', label: 'Skin tone', value: identity.skinTone || '',
             options: distinctTraitOptions(category.skinTones, context)
+        },
+        {
+            part: 'undertone', label: 'Skin undertone', value: identity.skinUndertone || '',
+            options: distinctTraitOptions(category.skinUndertones || SKIN_UNDERTONES, context)
         },
         {
             part: 'face', label: 'Face shape', value: identity.faceShape || '',
@@ -1693,6 +1707,8 @@ function setIdentityTrait(identity, part, value, input) {
         if (!skin) return identity;
         next.skinTone = selected;
         next.skinGroup = skin.group || next.skinGroup || '';
+    } else if (kind === 'undertone') {
+        next.skinUndertone = selected;
     } else if (kind === 'face') {
         next.faceShape = selected;
     } else if (kind === 'eyes') {

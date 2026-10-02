@@ -872,7 +872,7 @@ function rerollIdentityPart(concept, part, rng, theme) {
     const c = concept || {};
     if (!c.identity || typeof c.identity !== 'object') return concept;
     const kind = String(part || '').trim().toLowerCase();
-    const supported = ['appearance', 'age', 'gender', 'skin', 'face', 'eyes', 'brows', 'hair', 'build', 'feature'];
+    const supported = ['appearance', 'age', 'gender', 'skin', 'undertone', 'face', 'eyes', 'brows', 'hair', 'build', 'feature'];
     if (!supported.includes(kind)) return concept;
     const next = identityGen.rerollIdentityTrait(c.identity, kind, rng);
     c.identity = next;

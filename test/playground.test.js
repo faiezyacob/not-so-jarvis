@@ -1691,7 +1691,7 @@ test('an identity lock blocks the build re-roll', () => {
 test('trait dropdown options omit appearance, age, and gender', () => {
     const identity = characterGen.generateRandomIdentity(201);
     const traits = characterGen.listIdentityTraitOptions(identity);
-    assert.deepEqual(traits.map((trait) => trait.part), ['skin', 'face', 'eyes', 'brows', 'hair', 'build', 'feature']);
+    assert.deepEqual(traits.map((trait) => trait.part), ['skin', 'undertone', 'face', 'eyes', 'brows', 'hair', 'build', 'feature']);
 });
 
 test('Surprise Me Again applies pending trait choices without changing unrelated traits', () => {

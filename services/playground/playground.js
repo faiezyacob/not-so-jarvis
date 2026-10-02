@@ -161,7 +161,7 @@ function buildCard(session, character) {
         locks,
         identityTraits: canCustomizeIdentity
             ? characterGen.listIdentityTraitOptions(concept.identity).filter((item) =>
-                !((['appearance', 'skin', 'face', 'eyes', 'brows', 'feature'].includes(item.part) && locks.appearance)
+                !((['appearance', 'skin', 'undertone', 'face', 'eyes', 'brows', 'feature'].includes(item.part) && locks.appearance)
                     || (item.part === 'hair' && locks.hair)))
             : [],
         // The independent generator controls that produced a random character
