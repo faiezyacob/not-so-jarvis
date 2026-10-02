@@ -905,6 +905,44 @@ function h3DimensionsForAspectRatio(aspectRatio, size) {
     return h3Dimensions(width, height, size);
 }
 
+// Resolve the render canvas so the video matches its source. Order:
+//   1. an explicit user-named size in the prompt ("768x1152"),
+//   2. otherwise the source/reference image's own aspect ratio for I2VA/Ref2VA,
+//      so the conditioned frame is never stretched,
+//   3. otherwise a caller-provided size, then the configured aspect/size tier.
+// `probeImageDimensions` is injectable so the resolution can be unit-tested
+// without touching disk.
+function resolveVideoOutputDimensions({
+    prompt,
+    options = {},
+    mode,
+    referenceImages = [],
+    sourceImageRawFilename,
+    settings = {},
+    probeImageDimensions
+} = {}) {
+    const namedDims = parseRequestedVideoResolution(null, null, prompt);
+    if (namedDims) return namedDims;
+
+    const useRefs = Array.isArray(referenceImages) && referenceImages.length > 0;
+    const dimSource = useRefs
+        ? referenceImages[0]
+        : (mode === 'i2va' ? sourceImageRawFilename : null);
+    if (dimSource) {
+        const probe = probeImageDimensions
+            || ((name) => readStillImageDimensions(resolveVideoStillPath(name)));
+        const imgDims = probe(dimSource);
+        if (imgDims && imgDims.width > 0 && imgDims.height > 0) {
+            const dims = h3Dimensions(imgDims.width, imgDims.height, settings.h3Size);
+            dims.source = { width: imgDims.width, height: imgDims.height };
+            return dims;
+        }
+    }
+
+    return parseRequestedVideoResolution(options.width, options.height, '')
+        || h3DimensionsForAspectRatio(settings.videoAspectRatio, settings.h3Size);
+}
+
 // --- Generation lock (shared with image-generator) ---------------------------
 // Single FIFO in services/generation-queue.js. Both pipelines delegate here
 // so image/video/upscale never run concurrently and extras queue.
@@ -4626,12 +4664,21 @@ async function generateVideo(prompt, options = {}) {
             : h3DurationSeconds(settings.h3Duration);
         const frames = h3FramesForSeconds(duration);
 
-        // An explicit requested size wins over the aspect/size tiers (e.g.
-        // options.width/height or "768x1152" in the prompt). Otherwise the
-        // configured aspect ratio + size tier derive it.
-        const requestedDims = parseRequestedVideoResolution(options.width, options.height, prompt);
-        const { W, H } = requestedDims || h3DimensionsForAspectRatio(settings.videoAspectRatio, settings.h3Size);
-        console.log('[video] output aspect ratio:', settings.videoAspectRatio, '-> video dimensions:', W + 'x' + H);
+        const resolvedDims = resolveVideoOutputDimensions({
+            prompt,
+            options,
+            mode,
+            referenceImages,
+            sourceImageRawFilename: options.sourceImageRawFilename,
+            settings
+        });
+        const { W, H } = resolvedDims;
+        if (resolvedDims.source) {
+            console.log('[video] source aspect ratio:', resolvedDims.source.width + 'x' + resolvedDims.source.height,
+                '-> video dimensions:', W + 'x' + H);
+        } else {
+            console.log('[video] output aspect ratio:', settings.videoAspectRatio, '-> video dimensions:', W + 'x' + H);
+        }
 
         // Prepend trigger words from active LoRAs to the prompt. For I2VA keep
         // the <Picture 1> first-frame alignment line as the literal first line of
@@ -5697,6 +5744,7 @@ module.exports = {
     h3EffectiveDurationSeconds,
     h3Dimensions,
     h3DimensionsForAspectRatio,
+    resolveVideoOutputDimensions,
     h3SizeScale,
     H3_VIDEO_ASPECT_RATIOS,
     normalizeVideoAspectRatio,

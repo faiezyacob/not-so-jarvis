@@ -1369,7 +1369,8 @@ const UGCUI = (() => {
             [{ value: 'auto', label: 'Auto' }].concat((options.outfitPacks || []).map((p) => ({ value: p.id, label: p.label }))),
             'auto');
         fillUgcSelect(document.getElementById('ugcEnvironment'),
-            (options.environments || []).map((e) => ({ value: e.id, label: e.label })), 'home');
+            (options.environments || []).filter((e) => e.id !== 'custom')
+                .map((e) => ({ value: e.id, label: e.label })), 'home');
         fillUgcSelect(document.getElementById('ugcPlatform'),
             (options.platforms || []).map((p) => ({ value: p.id, label: p.label })), 'generic');
         const profile = options.creatorProfile || {};
@@ -1380,8 +1381,9 @@ const UGCUI = (() => {
         paintUgcCreator();
     }
 
-    // Show the conditional rows (new product, random-creator controls, custom
-    // environment) so an unset field never looks required.
+    // Show the conditional rows (new product, random-creator controls) so an
+    // unset field never looks required. The custom environment field is always
+    // visible and takes over whenever it is not empty.
     function syncUgcPopupVisibility() {
         const product = document.getElementById('ugcProductSelect');
         const newRow = document.getElementById('ugcNewProductRow');
@@ -1389,9 +1391,6 @@ const UGCUI = (() => {
         const creator = document.getElementById('ugcCreatorSelect');
         const profileRow = document.getElementById('ugcCreatorProfileRow');
         if (profileRow) profileRow.hidden = !creator || creator.value !== 'random';
-        const environment = document.getElementById('ugcEnvironment');
-        const environmentRow = document.getElementById('ugcEnvironmentCustomRow');
-        if (environmentRow) environmentRow.hidden = !environment || environment.value !== 'custom';
     }
 
     function collectUgcSetup() {
@@ -1403,6 +1402,8 @@ const UGCUI = (() => {
         const creatorValue = value('ugcCreatorSelect');
         const environmentId = value('ugcEnvironment');
         const outfit = value('ugcOutfit');
+        const environmentCustom = value('ugcEnvironmentCustom');
+        const outfitCustom = value('ugcOutfitCustom');
         const setup = {
             briefText: value('ugcStudioBrief'),
             objective: value('ugcStudioBrief'),
@@ -1414,10 +1415,11 @@ const UGCUI = (() => {
             duration: Number(value('ugcDuration')) || 15,
             platform: value('ugcPlatform'),
             contentTypeId: value('ugcContentType'),
-            environmentId,
-            environmentCustom: environmentId === 'custom' ? value('ugcEnvironmentCustom') : '',
-            outfitPack: outfit === 'auto' ? '' : outfit,
-            outfitPackCustom: value('ugcOutfitCustom')
+            // A non-empty custom value always wins over the dropdown pick.
+            environmentId: environmentCustom ? 'custom' : environmentId,
+            environmentCustom,
+            outfitPack: outfitCustom ? 'custom' : (outfit === 'auto' ? '' : outfit),
+            outfitPackCustom: outfitCustom
         };
         if (productValue === 'new') {
             setup.product = { name: value('ugcProductName'), brand: value('ugcProductBrand') };

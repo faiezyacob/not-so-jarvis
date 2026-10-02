@@ -38,44 +38,25 @@ const CreatorStudioUI = (() => {
     }
 
     // The Scene selector reads the shared Scene/Location Library. "Auto" lets
-    // the concept decide; "Custom scene…" reveals a free-text field. An explicit
-    // library selection sends its sceneId so the exact shared Scene object is used.
-    function syncSceneCustom() {
-        const select = $('creatorScene');
-        const field = $('creatorSceneCustomField');
-        if (!select || !field) return;
-        field.hidden = select.value !== '__custom__';
-    }
-
+    // the concept decide; a non-empty custom scene always overrides the pick.
     function scenePayload() {
+        const custom = $('creatorSceneCustom') ? $('creatorSceneCustom').value.trim() : '';
+        if (custom) return { sceneId: '', scene: custom };
         const select = $('creatorScene');
         const value = select ? String(select.value || '') : '';
-        if (value === '__custom__') {
-            const custom = $('creatorSceneCustom') ? $('creatorSceneCustom').value.trim() : '';
-            return { sceneId: '', scene: custom || 'Auto' };
-        }
         const scene = (catalogs && Array.isArray(catalogs.scenes) ? catalogs.scenes : [])
             .find((item) => item.id === value) || null;
         return { sceneId: value || '', scene: scene ? scene.name : 'Auto' };
     }
 
     // The Outfit selector mirrors the Scene selector: "Auto" lets the Character
-    // wardrobe decide; "Custom outfit…" reveals a free-text field. Any other
-    // selection sends its Outfit Pack id.
-    function syncOutfitCustom() {
-        const select = $('creatorOutfit');
-        const field = $('creatorOutfitCustomField');
-        if (!select || !field) return;
-        field.hidden = select.value !== '__custom__';
-    }
-
+    // wardrobe decide; a non-empty custom outfit always overrides the pick. Any
+    // other selection sends its Outfit Pack id.
     function outfitPayload() {
+        const custom = $('creatorOutfitCustom') ? $('creatorOutfitCustom').value.trim() : '';
+        if (custom) return { outfitPack: 'custom', outfit: custom, outfitPackCustom: custom };
         const select = $('creatorOutfit');
         const value = select ? String(select.value || '') : '';
-        if (value === '__custom__') {
-            const custom = $('creatorOutfitCustom') ? $('creatorOutfitCustom').value.trim() : '';
-            return { outfitPack: 'custom', outfit: custom || 'Auto', outfitPackCustom: custom };
-        }
         return { outfitPack: value || '', outfit: 'Auto', outfitPackCustom: '' };
     }
 
@@ -142,13 +123,7 @@ const CreatorStudioUI = (() => {
         fillSelect($('creatorExpressionArc'), catalogs.expressionArcs, 'auto');
         fillSelect($('creatorBodyAction'), catalogs.bodyActions, 'conversational_gesture');
         fillSelect($('creatorOutfit'), catalogs.outfitPacks, '', 'Auto · Character wardrobe');
-        const outfitSelect = $('creatorOutfit');
-        if (outfitSelect) outfitSelect.appendChild(option('__custom__', 'Custom outfit…'));
         fillSelect($('creatorScene'), catalogs.scenes, '', 'Auto · let the concept decide');
-        const sceneSelect = $('creatorScene');
-        if (sceneSelect) sceneSelect.appendChild(option('__custom__', 'Custom scene…'));
-        syncSceneCustom();
-        syncOutfitCustom();
     }
 
     // "New" resets the whole surface: the persisted session (server-side), every
@@ -213,21 +188,17 @@ const CreatorStudioUI = (() => {
             if (sceneSelect && session.content && session.content.sceneId
                 && Array.from(sceneSelect.options).some((opt) => opt.value === session.content.sceneId)) {
                 sceneSelect.value = session.content.sceneId;
-            } else if (sceneSelect && session.content && session.content.scene
+            } else if ($('creatorSceneCustom') && session.content && session.content.scene
                 && session.content.scene !== 'Auto') {
-                sceneSelect.value = '__custom__';
-                if ($('creatorSceneCustom')) $('creatorSceneCustom').value = session.content.scene;
+                $('creatorSceneCustom').value = session.content.scene;
             }
-            syncSceneCustom();
             const outfitSelect = $('creatorOutfit');
             if (outfitSelect && session.content && session.content.outfitPack
                 && Array.from(outfitSelect.options).some((opt) => opt.value === session.content.outfitPack)) {
                 outfitSelect.value = session.content.outfitPack;
-            } else if (outfitSelect && session.content && session.content.outfitPack === 'custom') {
-                outfitSelect.value = '__custom__';
-                if ($('creatorOutfitCustom')) $('creatorOutfitCustom').value = session.content.outfit || '';
+            } else if ($('creatorOutfitCustom') && session.content && session.content.outfitPack === 'custom') {
+                $('creatorOutfitCustom').value = session.content.outfit || '';
             }
-            syncOutfitCustom();
         }
         renderSession();
         if (session && session.status === 'generating') {
@@ -591,8 +562,6 @@ const CreatorStudioUI = (() => {
         $('creatorCharacterSelect').addEventListener('change', () => {
             paintCharacter();
         });
-        if ($('creatorScene')) $('creatorScene').addEventListener('change', syncSceneCustom);
-        if ($('creatorOutfit')) $('creatorOutfit').addEventListener('change', syncOutfitCustom);
         const sheetButton = $('creatorCharacterSheet');
         if (sheetButton) sheetButton.addEventListener('click', () => {
             const characterId = $('creatorCharacterSelect').value;

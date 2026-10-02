@@ -88,6 +88,65 @@ test('buildH3Graph: reusable RefMods apply to H3 conditioning without replacing 
     assert.deepEqual(graph.first_image.inputs.image, 'opening.png');
 });
 
+// --- resolveVideoOutputDimensions -------------------------------------------
+
+test('resolveVideoOutputDimensions: I2VA matches the source image aspect ratio, not the global tier', () => {
+    const dims = videoGenerator.resolveVideoOutputDimensions({
+        prompt: 'integrated_multimodal_description:\n[Shot 1] walk forward',
+        mode: 'i2va',
+        sourceImageRawFilename: 'frame.png',
+        settings: { videoAspectRatio: '16:9', h3Size: 'M' },
+        probeImageDimensions: () => ({ width: 832, height: 1216 })
+    });
+    assert.ok(Math.abs((dims.W / dims.H) - (832 / 1216)) < 0.05, dims.W + 'x' + dims.H);
+    assert.deepEqual(dims.source, { width: 832, height: 1216 });
+});
+
+test('resolveVideoOutputDimensions: Ref2VA matches the first reference frame', () => {
+    const dims = videoGenerator.resolveVideoOutputDimensions({
+        prompt: 'subject_definitions:\n<Subject 1> creator',
+        mode: 'ref2va',
+        referenceImages: ['a.png', 'b.png'],
+        settings: { videoAspectRatio: '16:9', h3Size: 'M' },
+        probeImageDimensions: () => ({ width: 832, height: 1216 })
+    });
+    assert.ok(Math.abs((dims.W / dims.H) - (832 / 1216)) < 0.05, dims.W + 'x' + dims.H);
+});
+
+test('resolveVideoOutputDimensions: an explicit prompt size wins over the source image', () => {
+    const dims = videoGenerator.resolveVideoOutputDimensions({
+        prompt: 'a portrait scene, 768x1152',
+        mode: 'i2va',
+        sourceImageRawFilename: 'frame.png',
+        settings: { videoAspectRatio: '16:9', h3Size: 'M' },
+        probeImageDimensions: () => ({ width: 832, height: 1216 })
+    });
+    assert.equal(dims.W, 768);
+    assert.equal(dims.H, 1152);
+});
+
+test('resolveVideoOutputDimensions: T2VA falls back to the configured tier', () => {
+    const dims = videoGenerator.resolveVideoOutputDimensions({
+        prompt: 'a landscape desert at dusk',
+        mode: 't2va',
+        settings: { videoAspectRatio: '16:9', h3Size: 'M' }
+    });
+    const expected = videoGenerator.h3DimensionsForAspectRatio('16:9', 'M');
+    assert.equal(dims.W, expected.W);
+    assert.equal(dims.H, expected.H);
+});
+
+test('resolveVideoOutputDimensions: caller width/height applies when no image is present', () => {
+    const dims = videoGenerator.resolveVideoOutputDimensions({
+        prompt: 'no size here',
+        mode: 't2va',
+        options: { width: 512, height: 768 },
+        settings: { videoAspectRatio: '16:9', h3Size: 'M' }
+    });
+    assert.equal(dims.W, 512);
+    assert.equal(dims.H, 768);
+});
+
 // --- ensureShotDialogue ------------------------------------------------------
 
 test('ensureShotDialogue injects a dropped line with its language tag per shot', () => {
