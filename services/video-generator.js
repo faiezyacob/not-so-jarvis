@@ -13,7 +13,6 @@
 const fs = require('fs');
 const path = require('path');
 const comfyui = require('./comfyui');
-const h3ReferencePipeline = require('./h3-reference-pipeline');
 const configManager = require('../server/config-manager');
 const generatedHistory = require('./generated-history');
 const generationQueue = require('./generation-queue');
@@ -84,10 +83,6 @@ const H3_TURBO_REQUIRED_NODES = Object.freeze([H3_TURBO_LORA_NODE, H3_TURBO_SAMP
 const H3_TURBO_LORA_INSTALL_URL = 'https://github.com/larryvrh/ComfyUI-MiniMax-H3-Turbo';
 // Recommended checkpoint; only a default, so a renamed/overridden file works.
 const H3_TURBO_DEFAULT_LORA = 'minimax_h3_turbo_v4_step600_ema.safetensors';
-// Reference (ref2va) mode uses a dedicated Turbo adapter trained on the
-// reference model path. Using the frames adapter on the ref2va UNET degrades
-// output, so reference mode gets its own file (configurable).
-const H3_TURBO_DEFAULT_REFERENCE_LORA = 'minimax_h3_n_turbo_4step_v0.1_comfy_resized_avg_rank_21_bf16.safetensors';
 const H3_TURBO_STRENGTH = 1.0;
 const H3_TURBO_SCHEDULER = 'simple';
 // 4 steps is the usable minimum; past 8 it stops helping and over-sharpens.
@@ -120,17 +115,13 @@ function normalizeH3Cfg(value, fallback) {
 
 // Read the Turbo toggle/step/filename from a settings object. Enabled is only
 // true for an explicit truthy value so existing users stay on the normal path.
-function normalizeH3Turbo(settings, options) {
-    const reference = Boolean(options && options.reference);
+function normalizeH3Turbo(settings) {
     const source = settings || {};
     const raw = source.h3TurboEnabled;
     const enabled = raw === true || raw === 1 ||
         String(raw).toLowerCase() === 'true' || String(raw) === '1' || raw === undefined || raw === null;
-    const loraName = reference
-        ? (String(source.h3RefTurboLora || H3_DEFAULTS.h3RefTurboLora || H3_TURBO_DEFAULT_REFERENCE_LORA).trim() ||
-            H3_TURBO_DEFAULT_REFERENCE_LORA)
-        : (String(source.h3TurboLora || H3_DEFAULTS.h3TurboLora || H3_TURBO_DEFAULT_LORA).trim() ||
-            H3_TURBO_DEFAULT_LORA);
+    const loraName = String(source.h3TurboLora || H3_DEFAULTS.h3TurboLora || H3_TURBO_DEFAULT_LORA).trim() ||
+        H3_TURBO_DEFAULT_LORA;
     // ComfyUI's stock Euler sampler is audio-safe once the sigma shift is
     // applied, so a shifted Turbo run can use KSamplerSelect instead of the
     // pack's bespoke sampler. Resolved against /object_info at graph build.
@@ -484,7 +475,6 @@ function h3LatentUpscaleEnabled(value) {
 // matching env var is unset.
 const H3_MODEL_FILES = {
     unet: 'minimax_h3_fl2va_pruned_int8_convrot.safetensors',
-    referenceUnet: 'minimax_h3_ref2va_pruned_int8_convrot.safetensors',
     clip: 'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors',
     videoVae: 'minimax_h3_video_vae_fp16.safetensors',
     audioVae: 'minimax_h3_audio_vae_fp32.safetensors'
@@ -492,7 +482,6 @@ const H3_MODEL_FILES = {
 
 const H3_DEFAULTS = {
     h3Unet: process.env.H3_UNET || H3_MODEL_FILES.unet,
-    h3Ref2vaUnet: process.env.H3_REF2VA_UNET || process.env.H3_UNET_I2VA || H3_MODEL_FILES.referenceUnet,
     h3Clip: process.env.H3_CLIP || H3_MODEL_FILES.clip,
     h3VideoVae: process.env.H3_VIDEO_VAE || H3_MODEL_FILES.videoVae,
     h3AudioVae: process.env.H3_AUDIO_VAE || H3_MODEL_FILES.audioVae,
@@ -514,8 +503,6 @@ const H3_DEFAULTS = {
         process.env.H3_TURBO_ENABLED !== '0',
     h3TurboSteps: normalizeH3TurboSteps(process.env.H3_TURBO_STEPS, H3_TURBO_DEFAULT_STEPS),
     h3TurboLora: process.env.H3_TURBO_LORA || H3_TURBO_DEFAULT_LORA,
-    // Reference (ref2va) Turbo adapter — distinct from the frames adapter.
-    h3RefTurboLora: process.env.H3_REF_TURBO_LORA || H3_TURBO_DEFAULT_REFERENCE_LORA,
     // Sigma shift on the Turbo path: rebalances video/audio schedules.
     h3TurboSigmaShift: String(process.env.H3_TURBO_SIGMA_SHIFT || 'true').toLowerCase() !== 'false',
     // SageAttention is the verified default backend. `auto` still falls back
@@ -575,10 +562,10 @@ const H3_DEFAULTS = {
 };
 
 const H3_CONFIGURABLE_KEYS = [
-    'h3Unet', 'h3Ref2vaUnet', 'h3Clip', 'h3VideoVae', 'h3AudioVae',
+    'h3Unet', 'h3Clip', 'h3VideoVae', 'h3AudioVae',
     'h3Duration', 'h3Size', 'videoAspectRatio', 'h3Steps', 'h3Cfg', 'attentionBackend', 'firstBlockCache',
     'loras', 'loraTriggerWords',
-    'h3TurboEnabled', 'h3TurboSteps', 'h3TurboLora', 'h3RefTurboLora', 'h3TurboSigmaShift',
+    'h3TurboEnabled', 'h3TurboSteps', 'h3TurboLora', 'h3TurboSigmaShift',
     'faceRefineEnabled', 'faceRefineDetector', 'faceRefineCropFactor',
     'faceRefineDenoise', 'faceRefineSteps', 'faceRefineCanvasMode',
     'faceRefineSelect', 'faceRefineFeather',
@@ -907,8 +894,8 @@ function h3DimensionsForAspectRatio(aspectRatio, size) {
 
 // Resolve the render canvas so the video matches its source. Order:
 //   1. an explicit user-named size in the prompt ("768x1152"),
-//   2. otherwise the source/reference image's own aspect ratio for I2VA/Ref2VA,
-//      so the conditioned frame is never stretched,
+//   2. otherwise the I2VA first frame's own aspect ratio, so the conditioned
+//      frame is never stretched,
 //   3. otherwise a caller-provided size, then the configured aspect/size tier.
 // `probeImageDimensions` is injectable so the resolution can be unit-tested
 // without touching disk.
@@ -916,7 +903,6 @@ function resolveVideoOutputDimensions({
     prompt,
     options = {},
     mode,
-    referenceImages = [],
     sourceImageRawFilename,
     settings = {},
     probeImageDimensions
@@ -924,10 +910,7 @@ function resolveVideoOutputDimensions({
     const namedDims = parseRequestedVideoResolution(null, null, prompt);
     if (namedDims) return namedDims;
 
-    const useRefs = Array.isArray(referenceImages) && referenceImages.length > 0;
-    const dimSource = useRefs
-        ? referenceImages[0]
-        : (mode === 'i2va' ? sourceImageRawFilename : null);
+    const dimSource = mode === 'i2va' ? sourceImageRawFilename : null;
     if (dimSource) {
         const probe = probeImageDimensions
             || ((name) => readStillImageDimensions(resolveVideoStillPath(name)));
@@ -1492,13 +1475,10 @@ function uniqueStages(stages) {
 // Copy the authoritative fields out of a structured request, accepting the
 // canonical object (new or legacy shape) when present and otherwise mapping the
 // legacy performance beats defensively (`speech` is never read as empty).
-function resolveCreatorCanonical(structuredRequest, referenceImages) {
+function resolveCreatorCanonical(structuredRequest) {
     const req = structuredRequest || {};
     const provided = req.creator_dialogue;
-    const refCount = Array.isArray(referenceImages) ? referenceImages.length : 0;
-    const fallbackReference = refCount
-        ? 'the approved Character identity portrait supplied as <Picture 1>'
-        : 'the approved Character identity portrait';
+    const fallbackReference = 'the opening frame supplied as <Picture 1>';
 
     if (provided && typeof provided === 'object') {
         const creator = provided.creator && typeof provided.creator === 'object' ? provided.creator : {};
@@ -1761,7 +1741,7 @@ function buildCreatorStudioPrompt(canonical) {
     const language = String(c.language || 'English').trim() || 'English';
     const name = String(creator.name || 'the creator').trim() || 'the creator';
     const identity = String(creator.identityDescription || '').trim();
-    const reference = String(creator.referenceDescription || 'the approved Character identity portrait supplied as <Picture 1>').trim();
+    const reference = String(creator.referenceDescription || 'the opening frame supplied as <Picture 1>').trim();
     const cameraStyle = creatorStudio.cameraStyle(shot.cameraStyle);
     const camera = String(shot.cameraDirection || '').trim();
     const environment = String(shot.environment || 'a relaxed, uncluttered everyday creator setting').trim();
@@ -1784,10 +1764,10 @@ function buildCreatorStudioPrompt(canonical) {
         '<Subject 1> is ' + name + ', the fictional creator shown in ' + reference + '. ' +
         (identity ? 'Their identity: ' + identity + '. ' : '') +
         'Preserve their exact facial identity and facial structure, eyes, nose, lips, jawline, hairstyle, hair colour, ' +
-        'complexion and undertone, body proportions and distinctive features throughout. The portrait is an ' +
-        'identity-only reference: never use its pose, framing, background, clothing or lighting, and never generate ' +
-        'a character sheet, collage, turnaround or multi-panel reference. Creator identity is locked; only facial ' +
-        'expression and performance change across the recording.';
+        'complexion and undertone, body proportions and distinctive features throughout, together with the scene, ' +
+        'wardrobe, framing and lighting established by the opening frame. Do not redesign the character or the ' +
+        'environment, and never generate a character sheet, collage, turnaround or multi-panel reference. Creator ' +
+        'identity is locked; only facial expression, gestures and performance change across the recording.';
 
     const summary = 'summary:\n' +
         'A personality-led social creator video in [Shot 1]: ' + name + ' is a creator recording herself with a ' +
@@ -1795,8 +1775,8 @@ function buildCreatorStudioPrompt(canonical) {
         'Every line is performed with visible, natural lip synchronization and is never narrated.';
 
     const retention = 'retention_analysis:\n' +
-        '<Subject 1> (appears in [Shot 1]): fully_preserved - facial identity, complexion, hairstyle and distinctive ' +
-        'physical features from the identity portrait; scene, wardrobe and camera framing follow the Creator Studio direction.';
+        '<Subject 1> (appears in [Shot 1]): fully_preserved - facial identity, complexion, hairstyle, distinctive ' +
+        'physical features, wardrobe, environment, framing and lighting established by the opening frame.';
 
     const cameraBlock = 'Creator Studio camera style: ' + cameraStyle.id + '. ' + cameraStyle.concept + ' ' +
         cameraStyle.camera + (camera ? ' Framing: ' + camera + (/[.!?]$/.test(camera) ? '' : '.') + ' ' : '') +
@@ -1925,23 +1905,17 @@ function formatCreatorStudioDebug(canonical) {
 // Deterministic multi-shot H3 document used when the director LLM fails. Cut
 // times are distributed evenly across the duration (strictly increasing, inside
 // the duration), and [Shot 1] carries no timestamp.
-function buildMultiShotFallbackPrompt({ shotPlan, hasReferenceImage, durationSeconds, referenceCount }) {
+function buildMultiShotFallbackPrompt({ shotPlan, hasReferenceImage, durationSeconds }) {
     const shots = Array.isArray(shotPlan) ? shotPlan.filter(Boolean) : [];
     if (!shots.length) return '';
-    const refCount = Number(referenceCount) > 0 ? Number(referenceCount) : 0;
-    // In reference-to-video mode there is no first-frame lock, so the i2va
-    // alignment line is dropped and each shot names the reference it follows.
-    const alignmentLine = (hasReferenceImage && !refCount)
+    const alignmentLine = hasReferenceImage
         ? 'For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\n\n'
         : '';
     const duration = Number(durationSeconds) > 0 ? Number(durationSeconds) : 0;
     const parts = shots.map((desc, index) => {
-        const refNote = refCount
-            ? ' (matching <Picture ' + Math.min(index + 1, refCount) + '>)'
-            : '';
-        if (index === 0) return '[Shot 1] ' + desc + refNote;
+        if (index === 0) return '[Shot 1] ' + desc;
         const cut = duration > 0 ? (duration * index) / shots.length : index;
-        return '[Shot ' + (index + 1) + '] At ' + formatCutTime(cut) + ', the camera cuts to ' + desc + refNote;
+        return '[Shot ' + (index + 1) + '] At ' + formatCutTime(cut) + ', the camera cuts to ' + desc;
     });
     return alignmentLine +
         'integrated_multimodal_description:\n' + parts.join(' ') + '\n\n' +
@@ -2074,92 +2048,6 @@ function ensureCreatorCameraDirection(prompt, cameraDirection) {
         out = out.slice(0, start) + shot.slice(0, contentEnd) + cameraNote + shot.slice(contentEnd) + out.slice(end);
     }
     return text.slice(0, bodyStart) + out + text.slice(bodyEnd);
-}
-
-// Deterministic full-reference document used when the director LLM fails or
-// returns a non-compliant rewrite. Mirrors the official Full-Reference Mode
-// guide's six sections.
-function buildReferenceFallbackPrompt({ shotPlan, referenceCount, durationSeconds, creatorIdentityOnly, creatorDirection, creatorPerformanceBeats, dialogueLanguage }) {
-    const shots = Array.isArray(shotPlan) ? shotPlan.filter(Boolean) : [];
-    const refCount = Number(referenceCount) > 0 ? Number(referenceCount) : 1;
-    const duration = Number(durationSeconds) > 0 ? Number(durationSeconds) : 0;
-    const shotCount = Math.max(1, shots.length);
-    const pictures = Array.from({ length: refCount }, (_, i) => '<Picture ' + (i + 1) + '>').join(', ');
-    const appearances = shotCount > 1 ? '[Shot 1] and [Shot ' + shotCount + ']' : '[Shot 1]';
-    const performance = creatorPerformanceTimeline(creatorPerformanceBeats, dialogueLanguage);
-    const continuousCreator = Boolean(creatorIdentityOnly && performance.length);
-    const body = continuousCreator
-        ? '[Shot 1] ' + (String(creatorDirection || '').trim() || 'The creator performs directly to camera in one continuous recording.') + '\n\n' + performance.join('\n\n')
-        : shots.length
-        ? shots.map((desc, index) => {
-            const anchor = creatorIdentityOnly ? '' : ' (the shot begins from <Picture ' + Math.min(index + 1, refCount) + '>)';
-            if (index === 0) return '[Shot 1] ' + desc + anchor;
-            const cut = duration > 0 ? (duration * index) / shots.length : index;
-            return '[Shot ' + (index + 1) + '] At ' + formatCutTime(cut) + ', the shot cuts to ' + desc + anchor;
-        }).join(' ')
-        : '[Shot 1] The creator from <Picture 1> speaks to camera with natural, continuous motion.';
-    return 'subject_definitions:\n' +
-        (creatorIdentityOnly
-            ? '<Subject 1> is the same fictional creator shown in the approved Character identity portrait <Picture 1>. Preserve their facial identity, age, complexion, hairstyle and distinctive features; this portrait is an identity-only reference, not a scene or composition reference.\n\n'
-            : '<Subject 1> is the creator shown in <Picture 1>, preserving their identity, hairstyle, wardrobe and the exact product and environment established by the reference frames.\n\n') +
-        'summary:\n' +
-        (creatorIdentityOnly
-            ? (continuousCreator
-                ? 'A personality-led talking video follows the same creator in one continuous shot, with timed performance beats, changing facial expressions and natural gestures.\n\n'
-                : 'A personality-led talking video follows the same creator through ' + shotCount + ' ordered performance beat(s), with changing facial expressions and natural gestures.\n\n')
-            : '[reference generation + keyframe completion] The target video follows the approved reference frames ' + pictures + ' across ' + shotCount + ' shot(s), preserving the creator, wardrobe, product and environment.\n\n') +
-        'retention_analysis:\n' +
-        '<Subject 1> (appears in ' + (continuousCreator ? '[Shot 1]' : appearances) + '): fully_preserved - ' +
-        (creatorIdentityOnly
-            ? 'facial identity and distinctive physical features from the identity portrait; scene, clothing and framing follow Creator Studio direction.\n\n'
-            : 'identity, wardrobe, product and setting from the references are retained.\n\n') +
-        'detailed_description:\n' +
-        (creatorIdentityOnly
-            ? 'The target video is a personality-led social creator video. ' + String(creatorDirection || '') + ' Do not reproduce the reference portrait composition, pose, lighting or background. ' + (continuousCreator ? 'Keep the camera, lens perspective, framing, environment, lighting and wardrobe continuous throughout this single recording; allow only natural micro-adjustments. ' : '')
-            : 'The target video is a photorealistic user-generated-content phone-camera look with natural lighting and handheld framing. ') + body + '\n\n' +
-        'overall_soundscape:\n' +
-        'Ambient environmental sounds and physical action sounds matching the scene.\n\n' +
-        'non_diegetic_music:\nN/A';
-}
-
-// Appended to the H3 director system prompt for reference-to-video productions.
-// Replaces the T2VA/I2VA structure with the official Full-Reference Mode
-// rewrite: six sections, <Subject N>/<Picture N> labels, detailed_description.
-function buildReferenceAddendum(count, creatorIdentityOnly) {
-    const n = Number(count) > 0 ? Number(count) : 1;
-    const pictures = Array.from({ length: n }, (_, i) => '<Picture ' + (i + 1) + '>').join(', ');
-    return '\n\nOVERRIDE \u2014 FULL-REFERENCE MODE (ref2va, NOT i2va):\n' +
-        n + ' reference image(s) are supplied as ' + pictures + ' (1-based, in that order).\n' +
-        'IGNORE the T2VA/I2VA structure above: do NOT use integrated_multimodal_description, and do NOT ' +
-        'write the "at 0.00 seconds ... fully referenced" alignment sentence. Instead write a ' +
-        'full-reference rewrite whose prompt is EXACTLY these six sections, in order, each introduced ' +
-        'by its name followed by a colon on its own line:\n' +
-        'subject_definitions:\nsummary:\nretention_analysis:\ndetailed_description:\n' +
-        'overall_soundscape:\nnon_diegetic_music:\n\n' +
-        'SECTION RULES:\n' +
-        '- subject_definitions: one line per tracked referenced item. Define reusable visible content ' +
-        'with <Subject N> (the creator, their wardrobe, the product, the environment) and name the ' +
-        '<Picture N> each comes from, e.g. "<Subject 1> is the creator shown in <Picture 1>, with ...". ' +
-        'Use a standalone <Picture N> only when that image is a shot\'s concrete starting/keyframe anchor.\n' +
-        '- summary: ONE paragraph, beginning with the task type in square brackets. Use ' +
-        '"[reference generation]" and add " + keyframe completion" only if a picture is used as a ' +
-        'concrete frame anchor. Do not introduce new labels.\n' +
-        '- retention_analysis: one line per label, e.g. "<Subject 1> (appears in [Shot 1], [Shot 2]): ' +
-        'fully_preserved - ...". Allowed markers only: fully_preserved, partially_preserved, ' +
-        'attribute_transfer, weak_reference.\n' +
-        '- detailed_description: the main body, in English. Establish the look in one or two sentences ' +
-        'BEFORE [Shot 1]. [Shot 1] has no timestamp; every later shot starts with ' +
-        '"[Shot N] At MM:SS.mmm, the shot cuts to ...". Insert each <Subject N>/<Picture N> at first ' +
-        'appearance and where its role applies, e.g. "the shot begins from <Picture 1>". Every cut must ' +
-        'reveal new information.\n' +
-        '- overall_soundscape / non_diegetic_music: as usual. Never repeat dialogue there.\n' +
-        '- Preserve identity, wardrobe, colours, key objects and setting from the reference frames. ' +
-        'Keep every speaker on screen with a visibly moving, lip-synced mouth and the exact spoken ' +
-        'words inside <d>[Language] ...</d>. Never drop a dialogue block.\n' +
-        (creatorIdentityOnly
-            ? '\nCREATOR IDENTITY REFERENCE OVERRIDE: The supplied picture is the approved single Character base portrait and is an identity source only. Preserve the same face and physical identity, but DO NOT use it as a shot keyframe and do not copy its pose, framing, background, outfit or lighting. Use the Creator Studio scene, wardrobe and camera direction; facial expressions may transition while facial structure remains unchanged.\n' +
-              'CONTINUOUS CREATOR SESSION RULE: Unless the user explicitly requests multiple shots/scenes, an angle cut, a location cut, a montage or another explicit transition, the detailed_description MUST contain exactly one shot header, [Shot 1]. Creator performance beats are timed events inside that one shot, never separate shots. Use multiple timestamped events such as "At 00:02.500, ..." within [Shot 1]. Keep the same front-facing smartphone selfie framing, environment, lighting, wardrobe and identity throughout, with natural handheld micro-movement and no cinematic camera movement. Dialogue, expression, gaze and body actions flow continuously. Do not infer cuts from performance or framing changes. When an explicit cut is requested, include only the requested scene/camera changes; performance beats still remain timed events, never individual shots.\n'
-            : '');
 }
 
 async function detectVideoIntent(message, providers, provider, model, think) {
@@ -2363,16 +2251,11 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
     const continuousCreator = creatorIdentityOnly && !explicitCreatorMultiShot;
     const creatorBeatsForPrompt = continuousCreator ? creatorPerformanceBeats : [];
     const multiShot = shotPlan.length > 1;
-    // Reference-to-video (ref2va): every approved scene frame is conditioned via
-    // the MiniMaxH3ReferenceToVideo node and addressed as <Picture i>. This is
-    // what makes the UGC reference frames actually reach the final video.
-    const referenceImages = Array.isArray(structuredRequest.reference_images)
-        ? structuredRequest.reference_images.map((f) => String(f || '').trim()).filter(Boolean).slice(0, 9)
-        : [];
-    const isRefMode = referenceImages.length > 0;
-    const refCount = referenceImages.length;
-    const hasFirstFrameRef = !isRefMode && Boolean(has_reference_image);
-    const mode = isRefMode ? 'ref2va' : (has_reference_image ? 'i2va' : 't2va');
+    // H3 is image-to-video only: a single first frame is the complete visual
+    // source of truth. Character identity is resolved upstream by Qwen Image
+    // 2.1, never handed to H3 as a separate reference.
+    const hasFirstFrameRef = Boolean(has_reference_image);
+    const mode = has_reference_image ? 'i2va' : 't2va';
     const dialogueLanguage = String(
         structuredRequest.dialogue_language || structuredRequest.dialogueLanguage || ''
     ).trim();
@@ -2392,7 +2275,7 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
     let visionAvailable = false;
     let sourceImageBase64 = null;
 
-    if ((has_reference_image || isRefMode) && !isModify && sourceImageRawFilename) {
+    if (has_reference_image && !isModify && sourceImageRawFilename) {
         const modelInfo = getModelById(model);
         if (modelInfo && modelInfo.capabilities && modelInfo.capabilities.includes('vision')) {
             const filePath = resolveVideoStillPath(sourceImageRawFilename);
@@ -2438,7 +2321,7 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
     // while the prompt is built. Missing data and malformed output are rejected
     // rather than silently submitted.
     if (creatorIdentityOnly && continuousCreator && !isModify) {
-        const canonical = resolveCreatorCanonical(structuredRequest, referenceImages);
+        const canonical = resolveCreatorCanonical(structuredRequest);
         canonical.language = dialogueLanguage || 'English';
         const dialogueCheck = validateCreatorDialogue(canonical);
         if (!dialogueCheck.ok) {
@@ -2479,14 +2362,7 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
             'Output ONLY the JSON described in the system prompt.';
     } else {
         let sourceNote;
-        if (isRefMode) {
-            sourceNote = creatorIdentityOnly
-                ? 'CHARACTER IDENTITY REFERENCE: ' + refCount + ' approved base portrait(s) are supplied as ' + referenceImages.map((_, i) => '<Picture ' + (i + 1) + '>').join(', ') + '. They identify the same creator only; they are not shot keyframes. Preserve identity, but follow the Creator Studio concept for scene, outfit, framing and lighting. Never copy portrait composition or pose.\n'
-                : 'REFERENCE IMAGES: ' + refCount + ' approved reference frame(s) are provided as ' +
-                  referenceImages.map((_, i) => '<Picture ' + (i + 1) + '>').join(', ') + '.\n' +
-                  'Each is the keyframe anchor for its shot: <Picture 1> anchors [Shot 1], <Picture i> ' +
-                  'anchors [Shot i]. Define the reusable creator/wardrobe/product/environment from them.\n';
-        } else if (has_reference_image && visionAvailable) {
+        if (has_reference_image && visionAvailable) {
             sourceNote =
                 'SOURCE IMAGE: The image is attached directly below. Study it carefully.\n' +
                 'It is the exact first frame of the video at 0.00 seconds. Describe what you see ' +
@@ -2506,7 +2382,6 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
             'MODE: ' + mode + '\n' +
             'creative_mode: "' + creative_mode + '"\n' +
             'has_reference_image: ' + JSON.stringify(has_reference_image) + '\n' +
-            (isRefMode ? 'reference_images: ' + refCount + '\n' : '') +
             'explicit_constraints: ' + JSON.stringify(explicit_constraints || []) + '\n\n' +
             'Video duration: ' + durationSeconds + ' seconds\n' +
             (creatorIdentityOnly && creatorPerformanceBeats.length
@@ -2522,17 +2397,11 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
     // covers every planned shot with strictly increasing cut times. In reference
     // mode each shot is tied to its approved reference frame.
     if (multiShot && !isModify) {
-        const planLines = shotPlan.map((desc, index) => {
-            const refNote = isRefMode && !creatorIdentityOnly
-                ? ' (keyframe: <Picture ' + Math.min(index + 1, refCount) + '>)'
-                : '';
-            return '[Shot ' + (index + 1) + '] ' + desc + refNote;
-        });
+        const planLines = shotPlan.map((desc, index) => '[Shot ' + (index + 1) + '] ' + desc);
         userMessage +=
             '\n\nSHOT PLAN (authoritative \u2014 exactly these shots, in order):\n' +
             planLines.join('\n') +
-            '\nOutput exactly ' + shotPlan.length + ' shots with strictly increasing cut times.' +
-            (isRefMode && !creatorIdentityOnly ? ' Name each shot\'s <Picture i> reference in the shot text.' : '');
+            '\nOutput exactly ' + shotPlan.length + ' shots with strictly increasing cut times.';
     }
 
     const requestRaw = String(
@@ -2542,20 +2411,10 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
     const fallbackOpts = {
         shotPlan,
         hasReferenceImage: hasFirstFrameRef,
-        referenceCount: isRefMode ? refCount : 0,
         durationSeconds,
         creatorIdentityOnly,
         creatorDirection
     };
-    const refFallback = () => buildReferenceFallbackPrompt({
-        shotPlan,
-        referenceCount: refCount,
-        durationSeconds,
-        creatorIdentityOnly,
-        creatorDirection,
-        creatorPerformanceBeats: creatorBeatsForPrompt,
-        dialogueLanguage
-    });
 
     // Run the director LLM, retrying once when it returns unparseable JSON or
     // merely echoes the user's instruction instead of rewriting it. The raw
@@ -2570,10 +2429,6 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
                   ? ' You MUST include every shot from the SHOT PLAN as [Shot 1], [Shot 2], ... ' +
                     'with strictly increasing cut times inside the duration.'
                   : '') +
-              (isRefMode
-                  ? ' You MUST output the full-reference sections subject_definitions, summary, ' +
-                    'retention_analysis, detailed_description, overall_soundscape and non_diegetic_music.'
-                  : '') +
               (continuousCreator
                   ? ' This is one continuous Creator Studio recording: include exactly one [Shot 1], keep all performance and dialogue events timestamped within it, and make no cuts.'
                   : '') +
@@ -2583,20 +2438,17 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
             const userMsg = { role: 'user', content: userMessage + retryNote };
             if (userMessageImages) userMsg.images = userMessageImages;
             const systemPrompt = H3_DIRECTOR_SYSTEM_PROMPT +
-                (multiShot ? H3_MULTISHOT_ADDENDUM : '') +
-                (isRefMode ? buildReferenceAddendum(refCount, creatorIdentityOnly) : '');
+                (multiShot ? H3_MULTISHOT_ADDENDUM : '');
             const raw = await providers.chat(provider, [
                 { role: 'system', content: systemPrompt },
                 userMsg
             ], model, { think });
 
             const parsed = parseDirectorJson(raw);
-            const refFormatOk = !isRefMode ||
-                /(?:^|\n)\s*detailed_description\s*:/i.test(String((parsed && parsed.prompt) || ''));
             if (parsed && parsed.prompt && !isRawRequestEcho(parsed.prompt, requestRaw) &&
-                (!multiShot || countH3Shots(parsed.prompt) >= 2) && refFormatOk) {
+                (!multiShot || countH3Shots(parsed.prompt) >= 2)) {
                 return {
-                    mode: isRefMode ? 'ref2va' : (parsed.mode || mode),
+                    mode: parsed.mode || mode,
                     prompt: finalizePrompt(String(parsed.prompt).trim()),
                     duration: durationSeconds,
                     width: Number(parsed.width) || 1024,
@@ -2628,7 +2480,7 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
             if (multiShot) {
                 return {
                     mode,
-                    prompt: finalizePrompt(isRefMode ? refFallback() : buildMultiShotFallbackPrompt(fallbackOpts)),
+                    prompt: finalizePrompt(buildMultiShotFallbackPrompt(fallbackOpts)),
                     duration: durationSeconds,
                     width: 1024,
                     height: 768,
@@ -2637,12 +2489,10 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
             const liteAlignment = hasFirstFrameRef
                 ? 'For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\n\n'
                 : '';
-            const litePrompt = isRefMode
-                ? refFallback()
-                : (liteAlignment +
-                    'integrated_multimodal_description:\n[Shot 1] ' + lite + '\n\n' +
-                    'overall_soundscape:\nAmbient environmental sounds matching the scene.\n\n' +
-                    'non_diegetic_music:\nN/A');
+            const litePrompt = liteAlignment +
+                'integrated_multimodal_description:\n[Shot 1] ' + lite + '\n\n' +
+                'overall_soundscape:\nAmbient environmental sounds matching the scene.\n\n' +
+                'non_diegetic_music:\nN/A';
             return {
                 mode,
                 prompt: finalizePrompt(litePrompt),
@@ -2664,31 +2514,27 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
     if (multiShot) {
         return {
             mode,
-            prompt: finalizePrompt(isRefMode ? refFallback() : buildMultiShotFallbackPrompt(fallbackOpts)),
+            prompt: finalizePrompt(buildMultiShotFallbackPrompt(fallbackOpts)),
             duration: durationSeconds,
             width: 1024,
             height: 768,
         };
     }
     const concept = stripVideoRequestMeta(requestRaw) || (
-        isRefMode
-            ? 'the creator from the approved reference frames speaks to camera with natural, continuous motion'
-            : has_reference_image
-                ? 'the subject from the reference image comes to life with natural, continuous motion'
-                : 'a cinematic scene with natural movement and camera motion'
+        has_reference_image
+            ? 'the subject from the opening frame comes to life with natural, continuous motion'
+            : 'a cinematic scene with natural movement and camera motion'
     );
     const alignmentLine = hasFirstFrameRef
         ? 'For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\n\n'
         : '';
-    const fallbackPrompt = isRefMode
-        ? refFallback()
-        : (alignmentLine +
+    const fallbackPrompt = alignmentLine +
             'integrated_multimodal_description:\n' +
             '[Shot 1] ' + concept + '\n\n' +
             'overall_soundscape:\n' +
             'Ambient environmental sounds matching the scene.\n\n' +
             'non_diegetic_music:\n' +
-            'N/A');
+            'N/A';
 
     return {
         mode,
@@ -2773,8 +2619,6 @@ function effectiveVideoSettings() {
                 value = normalizeH3TurboSteps(value, H3_DEFAULTS.h3TurboSteps);
             } else if (key === 'h3TurboLora') {
                 value = String(value || '').trim() || H3_DEFAULTS.h3TurboLora;
-            } else if (key === 'h3RefTurboLora') {
-                value = String(value || '').trim() || H3_DEFAULTS.h3RefTurboLora;
             } else if (key === 'h3TurboSigmaShift') {
                 value = value !== false && String(value).toLowerCase() !== 'false' && String(value) !== '0';
             } else if (key === 'firstBlockCache') {
@@ -2937,8 +2781,6 @@ function saveVideoSettings(patch) {
             out[key] = normalizeH3TurboSteps(value, H3_DEFAULTS.h3TurboSteps);
         } else if (key === 'h3TurboLora') {
             out[key] = String(value || '').trim() || null;
-        } else if (key === 'h3RefTurboLora') {
-            out[key] = String(value || '').trim() || null;
         } else if (key === 'h3TurboSigmaShift') {
             out[key] = value === true || value === 1 || String(value).toLowerCase() === 'true' || String(value) === '1';
         } else if (key === 'firstBlockCache') {
@@ -3012,10 +2854,10 @@ async function getVideoModelChoices() {
 
 // --- H3 ComfyUI Workflow Graph ------------------------------------------------
 //
-// Builds the JARVIS H3 graph: T2VA (text only, optional first frame) and I2VA
-// (first frame as reference). The optional MiniMax H3 Turbo LoRA + Turbo
+// Builds the JARVIS H3 graph: T2VA (text only) and I2VA (a single first frame
+// as the visual source of truth). The optional MiniMax H3 Turbo LoRA + Turbo
 // sampler are layered onto the same graph when enabled; no long context,
-// reference videos/audio, or extra post-pass — those paths are not used here.
+// reference images/videos/audio, or extra post-pass — those paths are not used.
 
 // Available lora filenames from ComfyUI, preferring the Turbo node's own combo
 // (it lists models/loras) and falling back to the stock LoraLoader list.
@@ -3039,8 +2881,8 @@ function h3LoraNameMatches(choice, wanted) {
 // everything required is present. When ComfyUI reports no lora list at all the
 // file check is skipped (an empty list can mean the node pack is missing, which
 // the node check already reports).
-function resolveH3TurboAvailability(info, settings, options) {
-    const turbo = normalizeH3Turbo(settings, options);
+function resolveH3TurboAvailability(info, settings) {
+    const turbo = normalizeH3Turbo(settings);
     if (!turbo.enabled) {
         return { enabled: false, ready: true, nodesMissing: [], loraName: turbo.loraName, loraMissing: false, loraChoices: [] };
     }
@@ -3061,8 +2903,8 @@ function resolveH3TurboAvailability(info, settings, options) {
 
 // Fail with an actionable error instead of silently dropping back to normal H3:
 // a silent fallback would make the user's selected Turbo setting misleading.
-function assertH3TurboReady(info, settings, options) {
-    const state = resolveH3TurboAvailability(info, settings, options);
+function assertH3TurboReady(info, settings) {
+    const state = resolveH3TurboAvailability(info, settings);
     if (!state.enabled || state.ready) return state;
     if (state.nodesMissing.length) {
         const error = new Error(
@@ -3160,8 +3002,6 @@ function applyAttentionPatch(graph, baseModelNode, backend) {
 const H3_TURBO_STANDARD_LOADER_LORAS = Object.freeze([
     'minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors',
     'minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors',
-    // The reference (ref2va) Turbo adapter is a standard-loader checkpoint too.
-    'minimax_h3_n_turbo_4step_v0.1_comfy_resized_avg_rank_21_bf16.safetensors',
 ]);
 
 function h3TurboUsesStandardLoader(loraName) {
@@ -3563,23 +3403,14 @@ function buildH3Graph(opts) {
         seed = 0,
         settings = {},
         firstImageName = null,
-        refImageNames = [],
-        refModArtifacts = [],
-        referenceTokenBudget = 0,
         firstBlockCacheInputs = null,
         latentUpscale = null,
         objectInfo = null,
     } = opts;
 
     const graph = {};
-    const hasReferenceInput =
-        (Array.isArray(refImageNames) && refImageNames.some((name) => String(name || '').trim())) ||
-        (Array.isArray(refModArtifacts) && refModArtifacts.some((ref) => ref && ref.artifactName && Number(ref.strength) > 0));
-    const referenceMode = mode === 'ref2va' || hasReferenceInput;
-    const activeUnet = hasReferenceInput
-        ? (settings.h3Ref2vaUnet || H3_DEFAULTS.h3Ref2vaUnet)
-        : (settings.h3Unet || H3_DEFAULTS.h3Unet);
-    const turbo = normalizeH3Turbo(settings, { reference: referenceMode });
+    const activeUnet = settings.h3Unet || H3_DEFAULTS.h3Unet;
+    const turbo = normalizeH3Turbo(settings);
     graph.model = {
         class_type: 'UNETLoader',
         inputs: {
@@ -3624,116 +3455,47 @@ function buildH3Graph(opts) {
     // Turbo LoRA sits between the user LoRA chain and the attention patch, so
     // both the guider and the scheduler read the Turbo-adapted model. The
     // optional sigma-shift patch follows it when installed.
-    const turboModelNode = appendH3TurboLora(graph, userModelNode, settings, { reference: referenceMode });
-    const shiftedModelNode = appendH3TurboSigmaShift(graph, turboModelNode, settings, objectInfo, { reference: referenceMode });
+    const turboModelNode = appendH3TurboLora(graph, userModelNode, settings);
+    const shiftedModelNode = appendH3TurboSigmaShift(graph, turboModelNode, settings, objectInfo);
     const attention = normalizeH3AttentionBackend(settings.attentionBackend);
     const patchedModelNode = applyAttentionPatch(graph, shiftedModelNode, attention);
     // Sparse (SLA) attention also has to shape the denoise schedule; the other
     // backends leave the scheduler on the unpatched (Turbo) chain.
     const schedulerModelNode = attention === 'sla' ? patchedModelNode : shiftedModelNode;
 
-    // Reference-to-video: one LoadImage per approved frame, wired into the
-    // MiniMaxH3ReferenceToVideo Autogrow input. The keys are the node's own
-    // 0-based `ref_images.ref_image_<i>` slots (verified against /object_info +
-    // the ComfyUI schema); the <Picture i> ordinals follow the supplied order.
-    const refNames = Array.isArray(refImageNames)
-        ? refImageNames.map((n) => String(n || '').trim()).filter(Boolean).slice(0, 9)
-        : [];
-    if (refNames.length) {
-        refNames.forEach((name, index) => {
-            graph['ref_image_load_' + (index + 1)] = { class_type: 'LoadImage', inputs: { image: name } };
-        });
-    } else if (mode === 'i2va' && firstImageName) {
+    // H3 is image-to-video only: a single first frame (the complete visual
+    // source of truth) or text-only. No reference images/artifacts are ever
+    // wired into the graph.
+    if (mode === 'i2va' && firstImageName) {
         graph.first_image = { class_type: 'LoadImage', inputs: { image: firstImageName } };
     }
 
-    const refMods = Array.isArray(refModArtifacts)
-        ? refModArtifacts.filter((ref) => ref && ref.artifactName && Number(ref.strength) > 0).slice(0, 8)
-        : [];
-
     // Latent-upscale + refinement builds the conditioning twice from the SAME
-    // uploaded image nodes: the low-resolution generation node and the
-    // target-resolution refinement node. Sharing the LoadImage nodes means the
-    // reference/first-frame image is encoded once per H3 node but uploaded once.
+    // uploaded first-frame image: the low-resolution generation node and the
+    // target-resolution refinement node. Sharing the LoadImage node means the
+    // first frame is encoded once per H3 node but uploaded once.
     const upscale = latentUpscale && latentUpscale.enabled ? latentUpscale : null;
     const lowW = upscale ? upscale.sourceWidth : W;
     const lowH = upscale ? upscale.sourceHeight : H;
 
-    // Create `condition<suffix>` (plus the reusable-refmod apply chain when
-    // present) at the given canvas size; returns the conditioning node the
-    // guider reads and the latent-producing node.
+    // Create `condition<suffix>` at the given canvas size; returns the
+    // conditioning node the guider reads and the latent-producing node.
     const buildH3Conditioning = (suffix, condW, condH) => {
         const baseKey = 'condition' + suffix;
-        if (refNames.length) {
-            const refInputs = {};
-            refNames.forEach((name, index) => {
-                refInputs['ref_images.ref_image_' + index] = ['ref_image_load_' + (index + 1), 0];
-            });
-            graph[baseKey] = {
-                class_type: 'MiniMaxH3ReferenceToVideo',
-                inputs: Object.assign({
-                    clip: ['clip', 0],
-                    vae: ['video_vae', 0],
-                    prompt: String(prompt || ''),
-                    width: condW,
-                    height: condH,
-                    length: frames,
-                    ref_image_size: 'match',
-                }, refInputs),
-            };
-        } else {
-            const conditionInputs = {
-                clip: ['clip', 0],
-                vae: ['video_vae', 0],
-                prompt: String(prompt || ''),
-                width: condW,
-                height: condH,
-                length: frames,
-            };
-            if (mode === 'i2va' && firstImageName) conditionInputs.first_frame = ['first_image', 0];
-            graph[baseKey] = {
-                class_type: 'MiniMaxH3ImageToVideo',
-                inputs: conditionInputs,
-            };
-        }
-        let condNode = baseKey;
-        if (refMods.length) {
-            const loaderKey = 'h3_refmod_loader' + suffix;
-            const applyKey = 'h3_refmod_apply' + suffix;
-            const loaderInputs = { show_info: false };
-            for (let slot = 1; slot <= 8; slot += 1) {
-                loaderInputs['mod_' + slot] = '(none)';
-                loaderInputs['strength_' + slot] = 1;
-                loaderInputs['copies_' + slot] = 1;
-            }
-            refMods.forEach((ref, index) => {
-                const slot = index + 1;
-                loaderInputs['mod_' + slot] = String(ref.artifactName);
-                loaderInputs['strength_' + slot] = Math.max(0, Math.min(1, Number(ref.strength) || 0));
-                loaderInputs['copies_' + slot] = 1;
-            });
-            if (referenceTokenBudget > 0) loaderInputs.max_total_tokens = Math.round(referenceTokenBudget);
-            graph[loaderKey] = {
-                class_type: h3ReferencePipeline.REF_LOADER_NODE,
-                inputs: loaderInputs,
-            };
-            graph[applyKey] = {
-                class_type: h3ReferencePipeline.REF_APPLY_NODE,
-                inputs: {
-                    conditioning: [baseKey, 0],
-                    mods: [loaderKey, 0],
-                    override: false,
-                    retention: 1,
-                    curve_direction: 'constant',
-                    scramble_seed: -1,
-                    curve_shape: 'linear',
-                    curve_value: 1,
-                    max_total_tokens: Math.round(referenceTokenBudget || 0),
-                },
-            };
-            condNode = applyKey;
-        }
-        return { condition: baseKey, conditioning: condNode };
+        const conditionInputs = {
+            clip: ['clip', 0],
+            vae: ['video_vae', 0],
+            prompt: String(prompt || ''),
+            width: condW,
+            height: condH,
+            length: frames,
+        };
+        if (mode === 'i2va' && firstImageName) conditionInputs.first_frame = ['first_image', 0];
+        graph[baseKey] = {
+            class_type: 'MiniMaxH3ImageToVideo',
+            inputs: conditionInputs,
+        };
+        return { condition: baseKey, conditioning: baseKey };
     };
 
     const lowConditioning = buildH3Conditioning('', lowW, lowH);
@@ -3911,29 +3673,6 @@ async function validateH3Graph(info, graph) {
     // the graph). Run before the generic node scan so a missing FBCache node
     // surfaces the actionable install error instead of the generic one.
     const graphEntries = Object.entries(graph).filter(([, node]) => node && node.class_type);
-    const hasRefMods = graphEntries.some(([, node]) =>
-        node.class_type === h3ReferencePipeline.REF_LOADER_NODE ||
-        node.class_type === h3ReferencePipeline.REF_APPLY_NODE
-    );
-    if (hasRefMods) {
-        const missing = [h3ReferencePipeline.REF_LOADER_NODE, h3ReferencePipeline.REF_APPLY_NODE]
-            .filter((name) => !info || !info[name]);
-        if (missing.length) {
-            const error = new Error('The reusable H3 reference nodes disappeared after reference preparation: ' + missing.join(', ') + '. Restart ComfyUI and try again.');
-            error.code = 'h3_reference_nodes_missing';
-            error.missingNodes = missing;
-            error.installUrl = h3ReferencePipeline.REFMOD_INSTALL_URL;
-            throw error;
-        }
-        const loader = graph.h3_refmod_loader;
-        const apply = graph.h3_refmod_apply;
-        if (!loader || !apply || !Array.isArray(apply.inputs && apply.inputs.mods) || apply.inputs.mods[0] !== 'h3_refmod_loader' ||
-            !Array.isArray(apply.inputs && apply.inputs.conditioning) || apply.inputs.conditioning[0] !== 'condition') {
-            const error = new Error('The H3 reference loader/apply chain is incomplete. No video was submitted.');
-            error.code = 'h3_reference_graph_invalid';
-            throw error;
-        }
-    }
     const fbcEntries = graphEntries.filter(([, node]) => node.class_type === H3_FBCACHE_NODE);
     if (fbcEntries.length > 1) {
         const error = new Error('The H3 workflow contains more than one First Block Cache node.');
@@ -4650,13 +4389,9 @@ async function generateVideo(prompt, options = {}) {
             : Math.floor(Math.random() * 2 ** 32);
 
         const settings = effectiveVideoSettings();
-        // Reference-to-video: the approved scene frames are conditioned through
-        // MiniMaxH3ReferenceToVideo instead of a single locked first frame.
-        const referenceImages = Array.isArray(options.referenceImages)
-            ? options.referenceImages.map((f) => String(f || '').trim()).filter(Boolean).slice(0, 9)
-            : [];
-        const useRefs = referenceImages.length > 0;
-        const mode = useRefs ? 'ref2va' : (options.mode || 't2va');
+        // H3 is image-to-video only: a single first frame (options.mode 'i2va')
+        // or text-only ('t2va'). No reference images are ever conditioned.
+        const mode = options.mode || 't2va';
         // Explicit per-request duration wins over the configured default.
         const requestedDuration = Number(options.duration);
         const duration = Number.isFinite(requestedDuration) && requestedDuration > 0
@@ -4668,7 +4403,6 @@ async function generateVideo(prompt, options = {}) {
             prompt,
             options,
             mode,
-            referenceImages,
             sourceImageRawFilename: options.sourceImageRawFilename,
             settings
         });
@@ -4702,46 +4436,10 @@ async function generateVideo(prompt, options = {}) {
             }
         }
 
-        const semanticReferences = Array.isArray(options.semanticReferences)
-            ? options.semanticReferences
-            : [];
-        const preparedReferences = await h3ReferencePipeline.prepareH3References({
-            references: semanticReferences,
-            prompt: finalPrompt,
-            mode: options.referenceGenerationMode || mode,
-            settings: Object.assign({}, settings, options.referenceSettings || {}),
-            generationContext: {
-                conversationId: options.conversationId || null,
-                studio: options.studio || null,
-                mode: options.referenceGenerationMode || mode
-            },
-            signal
-        });
-        if (preparedReferences.guidance.length) {
-            finalPrompt = h3ReferencePipeline.applyReferenceGuidance(finalPrompt, preparedReferences.guidance);
-        }
-
         let firstImageName = null;
         const uploadedInputNames = [];
-        const refImageNames = [];
-        if (useRefs) {
-            for (let i = 0; i < referenceImages.length; i++) {
-                const raw = referenceImages[i];
-                const filePath = path.join(GENERATED_DIR, raw);
-                if (!fs.existsSync(filePath)) {
-                    const error = new Error('A selected H3 reference image could not be found: ' + path.basename(raw));
-                    error.code = 'h3_reference_source_missing';
-                    throw error;
-                }
-                const buffer = fs.readFileSync(filePath);
-                const uploadName = 'jarvis_video_ref_' + Date.now() + '_' + i + '_' + raw;
-                const uploaded = await comfyui.uploadImage(buffer, uploadName);
-                const name = (uploaded && uploaded.name) || uploadName;
-                refImageNames.push(name);
-                uploadedInputNames.push(name);
-            }
-        } else if (mode === 'i2va' && options.sourceImageRawFilename) {
-            // Upload source image to ComfyUI input for LoadImage node.
+        if (mode === 'i2va' && options.sourceImageRawFilename) {
+            // Upload the single first frame to ComfyUI input for the LoadImage node.
             const filePath = resolveVideoStillPath(options.sourceImageRawFilename);
             if (fs.existsSync(filePath)) {
                 const buffer = fs.readFileSync(filePath);
@@ -4800,13 +4498,11 @@ async function generateVideo(prompt, options = {}) {
             }
             // Turbo is never silently skipped: a missing node pack or LoRA fails
             // the render with instructions, so the enabled setting is truthful.
-            // Reference mode checks its own dedicated adapter.
-            const turboRef = useRefs || mode === 'ref2va';
-            if (normalizeH3Turbo(resolvedSettings, { reference: turboRef }).enabled) {
-                assertH3TurboReady(info, resolvedSettings, { reference: turboRef });
+            if (normalizeH3Turbo(resolvedSettings).enabled) {
+                assertH3TurboReady(info, resolvedSettings);
                 console.log('[video-generator] H3 Turbo enabled (' +
-                    normalizeH3Turbo(resolvedSettings, { reference: turboRef }).steps + ' steps, ' +
-                    normalizeH3Turbo(resolvedSettings, { reference: turboRef }).loraName + ')');
+                    normalizeH3Turbo(resolvedSettings).steps + ' steps, ' +
+                    normalizeH3Turbo(resolvedSettings).loraName + ')');
             }
             // First Block Cache is never silently skipped either: it composes
             // with the resolved attention backend and Turbo LoRA, and a missing
@@ -4827,9 +4523,6 @@ async function generateVideo(prompt, options = {}) {
                 seed,
                 settings: resolvedSettings,
                 firstImageName,
-                refImageNames,
-                refModArtifacts: preparedReferences.references,
-                referenceTokenBudget: preparedReferences.tokenBudget,
                 // Match the installed node's exact input names so required-input
                 // validation passes even if the node pack renames a field.
                 firstBlockCacheInputs: resolveFirstBlockCacheInputNames(info),
@@ -4903,24 +4596,10 @@ async function generateVideo(prompt, options = {}) {
                     fps: H3_FPS,
                     mode,
                     source: options.sourceImageRawFilename || null,
-                    refs: useRefs ? refImageNames.length : 0,
                     resolution: {
                         width: latentUpscalePlan ? latentUpscalePlan.targetWidth : W,
                         height: latentUpscalePlan ? latentUpscalePlan.targetHeight : H
                     },
-                    references: preparedReferences.references.map((ref) => ({
-                        id: ref.id,
-                        type: ref.type,
-                        strength: ref.strength,
-                        mode: ref.mode,
-                        artifactHash: ref.artifactHash,
-                        referenceHash: ref.referenceHash,
-                        cache: ref.cache,
-                        tokenCount: ref.tokenCount
-                    })),
-                    omittedReferences: preparedReferences.omittedReferences,
-                    referenceTokens: preparedReferences.tokenCount,
-                    referenceTokenBudget: preparedReferences.tokenBudget,
                     acceleration,
                     // Which pipeline produced this clip + the latent-upscale
                     // parameters, for debugging and benchmarking.
@@ -4967,7 +4646,6 @@ async function generateVideo(prompt, options = {}) {
                 fps: H3_FPS,
                 mode,
                 prompt: finalPrompt,
-                references: meta.video.references,
                 generationMs: meta.generationMs,
                 acceleration,
                 latentUpscale: latentUpscalePlan,
@@ -5619,7 +5297,6 @@ module.exports = {
     H3_TURBO_LORA_NODE,
     H3_TURBO_REQUIRED_NODES,
     H3_TURBO_DEFAULT_LORA,
-    H3_TURBO_DEFAULT_REFERENCE_LORA,
     H3_TURBO_SIGMA_SHIFT_NODE,
     H3_TURBO_STRENGTH,
     H3_TURBO_SCHEDULER,
@@ -5686,8 +5363,6 @@ module.exports = {
     parseShotDialogue,
     extractShotDialogues,
     ensureShotDialogue,
-    buildReferenceAddendum,
-    buildReferenceFallbackPrompt,
     parseDirectorJson,
     stripVideoRequestMeta,
     isRawRequestEcho,

@@ -76,7 +76,6 @@ const models = require('./server/models');
 const providerManager = require('./server/provider-manager');
 const imageGenerator = require('./services/image-generator');
 const videoGenerator = require('./services/video-generator');
-const h3ReferencePipeline = require('./services/h3-reference-pipeline');
 const faceRefine = require('./services/face-refine');
 const fbcache = require('./services/fbcache');
 const h3LatentUpscale = require('./services/h3-latent-upscale');
@@ -2294,12 +2293,11 @@ async function handleChatStream(req, res) {
         const parsedCharacters = characterContext.parseCharacterMessage(message, { explicitIds: explicitCharacterIds });
         const characterNameSet = new Set(characterPresets.list().map((character) => String(character.name || '').toLowerCase()));
         const productMentionRegistry = ugcProducts.list().filter((product) => !characterNameSet.has(String(product.name || '').toLowerCase()));
-        const parsedRegistryReferences = h3ReferencePipeline.resolveRegistryMentions(message, [
-            { type: 'product', items: productMentionRegistry }
-        ]);
-        const mentionedProducts = parsedRegistryReferences.references
-            .map((ref) => ref.entity)
-            .filter(Boolean);
+        const mentionedProducts = productMentionRegistry.filter((product) => {
+            const name = String(product.name || '').trim();
+            if (!name) return false;
+            return new RegExp('@' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![\\w])', 'i').test(message);
+        });
         const routingMessage = parsedCharacters.prompt && parsedCharacters.prompt.trim()
             ? parsedCharacters.prompt
             : message;
@@ -3025,6 +3023,37 @@ async function handleChatStream(req, res) {
                     attachedVideoReferences = attachedVideoReferences.slice(1);
                     videoMode = 'i2va';
                 }
+                // H3 is image-to-video only. A named character has no first
+                // frame yet, so Qwen Image 2.1 resolves the identity + scene +
+                // outfit into ONE opening frame first; H3 then animates it.
+                if (requestCharacters.length && !sourceImageRawFilename) {
+                    sseWrite(res, { generating: 'Creating initial frame...' });
+                    const conditioning = resolveIdentityConditioning(requestCharacters, message, {
+                        defaults: false,
+                        rawPrompt: ctx.rawMessage || message
+                    });
+                    if (!conditioning) {
+                        const name = requestCharacters.map((character) => character.name).filter(Boolean).join(', ');
+                        const text = 'The approved Character portrait for ' + (name || 'the selected character') + ' is missing or unavailable, so I could not create the opening frame for this video.';
+                        sseWrite(res, { error: text });
+                        res.end();
+                        return;
+                    }
+                    await vramManager.freeVRAMBeforeImage();
+                    const genSettings = imageGenerator.effectiveSettings();
+                    const frame = await imageGenerator.editImage(conditioning.sourceAbs, conditioning.instruction, {
+                        references: conditioning.references,
+                        width: genSettings.width,
+                        height: genSettings.height,
+                        provider, model, conversationId,
+                        seed: imageGenerator.resolveSeed(genSettings, null),
+                        label: 'character video opening frame',
+                        kind: 'image_generation'
+                    });
+                    sourceImageRawFilename = frame.filename;
+                    videoMode = 'i2va';
+                    sseWrite(res, { generating: 'Generating video...' });
+                }
 
                 console.log('[video] source image:', sourceImageRawFilename);
                 console.log('[video] mode:', videoMode);
@@ -3121,28 +3150,16 @@ async function handleChatStream(req, res) {
                 };
             }
 
-            // Semantic references are encoded/cached centrally, independently
-            // from scene keyframes. An explicit I2VA source remains the first
-            // frame, while the character identity is added as a separate H3 ref.
-            const semanticReferences = [];
-            if (requestCharacters.length) {
-                const conditioning = resolveIdentityConditioning(requestCharacters, message, { defaults: false });
-                if (!conditioning) {
-                    const name = requestCharacters.map((character) => character.name).filter(Boolean).join(', ');
-                    const text = 'The approved Character portrait for ' + (name || 'the selected character') + ' is missing or unavailable. I stopped before video generation so the request does not continue without that identity reference.';
-                    sseWrite(res, { error: text });
-                    res.end();
-                    return;
-                }
-                semanticReferences.push(...characterH3References(requestCharacters, conditioning));
+            // H3 is image-to-video only: the single first frame is the complete
+            // visual source of truth. Character identity is resolved upstream by
+            // Qwen Image 2.1 into the opening frame, never handed to H3 directly.
+            if (requestCharacters.length && !sourceImageRawFilename && !attachedVideoReferences.length) {
+                const name = requestCharacters.map((character) => character.name).filter(Boolean).join(', ');
+                const text = 'The approved Character portrait for ' + (name || 'the selected character') + ' is unavailable, so I could not create the opening frame for the video. Recreate or save the Character, then try again.';
+                sseWrite(res, { error: text });
+                res.end();
+                return;
             }
-            const sceneReferenceNames = referenceImages.filter((filename) =>
-                !sourceImageRawFilename || path.basename(String(filename || '')) !== path.basename(sourceImageRawFilename)
-            );
-            semanticReferences.push(...imageH3References(sceneReferenceNames, { order: semanticReferences.length }));
-            const attachedOrder = semanticReferences.length;
-            semanticReferences.push(...attachedVideoReferences.map((ref, index) => Object.assign({}, ref, { order: attachedOrder + index })));
-            semanticReferences.push(...productH3References(mentionedProducts, { required: true, order: semanticReferences.length }));
 
             // Set ActiveTask to running, then free VRAM for ComfyUI.
             const ctxPreviousPrompt = activeTask.prompt || null;
@@ -3187,8 +3204,6 @@ async function handleChatStream(req, res) {
                 previousPrompt: ctxPreviousPrompt,
                 videoMode,
                 sourceImageRawFilename,
-                referenceImages: undefined,
-                semanticReferences,
                 studio: 'chat',
                 duration: directorDimensions ? directorDimensions.duration : undefined,
                 width: directorDimensions ? directorDimensions.width : undefined,
@@ -3462,10 +3477,27 @@ async function handleCreatorStudioRequest(req, res, ctx) {
         }
         sseWrite(res, { creatorStudioProgress: { label: 'Character identity reference secured.', percent: 46 } });
 
-        // Rebuild the canonical dialogue with the approved identity reference
-        // described as a visual identity source, separate from performance.
+        // H3 is image-to-video only: Qwen Image 2.1 first resolves the creator
+        // identity, scene, wardrobe, posture and camera into ONE opening frame;
+        // H3 then animates it. The identity reference never reaches H3 directly.
+        sseWrite(res, { creatorStudioProgress: { label: 'Creating initial frame…', percent: 50 } });
+        await vramManager.freeVRAMBeforeImage();
+        const genSettings = imageGenerator.effectiveSettings();
+        const openingFrame = await imageGenerator.editImage(identity.sourceAbs, identity.instruction, {
+            references: identity.references,
+            width: genSettings.width,
+            height: genSettings.height,
+            provider, model, conversationId,
+            seed: imageGenerator.resolveSeed(genSettings, null),
+            label: 'creator opening frame',
+            kind: 'image_generation'
+        });
+        sseWrite(res, { creatorStudioProgress: { label: 'Generating video…', percent: 62 } });
+
+        // Rebuild the canonical dialogue describing the opening frame as the
+        // visual source of truth, separate from performance.
         content.creatorDialogue = creatorStudio.buildCanonicalDialogue(content, character, {
-            referenceFilenames: identityReferences
+            referenceFilenames: [openingFrame.filename]
         });
         if (process.env.JARVIS_CREATOR_DEBUG === '1') {
             console.log(videoGenerator.formatCreatorStudioDebug(content.creatorDialogue));
@@ -3475,8 +3507,7 @@ async function handleCreatorStudioRequest(req, res, ctx) {
             action: 'generate',
             user_prompt: content.userPrompt,
             creative_mode: 'none',
-            has_reference_image: false,
-            reference_images: [],
+            has_reference_image: true,
             shot_plan: content.explicitMultiShot ? [] : content.shotPlan,
             creator_performance_beats: content.performanceSequence,
             creator_dialogue: content.creatorDialogue,
@@ -3492,37 +3523,12 @@ async function handleCreatorStudioRequest(req, res, ctx) {
             creator_action: content.onCameraAction,
             creator_direction: 'Creator scene: ' + content.scene + '. Outfit: ' + content.outfit + '. On-camera action (visual only, never spoken): ' + (content.onCameraAction || 'none specified') + '. Camera recording style: ' + creatorStudio.cameraStyle(content.cameraStyle).concept + ' ' + content.cameraDirection + ' Personality direction: ' + content.personalityDirection,
             explicit_constraints: [
-                'preserve the approved Character identity reference exactly; expressions and performance may change but facial structure and appearance may not',
+                'animate the supplied opening frame exactly; preserve the character identity, wardrobe, environment, framing and lighting it establishes, and change only expression, gestures and motion',
                 'keep every spoken line verbatim and visibly lip-synced on camera',
                 'record like a natural smartphone selfie video with only subtle handheld micro-movement and no cinematic camera operation'
             ],
             parameters: {}
         };
-        const semanticReferences = characterH3References([character], identity);
-        // A shared Scene's reference image conditions the environment (never the
-        // character identity). It rides the existing semantic-reference channel
-        // as an optional, lower-priority reference than the Character portrait.
-        if (content.sceneReference) {
-            const refPath = String(content.sceneReference).split('?')[0];
-            const sceneFilename = path.basename(refPath);
-            if (sceneFilename) {
-                const sceneSource = refPath.startsWith('/images/')
-                    ? '/images/' + encodeURIComponent(sceneFilename)
-                    : '/generated/' + encodeURIComponent(sceneFilename);
-                semanticReferences.push({
-                    id: 'scene:' + sceneFilename,
-                    type: 'image',
-                    source: sceneSource,
-                    mode: 'compressed',
-                    strength: 0.6,
-                    priority: 2,
-                    required: false,
-                    order: semanticReferences.length
-                });
-            }
-        }
-        semanticReferences.push(...productH3References(ctx.products || [], { required: true, order: semanticReferences.length }));
-
         const session = Object.assign({}, prior || {}, {
             id: prior && prior.id || 'creator_session_' + Date.now().toString(36),
             characterId: character.id,
@@ -3536,7 +3542,8 @@ async function handleCreatorStudioRequest(req, res, ctx) {
             type: 'video',
             operation: 'generate',
             prompt: content.userPrompt,
-            videoMode: 't2va',
+            videoMode: 'i2va',
+            sourceImage: openingFrame.filename,
             lastAction: 'Creator Studio · ' + content.recipe.name,
             status: 'running',
             parameters: {
@@ -3547,9 +3554,9 @@ async function handleCreatorStudioRequest(req, res, ctx) {
             }
         });
 
-        sseWrite(res, { creatorStudioProgress: { label: 'Preparing H3 talking-video direction…', percent: 52 } });
-        const built = await videoGenerator.buildH3VideoPrompt(structuredRequest, providers, provider, model, null, conversationId, false);
-        sseWrite(res, { creatorStudioProgress: { label: 'Submitting the creator performance to H3…', percent: 68 } });
+        sseWrite(res, { creatorStudioProgress: { label: 'Preparing H3 talking-video direction…', percent: 68 } });
+        const built = await videoGenerator.buildH3VideoPrompt(structuredRequest, providers, provider, model, openingFrame.filename, conversationId, false);
+        sseWrite(res, { creatorStudioProgress: { label: 'Submitting the creator performance to H3…', percent: 80 } });
         await vramManager.freeVRAMBeforeImage();
         await handleVideoGenerationStream(req, res, {
             provider,
@@ -3560,8 +3567,8 @@ async function handleCreatorStudioRequest(req, res, ctx) {
             structuredRequest,
             action: 'generate',
             previousPrompt: prior && prior.content && prior.content.userPrompt || null,
-            videoMode: 't2va',
-            semanticReferences,
+            videoMode: 'i2va',
+            sourceImageRawFilename: openingFrame.filename,
             studio: 'creator',
             duration: built.duration,
             width: built.width,
@@ -4296,36 +4303,16 @@ async function handleUGCDirectorHandoff(req, res, ctx, project) {
         sseWrite(res, { generating: 'UGC Studio \u2014 handing off to Director Mode\u2026' });
         vramManager.rememberChatModel(provider, model);
         await vramManager.freeVRAMBeforeChat();
-        const ugcSemanticReferences = (input.identityReferences || []).map((filename, index) => ({
-            id: 'character:' + (input.identityCharacterId || 'ugc-creator') + (index ? ':' + index : ''),
-            entityId: input.identityCharacterId || 'ugc-creator',
-            name: project.creator && project.creator.name || 'UGC creator',
-            type: 'character',
-            source: '/generated/' + encodeURIComponent(path.basename(String(filename || ''))),
-            mode: 'full',
-            strength: 1,
-            priority: 1,
-            required: true,
-            order: index
-        }));
-        ugcSemanticReferences.push(...productH3References({
-            id: project.product && project.product.id,
-            name: project.product && project.product.name,
-            referenceImages: input.productReferences
-        }, { required: true, order: ugcSemanticReferences.length }));
+        // H3 is image-to-video only: the approved opening frame (already a Qwen
+        // Image 2.1 render combining creator identity, outfit, product, scene and
+        // composition) is the single visual source of truth. Identity/product
+        // references are not handed to H3.
         const production = director.createUgcProduction({
             conversationId,
             brief: input.brief,
             duration: input.duration,
             openingFrame: input.openingFrame,
-            originalRequest: input.originalRequest,
-            references: input.references,
-            // The approved creator's single consolidated identity image travels
-            // with the production so every shot inherits the same person.
-            identityReferences: input.identityReferences,
-            identityCharacterId: input.identityCharacterId,
-            productReferences: input.productReferences,
-            semanticReferences: ugcSemanticReferences
+            originalRequest: input.originalRequest
         });
         ugcStudio.setDirectorProduction(project, production.id);
         activityLog.record({
@@ -4412,71 +4399,6 @@ function resolveRequestCharacters(message, conversationId, explicitIds, action) 
         action
     });
     return resolution.characters.map((ref) => characterPresets.get(ref.id)).filter(Boolean);
-}
-
-function characterH3References(characters, conditioning) {
-    const list = Array.isArray(characters) ? characters : (characters ? [characters] : []);
-    if (!list.length || !conditioning) return [];
-    const sources = [];
-    if (conditioning.sourceAbs) sources.push(conditioning.sourceAbs);
-    for (const source of conditioning.references || []) {
-        if (!sources.includes(source)) sources.push(source);
-    }
-    return list.map((character, index) => {
-        const source = sources[index];
-        if (!source) return null;
-        return {
-            id: 'character:' + character.id,
-            entityId: character.id,
-            name: character.name || 'Character',
-            type: 'character',
-            source,
-            strength: 1,
-            mode: 'full',
-            priority: 1,
-            required: true,
-            order: index
-        };
-    }).filter(Boolean);
-}
-
-function productH3References(products, options = {}) {
-    const list = Array.isArray(products) ? products : (products ? [products] : []);
-    const out = [];
-    let order = Number(options.order || 0);
-    for (const product of list) {
-        const urls = Array.isArray(product && product.referenceImages) ? product.referenceImages : [];
-        urls.forEach((source, index) => {
-            if (!source) return;
-            const primary = out.length === 0 && index === 0 && options.primary !== false;
-            out.push({
-                id: 'product:' + String(product.id || product.name || 'product') + (index ? ':' + index : ''),
-                entityId: product.id || product.name || '',
-                name: product.name || 'Product',
-                type: 'product',
-                source,
-                mode: primary ? 'full' : 'compressed',
-                strength: primary ? 0.95 : 0.72,
-                priority: 3,
-                required: options.required === true && index === 0,
-                order: order++
-            });
-        });
-    }
-    return out;
-}
-
-function imageH3References(filenames, options = {}) {
-    return (Array.isArray(filenames) ? filenames : []).map((filename, index) => ({
-        id: 'image:' + path.basename(String(filename || '')),
-        type: 'image',
-        source: '/generated/' + encodeURIComponent(path.basename(String(filename || ''))),
-        mode: 'full',
-        strength: index === 0 ? 0.95 : 0.85,
-        priority: 2,
-        required: false,
-        order: Number(options.order || 0) + index
-    })).filter((ref) => ref.source !== '/generated/');
 }
 
 // Resolve (or create) the character a playground identity action operates on.
@@ -5222,8 +5144,9 @@ async function handleDirectorStart(req, res, ctx) {
             ? ctx.characters
             : characterContext.parseCharacterMessage(message).characters;
         const characterRecords = contextCharacters.map((ref) => characterPresets.get(ref.id)).filter(Boolean);
-        // The Director builds its own image prompt; only the identity
-        // references are consumed here, not the creative-defaults section.
+        // The Director builds its own opening-frame prompt; H3 is image-to-video
+        // only, so the approved identity reference must exist to render that
+        // frame. It is never handed to H3 directly.
         const identity = resolveIdentityConditioning(characterRecords, message, { defaults: false });
         if (characterRecords.length && !identity) {
             const text = 'The approved Character portrait is missing or unavailable. I stopped the Director production before generating an opening frame without the requested identity reference.';
@@ -5232,15 +5155,8 @@ async function handleDirectorStart(req, res, ctx) {
             return;
         }
         if (contextCharacters.length) characterContext.setActiveCharacter(conversationId, contextCharacters);
-        const semanticReferences = identity ? characterH3References(characterRecords, identity) : [];
-        semanticReferences.push(...productH3References(ctx.products || [], { required: true, order: semanticReferences.length }));
         const production = await director.createProduction({
-            conversationId, message, provider, model, think, referenceImage,
-            character: identity ? {
-                identityCharacterId: characterRecords[0] && characterRecords[0].id,
-                identityReferences: [identity.sourceAbs && path.basename(identity.sourceAbs)].concat(identity.references.map((p) => path.basename(p)))
-            } : null,
-            semanticReferences
+            conversationId, message, provider, model, think, referenceImage
         });
         activityLog.record({
             type: 'generation',
@@ -5407,8 +5323,6 @@ async function runDirectorVideoStage(req, res, ctx, production) {
             previousPrompt: null,
             videoMode: stage.videoMode,
             sourceImageRawFilename: stage.sourceImageRawFilename,
-            referenceImages: stage.referenceImages,
-            semanticReferences: stage.semanticReferences,
             studio: production.ugc ? 'ugc' : 'director',
             duration: stage.duration,
             width: stage.width,
@@ -6204,7 +6118,7 @@ async function handleVideoGenerationStream(req, res, opts) {
     const {
         provider, model, conversationId, message, videoPrompt,
         structuredRequest, action, previousPrompt, videoMode, sourceImageRawFilename,
-        referenceImages, semanticReferences, studio, duration, width, height, think
+        studio, duration, width, height, think
     } = opts;
 
     let queueId = null;
@@ -6243,8 +6157,6 @@ async function handleVideoGenerationStream(req, res, opts) {
         }
         if (videoMode) opts2.mode = videoMode;
         if (sourceImageRawFilename) opts2.sourceImageRawFilename = sourceImageRawFilename;
-        if (Array.isArray(referenceImages) && referenceImages.length) opts2.referenceImages = referenceImages;
-        if (Array.isArray(semanticReferences) && semanticReferences.length) opts2.semanticReferences = semanticReferences;
         if (studio) opts2.studio = studio;
         if (duration) opts2.duration = duration;
         if (width) opts2.width = width;

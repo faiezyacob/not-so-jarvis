@@ -1293,8 +1293,8 @@ function creatorIdentityDescription(character) {
 
 function creatorReferenceDescription(character, referenceFilenames) {
     const references = Array.isArray(referenceFilenames) ? referenceFilenames.filter(Boolean) : [];
-    if (!references.length) return 'the approved Character identity portrait as an identity-only visual reference';
-    return 'the approved Character identity portrait supplied as an identity-only visual reference; preserve identity without copying its portrait composition, pose, clothing or background unless requested';
+    if (!references.length) return 'the opening frame as the visual source of truth';
+    return 'the opening frame supplied as <Picture 1>, which already establishes the creator identity, wardrobe, environment, framing and lighting; animate it without redesigning the character or scene';
 }
 
 function buildCanonicalDialogue(content, character, options = {}) {

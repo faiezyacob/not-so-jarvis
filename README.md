@@ -92,7 +92,7 @@ https://github.com/user-attachments/assets/e74c3178-ad92-42bf-a1ca-4f68efde6897
 - **Chat-first UGC workflow** — ask for a TikTok-style ad and the studio walks the whole production: brief, product, creator, creative direction, script, scenes, reference frames, then the final video
 - **Facts-only scripts** — never invents product claims, ingredients, certifications, or testimonials; uses only what you or the Product Library supply
 - **Product Library** — reusable product records with reference images
-- **Director handoff** — approved scenes and every approved reference frame continue into the existing Director pipeline
+- **Director handoff** — the approved scene plan and the approved opening frame continue into the existing Director pipeline, which animates that single frame with H3
 
 ### Creative Playground
 

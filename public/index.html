@@ -553,7 +553,7 @@
                             <label class="settings-field-label" for="videoUnet">UNET Model</label>
                             <input type="text" class="settings-input" id="videoUnet"
                                 placeholder="Loading..." autocomplete="off">
-                            <span class="settings-hint">Default: minimax_h3_fl2va_pruned_int8_convrot.safetensors (T2VA). Pick minimax_h3_ref2va_pruned_int8_convrot.safetensors for image-to-video.</span>
+                            <span class="settings-hint">Default: minimax_h3_fl2va_pruned_int8_convrot.safetensors. Used for both text-to-video and image-to-video (H3 animates a single first frame).</span>
                         </div>
                         <div class="settings-field">
                             <label class="settings-field-label" for="videoClip">CLIP Model</label>
@@ -613,7 +613,7 @@
                                 <option value="2:3">2:3 Portrait</option>
                                 <option value="21:9">21:9 Ultrawide</option>
                             </select>
-                            <span class="settings-hint">Applied to normal, UGC, Creator Studio, and reference-guided videos.</span>
+                            <span class="settings-hint">Applied to normal, UGC and Creator Studio videos.</span>
                         </div>
                         <div class="settings-field">
                             <label class="settings-field-label" for="videoAttentionBackend">Attention</label>
@@ -665,16 +665,10 @@
                             <span class="settings-hint">6–8 steps generally provide better quality. 4 steps is fastest but may show motion smearing during fast motion.</span>
                         </div>
                         <div class="settings-field">
-                            <label class="settings-field-label" for="videoTurboLora">Turbo LoRA (frames)</label>
+                            <label class="settings-field-label" for="videoTurboLora">Turbo LoRA</label>
                             <input type="text" class="settings-input" id="videoTurboLora"
                                 placeholder="minimax_h3_turbo_v4_step600_ema.safetensors" autocomplete="off">
                             <span class="settings-hint">Used for text-to-video and image-to-video. Place the LoRA in ComfyUI models/loras. Default: minimax_h3_turbo_v4_step600_ema.safetensors</span>
-                        </div>
-                        <div class="settings-field">
-                            <label class="settings-field-label" for="videoRefTurboLora">Turbo LoRA (reference)</label>
-                            <input type="text" class="settings-input" id="videoRefTurboLora"
-                                placeholder="minimax_h3_n_turbo_4step_v0.1_comfy_resized_avg_rank_21_bf16.safetensors" autocomplete="off">
-                            <span class="settings-hint">Used for reference-to-video (ref2va). This dedicated adapter is trained on the reference model path and gives noticeably better reference videos than the frames adapter. Default: minimax_h3_n_turbo_4step_v0.1_comfy_resized_avg_rank_21_bf16.safetensors</span>
                         </div>
                             </div>
                         </div>

@@ -102,16 +102,6 @@ const KNOWN_FILES = {
         hfPath: 'diffusion_models/minimax_h3_fl2va_pruned_fp8_scaled.safetensors',
         approxMB: 24000
     },
-    'minimax_h3_ref2va_pruned_int8_convrot.safetensors': {
-        repo: 'Comfy-Org/MiniMax-H3',
-        hfPath: 'diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors',
-        approxMB: 21000
-    },
-    'minimax_h3_ref2va_pruned_fp8_scaled.safetensors': {
-        repo: 'Comfy-Org/MiniMax-H3',
-        hfPath: 'diffusion_models/minimax_h3_ref2va_pruned_fp8_scaled.safetensors',
-        approxMB: 24000
-    },
     'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors': {
         repo: 'Comfy-Org/MiniMax-H3',
         hfPath: 'text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors',
@@ -196,13 +186,11 @@ const MODEL_CATALOG = [
     { id: 'qwen_image_unet', group: 'image', label: 'Qwen Image 2.1 UNET (int8)', required: true, dest: 'diffusion_models', file: { settings: 'image', key: 'qwenUnet' }, minBytes: 5 * 1024 ** 3, note: 'The default image model. Needed for Qwen Image 2.1 generation and for ALL image editing.' },
     { id: 'qwen_image_clip', group: 'image', label: 'Qwen Image 2.1 text encoder (Qwen3-VL 8B int8)', required: true, dest: 'text_encoders', file: { settings: 'image', key: 'qwenClip' }, minBytes: 5 * 1024 ** 3, note: 'The default image model. Needed for Qwen Image 2.1 generation and for ALL image editing.' },
     { id: 'qwen_image_vae', group: 'image', label: 'Qwen Image 2.1 VAE', required: true, dest: 'vae', file: { settings: 'image', key: 'qwenVae' }, minBytes: 100 * 1024 ** 2, note: 'The default image model. Needed for Qwen Image 2.1 generation and for ALL image editing.' },
-    { id: 'h3_unet_t2va', group: 'video', label: 'H3 UNET for text-to-video (FL2VA)', required: true, dest: 'diffusion_models', file: { settings: 'video', key: 'h3Unet' }, minBytes: 5 * 1024 ** 3 },
-    { id: 'h3_unet_i2va', group: 'video', label: 'H3 UNET for image-to-video (Ref2VA)', required: true, dest: 'diffusion_models', file: 'minimax_h3_ref2va_pruned_int8_convrot.safetensors', minBytes: 5 * 1024 ** 3 },
+    { id: 'h3_unet', group: 'video', label: 'H3 UNET (FL2VA, text- and image-to-video)', required: true, dest: 'diffusion_models', file: { settings: 'video', key: 'h3Unet' }, minBytes: 5 * 1024 ** 3 },
     { id: 'h3_clip', group: 'video', label: 'H3 CLIP (Qwen3-VL 32B NVFP4)', required: true, dest: 'text_encoders', file: { settings: 'video', key: 'h3Clip' }, minBytes: 5 * 1024 ** 3 },
     { id: 'h3_video_vae', group: 'video', label: 'H3 video VAE', required: true, dest: 'vae', file: { settings: 'video', key: 'h3VideoVae' }, minBytes: 100 * 1024 ** 2 },
     { id: 'h3_audio_vae', group: 'video', label: 'H3 audio VAE', required: true, dest: 'vae', file: { settings: 'video', key: 'h3AudioVae' }, minBytes: 10 * 1024 ** 2 },
-    { id: 'h3_turbo_lora', group: 'video', label: 'MiniMax H3 Turbo LoRA — frames (v4 step600 EMA)', required: false, dest: 'loras', file: { settings: 'video', key: 'h3TurboLora' }, minBytes: 100 * 1024 ** 2, note: 'Needed only when MiniMax H3 Turbo is enabled in Settings > Video (the default). Used for text-to-video and image-to-video.' },
-    { id: 'h3_ref_turbo_lora', group: 'video', label: 'MiniMax H3 Turbo LoRA — reference (4-step v0.1)', required: false, dest: 'loras', file: { settings: 'video', key: 'h3RefTurboLora' }, minBytes: 50 * 1024 ** 2, note: 'Needed only when MiniMax H3 Turbo is enabled and a reference-to-video (ref2va) generation runs. This dedicated ref2va adapter produces noticeably better reference video than the frames adapter; without it, download it so reference Turbo runs use the right model.' },
+    { id: 'h3_turbo_lora', group: 'video', label: 'MiniMax H3 Turbo LoRA (v4 step600 EMA)', required: false, dest: 'loras', file: { settings: 'video', key: 'h3TurboLora' }, minBytes: 100 * 1024 ** 2, note: 'Needed only when MiniMax H3 Turbo is enabled in Settings > Video (the default). Used for text-to-video and image-to-video.' },
     { id: 'h3_latent_upscaler', group: 'video', label: 'MiniMax H3 Latent Upscaler 3D (fp16)', required: false, dest: 'latent_upscale_models', file: { settings: 'video', key: 'h3LatentUpscaleModel' }, minBytes: 100 * 1024 ** 2, note: 'Needed only when H3 Latent Upscale is enabled in Settings > Video. A ~691 MB learned 24-channel H3 latent upscaler (fp16/bf16; fp32 is ~1.4 GB). Optional: Auto mode falls back to direct generation when it is missing.' },
     { id: 'seedvr2_dit', group: 'upscale', label: 'SeedVR2 DiT 7B (balanced)', required: true, dest: 'seedvr2', also: ['SEEDVR2'], seen: 'seedvr2dit', file: { settings: 'image', key: 'seedvr2Dit' }, minBytes: 2 * 1024 ** 3 },
     { id: 'seedvr2_dit_sharp', group: 'upscale', label: 'SeedVR2 DiT 7B (sharp profile)', required: false, dest: 'seedvr2', also: ['SEEDVR2'], seen: 'seedvr2dit', file: 'seedvr2_ema_7b_sharp_fp8_e4m3fn_mixed_block35_fp16.safetensors', minBytes: 2 * 1024 ** 3, note: 'Same profile the sharp upscale uses. The SeedVR2 nodes auto-download it on first use; no token needed.' },
@@ -258,13 +246,6 @@ const NODE_CATALOG = [
         repo: 'https://github.com/larryvrh/ComfyUI-MiniMax-H3-Turbo',
         dir: 'ComfyUI-MiniMax-H3-Turbo', recursive: false,
         note: 'Needed for the MiniMax H3 Turbo option (4-8 step generation). Install, then restart ComfyUI.'
-    },
-    {
-        id: 'h3_refmods', label: 'MiniMax H3 reusable visual references', required: false,
-        nodes: ['MiniMaxH3RefModExtract', 'MiniMaxH3RefModsLoader', 'MiniMaxH3RefModApply'],
-        repo: 'https://github.com/Luisacaotica/ComfyUI-MiniMaxH3Mod',
-        dir: 'ComfyUI-MiniMaxH3Mod', recursive: false, requirements: true,
-        note: 'Enables cached Full/Compressed visual references for @Character, products and other assets in video generation, UGC Studio and Creator Studio. Install this pack, then restart ComfyUI. Ordinary text-only video does not need it.'
     },
     {
         id: 'h3_latent_upscaler', label: 'MiniMax H3 Latent Upscaler', required: false,

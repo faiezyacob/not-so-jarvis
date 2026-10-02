@@ -211,7 +211,7 @@ function resolveExistingSource(conversationId, message, referenceImage) {
 
 // Create the production plan for a fresh request. The brief is canonical from
 // here on; later stages are rebuilt from it, never from the raw message.
-async function createProduction({ conversationId, message, provider, model, think, referenceImage, character, semanticReferences }) {
+async function createProduction({ conversationId, message, provider, model, think, referenceImage }) {
     const parsedDuration = typeof videoGenerator.parseRequestedVideoDuration === 'function'
         ? videoGenerator.parseRequestedVideoDuration(message)
         : null;
@@ -219,11 +219,6 @@ async function createProduction({ conversationId, message, provider, model, thin
         ? parsedDuration
         : defaultVideoDuration();
     const brief = await buildBrief({ message, provider, model, think });
-    // An approved character's identity references travel with the production so
-    // every shot inherits the same person (see buildVideoStageRequest).
-    if (character && Array.isArray(character.identityReferences)) {
-        brief.characterReferences = character.identityReferences.slice(0, 9);
-    }
     const sourceImage = resolveExistingSource(conversationId, message, referenceImage);
     const production = productionPlan.create({
         conversationId,
@@ -233,10 +228,6 @@ async function createProduction({ conversationId, message, provider, model, thin
         originalRequest: message
     });
     production.studio = 'director';
-    if (character && Array.isArray(character.identityReferences)) {
-        production.identityReferences = character.identityReferences.slice(0, 9);
-    }
-    production.semanticReferences = Array.isArray(semanticReferences) ? semanticReferences.slice(0, 16) : [];
     if (sourceImage) {
         // Starting from an existing image: record it as the opening frame and
         // treat it as approved so the Director goes straight to the video stage.
@@ -259,7 +250,10 @@ async function createProduction({ conversationId, message, provider, model, thin
 // the caller owns the canonical brief and the approved opening frame, so the
 // production starts at the approval checkpoint with the frame in place. The
 // brief's shotList (built from the UGC scene plan) drives the H3 cut sequence.
-function createUgcProduction({ conversationId, brief, duration, openingFrame, originalRequest, references, identityReferences, identityCharacterId, productReferences, semanticReferences }) {
+// H3 is image-to-video only: the caller's approved opening frame (a Qwen Image
+// 2.1 render that already combines the creator identity, outfit, environment,
+// product and composition) is the single visual source of truth.
+function createUgcProduction({ conversationId, brief, duration, openingFrame, originalRequest }) {
     const production = productionPlan.create({
         conversationId,
         brief,
@@ -268,26 +262,6 @@ function createUgcProduction({ conversationId, brief, duration, openingFrame, or
         originalRequest: originalRequest || (brief && brief.originalRequest) || ''
     });
     production.studio = 'ugc';
-    // Every approved scene frame travels with the production so the video stage
-    // can condition H3 on all of them (reference-to-video), not only <Picture 1>.
-    production.references = (Array.isArray(references) ? references : [])
-        .filter((r) => r && r.filename)
-        .slice(0, 9)
-        .map((r) => ({
-            sceneId: r.sceneId || null,
-            order: Number(r.order) || 0,
-            url: r.url || ('/generated/' + encodeURIComponent(r.filename)),
-            filename: r.filename
-        }));
-    // The creator's approved identity references travel alongside the scene
-    // frames so the H3 stage conditions on the same person across every shot.
-    production.identityReferences = (Array.isArray(identityReferences) ? identityReferences : [])
-        .map((name) => String(name || '').trim())
-        .filter(Boolean)
-        .slice(0, 9);
-    production.identityCharacterId = String(identityCharacterId || '').trim();
-    production.productReferences = Array.isArray(productReferences) ? productReferences.slice(0, 8) : [];
-    production.semanticReferences = Array.isArray(semanticReferences) ? semanticReferences.slice(0, 16) : [];
     if (openingFrame && openingFrame.filename) {
         production.image = {
             url: openingFrame.url || ('/generated/' + encodeURIComponent(openingFrame.filename)),
@@ -457,20 +431,14 @@ function cancel(production) {
 // brief + requested duration. Returns everything handleVideoGenerationStream
 // needs; the H3 director LLM (reused, not reimplemented) writes the prompt.
 async function buildVideoStageRequest(production, { provider, model, think }) {
-    const references = Array.isArray(production.references)
-        ? production.references.filter((r) => r && r.filename).slice(0, 9)
-        : [];
-    // If the opening frame was upscaled, animate the higher-resolution file as
-    // <Picture 1> so the reference used matches the frame the user approved.
-    const upscaledFrame = production.image && production.image.upscaled
-        ? production.image.rawFilename
-        : null;
-    const referenceImages = references.map((r) => r.filename);
-    if (upscaledFrame && referenceImages.length) referenceImages[0] = upscaledFrame;
-    const useRefs = referenceImages.length > 0;
-    const sourceImageRawFilename = useRefs
-        ? referenceImages[0]
-        : ((production.image && production.image.rawFilename) || production.sourceImage || null);
+    // H3 is image-to-video only: the single approved opening frame is the
+    // complete visual source of truth (identity, outfit, scene and composition
+    // were already resolved upstream by Qwen Image 2.1). If it was upscaled,
+    // animate the higher-resolution file so it matches the approved frame.
+    const sourceImageRawFilename =
+        (production.image && production.image.rawFilename) ||
+        production.sourceImage ||
+        null;
     const duration = Number(production.video && production.video.duration) > 0
         ? Number(production.video.duration)
         : defaultVideoDuration();
@@ -484,10 +452,7 @@ async function buildVideoStageRequest(production, { provider, model, think }) {
         user_prompt: prompts.composeVideoDirection(production.brief, duration, { authoritative, shotList }),
         previous_prompt: '',
         creative_mode: 'none',
-        has_reference_image: !useRefs && Boolean(sourceImageRawFilename),
-        // Only scene/keyframe references use native ref2va anchoring. Character,
-        // product and other reusable assets travel through the central RefMod path.
-        reference_images: useRefs ? referenceImages : [],
+        has_reference_image: Boolean(sourceImageRawFilename),
         requested_duration: duration,
         explicit_constraints: production.brief.explicitConstraints || [],
         shots: shotList.length,
@@ -510,33 +475,8 @@ async function buildVideoStageRequest(production, { provider, model, think }) {
     return {
         videoPrompt: director.prompt,
         structuredRequest,
-        videoMode: useRefs ? 'ref2va' : (sourceImageRawFilename ? 'i2va' : 't2va'),
+        videoMode: sourceImageRawFilename ? 'i2va' : 't2va',
         sourceImageRawFilename,
-        referenceImages: useRefs ? referenceImages : [],
-        semanticReferences: Array.isArray(production.semanticReferences) && production.semanticReferences.length
-            ? production.semanticReferences
-            : (Array.isArray(production.identityReferences) ? production.identityReferences : []).map((filename, index) => ({
-                id: 'character:' + (production.identityCharacterId || 'director') + (index ? ':' + index : ''),
-                entityId: production.identityCharacterId || '',
-                name: production.brief && production.brief.characterName || production.brief && production.brief.subject || 'Character',
-                type: 'character',
-                source: '/generated/' + encodeURIComponent(path.basename(String(filename || ''))),
-                mode: 'full',
-                strength: 1,
-                priority: 1,
-                required: true,
-                order: index
-            })).concat((production.productReferences || []).map((source, index) => ({
-                id: 'product:' + (production.brief && production.brief.productName || 'director') + ':' + index,
-                name: production.brief && production.brief.productName || 'Product',
-                type: 'product',
-                source,
-                mode: index === 0 ? 'full' : 'compressed',
-                strength: index === 0 ? 0.95 : 0.72,
-                priority: 3,
-                required: false,
-                order: index + 4
-            }))),
         duration: director.duration || duration,
         width: director.width,
         height: director.height

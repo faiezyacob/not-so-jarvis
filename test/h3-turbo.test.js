@@ -29,14 +29,6 @@ test('normalizeH3Turbo: defaults to the recommended checkpoint and 6 steps', () 
     assert.equal(turbo.steps, videoGenerator.H3_TURBO_DEFAULT_STEPS);
 });
 
-test('normalizeH3Turbo: reference mode selects the dedicated ref adapter', () => {
-    const turbo = videoGenerator.normalizeH3Turbo({ h3TurboEnabled: true }, { reference: true });
-    assert.equal(turbo.loraName, videoGenerator.H3_TURBO_DEFAULT_REFERENCE_LORA);
-    const custom = videoGenerator.normalizeH3Turbo(
-        { h3TurboEnabled: true, h3RefTurboLora: 'custom/ref.safetensors' }, { reference: true });
-    assert.equal(custom.loraName, 'custom/ref.safetensors');
-});
-
 test('normalizeH3TurboSteps: clamps to the 4-8 range', () => {
     assert.equal(videoGenerator.normalizeH3TurboSteps(4), 4);
     assert.equal(videoGenerator.normalizeH3TurboSteps(8), 8);

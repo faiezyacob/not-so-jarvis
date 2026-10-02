@@ -461,19 +461,6 @@ test('talking creator requests route without capturing ordinary image or product
     assert.equal(studio.detectCreatorIntent('Create a product demo for @Maya.', [{ id: 'maya-id' }]), false);
 });
 
-test('Creator reference fallback treats the portrait as identity-only rather than a UGC keyframe', () => {
-    const fallback = videoGenerator.buildReferenceFallbackPrompt({
-        shotPlan: ['Maya speaks to camera: <d>[English] Hello there.</d>'],
-        referenceCount: 1,
-        durationSeconds: 10,
-        creatorIdentityOnly: true
-    });
-    assert.match(fallback, /identity-only reference/i);
-    assert.match(fallback, /personality-led social creator video/i);
-    assert.doesNotMatch(fallback, /user-generated-content/i);
-    assert.doesNotMatch(fallback, /shot begins from <Picture/i);
-});
-
 test('Creator performance beats become timestamped events inside exactly one continuous H3 shot, deterministically', async () => {
     const content = await studio.buildCreatorContent({
         characterId: 'maya-id',
@@ -489,7 +476,7 @@ test('Creator performance beats become timestamped events inside exactly one con
     const result = await videoGenerator.buildH3VideoPrompt({
         creator_content: true,
         user_prompt: content.userPrompt,
-        reference_images: ['maya-base.png'],
+        has_reference_image: true,
         shot_plan: content.shotPlan,
         creator_performance_beats: content.performanceSequence,
         creator_dialogue: content.creatorDialogue,
@@ -501,10 +488,10 @@ test('Creator performance beats become timestamped events inside exactly one con
         dialogue_language: 'English',
         requested_duration: 15,
         explicit_constraints: []
-    }, providers, 'ollama', 'test-model', null, 'creator-test', false);
+    }, providers, 'ollama', 'test-model', 'opening-frame.png', 'creator-test', false);
 
     assert.equal(llmCalled, false);
-    assert.equal(result.mode, 'ref2va');
+    assert.equal(result.mode, 'i2va');
     for (const beat of content.performanceBeats) assert.ok(result.prompt.includes(beat.speech));
     assert.deepEqual(videoGenerator.creatorShotHeaders(result.prompt), ['[Shot 1]']);
     assert.equal(videoGenerator.validateCreatorContinuousShot(result.prompt), true);
@@ -547,7 +534,7 @@ function canonicalDialogue(overrides = {}) {
         creator: {
             name: 'Sofia',
             identityDescription: 'warm olive complexion, dark wavy hair, brown eyes',
-            referenceDescription: 'the approved Character identity portrait supplied as <Picture 1>'
+            referenceDescription: 'the opening frame supplied as <Picture 1>'
         },
         shot: {
             id: 'Shot 1',
@@ -652,11 +639,11 @@ test('Test E — malformed or incomplete dialogue is rejected before H3 submissi
     await assert.rejects(
         videoGenerator.buildH3VideoPrompt({
             creator_content: true,
-            reference_images: ['maya-base.png'],
+            has_reference_image: true,
             creator_dialogue: missingSpeech,
             dialogue_language: 'English',
             requested_duration: 10
-        }, { chat: async () => { throw new Error('must not be called'); } }, 'ollama', 'test-model', null, 'creator-invalid', false),
+        }, { chat: async () => { throw new Error('must not be called'); } }, 'ollama', 'test-model', 'opening-frame.png', 'creator-invalid', false),
         { code: 'creator_dialogue_invalid' }
     );
 });
@@ -750,7 +737,7 @@ test('a paraphrased script is repaired to retain a required topic point', async 
 });
 
 test('resolveCreatorCanonical preserves a complete canonical dialogue object', () => {
-    const canonical = videoGenerator.resolveCreatorCanonical({ creator_dialogue: canonicalDialogue() }, ['maya-base.png']);
+    const canonical = videoGenerator.resolveCreatorCanonical({ creator_dialogue: canonicalDialogue() });
     assert.equal(canonical.creator.name, 'Sofia');
     assert.deepEqual(canonical.guide.structure, ['hook', 'main_point', 'reaction', 'closing']);
     assert.equal(canonical.dialogue.lines.length, 4);
@@ -764,11 +751,11 @@ test('canonical normalization maps legacy speech beats instead of dropping the d
         creator_environment: 'a cafe',
         creator_wardrobe: 'a denim jacket',
         creator_camera_direction: 'front-facing smartphone',
-        creator_reference_description: 'the approved Character identity portrait supplied as <Picture 1>',
+        creator_reference_description: 'the opening frame supplied as <Picture 1>',
         creator_performance_beats: [
             { stage: 'hook', label: 'hook', expression: 'a soft smile', dialogue: 'Hello there, welcome back.', gaze: 'eye contact', body: 'a small gesture' }
         ]
-    }, ['maya-base.png']);
+    });
     assert.equal(canonical.dialogue.lines[0].speech, 'Hello there, welcome back.');
     assert.equal(canonical.dialogue.lines[0].stage, 'hook');
     assert.equal(videoGenerator.validateCreatorDialogue(canonical).ok, true);
@@ -777,11 +764,8 @@ test('canonical normalization maps legacy speech beats instead of dropping the d
 test('Creator Studio permits multiple shots only for an explicit multi-shot request', async () => {
     const providers = {
         chat: async () => JSON.stringify({
-            mode: 'ref2va',
-            prompt: 'subject_definitions:\n<Subject 1> is the creator in <Picture 1>.\n\n' +
-                'summary:\nA creator moves between two requested scenes.\n\n' +
-                'retention_analysis:\n<Subject 1> (appears in [Shot 1], [Shot 2]): fully_preserved - identity.\n\n' +
-                'detailed_description:\n[Shot 1] The creator begins speaking. [Shot 2] At 00:05.000, the camera cuts to a close-up.\n\n' +
+            mode: 'i2va',
+            prompt: 'integrated_multimodal_description:\n[Shot 1] The creator begins speaking. [Shot 2] At 00:05.000, the camera cuts to a close-up.\n\n' +
                 'overall_soundscape:\nNatural room tone.\n\nnon_diegetic_music:\nN/A'
         })
     };
@@ -789,10 +773,10 @@ test('Creator Studio permits multiple shots only for an explicit multi-shot requ
         creator_content: true,
         creator_multi_shot: true,
         user_prompt: 'Create a montage with multiple shots.',
-        reference_images: ['maya-base.png'],
+        has_reference_image: true,
         shot_plan: ['The creator starts speaking.', 'Cut to a close-up of the creator.'],
         requested_duration: 10
-    }, providers, 'ollama', 'test-model', null, 'creator-multishot-test', false);
+    }, providers, 'ollama', 'test-model', 'opening-frame.png', 'creator-multishot-test', false);
 
     assert.deepEqual(videoGenerator.creatorShotHeaders(result.prompt), ['[Shot 1]', '[Shot 2]']);
 });

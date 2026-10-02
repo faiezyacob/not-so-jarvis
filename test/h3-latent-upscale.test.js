@@ -25,7 +25,6 @@ const UPSCALE_NODE = 'MinimaxH3LatentUpscaler3D';
 function baseSettings(extra) {
     return Object.assign({
         h3Unet: 'minimax_h3_fl2va_pruned_int8_convrot.safetensors',
-        h3Ref2vaUnet: 'minimax_h3_ref2va_pruned_int8_convrot.safetensors',
         h3Clip: 'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors',
         h3VideoVae: 'minimax_h3_video_vae_fp16.safetensors',
         h3AudioVae: 'minimax_h3_audio_vae_fp32.safetensors',
@@ -294,18 +293,18 @@ test('buildH3Graph: latent upscale works with an I2V first frame', () => {
     assert.deepEqual(graph.condition_refine.inputs.first_frame, ['first_image', 0]);
 });
 
-test('buildH3Graph: latent upscale works with ref2va references', () => {
+test('buildH3Graph: latent upscale stays I2VA on a single first frame', () => {
     const plan = videoGenerator.buildH3LatentUpscalePlan({
         targetWidth: 768, targetHeight: 1152, scale: 2, settings: baseSettings(), info: fakeInfo(true)
     });
     const graph = videoGenerator.buildH3Graph({
-        prompt: 'refs', mode: 't2va', W: 768, H: 1152, frames: 124, seed: 2,
-        settings: baseSettings(), refImageNames: ['a.png', 'b.png'], latentUpscale: plan
+        prompt: 'scene', mode: 'i2va', W: 768, H: 1152, frames: 124, seed: 2,
+        settings: baseSettings(), firstImageName: 'frame.png', latentUpscale: plan
     });
-    assert.equal(graph.condition.class_type, 'MiniMaxH3ReferenceToVideo');
-    assert.equal(graph.condition_refine.class_type, 'MiniMaxH3ReferenceToVideo');
-    assert.deepEqual(graph.condition.inputs['ref_images.ref_image_0'], ['ref_image_load_1', 0]);
-    assert.deepEqual(graph.condition_refine.inputs['ref_images.ref_image_1'], ['ref_image_load_2', 0]);
+    assert.equal(graph.condition.class_type, 'MiniMaxH3ImageToVideo');
+    assert.equal(graph.condition_refine.class_type, 'MiniMaxH3ImageToVideo');
+    assert.deepEqual(graph.condition.inputs.first_frame, ['first_image', 0]);
+    assert.deepEqual(graph.condition_refine.inputs.first_frame, ['first_image', 0]);
 });
 
 test('validateH3Graph: a missing upscaler node fails with an actionable code', async () => {

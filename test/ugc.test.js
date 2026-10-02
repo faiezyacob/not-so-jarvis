@@ -433,7 +433,7 @@ test('directorBrief carries scene dialogue as on-screen H3 dialogue', () => {
     assert.ok(/lip-sync/i.test(input.brief.details));
 });
 
-test('directorProductionInput carries every approved reference frame', () => {
+test('directorProductionInput carries the approved opening frame', () => {
     const project = baseProject();
     project.scenes = [
         { id: 's1', order: 1, duration: 7, action: 'walks in', camera: {} },
@@ -444,12 +444,11 @@ test('directorProductionInput carries every approved reference frame', () => {
         { sceneId: 's2', order: 2, url: '/generated/b.png', filename: 'b.png' }
     ];
     const input = studio.directorProductionInput(project);
-    assert.equal(input.references.length, 2);
-    assert.deepEqual(input.references.map((r) => r.filename), ['a.png', 'b.png']);
+    assert.equal(input.references, undefined);
     assert.equal(input.openingFrame.filename, 'a.png');
 });
 
-test('a UGC handoff renders the video reference-to-video from every scene frame', async () => {
+test('a UGC handoff animates the single approved opening frame with H3 I2V', async () => {
     const director = require('../services/director/director');
     const project = baseProject();
     project.scenes = [
@@ -466,17 +465,18 @@ test('a UGC handoff renders the video reference-to-video from every scene frame'
         brief: input.brief,
         duration: input.duration,
         openingFrame: input.openingFrame,
-        originalRequest: input.originalRequest,
-        references: input.references
+        originalRequest: input.originalRequest
     });
-    assert.equal(production.references.length, 2);
+    assert.equal(production.references, undefined);
+    assert.equal(production.sourceImage, 'a.png');
     const stage = await director.buildVideoStageRequest(production, {
         provider: 'ollama', model: 'test-model', think: false
     });
-    assert.equal(stage.videoMode, 'ref2va');
-    assert.deepEqual(stage.referenceImages, ['a.png', 'b.png']);
-    assert.deepEqual(stage.structuredRequest.reference_images, ['a.png', 'b.png']);
-    assert.equal(stage.structuredRequest.has_reference_image, false);
+    assert.equal(stage.videoMode, 'i2va');
+    assert.equal(stage.sourceImageRawFilename, 'a.png');
+    assert.equal(stage.referenceImages, undefined);
+    assert.equal(stage.structuredRequest.has_reference_image, true);
+    assert.equal(stage.structuredRequest.reference_images, undefined);
     // Approved dialogue survives into the final H3 prompt with its language tag.
     assert.match(stage.videoPrompt, /<d>\[English\] Hi there\.<\/d>/);
     assert.match(stage.videoPrompt, /<d>\[English\] It sinks in\.<\/d>/);

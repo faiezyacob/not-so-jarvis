@@ -108,22 +108,29 @@ test('buildH3Graph: an explicit cfg of 1 stays on BasicGuider (Turbo off)', () =
     assert.equal(graph.negative, undefined);
 });
 
-test('buildH3Graph: reference mode uses the dedicated ref Turbo LoRA on the stock loader', () => {
-    const graph = videoGenerator.buildH3Graph({
-        prompt: 'a kite',
-        mode: 'ref2va',
-        refImageNames: ['ref1.png'],
-        settings: {}
-    });
-    // The reference adapter is a LightX2V-style checkpoint, so it loads with
-    // ComfyUI's stock LoraLoaderModelOnly (not the pack's Turbo loader).
-    assert.equal(graph.h3_turbo_lora.class_type, 'LoraLoaderModelOnly');
-    assert.equal(graph.h3_turbo_lora.inputs.lora_name, videoGenerator.H3_TURBO_DEFAULT_REFERENCE_LORA);
-});
-
-test('buildH3Graph: frames mode uses the frames Turbo LoRA', () => {
+test('buildH3Graph: H3 always uses the frames Turbo LoRA (no reference adapter)', () => {
     const graph = videoGenerator.buildH3Graph({ prompt: 'a kite', mode: 't2va', settings: {} });
     assert.equal(graph.h3_turbo_lora.inputs.lora_name, videoGenerator.H3_TURBO_DEFAULT_LORA);
+    const i2va = videoGenerator.buildH3Graph({
+        prompt: 'a kite',
+        mode: 'i2va',
+        firstImageName: 'frame.png',
+        settings: {}
+    });
+    assert.equal(i2va.h3_turbo_lora.inputs.lora_name, videoGenerator.H3_TURBO_DEFAULT_LORA);
+});
+
+test('buildH3Graph: I2VA conditions on a single first frame with no reference inputs', () => {
+    const graph = videoGenerator.buildH3Graph({
+        prompt: 'a kite',
+        mode: 'i2va',
+        firstImageName: 'frame.png',
+        settings: {}
+    });
+    assert.equal(graph.condition.class_type, 'MiniMaxH3ImageToVideo');
+    assert.deepEqual(graph.condition.inputs.first_frame, ['first_image', 0]);
+    assert.equal(graph.h3_refmod_loader, undefined);
+    assert.equal(graph.first_image.class_type, 'LoadImage');
 });
 
 test('autoUpscaleEnabled defaults to off', () => {

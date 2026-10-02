@@ -1590,10 +1590,9 @@ function pendingReferenceSceneIds(project) {
     return scenes.filter((s) => !ready.get(s.id)).map((s) => s.id);
 }
 
-// All approved reference frames in scene order. The Director conditions the
-// final video on every scene's approved frame (reference-to-video), not just
-// the first — this is what makes the generated scene frames actually reach the
-// video instead of being discarded after approval.
+// All approved reference frames in scene order. The Director's H3 stage is
+// image-to-video only, so the first approved frame becomes the opening frame
+// that Qwen rendered and H3 animates; the rest stay for the scene plan/cards.
 function resolveReferenceFrames(project) {
     const approved = project.approvedReferences && project.approvedReferences.length
         ? project.approvedReferences
@@ -1923,17 +1922,10 @@ function directorProductionInput(project) {
         requestedDuration: requested,
         durationCapped,
         originalRequest: project.request || '',
-        openingFrame: resolveOpeningFrame(project),
-        references: resolveReferenceFrames(project),
-        // The approved creator's identity references (when they have an identity
-        // sheet) condition every Director shot so the same person persists.
-        identityReferences: (project.creator && Array.isArray(project.creator.identityReferences))
-            ? project.creator.identityReferences.slice(0, 4)
-            : [],
-        identityCharacterId: project.creator && project.creator.characterId || '',
-        productReferences: project.product && Array.isArray(project.product.referenceImages)
-            ? project.product.referenceImages.slice(0, 6)
-            : []
+        // H3 is image-to-video only: the approved opening frame — a Qwen Image
+        // 2.1 render that already combines the creator identity, outfit, product,
+        // environment and composition — is the single visual source of truth.
+        openingFrame: resolveOpeningFrame(project)
     };
 }
 
