@@ -4,7 +4,7 @@
    the existing chat: inline cards for product,
    creator, outfit, environment, content type, the
    creative brief, the script, the scene plan and
-   the reference frames, plus a subtle "UGC Studio"
+   the single opening frame, plus a subtle "UGC Studio"
    mode bar. Actions flow back through the normal
    chat stream; each card is carried by a
    [[ugc:{...}]] marker so it survives reloads.
@@ -42,8 +42,8 @@ const UGCUI = (() => {
         creative_direction: 'Creative direction',
         script_review: 'Script review',
         scene_review: 'Scene plan',
-        reference_generation: 'Generating references',
-        reference_approval: 'Reference approval',
+        reference_generation: 'Rendering frame',
+        reference_approval: 'Opening frame',
         video_generation: 'Director handoff',
         completed: 'Complete'
     };
@@ -53,7 +53,7 @@ const UGCUI = (() => {
         { id: 'brief', label: 'Brief', stages: ['brief'] },
         { id: 'script', label: 'Script', stages: ['script_review'] },
         { id: 'scenes', label: 'Scenes', stages: ['scene_review'] },
-        { id: 'references', label: 'References', stages: ['reference_generation', 'reference_approval'] },
+        { id: 'frame', label: 'Opening frame', stages: ['reference_generation', 'reference_approval'] },
         { id: 'handoff', label: 'Render', stages: ['video_generation', 'completed'] }
     ];
 
@@ -138,9 +138,9 @@ const UGCUI = (() => {
         creative_direction: { title: 'Set the creative direction', hint: 'Choose a content type, an outfit and an environment.' },
         brief: { title: 'Review the brief', hint: 'Adjust anything, then approve it to write the script.' },
         script_review: { title: 'Review the script', hint: 'Edit the lines or ask for a rewrite, then approve to plan the scenes.' },
-        scene_review: { title: 'Review the scene plan', hint: 'Tune each scene, then approve to generate the reference frames.' },
-        reference_generation: { title: 'Generating reference frames', hint: 'Frames render one at a time. This card updates as they finish.' },
-        reference_approval: { title: 'Review reference frames', hint: 'Every scene needs one current frame. Approve to hand off to Director Mode.' },
+        scene_review: { title: 'Review the scene plan', hint: 'Tune each scene, then approve to render the opening frame.' },
+        reference_generation: { title: 'Rendering the opening frame', hint: 'The first frame the video will animate is being rendered.' },
+        reference_approval: { title: 'Review the opening frame', hint: 'Create the video, modify the frame, or regenerate it.' },
         video_generation: { title: 'Director handoff', hint: 'The approved plan is being produced. Follow the Director card for the video.' },
         completed: { title: 'Production complete', hint: 'Your UGC video is ready.' }
     };
@@ -236,25 +236,6 @@ const UGCUI = (() => {
 
     // --- Stage renderers ---
 
-    // Per-scene reference status counts used by the context strip and the
-    // reference progress header.
-    function frameStats(card) {
-        const scenes = Array.isArray(card.scenes) ? card.scenes : [];
-        const refs = Array.isArray(card.references) ? card.references : [];
-        const byScene = new Map();
-        refs.forEach((r) => { if (r && r.sceneId) byScene.set(r.sceneId, r); });
-        const stats = { total: scenes.length || refs.length, ready: 0, failed: 0, stale: 0, pending: 0 };
-        const source = scenes.length ? scenes.map((s) => byScene.get(s.id) || null) : refs;
-        source.forEach((r) => {
-            const status = r && r.status ? r.status : 'pending';
-            if (status === 'ready' || status === 'approved') stats.ready += 1;
-            else if (status === 'failed') stats.failed += 1;
-            else if (status === 'stale') stats.stale += 1;
-            else stats.pending += 1;
-        });
-        return stats;
-    }
-
     // The context strip: only populated values, with the current stage's most
     // relevant selections emphasized. Never renders an empty placeholder.
     function contextEntries(card) {
@@ -282,8 +263,9 @@ const UGCUI = (() => {
         if (brief.platform) entries.push({ key: 'platform', label: 'Platform', value: brief.platform });
         if (card.scenes && card.scenes.length) entries.push({ key: 'scenes', label: 'Scenes', value: String(card.scenes.length) });
         if (card.stage === 'reference_generation' || card.stage === 'reference_approval') {
-            const stats = frameStats(card);
-            entries.push({ key: 'frames', label: 'Frames', value: stats.ready + ' of ' + stats.total + ' ready' });
+            const frame = card.frame || (Array.isArray(card.references) ? card.references[0] : null);
+            const status = frame && frame.status ? frame.status : 'pending';
+            entries.push({ key: 'frames', label: 'Frame', value: REF_STATUS_LABELS[status] || status });
         }
         return entries;
     }
@@ -946,112 +928,77 @@ const UGCUI = (() => {
         ready: 'Ready', approved: 'Approved', pending: 'Pending', failed: 'Failed', stale: 'Stale'
     };
 
-    function renderReferences(card, container) {
-        const refs = Array.isArray(card.references) ? card.references : [];
-        const scenes = Array.isArray(card.scenes) ? card.scenes : [];
-        const byScene = new Map();
-        refs.forEach((r) => { byScene.set(r.sceneId, r); });
-        const items = scenes.length
-            ? scenes.map((s) => ({ sceneId: s.id, order: s.order, ref: byScene.get(s.id) || null }))
-            : refs.map((r) => ({ sceneId: r.sceneId, order: r.order, ref: r }));
-        const stats = frameStats(card);
-        const complete = card.referencesComplete === true;
-        const recovering = stats.failed > 0 || stats.stale > 0;
+    // The ONE opening frame the video will animate, rendered like Creator
+    // Studio's starting-frame card: the frame, then Create Video / Modify Frame /
+    // Regenerate Frame. Only a single frame is ever produced.
+    function renderFrameApproval(card, container) {
+        const frame = card.frame || (Array.isArray(card.references) ? card.references[0] : null);
+        const status = frame && frame.status ? frame.status : 'pending';
+        const ready = card.referencesComplete === true || status === 'ready' || status === 'approved';
 
-        // Overall progress: an exact count plus a bar, so several frames being
-        // generated or retried read at a glance.
-        const summary = el('div', 'ugc-refs-summary');
-        const head = el('div', 'ugc-refs-progress-head');
-        head.appendChild(el('span', 'ugc-refs-progress-label', stats.ready + ' of ' + stats.total + ' frames ready'));
-        const badges = el('span', 'ugc-refs-badges');
-        if (stats.failed) badges.appendChild(el('span', 'ugc-tag ugc-tag--warn', stats.failed + ' failed'));
-        if (stats.stale) badges.appendChild(el('span', 'ugc-tag ugc-tag--warn', stats.stale + ' stale'));
-        if (stats.pending) badges.appendChild(el('span', 'ugc-tag', stats.pending + ' pending'));
-        head.appendChild(badges);
-        summary.appendChild(head);
-        const bar = el('div', 'ugc-refs-bar');
-        bar.setAttribute('role', 'progressbar');
-        bar.setAttribute('aria-valuemin', '0');
-        bar.setAttribute('aria-valuemax', String(stats.total || 0));
-        bar.setAttribute('aria-valuenow', String(stats.ready));
-        bar.setAttribute('aria-label', stats.ready + ' of ' + stats.total + ' reference frames ready');
-        const fill = el('span', 'ugc-refs-bar-fill');
-        fill.style.width = stats.total ? Math.round((stats.ready / stats.total) * 100) + '%' : '0%';
-        bar.appendChild(fill);
-        summary.appendChild(bar);
-        container.appendChild(summary);
+        const frameCard = el('div', 'ugc-frame-card');
+        const head = el('div', 'ugc-frame-head');
+        head.appendChild(el('span', 'ugc-frame-title', 'UGC Studio \u00b7 Opening frame'));
+        head.appendChild(el('span', 'ugc-frame-status ugc-frame-status--' + status,
+            REF_STATUS_LABELS[status] || status));
+        frameCard.appendChild(head);
 
-        const grid = el('div', 'ugc-refs');
-        items.forEach((item) => {
-            const ref = item.ref || {};
-            const status = ref.status || 'pending';
-            const tile = el('div', 'ugc-ref ugc-ref--' + status);
-            const frame = el('div', 'ugc-ref-frame');
-            if (ref.url) {
-                const img = el('img', 'ugc-ref-img');
-                img.src = ref.url;
-                img.alt = '';
-                img.loading = 'lazy';
-                const preview = el('a', 'ugc-ref-preview');
-                preview.href = ref.url;
-                preview.target = '_blank';
-                preview.rel = 'noopener';
-                preview.title = 'Open reference image';
-                preview.appendChild(img);
-                frame.appendChild(preview);
-            } else {
-                frame.appendChild(el('div', 'ugc-ref-missing', status === 'failed' ? 'Failed' : 'No frame'));
-            }
-            tile.appendChild(frame);
-            const foot = el('div', 'ugc-ref-foot');
-            foot.appendChild(el('span', 'ugc-ref-label', 'Scene ' + item.order));
-            foot.appendChild(el('span', 'ugc-ref-status ugc-ref-status--' + status,
-                REF_STATUS_LABELS[status] || status));
-            tile.appendChild(foot);
-            if (status === 'failed' && ref.error) {
-                tile.appendChild(el('span', 'ugc-ref-error', ref.error));
-            }
-            if (item.sceneId) {
-                tile.appendChild(button(status === 'failed' ? 'Retry' : 'Regenerate', 'refresh', '', () => {
-                    lock(container.closest('.ugc-card'));
-                    send('Regenerate only scene ' + item.order, { type: 'regenerate_reference', projectId: card.id, sceneId: item.sceneId });
-                }));
-            }
-            grid.appendChild(tile);
-        });
-        container.appendChild(grid);
-
-        const actions = [];
-        if (complete) {
-            actions.push(button('Approve All \u2192 Director', 'check', 'primary', () => {
-                lock(container.closest('.ugc-card'));
-                send('Approve the references and continue in Director Mode', { type: 'approve_references', projectId: card.id });
-            }));
+        if (frame && frame.url) {
+            const img = el('img', 'ugc-frame-image');
+            img.src = frame.url;
+            img.alt = 'UGC opening frame';
+            img.loading = 'lazy';
+            frameCard.appendChild(img);
         } else {
-            actions.push(button('Approve All (needs every scene)', 'check', '', () => {
-                Dialog.alert({ title: 'Reference frames incomplete', message: 'Every scene needs exactly one current frame before the production can be approved. Retry the failed scenes first.' });
-            }));
+            frameCard.appendChild(el('div', 'ugc-frame-placeholder',
+                status === 'failed' ? 'The opening frame failed to render.' : 'Rendering the opening frame\u2026'));
+            if (status === 'failed' && frame && frame.error) {
+                frameCard.appendChild(el('p', 'ugc-frame-error', frame.error));
+            }
         }
-        if (recovering) {
-            actions.push(button('Retry failed', 'refresh', '', () => {
+
+        const actions = el('div', 'ugc-frame-actions');
+        if (ready) {
+            const create = el('button', 'creator-btn creator-btn--primary');
+            create.type = 'button';
+            create.textContent = 'Create Video';
+            create.addEventListener('click', () => {
                 lock(container.closest('.ugc-card'));
-                send('Retry the failed reference frames', { type: 'retry_failed', projectId: card.id });
-            }));
-        }
-        actions.push(button('Regenerate All', 'refresh', '', () => {
-            lock(container.closest('.ugc-card'));
-            send('Regenerate the references', { type: 'regenerate_references', projectId: card.id });
-        }));
-        actions.push(button('Edit Direction', 'pencil', '', () => {
-            Dialog.prompt({ title: 'Edit Direction', message: 'Describe the change for the reference frames.', placeholder: 'e.g. make the lighting warmer and move the camera closer', confirmText: 'Apply' })
-                .then((text) => {
-                    const value = String(text || '').trim();
-                    if (!value) return;
+                send('Create the UGC video', { type: 'create_video', projectId: card.id });
+            });
+            actions.appendChild(create);
+
+            const modify = el('button', 'creator-btn');
+            modify.type = 'button';
+            modify.textContent = 'Modify Frame';
+            modify.addEventListener('click', () => {
+                const openDialog = window.Dialog && typeof window.Dialog.prompt === 'function';
+                if (!openDialog) return;
+                window.Dialog.prompt({
+                    title: 'Modify Opening Frame',
+                    message: 'Describe how the opening frame should change.',
+                    placeholder: 'e.g. make the lighting warmer, move the product closer',
+                    confirmText: 'Modify'
+                }).then((text) => {
+                    const instruction = String(text === null || text === undefined ? '' : text).trim();
+                    if (!instruction) return;
                     lock(container.closest('.ugc-card'));
-                    send('Edit the direction: ' + value, { type: 'edit_direction', projectId: card.id, direction: value });
+                    send(instruction, { type: 'modify_frame', projectId: card.id, instruction });
                 });
-        }));
-        container.appendChild(actionRow(actions, 'footer'));
+            });
+            actions.appendChild(modify);
+        }
+
+        const regen = el('button', 'creator-btn');
+        regen.type = 'button';
+        regen.textContent = status === 'failed' ? 'Retry Frame' : 'Regenerate Frame';
+        regen.addEventListener('click', () => {
+            lock(container.closest('.ugc-card'));
+            send('Regenerate the opening frame', { type: 'regenerate_frame', projectId: card.id });
+        });
+        actions.appendChild(regen);
+        frameCard.appendChild(actions);
+        container.appendChild(frameCard);
     }
 
     function render(contentEl, card) {
@@ -1088,7 +1035,7 @@ const UGCUI = (() => {
         else if (card.stage === 'creative_direction') renderCreativeDirection(card, el2);
         else if (card.stage === 'script_review') renderScript(card, el2);
         else if (card.stage === 'scene_review') renderScenes(card, el2);
-        else if (card.stage === 'reference_approval' || card.stage === 'reference_generation') renderReferences(card, el2);
+        else if (card.stage === 'reference_approval' || card.stage === 'reference_generation') renderFrameApproval(card, el2);
         else if (card.stage === 'video_generation' || card.stage === 'completed') {
             if (card.stage === 'completed' && card.videoUrl) {
                 el2.appendChild(actionRow([
@@ -1282,8 +1229,8 @@ const UGCUI = (() => {
         if (selected !== undefined && selected !== null) select.value = selected;
     }
 
-    async function loadUgcOptions() {
-        if (ugcOptions) return ugcOptions;
+    async function loadUgcOptions(force) {
+        if (ugcOptions && !force) return ugcOptions;
         try {
             const res = await fetch('/api/ugc/options');
             ugcOptions = res.ok ? await res.json() : {};
@@ -1334,6 +1281,7 @@ const UGCUI = (() => {
         const select = document.getElementById('ugcProductSelect');
         const del = document.getElementById('ugcProductDelete');
         if (!del) return;
+        del.disabled = false;
         del.hidden = !(select && select.value.indexOf('product:') === 0);
     }
 
@@ -1434,7 +1382,7 @@ const UGCUI = (() => {
     }
 
     async function populateUgcPopup() {
-        const options = await loadUgcOptions();
+        const options = await loadUgcOptions(true);
         const products = options.products || [];
         fillUgcSelect(document.getElementById('ugcProductSelect'),
             productSelectOptions(options), products[0] ? 'product:' + products[0].id : 'new');

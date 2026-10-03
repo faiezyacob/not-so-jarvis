@@ -141,6 +141,70 @@ test('createProduction: a described subject with pronouns still generates a fres
     productionPlan.remove(id);
 });
 
+// --- Named characters (@Character) persist as opening-frame identity ----------
+
+test('production-plan: create persists character ids, defaulting to none', () => {
+    const id = conversationId('char-ids');
+    const withChars = productionPlan.create({
+        conversationId: id,
+        brief: { subject: 'Kira on a mountain peak' },
+        video: { duration: 10 },
+        originalRequest: 'a movie of Kira',
+        characterIds: ['kira-id', '', null]
+    });
+    assert.deepEqual(withChars.characterIds, ['kira-id']);
+    productionPlan.remove(id);
+
+    const bare = productionPlan.create({
+        conversationId: id,
+        brief: { subject: 'a woman' },
+        video: { duration: 10 },
+        originalRequest: 'a movie'
+    });
+    assert.deepEqual(bare.characterIds, []);
+    productionPlan.remove(id);
+});
+
+test('createProduction: named character refs are persisted as characterIds', async () => {
+    providers.chat = async () => '{}';
+    const id = conversationId('char-start');
+    const production = await director.createProduction({
+        conversationId: id,
+        message: 'generate 10 seconds video of Kira standing atop a jagged mountain peak during a violent thunderstorm',
+        provider: 'ollama',
+        model: 'test-model',
+        think: false,
+        characters: [{ id: 'kira-id', name: 'Kira' }, { id: '', name: '' }]
+    });
+    assert.deepEqual(production.characterIds, ['kira-id']);
+    assert.equal(production.sourceImage, null);
+    assert.equal(production.status, productionPlan.STATUS.GENERATING_IMAGE);
+    productionPlan.remove(id);
+});
+
+test('buildImageConcept: carries the user wording until the brief is edited', () => {
+    const id = conversationId('char-concept');
+    const production = productionPlan.create({
+        conversationId: id,
+        brief: {
+            subject: 'Kira',
+            setting: 'a jagged mountain peak during a thunderstorm',
+            originalRequest: 'generate 10 seconds video of Kira on a mountain peak'
+        },
+        video: { duration: 10 },
+        originalRequest: 'generate 10 seconds video of Kira on a mountain peak'
+    });
+    const concept = director.buildImageConcept(production);
+    assert.match(concept, /Kira/);
+    assert.match(concept, /mountain peak/);
+    // The user's exact wording survives while the brief is unmodified ...
+    assert.match(concept, /Honor every specific in the user's request/);
+    // ... and is dropped once a direction change makes the brief authoritative.
+    production.briefModified = true;
+    assert.equal(director.buildImageConcept(production).includes('Honor every specific'), false);
+    productionPlan.remove(id);
+});
+
 // --- Workflow selection (direct by default, Director on request) --------------
 
 test('workflow: a failed production stays open but does not claim a new video request', () => {

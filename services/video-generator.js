@@ -3,9 +3,10 @@
    Owns video-generation intent detection, the
    MiniMax H3 ComfyUI graph builders (T2VA and
    first-frame I2VA), the optional FaceRefine pass,
-   and the SeedVR2/RTX video upscalers. It queues
-   work in ComfyUI and records the finished media so
-   the chat layer can display it.
+   the optional RIFE frame-interpolation pass, and
+   the SeedVR2/RTX video upscalers. It queues work
+   in ComfyUI and records the finished media so the
+   chat layer can display it.
    SPDX-License-Identifier: MIT
    Copyright (c) 2026 not-so-jarvis.
    ============================================ */
@@ -481,6 +482,26 @@ const H3_MODEL_FILES = {
     audioVae: 'minimax_h3_audio_vae_fp32.safetensors'
 };
 
+// --- MiniMax H3 frame interpolation (RIFE VFI) ---------------------------------
+// Optional post-process that raises a clip's frame rate by synthesising
+// intermediate frames. It uses the Fannovel16/ComfyUI-Frame-Interpolation node
+// pack's `RIFE VFI` node (no reference to any other project's code). Off by
+// default; toggled in Settings > Video. Doubling (x2) is the default because
+// that is what "double the frame rate" means; x3/x4 are offered as options.
+const H3_FRAME_INTERP_NODE = 'RIFE VFI';
+const H3_FRAME_INTERP_REPO = 'https://github.com/Fannovel16/ComfyUI-Frame-Interpolation.git';
+const H3_FRAME_INTERP_DIR = 'ComfyUI-Frame-Interpolation';
+const H3_FRAME_INTERP_DEFAULT_MODEL = 'rife49.pth';
+const H3_FRAME_INTERP_MULTIPLIERS = Object.freeze([2, 3, 4]);
+const H3_FRAME_INTERP_DEFAULT_MULTIPLIER = 2;
+
+function normalizeFrameInterpMultiplier(value, fallback) {
+    const n = Math.round(Number(value));
+    const base = fallback !== undefined ? fallback : H3_FRAME_INTERP_DEFAULT_MULTIPLIER;
+    if (!Number.isFinite(n)) return base;
+    return H3_FRAME_INTERP_MULTIPLIERS.includes(n) ? n : base;
+}
+
 const H3_DEFAULTS = {
     h3Unet: process.env.H3_UNET || H3_MODEL_FILES.unet,
     h3Clip: process.env.H3_CLIP || H3_MODEL_FILES.clip,
@@ -555,6 +576,14 @@ const H3_DEFAULTS = {
     faceRefineCanvasMode: process.env.H3_FACEREFINE_CANVAS || 'auto_capped_768',
     faceRefineSelect: process.env.H3_FACEREFINE_SELECT || 'largest_face',
     faceRefineFeather: Math.round(envNumber('H3_FACEREFINE_FEATHER', 24)),
+    // RIFE frame interpolation (Fannovel16/ComfyUI-Frame-Interpolation): an
+    // optional post-process that doubles (or x3/x4) the clip's frame rate.
+    // Off by default; the VIDEO settings panel toggles it per user.
+    frameInterpEnabled: String(process.env.H3_FRAME_INTERP_ENABLED || '').toLowerCase() === 'true' ||
+        process.env.H3_FRAME_INTERP_ENABLED === '1',
+    frameInterpMultiplier: normalizeFrameInterpMultiplier(
+        process.env.H3_FRAME_INTERP_MULTIPLIER, H3_FRAME_INTERP_DEFAULT_MULTIPLIER),
+    frameInterpModel: process.env.H3_FRAME_INTERP_MODEL || H3_FRAME_INTERP_DEFAULT_MODEL,
     // Video upscaling (SeedVR2 quality or fast RTX) shares the single global
     // upscale settings in imageGeneration (upscaleResolution/Profile/Noise/
     // PreScale, seedvr2 DiT/VAE/attention, upscaleEngine, upscaleMultiplier) —
@@ -570,6 +599,7 @@ const H3_CONFIGURABLE_KEYS = [
     'faceRefineEnabled', 'faceRefineDetector', 'faceRefineCropFactor',
     'faceRefineDenoise', 'faceRefineSteps', 'faceRefineCanvasMode',
     'faceRefineSelect', 'faceRefineFeather',
+    'frameInterpEnabled', 'frameInterpMultiplier', 'frameInterpModel',
     'autoUpscaleEnabled',
     'h3LatentUpscale', 'h3LatentUpscaleModel', 'h3LatentUpscaleStrength',
     'h3LatentUpscalePrecision', 'h3LatentUpscaleTemporalChunking', 'h3LatentUpscaleForceUnload'
@@ -2366,6 +2396,12 @@ function effectiveVideoSettings() {
                 value = normalizeFirstBlockCache(value);
             } else if (key === 'faceRefineEnabled') {
                 value = value === true || value === 1 || String(value).toLowerCase() === 'true' || String(value) === '1';
+            } else if (key === 'frameInterpEnabled') {
+                value = value === true || value === 1 || String(value).toLowerCase() === 'true' || String(value) === '1';
+            } else if (key === 'frameInterpMultiplier') {
+                value = normalizeFrameInterpMultiplier(value, H3_DEFAULTS.frameInterpMultiplier);
+            } else if (key === 'frameInterpModel') {
+                value = String(value || '').trim() || H3_DEFAULTS.frameInterpModel;
             } else if (key === 'autoUpscaleEnabled') {
                 value = value === true || value === 1 || String(value).toLowerCase() === 'true' || String(value) === '1';
             } else if (key === 'h3LatentUpscale') {
@@ -2535,6 +2571,12 @@ function saveVideoSettings(patch) {
             out[key] = normalizeFirstBlockCache(value);
         } else if (key === 'faceRefineEnabled') {
             out[key] = value === true || value === 1 || String(value).toLowerCase() === 'true' || String(value) === '1';
+        } else if (key === 'frameInterpEnabled') {
+            out[key] = value === true || value === 1 || String(value).toLowerCase() === 'true' || String(value) === '1';
+        } else if (key === 'frameInterpMultiplier') {
+            out[key] = normalizeFrameInterpMultiplier(value, H3_DEFAULTS.frameInterpMultiplier);
+        } else if (key === 'frameInterpModel') {
+            out[key] = String(value || '').trim() || null;
         } else if (key === 'autoUpscaleEnabled') {
             out[key] = value === true || value === 1 || String(value).toLowerCase() === 'true' || String(value) === '1';
         } else if (key === 'h3LatentUpscale') {
@@ -4393,10 +4435,13 @@ async function generateVideo(prompt, options = {}) {
                 meta,
                 refined: false
             }, Object.assign({}, options, { signal }));
+            // Optional Frame Interpolation post-process (also inside this lock;
+            // fail-open — a failure keeps the current video).
+            const interpolatedResult = await maybeFrameInterpolate(refinedResult, Object.assign({}, options, { signal }));
             // Optional auto-upscale post-process (also inside this lock). Runs on
-            // the current result (refined if FaceRefine ran) and is best-effort:
-            // a failure keeps the base/refined render.
-            return maybeAutoUpscale(refinedResult, Object.assign({}, options, { signal }));
+            // the current result (refined/interpolated if those ran) and is
+            // best-effort: a failure keeps the base/refined render.
+            return maybeAutoUpscale(interpolatedResult, Object.assign({}, options, { signal }));
         } finally {
             for (const name of uploadedInputNames) {
                 await comfyui.deleteInputFile(name).catch(() => {});
@@ -4994,6 +5039,393 @@ async function upscaleVideo(rawFilename, options = {}) {
     }, queueOpts);
 }
 
+// --- Frame interpolation post-process (RIFE VFI) -------------------------------
+//
+// Optional post-process that raises a clip's frame rate: the finished video is
+// re-uploaded, every pair of frames is expanded into `multiplier` frames with
+// the ComfyUI-Frame-Interpolation `RIFE VFI` node, and the result is saved at
+// fps * multiplier (audio passes through from VHS_LoadVideo slot 2). Runs
+// INSIDE the caller's generation lock (generateVideo calls it directly, never
+// via withGenerationLock — re-enqueueing from inside a running job would
+// self-deadlock the FIFO). Fail-open by design: any error keeps the base video.
+
+const FRAMEINTERP_TIMEOUT_MS = 30 * 60 * 1000; // 30 min, same as base video
+
+// Available RIFE checkpoints from ComfyUI (the node lists them statically).
+function frameInterpChoices(info) {
+    return objectInfoChoices(info, H3_FRAME_INTERP_NODE, 'ckpt_name') || [];
+}
+
+function frameInterpAvailability(info) {
+    const available = info || {};
+    return {
+        nodePresent: Boolean(available[H3_FRAME_INTERP_NODE]),
+        vhsPresent: Boolean(available.VHS_LoadVideo),
+        ckptChoices: frameInterpChoices(info),
+        ready: Boolean(available[H3_FRAME_INTERP_NODE])
+    };
+}
+
+// Pick a checkpoint the node actually lists. Falls back to the recommended
+// rife49.pth, then to whatever the node offers, so a renamed/limited list still
+// validates instead of sending a value ComfyUI rejects.
+function resolveFrameInterpModel(info, requested) {
+    const wanted = String(requested || H3_FRAME_INTERP_DEFAULT_MODEL).trim() || H3_FRAME_INTERP_DEFAULT_MODEL;
+    const choices = frameInterpChoices(info);
+    if (!choices.length) return wanted;
+    if (choices.includes(wanted)) return wanted;
+    const base = (name) => String(name).split(/[\\/]/).pop();
+    const match = choices.find((c) => base(c).toLowerCase() === base(wanted).toLowerCase());
+    if (match) return match;
+    if (choices.includes(H3_FRAME_INTERP_DEFAULT_MODEL)) return H3_FRAME_INTERP_DEFAULT_MODEL;
+    return choices[choices.length - 1] || wanted;
+}
+
+// Declared default for a node widget, used to fill any required input we do not
+// name explicitly so a version that adds a field still passes validation.
+function frameInterpDefaultWidget(spec) {
+    const arr = Array.isArray(spec) ? spec : [spec];
+    const meta = arr[1];
+    if (meta && typeof meta === 'object' && meta.default !== undefined) return meta.default;
+    const type = arr[0];
+    if (Array.isArray(type)) return type[0];
+    if (type === 'BOOLEAN') return false;
+    if (type === 'INT' || type === 'FLOAT') return 0;
+    if (type === 'STRING') return '';
+    return undefined;
+}
+
+// Build the RIFE VFI inputs by resolving the node's real input keys from
+// ComfyUI's /object_info (field names have changed across pack versions), then
+// filling any remaining required widget from its declared default.
+function buildFrameInterpInputs(frameSource, opts = {}) {
+    const node = opts.nodeSpec;
+    const required = (node && node.input && node.input.required) || {};
+    const optional = (node && node.input && node.input.optional) || {};
+    const keys = Object.keys(required);
+    // Match against required + optional so a version that moves the image input
+    // to `optional` still gets wired.
+    const allKeys = keys.concat(Object.keys(optional));
+    const find = (candidates) => {
+        for (const candidate of candidates) {
+            const hit = allKeys.find((key) => String(key).toLowerCase() === candidate);
+            if (hit) return hit;
+        }
+        return null;
+    };
+    const inputs = {};
+    const set = (candidates, value) => {
+        const key = find(candidates);
+        if (key) inputs[key] = value;
+        return key;
+    };
+    // The IMAGE input must be wired to the frame source.
+    set(['frames', 'images', 'image'], frameSource);
+    set(['ckpt_name', 'ckpt'], opts.model || H3_FRAME_INTERP_DEFAULT_MODEL);
+    set(['multiplier'], normalizeFrameInterpMultiplier(opts.multiplier, H3_FRAME_INTERP_DEFAULT_MULTIPLIER));
+    set(['clear_cache_after_n_frames', 'clearcacheafternframes'], 10);
+    set(['fast_mode', 'fastmode'], true);
+    set(['ensemble'], true);
+    set(['scale_factor', 'scalefactor'], 1);
+    set(['dtype'], 'float32');
+    set(['torch_compile', 'torchcompile'], false);
+    set(['batch_size', 'batchsize'], 1);
+    for (const key of keys) {
+        if (key in inputs) continue;
+        const def = frameInterpDefaultWidget(required[key]);
+        if (def !== undefined) inputs[key] = def;
+    }
+    return inputs;
+}
+
+function buildFrameInterpGraph(videoName, options = {}) {
+    const multiplier = normalizeFrameInterpMultiplier(options.multiplier, H3_FRAME_INTERP_DEFAULT_MULTIPLIER);
+    const fps = Number(options.fps) > 0 ? Number(options.fps) : H3_FPS;
+    const outputFps = fps * multiplier;
+    const hasAudio = options.hasAudio !== false;
+    const savePrefix = String(options.savePrefix || 'not-so-jarvis/video_interp');
+
+    const graph = {};
+    graph.src = videoLoadNode(videoName, fps);
+    graph.rife = {
+        class_type: H3_FRAME_INTERP_NODE,
+        inputs: buildFrameInterpInputs(['src', 0], {
+            model: options.model || H3_FRAME_INTERP_DEFAULT_MODEL,
+            multiplier,
+            nodeSpec: options.nodeSpec
+        })
+    };
+
+    const videoInputs = { images: ['rife', 0], fps: outputFps };
+    if (hasAudio) videoInputs.audio = ['src', 2];
+    graph.video = { class_type: 'CreateVideo', inputs: videoInputs };
+    graph.save = {
+        class_type: 'SaveVideo',
+        inputs: { video: ['video', 0], filename_prefix: savePrefix, format: 'auto', codec: 'auto' }
+    };
+
+    return { graph, multiplier, outputFps };
+}
+
+function validateFrameInterpGraph(info, graph) {
+    const missing = [];
+    for (const node of Object.values(graph)) {
+        if (node && node.class_type && !(info && info[node.class_type])) missing.push(node.class_type);
+    }
+    if (missing.length) {
+        const error = new Error(
+            'ComfyUI is missing frame-interpolation node' + (missing.length > 1 ? 's' : '') + ': ' +
+            missing.join(', ') + '. Enable VIDEO > Frame Interpolation to auto-install, then restart ComfyUI.'
+        );
+        error.code = 'frameinterp_failed';
+        error.missingNodes = missing;
+        throw error;
+    }
+    const rife = graph.rife;
+    const wired = rife && rife.inputs && Object.values(rife.inputs)
+        .some((value) => Array.isArray(value) && value[0] === 'src');
+    if (!wired) {
+        const error = new Error('The frame-interpolation graph is not wired to the source clip.');
+        error.code = 'frameinterp_failed';
+        throw error;
+    }
+}
+
+async function interpolateVideo(baseRawFilename, opts = {}) {
+    await ensureGeneratedDir();
+
+    const safeName = path.basename(String(baseRawFilename || ''));
+    if (!safeName) {
+        const error = new Error('No source video specified for frame interpolation.');
+        error.code = 'frameinterp_failed';
+        throw error;
+    }
+    const filePath = path.join(GENERATED_DIR, safeName);
+    if (!fs.existsSync(filePath)) {
+        const error = new Error('Frame-interpolation source not found on disk: ' + safeName);
+        error.code = 'frameinterp_failed';
+        throw error;
+    }
+
+    const settings = effectiveVideoSettings();
+    const info = await comfyui.getObjectInfo();
+    const availability = frameInterpAvailability(info);
+    if (!availability.ready) {
+        const error = new Error(
+            'ComfyUI is missing the "' + H3_FRAME_INTERP_NODE + '" node (ComfyUI-Frame-Interpolation). ' +
+            'Enable VIDEO > Frame Interpolation to auto-install, then restart ComfyUI and try again.'
+        );
+        error.code = 'frameinterp_failed';
+        error.missingNodes = [H3_FRAME_INTERP_NODE];
+        error.installUrl = H3_FRAME_INTERP_REPO;
+        throw error;
+    }
+
+    const multiplier = normalizeFrameInterpMultiplier(
+        opts.multiplier !== undefined && opts.multiplier !== null && opts.multiplier !== ''
+            ? opts.multiplier
+            : settings.frameInterpMultiplier,
+        H3_FRAME_INTERP_DEFAULT_MULTIPLIER);
+    const model = resolveFrameInterpModel(
+        info,
+        opts.model !== undefined && opts.model !== null && opts.model !== ''
+            ? opts.model
+            : settings.frameInterpModel);
+
+    const startedAt = Date.now();
+    // The interpolated file replaces the base render, so its reported
+    // generation time is the whole job: base H3 render + this pass.
+    const baseGenerationMs = Number(opts.baseGenerationMs) > 0 ? Number(opts.baseGenerationMs) : 0;
+    const buffer = fs.readFileSync(filePath);
+    const sourceProbe = probeVideoBuffer(buffer, path.extname(safeName));
+    const fps = Number(opts.fps) > 0 ? Number(opts.fps) : H3_FPS;
+    const inputFrames = Number(opts.frames) > 0 ? Number(opts.frames) : null;
+
+    const uploadName = 'jarvis_frameinterp_' + Date.now() + '_' + safeName;
+    const uploaded = await comfyui.uploadImage(buffer, uploadName);
+    const loadName = (uploaded && uploaded.name) || uploadName;
+
+    let basename = null;
+    let outputFps = fps * multiplier;
+    try {
+        const built = buildFrameInterpGraph(loadName, {
+            multiplier,
+            model,
+            fps,
+            hasAudio: true,
+            nodeSpec: info[H3_FRAME_INTERP_NODE]
+        });
+        outputFps = built.outputFps;
+        await validateFrameInterpGraph(info, built.graph);
+
+        const pid = await comfyui.queuePrompt(built.graph);
+        console.log('[video-generator] queued frame-interpolation workflow:', pid,
+            '(' + fps + ' -> ' + outputFps + ' fps, x' + multiplier + ')');
+
+        const history = await comfyui.waitForPrompt(pid, {
+            timeoutMs: opts.timeoutMs || FRAMEINTERP_TIMEOUT_MS,
+            signal: opts.signal || null
+        });
+        const videoFiles = comfyui.findOutputFiles(history.outputs || {}, /\.(?:mp4|webm|avi|mov)$/i);
+        if (!videoFiles.length) {
+            const error = new Error('ComfyUI finished frame interpolation but produced no video file.');
+            error.code = 'frameinterp_failed';
+            throw error;
+        }
+
+        const entry = videoFiles[videoFiles.length - 1];
+        const outBuffer = await comfyui.downloadImage(entry);
+
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const extension = path.extname(entry.filename).toLowerCase() || '.mp4';
+        const root = path.basename(safeName, path.extname(safeName))
+            .replace(/_vid_.*$/, '')
+            .replace(/_(?:refined|interp)_.*$/, '');
+        basename = safeFilename(root) + '_interp_' + stamp + extension;
+        fs.writeFileSync(path.join(GENERATED_DIR, basename), outBuffer);
+        console.log('[video-generator] saved frame-interpolated video:', basename, '(' + outBuffer.length + ' bytes)');
+
+        await comfyui.deleteOutputFile(entry, { history: pid });
+    } catch (err) {
+        if (!err.code) err.code = 'frameinterp_failed';
+        throw err;
+    } finally {
+        await comfyui.deleteInputFile(loadName).catch(() => {});
+    }
+
+    // Stitch/interpolation preserve the source dimensions; probe the result so
+    // the preview shows the real size, falling back to the source probe.
+    let outWidth = (sourceProbe && sourceProbe.width) || 0;
+    let outHeight = (sourceProbe && sourceProbe.height) || 0;
+    try {
+        const probed = probeVideoBuffer(
+            fs.readFileSync(path.join(GENERATED_DIR, basename)),
+            path.extname(basename)
+        );
+        if (probed) {
+            outWidth = probed.width;
+            outHeight = probed.height;
+        }
+    } catch { /* keep source dims */ }
+
+    // (inputFrames - 1) * multiplier + 1 output frames, matching RIFE's output.
+    const outFrames = inputFrames ? (inputFrames - 1) * multiplier + 1 : null;
+
+    const activeLoras = (settings.loras || [])
+        .filter((l) => l && l.on !== false && l.name)
+        .map((l) => ({ name: l.name, strength: Number(l.strength) || 0, triggerWord: l.triggerWord || '' }));
+    const meta = generatedHistory.add({
+        file: '/generated/' + encodeURIComponent(basename),
+        rawFilename: basename,
+        conversationId: opts.conversationId || null,
+        prompt: opts.prompt || 'Frame-interpolated video',
+        model: 'MiniMax H3 + Frame Interpolation',
+        width: outWidth || null,
+        height: outHeight || null,
+        loras: activeLoras,
+        generationMs: (Date.now() - startedAt) + baseGenerationMs,
+        video: {
+            duration: opts.duration || null,
+            frames: outFrames,
+            fps: outputFps,
+            mode: opts.mode || null,
+            source: opts.sourceImageRawFilename || null,
+            frameInterp: {
+                model,
+                multiplier,
+                inputFps: fps,
+                outputFps,
+                inputFrames: inputFrames || null,
+                frames: outFrames
+            },
+            references: Array.isArray(opts.references) ? opts.references : []
+        }
+    });
+
+    // The interpolated video replaces the base render (same replacement
+    // semantics as FaceRefine): drop the pre-interpolation file + entry now
+    // that the new output is safely recorded.
+    if (safeName && safeName !== basename) {
+        try {
+            const sourceEntry = generatedHistory.list().find((e) => e.rawFilename === safeName);
+            if (sourceEntry && sourceEntry.id) {
+                generatedHistory.remove(sourceEntry.id);
+            } else {
+                const abs = path.join(GENERATED_DIR, safeName);
+                if (abs.startsWith(GENERATED_DIR) && fs.existsSync(abs)) {
+                    try { fs.unlinkSync(abs); } catch { /* ignore */ }
+                }
+            }
+        } catch { /* replacement is best-effort */ }
+    }
+
+    return {
+        url: meta.file,
+        filename: basename,
+        width: outWidth || null,
+        height: outHeight || null,
+        multiplier,
+        outputFps,
+        frames: outFrames,
+        model,
+        generationMs: meta.generationMs,
+        meta
+    };
+}
+
+async function maybeFrameInterpolate(baseResult, opts = {}) {
+    // Cheap gate first: no extra ComfyUI calls when the toggle is off.
+    const settings = effectiveVideoSettings();
+    if (!settings.frameInterpEnabled) return baseResult;
+    if (typeof opts.onProgress === 'function') {
+        try { opts.onProgress('frame-interp'); } catch { /* progress is best-effort */ }
+    }
+    try {
+        console.log('[video-generator] Frame interpolation enabled — interpolating', baseResult.filename);
+        const interpolated = await interpolateVideo(baseResult.filename, {
+            multiplier: settings.frameInterpMultiplier,
+            model: settings.frameInterpModel,
+            prompt: baseResult.prompt,
+            mode: baseResult.mode,
+            fps: baseResult.fps || H3_FPS,
+            frames: baseResult.frames,
+            duration: baseResult.duration,
+            baseGenerationMs: baseResult.generationMs || 0,
+            sourceImageRawFilename: opts.sourceImageRawFilename || null,
+            references: baseResult.references || [],
+            conversationId: opts.conversationId || null,
+            signal: opts.signal || null
+        });
+        return {
+            url: interpolated.url,
+            filename: interpolated.filename,
+            width: interpolated.width !== null ? interpolated.width : baseResult.width,
+            height: interpolated.height !== null ? interpolated.height : baseResult.height,
+            duration: baseResult.duration,
+            frames: interpolated.frames || baseResult.frames,
+            fps: interpolated.outputFps || baseResult.fps,
+            mode: baseResult.mode,
+            prompt: baseResult.prompt,
+            generationMs: interpolated.generationMs || (baseResult.generationMs || 0),
+            acceleration: baseResult.acceleration || null,
+            references: baseResult.references || [],
+            latentUpscale: baseResult.latentUpscale || null,
+            refined: baseResult.refined || false,
+            frameInterp: {
+                multiplier: interpolated.multiplier,
+                outputFps: interpolated.outputFps,
+                model: interpolated.model
+            },
+            meta: interpolated.meta
+        };
+    } catch (err) {
+        // Fail-open: a missing node, no frames, or a timeout must never lose
+        // the good base render.
+        console.warn('[video-generator] Frame interpolation skipped/failed, keeping base video:', err.message);
+        return Object.assign({}, baseResult, { frameInterpError: err.message });
+    }
+}
+
 // --- Helpers ------------------------------------------------------------------
 
 function stripVideoLoraTriggerWords(prompt) {
@@ -5147,6 +5579,22 @@ module.exports = {
     resolveFaceRefineDetector,
     refineVideo,
     maybeFaceRefine,
+    H3_FRAME_INTERP_NODE,
+    H3_FRAME_INTERP_REPO,
+    H3_FRAME_INTERP_DIR,
+    H3_FRAME_INTERP_DEFAULT_MODEL,
+    H3_FRAME_INTERP_MULTIPLIERS,
+    H3_FRAME_INTERP_DEFAULT_MULTIPLIER,
+    FRAMEINTERP_TIMEOUT_MS,
+    normalizeFrameInterpMultiplier,
+    frameInterpChoices,
+    frameInterpAvailability,
+    resolveFrameInterpModel,
+    buildFrameInterpInputs,
+    buildFrameInterpGraph,
+    validateFrameInterpGraph,
+    interpolateVideo,
+    maybeFrameInterpolate,
     maybeAutoUpscale,
     autoUpscaleGenerated,
     FACEREFINE_REQUIRED_NODES,

@@ -72,10 +72,13 @@ const ACTIONS = Object.freeze({
     GENERATE_REFERENCES: 'generate_references',
     REGENERATE_REFERENCES: 'regenerate_references',
     REGENERATE_REFERENCE: 'regenerate_reference',
+    REGENERATE_FRAME: 'regenerate_frame',
+    MODIFY_FRAME: 'modify_frame',
     RETRY_FAILED: 'retry_failed',
     EDIT_DIRECTION: 'edit_direction',
     APPROVE_REFERENCES: 'approve_references',
     CONTINUE_DIRECTOR: 'continue_director',
+    CREATE_VIDEO: 'create_video',
     CONFIRM_DURATION: 'confirm_duration',
     CREATE_PROJECT: 'create_project',
     SAVE_DRAFT: 'save_draft',
@@ -134,10 +137,13 @@ const ACTION_RULES = Object.freeze({
     [ACTIONS.GENERATE_REFERENCES]: { stages: REFERENCE_STAGES },
     [ACTIONS.REGENERATE_REFERENCES]: { stages: REFERENCE_STAGES },
     [ACTIONS.REGENERATE_REFERENCE]: { stages: REFERENCE_STAGES },
+    [ACTIONS.REGENERATE_FRAME]: { stages: REFERENCE_STAGES },
+    [ACTIONS.MODIFY_FRAME]: { stages: REFERENCE_STAGES },
     [ACTIONS.RETRY_FAILED]: { stages: REFERENCE_STAGES },
     [ACTIONS.EDIT_DIRECTION]: { stages: REFERENCE_STAGES },
     [ACTIONS.APPROVE_REFERENCES]: { stages: ['reference_approval'] },
     [ACTIONS.CONTINUE_DIRECTOR]: { stages: ['reference_approval'] },
+    [ACTIONS.CREATE_VIDEO]: { stages: ['reference_approval'] },
     [ACTIONS.CONFIRM_DURATION]: { stages: ['reference_approval'] },
     // Lifecycle actions are always available.
     [ACTIONS.CREATE_PROJECT]: { stages: '*' },
@@ -544,20 +550,21 @@ function invalidateReferences(project) {
     return project;
 }
 
-// True only when every scene has exactly one ready frame generated for the
-// current plan.
-function referencesComplete(project) {
-    const scenes = project.scenes || [];
-    if (!scenes.length) return false;
+// The single opening frame the UGC video will animate, when it is current for
+// the live plan. Exactly one frame is ever required: the visual source of truth
+// H3 animates. A frame generated for an older plan is stale and cannot be used.
+function currentFrame(project) {
+    if (!project) return null;
     const current = currentPlanHash(project);
-    const byScene = new Map();
-    for (const ref of (project.references || [])) {
-        if (!ref || !ref.filename) continue;
-        if (ref.status !== 'ready' && ref.status !== 'approved') continue;
-        if (ref.planHash !== current) continue;
-        byScene.set(ref.sceneId, (byScene.get(ref.sceneId) || 0) + 1);
-    }
-    return scenes.every((s) => byScene.get(s.id) === 1);
+    const ref = (project.references || []).find((r) => r && r.filename
+        && (r.status === 'ready' || r.status === 'approved')
+        && r.planHash === current);
+    return ref || null;
+}
+
+// True only when the opening frame is ready for the current plan.
+function referencesComplete(project) {
+    return Boolean(currentFrame(project));
 }
 
 // --- Continuity ---------------------------------------------------------------
@@ -1473,47 +1480,70 @@ function buildReferenceRequest(project, scene) {
     };
 }
 
+// The scene the opening frame is drawn from — the first beat of the video.
+function openingFrameScene(project) {
+    return (project.scenes || [])[0] || null;
+}
+
+// The structured request for the single opening frame. Only one frame is ever
+// rendered; it is drawn from the video's opening scene.
+function buildOpeningFrameRequest(project) {
+    const scene = openingFrameScene(project);
+    return scene ? buildReferenceRequest(project, scene) : null;
+}
+
+// The Qwen Image 2.1 edit instruction for a user-requested change to the
+// opening frame. The current frame is the edit source, so identity, outfit,
+// environment, product and framing must be preserved.
+function frameEditInstruction(project, userInstruction) {
+    const change = clean(userInstruction, 600) || 'a subtle natural improvement';
+    const creatorFree = prompts.isCreatorFree(project);
+    return 'EDIT this opening frame only as requested: ' + change + '. ' +
+        'Keep the same ' + (creatorFree ? '' : 'creator identity, face and hairstyle, ') +
+        'outfit, environment, product and camera framing shown in the frame. ' +
+        'Change only what the request names; do not redesign the character, the outfit, the setting or the shot. ' +
+        'The result stays the exact first frame of a single continuous UGC video.';
+}
+
+// Record the single opening frame. A project holds exactly one frame, so a new
+// frame replaces the previous one (and any approval).
 function recordReference(project, sceneId, result) {
-    const scene = (project.scenes || []).find((s) => s.id === sceneId);
+    const scene = (project.scenes || []).find((s) => s.id === sceneId) || (project.scenes || [])[0] || null;
     if (scene) {
         scene.referenceUrl = result.url;
         scene.status = 'reference';
     }
-    const list = (project.references || []).filter((r) => r.sceneId !== sceneId);
-    list.push({
-        sceneId,
-        order: scene ? scene.order : list.length + 1,
+    project.references = [{
+        sceneId: scene ? scene.id : (sceneId || ''),
+        order: 1,
         url: result.url,
         filename: result.filename,
         prompt: result.prompt || '',
         status: 'ready',
         planHash: currentPlanHash(project),
         error: ''
-    });
-    list.sort((a, b) => a.order - b.order);
-    project.references = list;
+    }];
+    project.approvedReferences = [];
     project.planHash = currentPlanHash(project);
     return save(project);
 }
 
-// Record a failed frame for one scene. The scene stays identifiable so the UI
-// can show exactly which frames failed and offer a retry-failed-only action.
+// Record a failed opening frame so the card can show the failure and offer a
+// retry/regenerate action.
 function recordReferenceFailure(project, sceneId, message) {
-    const scene = (project.scenes || []).find((s) => s.id === sceneId);
+    const scene = (project.scenes || []).find((s) => s.id === sceneId) || (project.scenes || [])[0] || null;
     if (scene) scene.status = 'reference_failed';
-    const list = (project.references || []).filter((r) => r.sceneId !== sceneId);
-    list.push({
-        sceneId,
-        order: scene ? scene.order : list.length + 1,
+    project.references = [{
+        sceneId: scene ? scene.id : (sceneId || ''),
+        order: 1,
         url: '',
         filename: '',
         prompt: '',
         status: 'failed',
         planHash: currentPlanHash(project),
         error: clean(message, 300)
-    });
-    list.sort((a, b) => a.order - b.order);
-    project.references = list;
+    }];
+    project.approvedReferences = [];
     return save(project);
 }
 
@@ -1522,72 +1552,40 @@ function markReferencesReady(project) {
     return save(project);
 }
 
-// Approve the frames. Requires exactly one ready frame per approved scene,
-// generated for the current plan. Missing, stale, failed or duplicate frames
-// reject the approval with a clear reason.
+// Approve the opening frame. Requires exactly one ready frame generated for the
+// current plan; a missing, stale or failed frame rejects the approval with a
+// clear reason.
 function approveReferences(project) {
     const scenes = project.scenes || [];
     if (!scenes.length) return { ok: false, error: 'There is no approved scene plan.' };
-    const current = currentPlanHash(project);
-    const byScene = new Map();
-    for (const ref of (project.references || [])) {
-        if (!ref || !ref.filename) continue;
-        if (ref.status !== 'ready' && ref.status !== 'approved') continue;
-        if (ref.planHash !== current) continue;
-        if (!byScene.has(ref.sceneId)) byScene.set(ref.sceneId, []);
-        byScene.get(ref.sceneId).push(ref);
-    }
-    const missing = [];
-    const duplicate = [];
-    for (const scene of scenes) {
-        const refs = byScene.get(scene.id) || [];
-        if (refs.length === 0) missing.push(scene.order);
-        else if (refs.length > 1) duplicate.push(scene.order);
-    }
-    if (missing.length || duplicate.length) {
-        const parts = [];
-        if (missing.length) parts.push('missing a ready frame for scene(s) ' + missing.join(', '));
-        if (duplicate.length) parts.push('more than one frame for scene(s) ' + duplicate.join(', '));
+    const ref = currentFrame(project);
+    if (!ref) {
         return {
             ok: false,
-            error: 'Reference approval needs exactly one current frame per scene (' +
-                parts.join('; ') + '). Regenerate the affected scenes.'
+            error: 'The opening frame is missing or out of date. Generate it before creating the video.'
         };
     }
-    const approved = [];
-    for (const scene of scenes) {
-        const ref = byScene.get(scene.id)[0];
-        approved.push({
-            sceneId: ref.sceneId,
-            order: ref.order,
-            url: ref.url,
-            filename: ref.filename,
-            planHash: ref.planHash
-        });
-    }
-    approved.sort((a, b) => a.order - b.order);
-    project.approvedReferences = approved;
-    project.planHash = current;
-    const approvedIds = new Set(approved.map((r) => r.sceneId));
+    project.approvedReferences = [{
+        sceneId: ref.sceneId,
+        order: ref.order,
+        url: ref.url,
+        filename: ref.filename,
+        planHash: ref.planHash
+    }];
+    project.planHash = currentPlanHash(project);
     project.references = (project.references || []).map((r) =>
-        Object.assign({}, r, { status: approvedIds.has(r.sceneId) && r.planHash === current ? 'approved' : r.status }));
+        Object.assign({}, r, { status: (r.filename === ref.filename) ? 'approved' : r.status }));
     project.stage = STAGES.VIDEO_GENERATION;
     save(project);
     return { ok: true };
 }
 
-// Scenes whose current frame is missing, failed, stale or otherwise not ready.
+// The opening-frame scene id when no current frame exists (so recovery/retry
+// actions have one target), otherwise an empty list.
 function pendingReferenceSceneIds(project) {
-    const scenes = project.scenes || [];
-    const current = currentPlanHash(project);
-    const ready = new Map();
-    for (const ref of (project.references || [])) {
-        if (ref && ref.filename && (ref.status === 'ready' || ref.status === 'approved')
-            && ref.planHash === current) {
-            ready.set(ref.sceneId, true);
-        }
-    }
-    return scenes.filter((s) => !ready.get(s.id)).map((s) => s.id);
+    if (currentFrame(project)) return [];
+    const first = (project.scenes || [])[0];
+    return first ? [first.id] : [];
 }
 
 // All approved reference frames in scene order. The Director's H3 stage is
@@ -1694,6 +1692,14 @@ function classifyMessage(message, project) {
         };
     }
     if (DURATION_EDIT_RE.test(text)) return { action: 'edit', message: text };
+
+    // The single opening frame: regenerate or modify it in place.
+    if (/\b(?:regenerate|redo|re-do|rework)\s+(?:the\s+)?(?:opening\s+|initial\s+|starting\s+)?frame\b/i.test(text)) {
+        return { action: 'regenerate_reference' };
+    }
+    if (/\b(?:modify|change|edit|adjust|update|tweak)\s+(?:the\s+)?(?:opening\s+|initial\s+|starting\s+)?frame\b/i.test(text)) {
+        return { action: 'modify_frame', message: text };
+    }
 
     if (CONTINUE_VIDEO_RE.test(text)) return { action: 'continue_director' };
     if (REFERENCE_REQUEST_RE.test(text)) return { action: 'generate_references' };
@@ -1972,6 +1978,20 @@ function buildCard(project) {
             sceneId: r.sceneId, order: r.order, url: r.url, prompt: r.prompt,
             status: referenceStatus(project, r), error: r.error || ''
         })),
+        // The single opening frame is surfaced directly so the frame-approval
+        // card does not need to reconstruct it from the references list.
+        frame: (() => {
+            const ref = (project.references || [])[0];
+            if (!ref) return null;
+            return {
+                sceneId: ref.sceneId,
+                url: ref.url || '',
+                prompt: ref.prompt || '',
+                status: referenceStatus(project, ref),
+                error: ref.error || ''
+            };
+        })(),
+        hasFrame: Boolean(currentFrame(project)),
         referencesComplete: referencesComplete(project),
         continuity: project.continuity,
         directorProductionId: project.directorProductionId,
@@ -2032,9 +2052,9 @@ const STAGE_INTRO = {
     [STAGES.CREATIVE_DIRECTION]: 'UGC Studio \u2014 a few creative choices: content type, outfit and environment.',
     [STAGES.BRIEF]: 'UGC Studio \u2014 here is the brief I assembled. Edit anything, then approve it to write the script.',
     [STAGES.SCRIPT_REVIEW]: 'UGC Studio \u2014 here is the script. Approve it to plan the scenes, or ask for changes.',
-    [STAGES.SCENE_REVIEW]: 'UGC Studio \u2014 here is the scene plan. Adjust any scene, then approve to generate the reference frames.',
-    [STAGES.REFERENCE_GENERATION]: 'UGC Studio \u2014 generating the reference frames\u2026',
-    [STAGES.REFERENCE_APPROVAL]: 'UGC Studio \u2014 reference frames are ready. Approve them to hand the production to Director Mode.',
+    [STAGES.SCENE_REVIEW]: 'UGC Studio \u2014 here is the scene plan. Adjust any scene, then approve to render the opening frame.',
+    [STAGES.REFERENCE_GENERATION]: 'UGC Studio \u2014 rendering the opening frame\u2026',
+    [STAGES.REFERENCE_APPROVAL]: 'UGC Studio \u2014 opening frame ready. Create the video, regenerate the frame, or modify it.',
     [STAGES.VIDEO_GENERATION]: 'UGC Studio \u2014 handing this to Director Mode\u2026',
     [STAGES.COMPLETED]: 'UGC Studio \u2014 production complete.'
 };
@@ -2053,7 +2073,7 @@ function normalizeAction(value) {
     const out = { type: key };
     if (value && typeof value === 'object') {
         for (const field of ['projectId', 'productId', 'characterId', 'environmentId', 'contentTypeId', 'outfitPack',
-            'outfitPackCustom', 'sceneId', 'field', 'value', 'direction', 'message', 'productionId']) {
+            'outfitPackCustom', 'sceneId', 'field', 'value', 'direction', 'message', 'instruction', 'productionId']) {
             if (value[field] !== undefined && value[field] !== null) out[field] = String(value[field]);
         }
         if (value.duration !== undefined) out.duration = value.duration;
@@ -2121,11 +2141,15 @@ module.exports = {
     fitDurations,
     resizeScenesForDuration,
     buildReferenceRequest,
+    buildOpeningFrameRequest,
+    frameEditInstruction,
+    openingFrameScene,
     recordReference,
     recordReferenceFailure,
     markReferencesReady,
     approveReferences,
     referencesComplete,
+    currentFrame,
     pendingReferenceSceneIds,
     referenceStatus,
     currentPlanHash,

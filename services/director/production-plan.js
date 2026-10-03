@@ -140,7 +140,7 @@ function normalizeBrief(brief) {
 // Build a fresh production plan. `sourceImage` (a raw generated filename) may be
 // supplied when the production starts from an existing image — its image stage
 // is recorded as completed so the Director skips straight to the video stage.
-function create({ conversationId, brief, video, sourceImage, originalRequest }) {
+function create({ conversationId, brief, video, sourceImage, originalRequest, characterIds }) {
     const now = Date.now();
     const normalizedBrief = normalizeBrief(brief);
     if (!normalizedBrief.originalRequest && originalRequest) {
@@ -153,6 +153,12 @@ function create({ conversationId, brief, video, sourceImage, originalRequest }) 
         type: TYPES.VIDEO_PRODUCTION,
         status: sourceImage ? STATUS.AWAITING_IMAGE_APPROVAL : STATUS.GENERATING_IMAGE,
         brief: normalizedBrief,
+        // Named characters whose approved identity the opening frame (and every
+        // later regeneration) must condition on. Persisted so regenerate/modify
+        // and post-restart actions still render the requested person.
+        characterIds: Array.isArray(characterIds)
+            ? characterIds.map((id) => String(id || '').trim()).filter(Boolean)
+            : [],
         video: {
             duration: Number.isFinite(duration) && duration > 0 ? duration : null,
             width: (video && video.width) || null,

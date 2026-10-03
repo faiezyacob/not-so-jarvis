@@ -804,6 +804,41 @@
                             <pre class="settings-log" id="videoFaceRefineLog" hidden></pre>
                         </div>
                         </div>
+                        <div class="settings-card" data-search="video frame interpolation rife frame rate fps smooth double frames motion interpolate install">
+                            <div class="settings-card-title">FRAME INTERPOLATION</div>
+                            <div class="settings-card-sub">Optional post-process that raises the clip's frame rate by synthesising intermediate frames with RIFE. Doubling turns H3's 24 fps into a smoother 48 fps.</div>
+                        <div class="settings-field">
+                            <label class="settings-toggle">
+                                <span class="settings-toggle-label">Double frame rate (frame interpolation)</span>
+                                <input type="checkbox" id="videoFrameInterpEnabled">
+                            </label>
+                            <span class="settings-hint">Runs automatically after every video (after Face Refinement, before Auto Upscale). Needs the ComfyUI-Frame-Interpolation custom node. First enable auto-installs it (restart ComfyUI when it finishes).</span>
+                        </div>
+                            <div class="settings-field-row">
+                        <div class="settings-field">
+                            <label class="settings-field-label" for="videoFrameInterpMultiplier">Frame rate multiplier</label>
+                            <select class="settings-select" id="videoFrameInterpMultiplier">
+                                <option value="2">2x — double (recommended)</option>
+                                <option value="3">3x</option>
+                                <option value="4">4x</option>
+                            </select>
+                            <span class="settings-hint">2x turns 24 fps into 48 fps. Higher multipliers interpolate more frames and take longer.</span>
+                        </div>
+                        <div class="settings-field">
+                            <label class="settings-field-label" for="videoFrameInterpModel">RIFE model</label>
+                            <input type="text" class="settings-input" id="videoFrameInterpModel"
+                                placeholder="rife49.pth" autocomplete="off">
+                            <span class="settings-hint">RIFE checkpoint name. The checkpoint downloads on first use.</span>
+                        </div>
+                            </div>
+                        <div class="settings-field">
+                            <button class="settings-browse-btn" id="videoFrameInterpInstallBtn" type="button">Install / check Frame Interpolation</button>
+                            <span class="settings-save-status" id="videoFrameInterpStatus"></span>
+                        </div>
+                        <div class="settings-field">
+                            <pre class="settings-log" id="videoFrameInterpLog" hidden></pre>
+                        </div>
+                        </div>
                         <div class="settings-card" data-search="video upscale auto upscale super resolution seedvr2 rtx enhance resolution quality">
                             <div class="settings-card-title">AUTO UPSCALE</div>
                             <div class="settings-card-sub">Run the video upscale pipeline on every generated video. The original clip is kept, so the gallery can compare them side by side.</div>

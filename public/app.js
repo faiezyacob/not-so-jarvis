@@ -1789,6 +1789,103 @@ async function refreshFaceRefineStatus() {
     }
 }
 
+// --- Frame Interpolation (RIFE): enable toggle + installer ---
+
+let frameInterpPollTimer = null;
+
+function frameInterpStatusEl() {
+    return document.getElementById('videoFrameInterpStatus');
+}
+
+function frameInterpLogEl() {
+    return document.getElementById('videoFrameInterpLog');
+}
+
+function setFrameInterpStatus(text, isError) {
+    const el = frameInterpStatusEl();
+    if (!el) return;
+    el.textContent = text || '';
+    el.classList.toggle('settings-save-status--error', !!isError);
+}
+
+function renderFrameInterpStatus(data) {
+    if (!data) {
+        setFrameInterpStatus('Could not check Frame Interpolation status.', true);
+        return;
+    }
+    const logEl = frameInterpLogEl();
+    const job = data.job || {};
+    if (Array.isArray(job.log) && job.log.length && logEl) {
+        logEl.hidden = false;
+        logEl.textContent = job.log.slice(-12).join('\n');
+        logEl.scrollTop = logEl.scrollHeight;
+    } else if (logEl && !job.running) {
+        logEl.hidden = true;
+    }
+    if (job.running) {
+        setFrameInterpStatus('Installing Frame Interpolation... (restart ComfyUI when done)');
+        scheduleFrameInterpPoll();
+        return;
+    }
+    if (job.done && !job.ok && job.error) {
+        setFrameInterpStatus('Install failed: ' + job.error, true);
+        return;
+    }
+    if (job.done && job.ok && job.warn) {
+        setFrameInterpStatus(job.warn, true);
+        return;
+    }
+    if (!data.comfyAvailable) {
+        setFrameInterpStatus('ComfyUI unreachable — Frame Interpolation status unknown.', true);
+        return;
+    }
+    if (data.ready) {
+        setFrameInterpStatus(
+            'Ready in ComfyUI' + (data.ckptFound ? ' (RIFE checkpoint installed).' : ' (checkpoint downloads on first use).')
+        );
+        return;
+    }
+    if (data.restartRequired || (data.packInstalled && !data.nodePresent)) {
+        setFrameInterpStatus('Installed — restart ComfyUI to load the RIFE node.', true);
+        return;
+    }
+    const parts = [];
+    if (!data.nodePresent) parts.push('RIFE VFI node');
+    if (Array.isArray(data.packagesMissing) && data.packagesMissing.length) {
+        parts.push('python: ' + data.packagesMissing.join(', '));
+    }
+    if (!data.vhsPresent) parts.push('VHS_LoadVideo');
+    setFrameInterpStatus(
+        parts.length ? 'Missing: ' + parts.join('; ') + '. Press Install.' : 'Frame Interpolation not installed. Press Install.',
+        true
+    );
+}
+
+function scheduleFrameInterpPoll() {
+    if (frameInterpPollTimer) return;
+    frameInterpPollTimer = setTimeout(async () => {
+        frameInterpPollTimer = null;
+        try {
+            const res = await fetch('/api/video/frame-interp/status');
+            const data = await res.json().catch(() => null);
+            renderFrameInterpStatus(data);
+            if (data && data.job && data.job.running) scheduleFrameInterpPoll();
+        } catch {
+            setFrameInterpStatus('Could not check Frame Interpolation status.', true);
+        }
+    }, 2500);
+}
+
+async function refreshFrameInterpStatus() {
+    try {
+        const res = await fetch('/api/video/frame-interp/status');
+        const data = await res.json().catch(() => null);
+        renderFrameInterpStatus(data);
+    } catch {
+        setFrameInterpStatus('Could not check Frame Interpolation status.', true);
+    }
+}
+
 // --- MiniMax H3 First Block Cache: ComfyUI-side install / check ---
 
 function fbcInstallStatusEl() {
@@ -2192,6 +2289,73 @@ function initVideoSettings() {
         });
     }
 
+    // --- Frame Interpolation: enable toggle, multiplier, model, installer ---
+    const frameInterpToggle = document.getElementById('videoFrameInterpEnabled');
+    if (frameInterpToggle) {
+        frameInterpToggle.addEventListener('change', async () => {
+            const enabled = frameInterpToggle.checked;
+            setStatus(enabled ? 'Enabling frame interpolation...' : 'Saving...');
+            try {
+                const res = await fetch('/api/settings/video', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ frameInterpEnabled: enabled })
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    setStatus('Save failed: ' + (data.error || 'Unknown error'), true);
+                    frameInterpToggle.checked = !enabled;
+                    return;
+                }
+                setStatus(enabled ? 'Frame interpolation on — checking ComfyUI setup...' : 'Frame interpolation off.');
+                refreshFrameInterpStatus();
+            } catch {
+                setStatus('Save failed: connection error', true);
+                frameInterpToggle.checked = !enabled;
+            }
+            setTimeout(() => setStatus(''), 3000);
+        });
+    }
+
+    const frameInterpMultiplier = document.getElementById('videoFrameInterpMultiplier');
+    if (frameInterpMultiplier) {
+        frameInterpMultiplier.addEventListener('change', () => persistSelect('frameInterpMultiplier', frameInterpMultiplier));
+    }
+
+    const frameInterpModel = document.getElementById('videoFrameInterpModel');
+    if (frameInterpModel) {
+        frameInterpModel.addEventListener('change', () => persistText('frameInterpModel', frameInterpModel));
+        frameInterpModel.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                frameInterpModel.blur();
+            }
+        });
+    }
+
+    const frameInterpInstallBtn = document.getElementById('videoFrameInterpInstallBtn');
+    if (frameInterpInstallBtn) {
+        frameInterpInstallBtn.addEventListener('click', async () => {
+            setFrameInterpStatus('Starting Frame Interpolation install...');
+            try {
+                const res = await fetch('/api/video/frame-interp/install', { method: 'POST' });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    setFrameInterpStatus('Install failed: ' + (data.error || 'Unknown error'), true);
+                    return;
+                }
+                if (data.install && data.install.started === false) {
+                    setFrameInterpStatus('Install already running — see log below.');
+                } else {
+                    setFrameInterpStatus('Installing Frame Interpolation... (restart ComfyUI when done)');
+                }
+                refreshFrameInterpStatus();
+            } catch {
+                setFrameInterpStatus('Install failed: connection error', true);
+            }
+        });
+    }
+
     // --- MiniMax H3 Turbo: the toggle reveals the step / LoRA options ---
     const turboToggle = document.getElementById('videoTurboEnabled');
     const turboOptions = document.getElementById('videoTurboOptions');
@@ -2459,6 +2623,30 @@ function initVideoSettings() {
             }
 
             refreshFaceRefineStatus();
+
+            const frameInterpToggleEl = document.getElementById('videoFrameInterpEnabled');
+            if (frameInterpToggleEl) {
+                const stored = settings.frameInterpEnabled;
+                frameInterpToggleEl.checked = stored === true || stored === 1 ||
+                    String(stored).toLowerCase() === 'true' || String(stored) === '1' ||
+                    (stored === undefined && defaults.frameInterpEnabled === true);
+            }
+            const frameInterpMultiplierEl = document.getElementById('videoFrameInterpMultiplier');
+            if (frameInterpMultiplierEl) {
+                const stored = settings.frameInterpMultiplier;
+                const fallback = defaults.frameInterpMultiplier !== undefined && defaults.frameInterpMultiplier !== null
+                    ? String(defaults.frameInterpMultiplier) : '2';
+                const wanted = (stored !== undefined && stored !== null && stored !== '') ? String(stored) : fallback;
+                const hasOption = Array.from(frameInterpMultiplierEl.options).some((o) => o.value === wanted);
+                frameInterpMultiplierEl.value = hasOption ? wanted : '2';
+            }
+            const frameInterpModelEl = document.getElementById('videoFrameInterpModel');
+            if (frameInterpModelEl) {
+                const stored = settings.frameInterpModel;
+                frameInterpModelEl.value = (stored !== undefined && stored !== null && stored !== '') ? stored : '';
+                frameInterpModelEl.placeholder = defaults.frameInterpModel || 'rife49.pth';
+            }
+            refreshFrameInterpStatus();
 
             if (turboToggle) {
                 const stored = settings.h3TurboEnabled;

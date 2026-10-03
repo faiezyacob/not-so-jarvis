@@ -211,7 +211,7 @@ function resolveExistingSource(conversationId, message, referenceImage) {
 
 // Create the production plan for a fresh request. The brief is canonical from
 // here on; later stages are rebuilt from it, never from the raw message.
-async function createProduction({ conversationId, message, provider, model, think, referenceImage }) {
+async function createProduction({ conversationId, message, provider, model, think, referenceImage, characters }) {
     const parsedDuration = typeof videoGenerator.parseRequestedVideoDuration === 'function'
         ? videoGenerator.parseRequestedVideoDuration(message)
         : null;
@@ -220,12 +220,17 @@ async function createProduction({ conversationId, message, provider, model, thin
         : defaultVideoDuration();
     const brief = await buildBrief({ message, provider, model, think });
     const sourceImage = resolveExistingSource(conversationId, message, referenceImage);
+    const characterIds = (Array.isArray(characters) ? characters : [])
+        .map((ref) => (ref && ref.id) || (typeof ref === 'string' ? ref : ''))
+        .map((id) => String(id || '').trim())
+        .filter(Boolean);
     const production = productionPlan.create({
         conversationId,
         brief,
         video: { duration },
         sourceImage,
-        originalRequest: message
+        originalRequest: message,
+        characterIds
     });
     production.studio = 'director';
     if (sourceImage) {
@@ -278,13 +283,20 @@ function createUgcProduction({ conversationId, brief, duration, openingFrame, or
     return production;
 }
 
+// The opening-frame scene concept (plain text) for a production. Used both as
+// the image pipeline's user prompt and as the scene layer when a named
+// character's approved identity conditions the frame via reference-guided edit.
+function buildImageConcept(production) {
+    const authoritative = production.briefModified ? '' : production.brief.originalRequest;
+    return prompts.composeImageConcept(production.brief, { authoritative });
+}
+
 // Build the opening-frame prompt from the brief via the existing image prompt
 // builder. Stores the resulting prompt on the plan so regeneration reuses it.
 async function buildImageStagePrompt(production, { provider, model, think }) {
     // While the brief is still the user's original ask, carry their exact
     // wording too; after a direction change the updated brief is authoritative.
-    const authoritative = production.briefModified ? '' : production.brief.originalRequest;
-    const concept = prompts.composeImageConcept(production.brief, { authoritative });
+    const concept = buildImageConcept(production);
     const structuredRequest = {
         intent: 'image_generation',
         user_prompt: concept,
@@ -607,6 +619,7 @@ module.exports = {
     shouldForceDirectorOverLongVideo,
     createProduction,
     createUgcProduction,
+    buildImageConcept,
     buildImageStagePrompt,
     applyDirectionUpdate,
     buildVideoStageRequest,

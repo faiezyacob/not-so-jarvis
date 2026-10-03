@@ -772,28 +772,31 @@ function twoSceneProject(overrides = {}) {
     return project;
 }
 
-test('visual edits invalidate approved references', async () => {
+test('visual edits invalidate the approved opening frame', async () => {
     const project = twoSceneProject();
+    // Only one frame is ever kept: a newer frame replaces the previous one.
     studio.recordReference(project, 's1', { url: '/generated/a.png', filename: 'a.png' });
     studio.recordReference(project, 's2', { url: '/generated/b.png', filename: 'b.png' });
+    assert.equal(project.references.length, 1);
+    assert.equal(project.references[0].filename, 'b.png');
     assert.equal(studio.referencesComplete(project), true);
     assert.equal(studio.approveReferences(project).ok, true);
-    assert.equal(project.approvedReferences.length, 2);
+    assert.equal(project.approvedReferences.length, 1);
 
     studio.editScene(project, 's1', { action: 'a completely different action' });
     assert.equal(project.approvedReferences.length, 0);
     assert.equal(studio.referencesComplete(project), false);
 });
 
-test('referenceFilenames lists every frame the project owns for cleanup', () => {
+test('referenceFilenames lists the opening frame the project owns for cleanup', () => {
     const project = twoSceneProject();
     studio.recordReference(project, 's1', { url: '/generated/a.png', filename: 'a.png' });
     studio.recordReference(project, 's2', { url: '/generated/b.png', filename: 'b.png' });
     studio.approveReferences(project);
-    assert.deepEqual(studio.referenceFilenames(project).sort(), ['a.png', 'b.png']);
+    assert.deepEqual(studio.referenceFilenames(project).sort(), ['b.png']);
     // An entry that only carries a URL (no filename) still resolves its basename.
     project.references.push({ sceneId: 's3', order: 3, url: '/generated/c.png', status: 'ready' });
-    assert.deepEqual(studio.referenceFilenames(project).sort(), ['a.png', 'b.png', 'c.png']);
+    assert.deepEqual(studio.referenceFilenames(project).sort(), ['b.png', 'c.png']);
     assert.deepEqual(studio.referenceFilenames(null), []);
 });
 
@@ -825,34 +828,54 @@ test('approved references remain valid for a re-approval (duration-confirm path)
     assert.equal(studio.approveReferences(project).ok, true);
 });
 
-test('approveReferences requires exactly one current frame per scene', () => {
+test('approveReferences requires a current opening frame', () => {
     const project = twoSceneProject();
-    studio.recordReference(project, 's1', { url: '/generated/a.png', filename: 'a.png' });
+    // Nothing rendered yet: approval is rejected.
     let result = studio.approveReferences(project);
     assert.equal(result.ok, false);
-    assert.match(result.error, /missing/i);
+    assert.match(result.error, /missing|out of date/i);
+
+    studio.recordReference(project, 's1', { url: '/generated/a.png', filename: 'a.png' });
+    assert.equal(studio.approveReferences(project).ok, true);
+    assert.equal(project.approvedReferences.length, 1);
 
     // A stale frame (generated before a plan change) cannot be approved.
-    studio.recordReference(project, 's2', { url: '/generated/b.png', filename: 'b.png' });
+    project.stage = studio.STAGES.REFERENCE_APPROVAL;
     studio.editScene(project, 's2', { action: 'changed action' });
     result = studio.approveReferences(project);
     assert.equal(result.ok, false);
     assert.equal(project.approvedReferences.length, 0);
 });
 
-test('partial reference generation keeps successes and reports failed scenes', () => {
+test('a failed opening frame is reported and can be retried', () => {
     const project = twoSceneProject();
-    project.scenes.push({ id: 's3', order: 3, duration: 5, action: 'closes', camera: {} });
-    studio.reconcileContinuity(project);
-    studio.recordReference(project, 's1', { url: '/generated/a.png', filename: 'a.png' });
-    studio.recordReferenceFailure(project, 's2', 'out of memory');
-    const pending = studio.pendingReferenceSceneIds(project).sort();
-    assert.deepEqual(pending, ['s2', 's3']);
+    studio.recordReferenceFailure(project, 's1', 'out of memory');
+    assert.deepEqual(studio.pendingReferenceSceneIds(project), ['s1']);
     assert.equal(studio.referencesComplete(project), false);
     const card = studio.buildCard(project);
-    const failed = card.references.find((r) => r.sceneId === 's2');
-    assert.equal(failed.status, 'failed');
-    assert.match(failed.error, /memory/);
+    assert.equal(card.frame.status, 'failed');
+    assert.match(card.frame.error, /memory/);
+
+    // A successful retry replaces the failed frame.
+    studio.recordReference(project, 's1', { url: '/generated/a.png', filename: 'a.png' });
+    assert.equal(studio.referencesComplete(project), true);
+    assert.deepEqual(studio.pendingReferenceSceneIds(project), []);
+});
+
+test('frameEditInstruction preserves identity for a named creator and stays neutral when creator-free', () => {
+    const withCreator = twoSceneProject();
+    const instruction = studio.frameEditInstruction(withCreator, 'make the lighting warmer');
+    assert.match(instruction, /make the lighting warmer/);
+    assert.match(instruction, /creator identity/i);
+
+    const creatorFree = studio.normalizeProject({ request: 'product only', creatorMode: 'none', scenes: [{ id: 's1', order: 1 }] });
+    const neutral = studio.frameEditInstruction(creatorFree, 'move the product closer');
+    assert.match(neutral, /move the product closer/);
+    assert.ok(!/creator identity/i.test(neutral));
+
+    const request = studio.buildOpeningFrameRequest(withCreator);
+    assert.equal(request.intent, 'image_generation');
+    assert.ok(request.user_prompt);
 });
 
 test('duplicate and malformed scene IDs are repaired deterministically', () => {
@@ -1036,6 +1059,19 @@ test('classifyMessage handles approval and edit phrases', () => {
     assert.equal(studio.classifyMessage('change the product shot', project).action, 'edit');
     assert.equal(studio.classifyMessage('make the hook shorter', project).action, 'edit');
     assert.equal(studio.classifyMessage('keep the outfit but change the environment', project).action, 'edit');
+});
+
+test('classifyMessage routes opening-frame actions and validates them per stage', () => {
+    const project = twoSceneProject();
+    project.stage = studio.STAGES.REFERENCE_APPROVAL;
+    assert.equal(studio.classifyMessage('regenerate the opening frame', project).action, 'regenerate_reference');
+    assert.equal(studio.classifyMessage('change the frame to a wider shot', project).action, 'modify_frame');
+    // The single-frame actions are only valid at the reference stages.
+    assert.equal(studio.validateAction(project, studio.ACTIONS.CREATE_VIDEO).ok, true);
+    assert.equal(studio.validateAction(project, studio.ACTIONS.MODIFY_FRAME).ok, true);
+    assert.equal(studio.validateAction(project, studio.ACTIONS.REGENERATE_FRAME).ok, true);
+    project.stage = studio.STAGES.SCENE_REVIEW;
+    assert.equal(studio.validateAction(project, studio.ACTIONS.CREATE_VIDEO).ok, false);
 });
 
 test('natural edits apply hook shortening and product-shot changes', async () => {

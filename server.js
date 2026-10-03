@@ -77,6 +77,7 @@ const providerManager = require('./server/provider-manager');
 const imageGenerator = require('./services/image-generator');
 const videoGenerator = require('./services/video-generator');
 const faceRefine = require('./services/face-refine');
+const frameInterp = require('./services/frame-interp');
 const fbcache = require('./services/fbcache');
 const h3LatentUpscale = require('./services/h3-latent-upscale');
 const modelSetup = require('./services/model-setup');
@@ -638,6 +639,15 @@ async function handleAPI(req, res, urlPath) {
             if (!fbcWasEnabled && fbcNowEnabled) {
                 firstBlockCacheInstall = fbcache.ensureAutoInstall();
             }
+            // Frame interpolation: a genuine off→on transition clones the RIFE
+            // node pack in the background. Non-blocking; the VIDEO panel polls
+            // GET /api/video/frame-interp/status.
+            let frameInterpInstall = null;
+            const frameInterpWasEnabled = Boolean(previous.frameInterpEnabled);
+            const frameInterpNowEnabled = Boolean(settings.frameInterpEnabled);
+            if (!frameInterpWasEnabled && frameInterpNowEnabled) {
+                frameInterpInstall = frameInterp.ensureAutoInstall();
+            }
             // Latent upscale: a genuine off→on transition clones the node pack
             // in the background (the checkpoint is downloaded via Setup or
             // manually). Non-blocking; the VIDEO panel polls the status endpoint.
@@ -647,7 +657,7 @@ async function handleAPI(req, res, urlPath) {
             if (latentPrevious === 'off' && latentNow !== 'off') {
                 latentUpscaleInstall = h3LatentUpscale.ensureAutoInstall();
             }
-            json(res, 200, { ok: true, settings, faceRefineInstall, firstBlockCacheInstall, latentUpscaleInstall });
+            json(res, 200, { ok: true, settings, faceRefineInstall, firstBlockCacheInstall, latentUpscaleInstall, frameInterpInstall });
         } catch (err) {
             json(res, 400, { error: err.message });
         }
@@ -671,6 +681,30 @@ async function handleAPI(req, res, urlPath) {
     if (urlPath === '/api/video/face-refine/install' && req.method === 'POST') {
         try {
             const started = faceRefine.startInstall();
+            json(res, 200, { ok: true, install: started });
+        } catch (err) {
+            json(res, 500, { error: err.message });
+        }
+        return true;
+    }
+
+    // GET /api/video/frame-interp/status — ComfyUI readiness for the RIFE
+    // frame-interpolation node (ComfyUI-Frame-Interpolation) + install state.
+    if (urlPath === '/api/video/frame-interp/status' && req.method === 'GET') {
+        try {
+            json(res, 200, await frameInterp.getStatus());
+        } catch (err) {
+            json(res, 500, { error: err.message });
+        }
+        return true;
+    }
+
+    // POST /api/video/frame-interp/install — clone the RIFE node pack and
+    // pip-install einops in the background. Returns immediately; poll the
+    // status endpoint for progress. Restart ComfyUI when it finishes.
+    if (urlPath === '/api/video/frame-interp/install' && req.method === 'POST') {
+        try {
+            const started = frameInterp.startInstall();
             json(res, 200, { ok: true, install: started });
         } catch (err) {
             json(res, 500, { error: err.message });
@@ -3819,24 +3853,14 @@ async function handleUGCAutoRun(req, res, ctx, project) {
         sseWrite(res, { generating: 'UGC Studio \u2014 planning the scenes\u2026' });
         await ugcStudio.generateScenes(project, { provider, model, think });
 
-        // 4. Approve the plan server-side and render every reference frame.
+        // 4. Approve the plan server-side and render the ONE opening frame the
+        //    Director's H3 stage will animate. Stop at the frame-approval
+        //    checkpoint so the user can create the video, modify the frame, or
+        //    regenerate it.
         ugcStudio.approveScenes(project);
-        const referencesOk = await handleUGCGenerateReferences(req, res, ctx, project, null, { fresh: true, silent: true });
-        if (!referencesOk || !ugcStudio.referencesComplete(project)) {
-            // Recovery: surface the reference-approval card so failed frames can
-            // be retried. The happy path never reaches here.
-            emitUGCCard(res, project);
-            return;
-        }
-
-        // 5. Approve the frames and hand the production to Director Mode, which
-        //    renders the final H3 video and emits the completion card.
-        const approval = ugcStudio.approveReferences(project);
-        if (!approval.ok) {
-            emitUGCCard(res, project);
-            return;
-        }
-        await handleUGCDirectorHandoff(req, res, ctx, project);
+        await handleUGCGenerateReferences(req, res, ctx, project, null, { fresh: true, silent: true });
+        emitUGCCard(res, project);
+        return;
     } catch (err) {
         console.error('[ugc] auto-run failed:', err.message);
         if (err && err.code === 'generation_cancelled') {
@@ -4187,32 +4211,28 @@ async function dispatchUGCAction(req, res, ctx, project, action) {
         }
         if (action.type === UGC_ACTION.APPROVE_SCENES) {
             ugcStudio.approveScenes(project);
-            await handleUGCGenerateReferences(req, res, ctx, project, null);
-            return;
-        }
-
-        // --- references ---
-        if (action.type === UGC_ACTION.GENERATE_REFERENCES || action.type === UGC_ACTION.REGENERATE_REFERENCES) {
             await handleUGCGenerateReferences(req, res, ctx, project, null, { fresh: true });
             return;
         }
-        if (action.type === UGC_ACTION.REGENERATE_REFERENCE) {
-            let sceneId = action.sceneId || null;
-            if (!sceneId && action.sceneNumber) {
-                const scene = (project.scenes || []).find((s) => s.order === Number(action.sceneNumber));
-                sceneId = scene ? scene.id : null;
-            }
-            await handleUGCGenerateReferences(req, res, ctx, project, sceneId ? [sceneId] : null);
+
+        // --- opening frame ---
+        if (action.type === UGC_ACTION.GENERATE_REFERENCES || action.type === UGC_ACTION.REGENERATE_REFERENCES ||
+            action.type === UGC_ACTION.REGENERATE_REFERENCE || action.type === UGC_ACTION.REGENERATE_FRAME) {
+            await handleUGCGenerateReferences(req, res, ctx, project, null, { fresh: true });
+            return;
+        }
+        if (action.type === UGC_ACTION.MODIFY_FRAME) {
+            await handleUGCModifyFrame(req, res, ctx, project,
+                action.instruction || action.direction || action.message || '');
             return;
         }
         if (action.type === UGC_ACTION.RETRY_FAILED) {
-            const pending = ugcStudio.pendingReferenceSceneIds(project);
-            if (!pending.length) {
-                sseWrite(res, { error: 'UGC Studio \u2014 Every scene already has a current reference frame.' });
+            if (!ugcStudio.pendingReferenceSceneIds(project).length) {
+                sseWrite(res, { error: 'UGC Studio \u2014 The opening frame is already ready.' });
                 res.end();
                 return;
             }
-            await handleUGCGenerateReferences(req, res, ctx, project, pending);
+            await handleUGCGenerateReferences(req, res, ctx, project, null, { fresh: true });
             return;
         }
         if (action.type === UGC_ACTION.EDIT_DIRECTION) {
@@ -4237,7 +4257,8 @@ async function dispatchUGCAction(req, res, ctx, project, action) {
             await handleUGCDirectorHandoff(req, res, ctx, project);
             return;
         }
-        if (action.type === UGC_ACTION.APPROVE_REFERENCES || action.type === UGC_ACTION.CONTINUE_DIRECTOR) {
+        if (action.type === UGC_ACTION.APPROVE_REFERENCES || action.type === UGC_ACTION.CONTINUE_DIRECTOR ||
+            action.type === UGC_ACTION.CREATE_VIDEO) {
             const approval = ugcStudio.approveReferences(project);
             if (!approval.ok) {
                 sseWrite(res, { error: 'UGC Studio \u2014 ' + approval.error });
@@ -4304,10 +4325,11 @@ async function dispatchUGCAction(req, res, ctx, project, action) {
     }
 }
 
-// Generate (or regenerate) the reference frame for every approved scene — or a
-// single scene when `sceneIds` is given. Reuses the existing image pipeline: the
-// studio builds direction, imageGenerator.buildImagePrompt owns the final prompt,
-// and imageGenerator.generateImage renders + records it in the gallery.
+// Render (or re-render) the ONE opening frame the UGC video will animate. Only a
+// single frame is ever produced — it is the visual source of truth the Director's
+// H3 stage animates. Reuses the existing image pipeline: the studio builds
+// direction, imageGenerator.buildImagePrompt owns the final prompt, and
+// imageGenerator.editImage (creator identity) / generateImage render it.
 async function handleUGCGenerateReferences(req, res, ctx, project, sceneIds, options) {
     const { conversationId, provider, model, think } = ctx;
     const opts = options || {};
@@ -4315,11 +4337,8 @@ async function handleUGCGenerateReferences(req, res, ctx, project, sceneIds, opt
     // one stream, so this returns instead of emitting a standalone card and
     // ending the response.
     const silent = opts.silent === true;
-    const scenes = (project.scenes || []).slice();
-    const targets = Array.isArray(sceneIds) && sceneIds.length
-        ? scenes.filter((s) => sceneIds.includes(s.id))
-        : scenes;
-    if (!targets.length) {
+    const scene = ugcStudio.openingFrameScene(project);
+    if (!scene || !(project.scenes || []).length) {
         if (silent) return false;
         sseWrite(res, { error: 'UGC Studio \u2014 There is no scene plan yet. Approve the scenes first.' });
         res.end();
@@ -4343,43 +4362,32 @@ async function handleUGCGenerateReferences(req, res, ctx, project, sceneIds, opt
     };
 
     try {
-        // A fresh full regeneration must not mix new frames with old ones: drop
-        // the existing set (and any approval) before generating.
-        if (opts.fresh && !sceneIds) {
+        // A fresh regeneration must never keep an old frame (or its approval).
+        if (opts.fresh) {
             project.references = [];
             project.approvedReferences = [];
         }
         project.stage = UGC_STAGE.REFERENCE_GENERATION;
         ugcStudio.save(project);
-        sseWrite(res, { generating: 'UGC Studio \u2014 building ' + targets.length + ' reference prompt(s)\u2026' });
+        sseWrite(res, { generating: 'UGC Studio \u2014 building the opening-frame prompt\u2026' });
 
-        // Prompt building needs the chat model; render needs ComfyUI. Keep the
-        // one-side-resident rule: build every prompt first, then free Ollama once
-        // and render the whole batch on ComfyUI (no per-image ping-pong).
+        // Prompt building needs the chat model; rendering needs ComfyUI, so free
+        // Ollama before the image job (one side resident).
         vramManager.rememberChatModel(provider, model);
         await vramManager.freeVRAMBeforeChat();
-        const jobs = [];
-        for (const scene of targets) {
-            const request = ugcStudio.buildReferenceRequest(project, scene);
-            let imagePrompt = request.user_prompt;
-            let attributes = null;
-            try {
-                const enhanced = await imageGenerator.buildImagePrompt(request, providers, provider, model, think);
-                if (enhanced && enhanced.prompt) {
-                    imagePrompt = enhanced.prompt;
-                    attributes = enhanced.attributes || null;
-                }
-            } catch (err) {
-                console.warn('[ugc] reference prompt build failed, using concept:', err.message);
-            }
-            jobs.push({ scene, imagePrompt, attributes, request });
+        const request = ugcStudio.buildReferenceRequest(project, scene);
+        let imagePrompt = request.user_prompt;
+        try {
+            const enhanced = await imageGenerator.buildImagePrompt(request, providers, provider, model, think);
+            if (enhanced && enhanced.prompt) imagePrompt = enhanced.prompt;
+        } catch (err) {
+            console.warn('[ugc] opening-frame prompt build failed, using concept:', err.message);
         }
 
         await vramManager.freeVRAMBeforeImage();
-        // The creator's single consolidated identity image conditions every
-        // reference frame (reference-guided edit), so the same person appears
-        // across all scenes. A project with no on-camera creator stays a plain
-        // text generation.
+        // The creator's consolidated identity portrait conditions the frame
+        // (reference-guided edit), so the creator appears. A creator-free project
+        // stays a plain text generation.
         const creatorIdentityName = (project.creator && project.creator.identityBaseImage)
             || (project.creator && Array.isArray(project.creator.identityReferences) &&
                 project.creator.identityReferences[0])
@@ -4391,67 +4399,50 @@ async function handleUGCGenerateReferences(req, res, ctx, project, sceneIds, opt
         const creatorIdentityInstruction = (project.creator && project.creator.identityPreservationInstructions)
             ? 'IDENTITY: ' + project.creator.identityPreservationInstructions + ' SCENE (change only this): '
             : '';
-        let failed = 0;
-        for (let i = 0; i < jobs.length; i++) {
-            const job = jobs[i];
-            sseWrite(res, {
-                generating: 'UGC Studio \u2014 reference ' + (i + 1) + ' of ' + jobs.length +
-                    ' (scene ' + job.scene.order + ')\u2026'
-            });
-            try {
-                const onStart = () => sseWrite(res, { generating: 'UGC Studio \u2014 rendering scene ' + job.scene.order + '\u2026' });
-                const promise = hasCreatorIdentity
-                    ? imageGenerator.editImage(creatorIdentityAbs, creatorIdentityInstruction + job.imagePrompt, {
-                        provider, model, conversationId, onQueued, onStart,
-                        references: [],
-                        // Reference frames exist only for the UGC video handoff;
-                        // keep them out of the shared gallery/activity/`@` picker.
-                        hidden: true,
-                        label: 'ugc reference', kind: 'image_generation'
-                    })
-                    : imageGenerator.generateImage(job.imagePrompt, {
-                        provider, model, conversationId, onQueued,
-                        // Product reference images travel on their own channel; they
-                        // are never merged with the scene reference frames.
-                        productReferences: job.request.product_references || [],
-                        onStart,
-                        hidden: true,
-                        label: 'ugc reference', kind: 'image_generation'
-                    });
-                queueId = promise.queueId || null;
-                const result = await promise;
-                ugcStudio.recordReference(project, job.scene.id, {
-                    url: result.url,
-                    filename: ugcRawFilename(result.url),
-                    prompt: job.imagePrompt
+        const onStart = () => sseWrite(res, { generating: 'UGC Studio \u2014 rendering the opening frame\u2026' });
+        try {
+            const promise = hasCreatorIdentity
+                ? imageGenerator.editImage(creatorIdentityAbs, creatorIdentityInstruction + imagePrompt, {
+                    provider, model, conversationId, onQueued, onStart,
+                    references: [],
+                    // The frame exists only for the UGC video handoff; keep it out
+                    // of the shared gallery/activity/@ picker.
+                    hidden: true,
+                    label: 'ugc opening frame', kind: 'image_generation'
+                })
+                : imageGenerator.generateImage(imagePrompt, {
+                    provider, model, conversationId, onQueued, onStart,
+                    productReferences: request.product_references || [],
+                    hidden: true,
+                    label: 'ugc opening frame', kind: 'image_generation'
                 });
-            } catch (err) {
-                // Cancellation aborts the batch; any other per-scene failure is
-                // recorded so the successful frames are preserved and the failed
-                // scene can be retried on its own.
-                if (err && err.code === 'generation_cancelled') throw err;
-                failed += 1;
-                console.warn('[ugc] reference for scene ' + job.scene.order + ' failed:', err.message);
-                ugcStudio.recordReferenceFailure(project, job.scene.id, friendlyImageError(err));
-                sseWrite(res, { generating: 'UGC Studio \u2014 scene ' + job.scene.order + ' failed, continuing\u2026' });
-            }
+            queueId = promise.queueId || null;
+            const result = await promise;
+            ugcStudio.recordReference(project, scene.id, {
+                url: result.url,
+                filename: ugcRawFilename(result.url),
+                prompt: imagePrompt
+            });
+        } catch (err) {
+            if (err && err.code === 'generation_cancelled') throw err;
+            console.warn('[ugc] opening frame failed:', err.message);
+            ugcStudio.recordReferenceFailure(project, scene.id, friendlyImageError(err));
         }
         ugcStudio.markReferencesReady(project);
         activityLog.record({
             type: 'generation',
-            title: 'UGC reference frames',
-            detail: (jobs.length - failed) + ' of ' + jobs.length + ' frame(s) for ' +
-                ((project.product && project.product.name) || 'project'),
+            title: 'UGC opening frame',
+            detail: (ugcStudio.referencesComplete(project) ? 'Frame ready' : 'Frame failed') +
+                ' for ' + ((project.product && project.product.name) || 'project'),
             conversationId
         });
-        await vramManager.freeComfyModels('ugc references');
+        await vramManager.freeComfyModels('ugc opening frame');
         if (silent) return true;
         emitUGCCard(res, project);
         return true;
     } catch (err) {
-        console.error('[ugc] reference generation failed:', err.message);
-        // Recover the stage so the card stays actionable: back to reference
-        // approval when some frames exist, otherwise back to the scene plan.
+        console.error('[ugc] opening-frame generation failed:', err.message);
+        // Recover the stage so the card stays actionable.
         try {
             project.stage = (project.references && project.references.length)
                 ? UGC_STAGE.REFERENCE_APPROVAL
@@ -4460,13 +4451,79 @@ async function handleUGCGenerateReferences(req, res, ctx, project, sceneIds, opt
         } catch (e) { /* keep the original error */ }
         if (silent) throw err;
         const friendly = (err && (err.code === 'generation_cancelled'))
-            ? 'Reference generation cancelled.'
+            ? 'Opening-frame generation cancelled.'
             : friendlyImageError(err);
         sseWrite(res, { error: 'UGC Studio \u2014 ' + friendly });
         res.end();
     } finally {
         req.removeListener('close', onClose);
         stopProgress();
+    }
+}
+
+// Apply a user-requested change to the current opening frame with the Qwen Image
+// 2.1 editor. The existing frame is the edit source and the creator's identity
+// portrait rides along as a secondary reference so identity cannot drift. The
+// edited frame replaces the previous one and returns to the approval card.
+async function handleUGCModifyFrame(req, res, ctx, project, instruction) {
+    const { conversationId, provider, model } = ctx;
+    const change = String(instruction || '').trim();
+    const frame = ugcStudio.resolveOpeningFrame(project);
+    if (!frame || !frame.filename) {
+        sseWrite(res, { error: 'UGC Studio \u2014 There is no opening frame to modify. Generate it first.' });
+        res.end();
+        return;
+    }
+    if (!change) {
+        sseWrite(res, { error: 'UGC Studio \u2014 Tell me how to change the opening frame.' });
+        res.end();
+        return;
+    }
+    const frameAbs = path.join(GENERATED_DIR, path.basename(frame.filename));
+    if (!fs.existsSync(frameAbs)) {
+        sseWrite(res, { error: 'UGC Studio \u2014 The opening frame file is missing on disk. Regenerate it first.' });
+        res.end();
+        return;
+    }
+    try {
+        sseWrite(res, { generating: 'UGC Studio \u2014 modifying the opening frame\u2026' });
+        await vramManager.freeVRAMBeforeImage();
+        const creatorIdentityName = (project.creator && project.creator.identityBaseImage)
+            || (project.creator && Array.isArray(project.creator.identityReferences) &&
+                project.creator.identityReferences[0])
+            || '';
+        const creatorIdentityAbs = creatorIdentityName
+            ? path.join(GENERATED_DIR, path.basename(String(creatorIdentityName)))
+            : '';
+        const references = (creatorIdentityAbs && fs.existsSync(creatorIdentityAbs)) ? [creatorIdentityAbs] : [];
+        const editInstruction = ugcStudio.frameEditInstruction(project, change);
+        const edited = await imageGenerator.editImage(frameAbs, editInstruction, {
+            references,
+            provider, model, conversationId,
+            seed: Math.floor(Math.random() * 2 ** 32),
+            label: 'ugc opening frame edit',
+            kind: 'image_edit',
+            hidden: true
+        });
+        const scene = ugcStudio.openingFrameScene(project);
+        ugcStudio.recordReference(project, scene ? scene.id : '', {
+            url: edited.url,
+            filename: ugcRawFilename(edited.url),
+            prompt: editInstruction
+        });
+        ugcStudio.markReferencesReady(project);
+        activityLog.record({
+            type: 'generation',
+            title: 'UGC opening frame modified',
+            detail: change,
+            conversationId
+        });
+        await vramManager.freeComfyModels('ugc opening frame edit');
+        emitUGCCard(res, project);
+    } catch (err) {
+        console.error('[ugc] opening-frame edit failed:', err.message);
+        sseWrite(res, { error: 'UGC Studio \u2014 ' + friendlyImageError(err) });
+        res.end();
     }
 }
 
@@ -4477,7 +4534,7 @@ async function handleUGCDirectorHandoff(req, res, ctx, project) {
     const { conversationId, message, provider, model, think } = ctx;
     const input = ugcStudio.directorProductionInput(project);
     if (!input.openingFrame) {
-        sseWrite(res, { error: 'UGC Studio \u2014 There is no approved reference frame to animate. Generate and approve the references first.' });
+        sseWrite(res, { error: 'UGC Studio \u2014 There is no opening frame to animate. Generate it first.' });
         res.end();
         return;
     }
@@ -5353,8 +5410,12 @@ async function handleDirectorStart(req, res, ctx) {
             return;
         }
         if (contextCharacters.length) characterContext.setActiveCharacter(conversationId, contextCharacters);
+        // The character ids ride on the production so the opening frame is
+        // reference-guided (not a random text-to-image render) and so a later
+        // regenerate/modify or a post-restart action still renders the person.
         const production = await director.createProduction({
-            conversationId, message, provider, model, think, referenceImage
+            conversationId, message, provider, model, think, referenceImage,
+            characters: contextCharacters
         });
         activityLog.record({
             type: 'generation',
@@ -5384,12 +5445,46 @@ async function handleDirectorStart(req, res, ctx) {
     }
 }
 
+// Resolve the approved-character conditioning for a Director opening frame.
+// The identity images come from the ids persisted on the production, with the
+// current turn's parsed characters as a fallback. The scene layer is the brief's
+// image concept, so the frame matches the production while preserving identity.
+function resolveDirectorIdentity(production, ctx) {
+    const persistedIds = Array.isArray(production && production.characterIds)
+        ? production.characterIds
+        : [];
+    let records = persistedIds.map((id) => characterPresets.get(id)).filter(Boolean);
+    if (!records.length && ctx && Array.isArray(ctx.characters)) {
+        records = ctx.characters.map((ref) => characterPresets.get(ref && ref.id)).filter(Boolean);
+    }
+    if (!records.length) return null;
+    const scenePrompt = director.buildImageConcept(production);
+    return resolveIdentityConditioning(records, scenePrompt, {
+        rawPrompt: (production.brief && production.brief.originalRequest) || production.originalRequest || '',
+        defaults: false
+    });
+}
+
 // Generate (or regenerate) the opening frame from the canonical brief.
 async function runDirectorImageStage(req, res, ctx, production, options) {
     const { provider, model, conversationId, message, think } = ctx;
     const regenerate = Boolean(options && options.regenerate);
     let imagePrompt = options && options.prompt ? options.prompt : null;
     try {
+        // A named character's approved portrait is the reference-guided source
+        // for the opening frame. Without it the frame would be a plain
+        // text-to-image render and invent a stranger, and H3 (image-to-video
+        // only) would then animate that stranger.
+        const wantsCharacter = Boolean(production.characterIds && production.characterIds.length);
+        const identity = wantsCharacter
+            ? ((options && options.identity) || resolveDirectorIdentity(production, ctx))
+            : null;
+        if (wantsCharacter && !identity) {
+            throw Object.assign(
+                new Error('The approved Character portrait is missing or unavailable.'),
+                { code: 'director_character_missing' }
+            );
+        }
         if (!imagePrompt) {
             if (regenerate && production.image && production.image.prompt) {
                 // Same brief, same prompt, fresh seed — the requested new frame.
@@ -5416,6 +5511,8 @@ async function runDirectorImageStage(req, res, ctx, production, options) {
         await handleImageGenerationStream(req, res, {
             provider, model, conversationId, message,
             imagePrompt,
+            identity,
+            displayPrompt: identity ? director.buildImageConcept(production) : null,
             action: 'generate',
             previousPrompt: null,
             think,
@@ -6307,6 +6404,8 @@ function friendlyImageError(err) {
             return err.message;
         case 'upscale_source_missing':
             return 'The image to upscale could not be found on disk. It may have been deleted.';
+        case 'director_character_missing':
+            return err.message;
         default:
             return 'Image generation failed: ' + (err.message || 'unknown error');
     }
@@ -6361,6 +6460,7 @@ async function handleVideoGenerationStream(req, res, opts) {
         if (height) opts2.height = height;
         opts2.onProgress = (stage) => {
             if (stage === 'face-refine') sseWrite(res, { generating: 'Refining faces...' });
+            else if (stage === 'frame-interp') sseWrite(res, { generating: 'Interpolating frames...' });
             else if (stage === 'auto-upscale') sseWrite(res, { generating: 'Upscaling video...' });
             else if (stage === 'latent-upscale-begin') {
                 sseWrite(res, { generating: 'MiniMax H3 — generating low-resolution latent...' });
@@ -6506,6 +6606,7 @@ async function handleVideoGenerationStream(req, res, opts) {
                 meta: finalResult.meta || null,
                 refined: Boolean(finalResult.refined),
                 refineError: finalResult.refineError || null,
+                frameInterp: finalResult.frameInterp || null,
                 latentUpscale: (finalResult.meta && finalResult.meta.video && finalResult.meta.video.latentUpscale) || null,
                 upscale: finalResult.upscale || null
             }
@@ -6687,6 +6788,8 @@ function friendlyVideoError(err) {
         case 'rtx_video_upscale_setup_required':
             return err.message;
         case 'facerefine_failed':
+            return err.message;
+        case 'frameinterp_failed':
             return err.message;
         case 'h3_turbo_lora_missing':
         case 'h3_turbo_nodes_missing':
