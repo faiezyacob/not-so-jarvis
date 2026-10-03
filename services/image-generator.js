@@ -842,10 +842,9 @@ function repairStructuredPrompt(prompt, request) {
 
 // --- Resolution (Aspect Ratio + Size) ------------------------------------------
 //
-// The only user-facing resolution controls are the S/M/L size tiers (see
-// public/app.js RESOLUTION_SIZE_OPTIONS + createSizeLabel): S is 0.75 MP,
-// M is 1 MP, L is 1.75 MP total pixels. Dimensions are derived from the
-// aspect ratio as
+// The only user-facing resolution controls are the S/M/L/XL size tiers:
+// S is 0.75 MP, M is 1 MP, L is 1.25 MP and XL is 1.75 MP total pixels.
+// Dimensions are derived from the aspect ratio as
 //   w = snapToLatentGrid(sqrt(pixels * ratio)),
 //   h = snapToLatentGrid(sqrt(pixels / ratio))
 // so M + 1:1 yields ~992x992, M + 4:5 yields ~896x1120, and
@@ -853,7 +852,7 @@ function repairStructuredPrompt(prompt, request) {
 // before reaching Krea2.
 
 const ASPECT_RATIOS = ['1:1', '4:5', '3:4', '16:9', '9:16'];
-const IMAGE_MEGAPIXELS = { S: 0.75, M: 1, L: 1.75 };
+const IMAGE_MEGAPIXELS = { S: 0.75, M: 1, L: 1.25, XL: 1.75 };
 // Backwards-compatible alias: previous revisions exposed short-side pixels
 // under this name ({ S: 768, M: 1024, L: 1536 }).
 const IMAGE_SIZES = IMAGE_MEGAPIXELS;

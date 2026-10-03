@@ -240,10 +240,19 @@ function composeVideoDirection(brief, duration, opts = {}) {
         );
     } else {
         lines.push(
-            'Animate the reference image as a continuous shot: ' + subject + ' ' + action +
+            'Animate the approved opening frame as the video\'s first frame in a continuous shot: ' + subject + ' ' + action +
             (setting ? ' in ' + setting : '') + '.'
         );
     }
+    // H3 is image-to-video only: the opening frame already solved the visual
+    // composition, so the direction asks for animation and progression rather
+    // than a fresh interpretation of the image.
+    lines.push(
+        'The approved opening frame is the exact starting state at 0.00 seconds; it already establishes ' +
+        'the composition, camera, lighting, character, wardrobe and starting pose. Describe what happens ' +
+        'from that frame onward (motion, action, performance, camera movement and temporal progression) ' +
+        'instead of recreating the still image.'
+    );
     if (cleanFragment(b.visualStyle)) lines.push(sentence('Visual style: ' + b.visualStyle));
     if (cleanFragment(b.mood)) lines.push(sentence('Mood: ' + b.mood));
     const camera = [cleanFragment(b.camera), cleanFragment(b.cameraMovement)]

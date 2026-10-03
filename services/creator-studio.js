@@ -665,6 +665,27 @@ function ensureTalkingPoint(segments, concept) {
     return list;
 }
 
+// Deterministic call-to-action repair. The dialogue writer is asked to end on a
+// call to action but does not always comply, and a missing CTA would otherwise
+// reject the entire submission. Only the guide's own CTA beat is touched, and
+// nothing is invented beyond a neutral invitation to respond.
+function ensureCallToAction(segments, structure) {
+    const list = Array.isArray(segments) ? segments.map((segment) => Object.assign({}, segment)) : [];
+    if (!structureHasCta(structure) || !list.length) return list;
+    const dialogue = list.map((segment) => String(segment.text || '')).join(' ');
+    if (CTA_TEXT_RE.test(dialogue)) return list;
+    const stages = Array.isArray(structure) ? structure : [];
+    const ctaStage = stages.slice().reverse().find((stage) => GUIDE_CTA_STAGES.includes(stage)) || '';
+    let index = ctaStage
+        ? list.findIndex((segment) => String(segment.stage || '').toLowerCase().replace(/\s+/g, '_') === ctaStage)
+        : -1;
+    if (index < 0) index = list.length - 1;
+    const sentence = 'Let me know what you think in the comments.';
+    if (list[index]) list[index].text = [String(list[index].text || '').trim(), sentence].filter(Boolean).join(' ');
+    else list.push({ stage: ctaStage || 'closing', text: sentence });
+    return list;
+}
+
 // Deterministic per-stage spoken line used when the LLM is unavailable or
 // returns an incomplete guide. Fictional creator content only.
 function fallbackStageText(stage, context) {
@@ -1138,7 +1159,10 @@ async function generateScript(input, providers, provider, model) {
     const fallbackByStage = {};
     base.segments.forEach((segment) => { if (!fallbackByStage[segment.stage]) fallbackByStage[segment.stage] = segment.text; });
     const finalize = (segments) => fitScriptWordBudget({
-        segments: ensureTalkingPoint(alignSegmentsToStructure(segments, structures, fallbackByStage), input.concept)
+        segments: ensureCallToAction(
+            ensureTalkingPoint(alignSegmentsToStructure(segments, structures, fallbackByStage), input.concept),
+            structures
+        )
     }, input.duration);
     if (!providers || typeof providers.chat !== 'function') return finalize(base.segments);
     const traits = input.personality.join(', ') || 'playful';
@@ -1311,14 +1335,14 @@ function buildCanonicalDialogue(content, character, options = {}) {
     const name = clean(source.creatorName || (character && character.name) || 'Creator', 80);
     const recipe = source.recipe || CONTENT_TYPES.find((item) => item.id === source.contentType) || CONTENT_TYPES[0];
     const structure = Array.isArray(recipe.structure) ? recipe.structure.slice() : [];
-    const lines = beats.map((beat) => {
-        const stage = clean(beat && beat.stage, 60) || 'beat';
-        return {
-            stage,
-            label: stageLabel(stage),
-            speech: String(beat && beat.speech !== undefined && beat.speech !== null ? beat.speech : '').trim()
-        };
-    });
+    const lines = ensureCallToAction(beats.map((beat) => ({
+        stage: clean(beat && beat.stage, 60) || 'beat',
+        text: String(beat && beat.speech !== undefined && beat.speech !== null ? beat.speech : '').trim()
+    })), structure).map((line) => ({
+        stage: line.stage,
+        label: stageLabel(line.stage),
+        speech: line.text
+    }));
     const performance = beats.map((beat) => {
         const stage = clean(beat && beat.stage, 60) || 'beat';
         return {
@@ -1491,6 +1515,13 @@ function buildContentDefaults(input, character, previousSession) {
     const rawSceneId = clean(sceneIdProvided ? input.sceneId : (previous.sceneId || ''), 80);
     const sceneDef = rawSceneId ? sceneLibrary.get(rawSceneId) : null;
     const sceneContext = sceneDef ? sceneLibrary.buildSceneContext(sceneDef) : null;
+    // sceneSource separates a user-typed custom scene from one the studio
+    // inferred automatically. Without it the UI cannot tell the two apart and
+    // re-displays an inferred scene in the "Custom scene" field, which the user
+    // then cannot clear. Mirrors outfitSource.
+    const sceneSource = sceneContext
+        ? 'library'
+        : (rawScene.toLowerCase() === 'auto' ? 'automatic' : 'explicit');
     const rawOutfit = clean(merged.outfit || previous.outfit || 'Auto', 200);
     const explicitMultiShot = /\b(?:cut\s+to\s+(?:(?:another|the|a)\s+)?(?:different\s+)?(?:angle|shot|close[- ]?up|scene|location|bedroom|cafe|office)|show\s+another\s+shot|change\s+(?:the\s+)?camera\s+angle|different\s+camera\s+angle|different\s+location|separate\s+scene|explicit\s+cut|multiple\s+shots?|multiple\s+scenes|montage|transition\s+to)\b/i.test(
         [merged.message, merged.concept].filter(Boolean).join(' ')
@@ -1498,7 +1529,7 @@ function buildContentDefaults(input, character, previousSession) {
     const scene = sceneContext
         ? sceneContext.summary
         : (rawScene.toLowerCase() === 'auto'
-            ? (dimension !== 'scene' && previous.scene && previous.scene.toLowerCase() !== 'auto' ? previous.scene : inferScene(merged.concept || merged.message))
+            ? (dimension !== 'scene' && previous.sceneSource !== 'explicit' && previous.scene && previous.scene.toLowerCase() !== 'auto' ? previous.scene : inferScene(merged.concept || merged.message))
             : rawScene);
     const outfit = rawOutfit.toLowerCase() === 'auto'
         ? (dimension !== 'outfit' && !outfitPackChanged && previous.outfit && previous.outfit.toLowerCase() !== 'auto' ? previous.outfit : 'Auto')
@@ -1524,6 +1555,7 @@ function buildContentDefaults(input, character, previousSession) {
         voice,
         scene,
         sceneId: sceneDef ? sceneDef.id : '',
+        sceneSource,
         sceneReference: sceneContext ? sceneContext.referenceImage || '' : '',
         outfit,
         outfitSource,
@@ -1693,7 +1725,23 @@ async function buildCreatorContent(input, character, options = {}) {
 function normalizeAction(input) {
     const src = input && typeof input === 'object' ? input : {};
     return src.type === 'generate' || src.type === 'new_session' ||
-        src.type === 'regenerate_frame' || src.type === 'create_video' ? src : null;
+        src.type === 'regenerate_frame' || src.type === 'create_video' ||
+        src.type === 'modify_frame' ? src : null;
+}
+
+// The edit instruction for a user-driven change to the approved starting frame.
+// The current frame is the edit source, so identity, wardrobe, environment and
+// framing must be preserved and only the requested change applied.
+function frameEditInstruction(content, userInstruction) {
+    const c = content && typeof content === 'object' ? content : {};
+    const preset = CAMERA_PRESETS.find((item) => item.id === c.camera) || CAMERA_PRESETS[0];
+    const change = clean(userInstruction, 600) || 'a subtle natural improvement';
+    return 'EDIT this starting frame only as requested: ' + change + '. ' +
+        'Keep the same creator identity, face, hairstyle, wardrobe, environment, lighting and the ' +
+        preset.label + ' camera framing (' + preset.direction + '). ' +
+        'Change only what the request names; do not redesign the character, the outfit, the setting or the shot. ' +
+        'The result stays the exact first frame of a single continuous creator video, with the creator looking ' +
+        'toward the phone lens, mouth visible and ready to speak.';
 }
 
 // The explicit first-frame framing directive for the Qwen opening-frame render.
@@ -1706,9 +1754,7 @@ function buildFrameDirection(content) {
     const framingText = 'FIRST FRAME FRAMING (must match the selected camera): This image is the exact first ' +
         'frame of the video, so its shot size, camera height, angle and distance must already match the ' +
         'selected camera setup. ' + preset.direction + '. ' +
-        (preset.id === 'tripod' || preset.id === 'desk_camera'
-            ? 'The phone is supported, not held, so the hands are free. '
-            : 'The phone is held by the creator at a natural selfie distance. ') +
+        cameraSelfieStaging(preset) + ' ' +
         'Do not default to a front-on, centred, eye-level portrait: unless the selected camera is front-on eye ' +
         'level, show the requested angle and framing. Keep the creator looking toward the phone lens. ' +
         'Preserve identity, wardrobe and environment exactly as specified.';
@@ -1829,23 +1875,40 @@ async function generateFramePlan(content, character, providers, provider, model)
     }
 }
 
+// The concrete visual staging that makes an opening frame actually read as a
+// self-taken selfie. Qwen Image Edit anchors to the approved portrait's pose, so
+// camera *framing* wording alone is not enough — the pose must name the extended
+// arm and the selfie lens, or the model reuses the portrait's still front-on
+// stance and the frame comes back as a talking head. Supported setups hold no
+// phone (tripod/stand), so their staging is explicitly arm-free.
+const SELFIE_STAGING_HELD =
+    'Stage it as a genuine self-taken selfie: the creator is holding the phone herself with one arm ' +
+    'extended at arm\'s length, so the phone and her hand are naturally visible in the foreground, ' +
+    'shot through the phone\'s front-facing camera with the mildly wide perspective of a selfie lens.';
+const SELFIE_STAGING_SUPPORTED =
+    'Stage it as a casual front-facing phone video: the phone is propped on a small support in front ' +
+    'of her at a natural conversational distance, shot through its front-facing camera, and no arm holds it.';
+
+function cameraSelfieStaging(preset) {
+    if (preset && preset.staging) return preset.staging;
+    if (preset && (preset.id === 'tripod' || preset.id === 'desk_camera')) return SELFIE_STAGING_SUPPORTED;
+    return SELFIE_STAGING_HELD;
+}
+
 // The camera directive is the ONE part of an opening-frame prompt that Qwen
 // Image Edit resists: its reference image is the front-on approved portrait, so
 // a framing sentence buried after the identity block is treated as a weak
 // suggestion and the model reproduces the portrait's composition. The directive
 // therefore carries the requested camera as a direct recompose instruction plus
-// the concrete visual hallmarks of a front-facing phone selfie, so it cannot be
+// the concrete visual staging of a front-facing phone selfie, so it cannot be
 // satisfied by a studio headshot. `frameInstruction` leads and trails the final
 // instruction with it for salience.
 function buildFrameCameraDirective(content) {
     const c = content && typeof content === 'object' ? content : {};
     const preset = CAMERA_PRESETS.find((item) => item.id === c.camera) || CAMERA_PRESETS[0];
-    const supported = preset.id === 'tripod' || preset.id === 'desk_camera';
     const parts = [
         'Recompose the shot to exactly match the ' + preset.label + ' camera: ' + preset.direction + '.',
-        supported
-            ? 'The phone is supported, not held, so both hands are free.'
-            : 'The phone is held by the creator at selfie distance, so one hand may be partly visible holding it.',
+        cameraSelfieStaging(preset),
         'The shot size, camera height, angle and distance must visibly change from the reference portrait; do not keep the reference\'s front-on, centred, eye-level headshot framing unless that is this exact camera.'
     ];
     if ((c.cameraStyle || DEFAULT_CAMERA_STYLE) === DEFAULT_CAMERA_STYLE) {
@@ -1863,7 +1926,8 @@ function frameInstruction(instruction, cameraDirective) {
     if (!camera) return base;
     return 'SHOT / CAMERA — highest priority, apply this framing to the whole image: ' + camera + ' ' +
         base + ' ' +
-        'FINAL REMINDER — the camera is the ' + camera + ' Recompose the frame, do not reproduce the reference portrait\'s framing.';
+        'FINAL REMINDER — you MUST recompose the frame to the camera setup described above and must NOT ' +
+        'reproduce the reference portrait\'s framing or pose.';
 }
 
 // Compose the standalone scene text for the opening frame from the plan plus
@@ -2031,6 +2095,7 @@ module.exports = {
     identityReferenceFilenames,
     createOpeningFrame,
     frameMarker,
+    frameEditInstruction,
     buildFrameDirection,
     frameDurationBand,
     buildFramePlan,

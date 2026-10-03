@@ -96,6 +96,17 @@ test('resolveDimensions: ratio + size still derive dimensions for S/M/L', () => 
     assert.equal(dims.height, 992);
 });
 
+test('resolveDimensions: L is the 1.25MP tier and XL is the 1.75MP tier', () => {
+    assert.equal(imageGenerator.IMAGE_MEGAPIXELS.L, 1.25);
+    assert.equal(imageGenerator.IMAGE_MEGAPIXELS.XL, 1.75);
+    const l = imageGenerator.resolveDimensions({ imageSize: 'L', aspectRatio: '1:1' });
+    const xl = imageGenerator.resolveDimensions({ imageSize: 'XL', aspectRatio: '1:1' });
+    assert.equal(l.width, 1120);
+    assert.equal(l.height, 1120);
+    assert.equal(xl.width, 1312);
+    assert.ok(l.width < xl.width);
+});
+
 test('sanitizeSettings: custom imageSize + width/height are validated and clamped', () => {
     assert.deepEqual(imageGenerator.sanitizeSettings({ imageSize: 'custom' }), { imageSize: 'CUSTOM' });
     assert.deepEqual(imageGenerator.sanitizeSettings({ width: 5000, height: 10 }), { width: 4096, height: 64 });

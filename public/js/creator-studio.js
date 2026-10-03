@@ -16,6 +16,9 @@ const CreatorStudioUI = (() => {
     let progressPercent = 0;
     let progressConversationId = null;
     let recentSuggestions = [];
+    // Tracks the value the UI last wrote into #creatorSceneCustom so the 2.5s
+    // session poll only resyncs a field the user has not edited in the meantime.
+    let lastSceneCustomValue = null;
 
     // The opening-frame approval card persists as a [[creator-frame:{...}]]
     // marker in the assistant message, so it survives a reload and stays
@@ -80,6 +83,25 @@ const CreatorStudioUI = (() => {
             lock(el);
             send('Create the creator video', { type: 'create_video', sessionId: card.sessionId });
         });
+        const modify = document.createElement('button');
+        modify.type = 'button';
+        modify.className = 'creator-btn';
+        modify.textContent = 'Modify Frame';
+        modify.addEventListener('click', () => {
+            const openDialog = window.Dialog && typeof window.Dialog.prompt === 'function';
+            if (!openDialog) return;
+            window.Dialog.prompt({
+                title: 'Modify Starting Frame',
+                message: 'Describe how the starting frame should change.',
+                placeholder: 'e.g. make her smile, warmer lighting, move the camera further back',
+                confirmText: 'Modify'
+            }).then((text) => {
+                const instruction = String(text === null || text === undefined ? '' : text).trim();
+                if (!instruction) return;
+                lock(el);
+                send(instruction, { type: 'modify_frame', sessionId: card.sessionId, instruction });
+            });
+        });
         const regen = document.createElement('button');
         regen.type = 'button';
         regen.className = 'creator-btn';
@@ -88,7 +110,7 @@ const CreatorStudioUI = (() => {
             lock(el);
             send('Regenerate the starting frame', { type: 'regenerate_frame', sessionId: card.sessionId });
         });
-        actions.append(create, regen);
+        actions.append(create, modify, regen);
         el.appendChild(actions);
 
         contentEl.appendChild(el);
@@ -246,6 +268,7 @@ const CreatorStudioUI = (() => {
         if ($('creatorConcept')) $('creatorConcept').value = '';
         if ($('creatorOnCameraAction')) $('creatorOnCameraAction').value = '';
         if ($('creatorSceneCustom')) $('creatorSceneCustom').value = '';
+        lastSceneCustomValue = null;
         if ($('creatorOutfitCustom')) $('creatorOutfitCustom').value = '';
         if ($('creatorDuration')) $('creatorDuration').value = '15';
         if ($('creatorEnergy')) $('creatorEnergy').value = 'medium';
@@ -293,12 +316,24 @@ const CreatorStudioUI = (() => {
             paintCharacter();
             if (session.content) renderTraits(session.content.personality || ['playful']);
             const sceneSelect = $('creatorScene');
+            const sceneCustom = $('creatorSceneCustom');
+            const sceneUntouched = sceneCustom
+                && (lastSceneCustomValue === null || sceneCustom.value === lastSceneCustomValue);
+            const explicitScene = session.content && session.content.sceneSource === 'explicit'
+                && session.content.scene && session.content.scene !== 'Auto';
             if (sceneSelect && session.content && session.content.sceneId
                 && Array.from(sceneSelect.options).some((opt) => opt.value === session.content.sceneId)) {
                 sceneSelect.value = session.content.sceneId;
-            } else if ($('creatorSceneCustom') && session.content && session.content.scene
-                && session.content.scene !== 'Auto') {
-                $('creatorSceneCustom').value = session.content.scene;
+                if (sceneUntouched) {
+                    sceneCustom.value = '';
+                    lastSceneCustomValue = '';
+                }
+            } else if (sceneCustom && explicitScene && sceneUntouched) {
+                sceneCustom.value = session.content.scene;
+                lastSceneCustomValue = session.content.scene;
+            } else if (sceneUntouched) {
+                sceneCustom.value = '';
+                lastSceneCustomValue = '';
             }
             const outfitSelect = $('creatorOutfit');
             if (outfitSelect && session.content && session.content.outfitPack
@@ -594,6 +629,7 @@ const CreatorStudioUI = (() => {
     function open() {
         const overlay = $('creatorStudioOverlay');
         closeSuggestions();
+        lastSceneCustomValue = null;
         overlay.hidden = false;
         requestAnimationFrame(() => overlay.classList.add('open'));
         setStatus('');
@@ -677,6 +713,14 @@ const CreatorStudioUI = (() => {
         $('creatorStudioOverlay').addEventListener('click', (event) => { if (event.target === $('creatorStudioOverlay')) close(); });
         $('creatorCharacterSelect').addEventListener('change', () => {
             paintCharacter();
+        });
+        const sceneSelectEl = $('creatorScene');
+        if (sceneSelectEl) sceneSelectEl.addEventListener('change', () => {
+            const custom = $('creatorSceneCustom');
+            if (custom) {
+                custom.value = '';
+                lastSceneCustomValue = '';
+            }
         });
         const sheetButton = $('creatorCharacterSheet');
         if (sheetButton) sheetButton.addEventListener('click', () => {

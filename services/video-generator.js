@@ -18,6 +18,7 @@ const generatedHistory = require('./generated-history');
 const generationQueue = require('./generation-queue');
 const imageGenerator = require('./image-generator');
 const creatorStudio = require('./creator-studio');
+const h3Prompt = require('./h3-prompt');
 const { getModelById } = require('../server/models');
 
 const GENERATED_DIR = path.join(__dirname, '..', 'data', 'generated');
@@ -25,9 +26,9 @@ const IMAGES_DIR = path.join(__dirname, '..', 'data', 'images');
 
 // --- H3 Constants -------------------------------------------------------------
 // H3 renders on a base canvas whose short edge is 768 and whose total pixel
-// count cannot exceed 768x1344. Three tiers scale that canvas: S = 0.5x,
-// M = 0.75x (roughly the model's 1 MP native canvas) and L = 1x (its
-// 1.75 MP native canvas).
+// count cannot exceed 768x1344. Four tiers scale that canvas: S = 0.5x,
+// M = 0.75x (roughly 1 MP), L = 0.8333x (roughly 1.25 MP) and XL = 1x (the
+// model's 1.75 MP native canvas).
 
 const H3_FPS = 24;
 const H3_MIN_SECONDS = 5;
@@ -35,7 +36,7 @@ const H3_MAX_SECONDS = 15;
 const H3_BASE_SHORT_EDGE = 768;
 const H3_MAX_PIXELS = H3_BASE_SHORT_EDGE * 1344;
 
-const H3_SIZE_SCALES = { S: 0.5, M: 0.75, L: 1 };
+const H3_SIZE_SCALES = { S: 0.5, M: 0.75, L: 0.8333, XL: 1 };
 // Alias retained for callers written against the older short-side pixel name.
 const H3_IMAGE_SIZES = H3_SIZE_SCALES;
 const H3_VIDEO_ASPECT_RATIOS = Object.freeze({
@@ -486,10 +487,10 @@ const H3_DEFAULTS = {
     h3VideoVae: process.env.H3_VIDEO_VAE || H3_MODEL_FILES.videoVae,
     h3AudioVae: process.env.H3_AUDIO_VAE || H3_MODEL_FILES.audioVae,
     h3Duration: Number(process.env.H3_DURATION) || 5,
-    // Default to the model's native canvas (L, 1.75MP). The previous M (1MP)
+    // Default to the model's native canvas (XL, 1.75MP). The previous M (1MP)
     // default rendered a smaller base than the model's native resolution and
     // looked softer; the Turbo adapters are also trained for this canvas.
-    h3Size: process.env.H3_SIZE || 'L',
+    h3Size: process.env.H3_SIZE || 'XL',
     videoAspectRatio: normalizeVideoAspectRatio(process.env.H3_ASPECT_RATIO, '16:9'),
     // Base sampling controls for the non-Turbo H3 pipeline. h3Steps is the
     // scheduler step count; h3Cfg = 1 keeps the unguided BasicGuider path.
@@ -1064,175 +1065,21 @@ function parseRequestedVideoDuration(message) {
     return h3DurationSeconds(Math.round(chosen.value));
 }
 
-// --- H3 Video Director System Prompt (Ollama) --------------------------------
-
-const H3_DIRECTOR_SYSTEM_PROMPT =
-    'You are JARVIS\'s H3 Video Director. You convert video requests into MiniMax H3 compliant ' +
-    'prompts following the official H3 Video Prompt Writing Guide.\n\n' +
-
-    'CONVERSION RULE — CRITICAL:\n' +
-    '- The user request is an instruction, never a scene description. Do NOT quote, repeat, or ' +
-    'paraphrase it back, and do NOT place it in the output prompt.\n' +
-    '- Vague directives ("animate this image", "generate a video", "make it mindblowing", ' +
-    '"make a cool clip", "bring it to life", "be creative") must be translated into a specific, ' +
-    'concrete sequence: subject action, environment, motion, camera movement, lighting, and sound.\n' +
-    '- Imperative words such as "animate", "generate", "create", "mindblowing", "epic", "cool", ' +
-    '"video", and "image" must NEVER appear in the output prompt.\n\n' +
-
-    'OUTPUT FORMAT — always output a JSON object:\n' +
-    '{"mode": "t2va"|"i2va", "prompt": "..."}\n\n' +
-
-    'MODE RULES:\n' +
-    '- "t2va": Text-to-Video-Audio. No reference image.\n' +
-    '- "i2va": Image-to-Video-Audio. A reference image is provided as the first frame.\n' +
-    '- For I2VA, the prompt MUST reference <Picture 1>.\n' +
-    '- For I2VA, always include this exact alignment line:\n' +
-    '"For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced."\n' +
-    '- Never leave <Picture 1> empty or replace it with a blank space.\n\n' +
-
-    'SHOT RULE — CRITICAL:\n' +
-    '- Use ONLY [Shot 1] by default.\n' +
-    '- Do NOT create [Shot 2], [Shot 3], or any additional shots unless the user explicitly requests ' +
-    'multiple shots, a scene change, a cut, a transition to another scene, or separate shots.\n' +
-    '- A continuous action MUST remain entirely inside [Shot 1].\n' +
-    '- Do NOT use timestamps to divide a continuous action into multiple shots.\n' +
-    '- Do NOT create additional shots simply because the action changes over time.\n' +
-    '- If the user does not specify a shot change, assume the entire video is one continuous shot.\n\n' +
-
-    'PROMPT STRUCTURE:\n\n' +
-
-    'integrated_multimodal_description:\n' +
-    '[Shot 1] Describe the complete continuous sequence: starting visual state, subject appearance, ' +
-    'environment, composition, lighting, camera position, action, movement, reactions, and natural ' +
-    'visual evolution throughout the video.\n' +
-    'For I2VA, describe the reference image as the starting state and explain how the action naturally ' +
-    'continues from that frame.\n\n' +
-
-    'overall_soundscape:\n' +
-    'Describe environmental and diegetic sounds that naturally match the visual action. Include relevant ' +
-    'ambience such as footsteps, wind, rain, traffic, crowd noise, object movement, or other physical sounds.\n\n' +
-
-    'non_diegetic_music:\n' +
-    'Describe suitable background music when appropriate, or write "N/A" when no music is needed.\n\n' +
-
-    'I2VA ACTION TIMING — CRITICAL:\n' +
-    '- The reference image is the first frame, not a static introductory pause.\n' +
-    '- Unless the user explicitly requests a delay, the requested action MUST begin at 0.00 seconds.\n' +
-    '- NEVER invent a 2-5 second pause before the action.\n' +
-    '- NEVER delay the action simply to separate the reference image from the motion.\n' +
-    '- The reference image establishes the starting state at 0.00 seconds.\n' +
-    '- Describe the action beginning immediately from that starting state.\n' +
-    '- Only introduce delayed timing when the user explicitly specifies it.\n\n' +
-
-    'SPEAKERS, DIALOGUE AND SINGING — CRITICAL:\n' +
-    '- Every character who speaks or sings gets a stable speaker ID like (S1); a character who ' +
-    'never vocalizes gets no ID. A speaker keeps the same ID across shots, and multiple voices ' +
-    'together use a compound ID like (S1,S2).\n' +
-    '- Put the speaker\'s identity, ID, action, and delivery OUTSIDE <d>; put ONLY the language tag ' +
-    'and the exact spoken words INSIDE <d>, for example: The young woman (S1) says: ' +
-    '<d>[English] I get off at the next station.</d>\n' +
-    '- Reproduce every spoken word and punctuation mark verbatim. Never translate, rewrite, ' +
-    'shorten, summarize, or invent dialogue, and never echo the user\'s instruction as dialogue.\n' +
-    '- Spoken dialogue is an on-screen, diegetic event: place it inside the ' +
-    'integrated_multimodal_description with the speaker visible in frame, and describe their mouth ' +
-    'visibly moving and staying in sync with the words as they speak. A spoken line whose speaker ' +
-    'is never shown on screen, or whose mouth does not move, is a defect.\n' +
-    '- Use an off-screen voiceover ONLY when the user explicitly asks for narration; then write ' +
-    'exactly \"says in an off-screen voiceover\" and state that the on-screen character\'s lips ' +
-    'remain completely closed.\n' +
-    '- Never move dialogue or singing into overall_soundscape; the soundscape carries only ' +
-    'ambience, physical action sounds, and non-verbal human sounds.\n\n' +
-
-    'CONTINUOUS ACTION:\n' +
-    '- Describe how the action develops naturally from beginning to end within [Shot 1].\n' +
-    '- You may describe progression such as "begins", "then", "continues", "gradually", and "ends" ' +
-    'without creating additional shots.\n' +
-    '- Use timestamps only when the user explicitly specifies timing or when timing is essential to a ' +
-    'specific requested event.\n\n' +
-
-    'CREATIVE RULES:\n' +
-    '- When the user says "be creative", act as a director: decide natural movement, pacing, camera ' +
-    'motion, soundscape, and music that serve the visual concept.\n' +
-    '- For I2VA, preserve the subject identity, clothing, hairstyle, environment, composition, colors, ' +
-    'key objects, and visual style from <Picture 1>.\n' +
-    '- Never change the subject\'s identity, clothing, hairstyle, setting, or important objects unless ' +
-    'the user explicitly asks for the change.\n' +
-    '- When the user gives a specific action, center the video on that action while preserving the reference image.\n' +
-    '- Camera movement should be concrete and purposeful: push in, pull out, pan, tilt, tracking, arc, ' +
-    'static, handheld, etc.\n' +
-    '- Do not invent dialogue. Preserve user-provided dialogue exactly.\n' +
-    '- Do not invent on-screen text. Preserve user-provided on-screen text exactly.\n' +
-    '- Avoid generic filler such as "highly detailed", "stunning visuals", "cinematic masterpiece", ' +
-    '"8K", "professional quality", or "beautiful lighting".\n' +
-    '- Prefer concrete, observable visual and audio descriptions over abstract praise.\n\n' +
-
-    'I2VA FIRST-FRAME RULE:\n' +
-    'When a reference image is available, the first-frame alignment line must explicitly identify ' +
-    '<Picture 1>. The visual description must describe what happens FROM that starting frame. Do not ' +
-    'describe a separate introductory scene before the requested action.\n\n' +
-
-    'TECHNICAL SETTINGS & VIDEO DURATION:\n' +
-    '- The target video duration is determined by application settings and provided in the request context.\n' +
-    '- Craft the pacing, continuous action, movement speed, and audio evolution to fit naturally within this duration.\n' +
-    '- Do NOT override or invent technical generation parameters.\n' +
-    '- Your responsibility is the H3 mode and creative prompt only.\n\n' +
-
-    'FINAL CHECK BEFORE OUTPUT:\n' +
-    '- Default to exactly ONE shot: [Shot 1].\n' +
-    '- Only use additional shots when explicitly requested by the user.\n' +
-    '- If I2VA, confirm the exact <Picture 1> alignment line is present.\n' +
-    '- Confirm the requested action begins at 0.00 seconds unless the user explicitly requested a delay.\n' +
-    '- Confirm there is no artificial introductory pause.\n' +
-    '- Confirm unrelated reference-image details are preserved.\n' +
-    '- Output ONLY the JSON object.\n\n' +
-
-    'Respond with ONLY the JSON object.';
-
-// Appended to the H3 director system prompt when a production explicitly wants a
-// cut sequence (Director mode). It overrides the one-shot default above and
-// encodes the official H3 guide's shot / cut syntax.
-const H3_MULTISHOT_ADDENDUM =
-    '\n\nOVERRIDE \u2014 MULTI-SHOT DIRECTION (this production IS a cut sequence):\n' +
-    '- IGNORE the "SHOT RULE" and the one-shot "FINAL CHECK" defaults above. Follow this instead.\n' +
-    '- Use exactly the numbered shots in the SHOT PLAN, in order, and no others.\n' +
-    '- [Shot 1] carries NO timestamp.\n' +
-    '- Every later shot begins with a strictly increasing cut time inside the target duration, ' +
-    'formatted exactly like: "[Shot 2] At 00:03.500, the camera cuts to ..." (MM:SS.mmm).\n' +
-    '- Use cut language such as "the camera cuts to", "the shot cuts to", "the shot transitions to", ' +
-    '"the shot changes to", or "the shot switches to". Cross-dissolve, fade, or wipe only when the plan calls for one.\n' +
-    '- Every cut MUST introduce new information about the subject, space, state, viewpoint, or time. ' +
-    'Never cut only to change distance or a slight angle \u2014 use camera motion inside the shot for that.\n' +
-    '- Keep subject identity, wardrobe, colors, key objects, and setting consistent across all shots.\n' +
-    '- Write camera motion inside a shot as a natural English action using motion type plus optional ' +
-    'amplitude and optional speed (e.g. "The camera pushes in with small amplitude at slow speed toward ...").\n' +
-    '- Speakers keep stable IDs like (S1), stay visible on screen with visibly moving, ' +
-    'lip-synced mouths, and put spoken words inside <d>[Language] ...</d>.\n' +
-    '- The last cut time must stay within the video duration; the final shot ends the video.\n';
-
-// --- H3 Video Prompt Modifier (for conversational modifications) ---------------
-
-const H3_MODIFIER_SYSTEM_PROMPT =
-    'You are an H3 video prompt editor. You are given the CURRENT H3 video prompt ' +
-    'and a USER MODIFICATION. Rewrite the entire prompt into a NEW complete H3 prompt ' +
-    'that applies the requested change.\n\n' +
-
-    'RULES:\n' +
-    '- Preserve the H3 prompt structure (integrated_multimodal_description, ' +
-    'overall_soundscape, non_diegetic_music).\n' +
-    '- For I2VA prompts, preserve the <Picture 1> alignment and all reference tokens.\n' +
-    '- Preserve speakers and dialogue exactly: keep each speaker\'s (S1) ID and the spoken words ' +
-    'inside <d>[Language] ...</d>, keep the speaker on screen with a visibly moving, lip-synced ' +
-    'mouth, and never move dialogue into overall_soundscape or turn it into narration unless the ' +
-    'modification explicitly asks for an off-screen voiceover.\n' +
-    '- When a reference image is attached, it is the video\'s first frame: study ' +
-    'it and keep the subject identity, clothing, setting, composition, and ' +
-    'visual style unless the modification explicitly changes them.\n' +
-    '- Apply the modification as an actual change, not an instruction appended.\n' +
-    '- Preserve every existing detail the user did not ask to change.\n' +
-    '- Update the soundscape and music if the visual change affects them.\n' +
-    '- The result must describe the final video, not describe the editing operation.\n\n' +
-
-    'Output ONLY the new full H3 prompt. No explanations, no quotes, no markdown.';
+// --- Shared H3 I2V prompt system --------------------------------------------
+//
+// The first-frame rules, the four-section structure (summary /
+// detailed_description / overall_soundscape / non_diegetic_music) and the
+// legacy-reference sanitizer live in services/h3-prompt.js so Creator Studio,
+// UGC Studio, normal video generation and the Image Director all share ONE
+// system.
+const {
+    H3_DIRECTOR_SYSTEM_PROMPT,
+    H3_MULTISHOT_ADDENDUM,
+    H3_MODIFIER_SYSTEM_PROMPT,
+    creatorStageName,
+    creatorStageLabel,
+    uniqueStages
+} = h3Prompt;
 
 // --- H3 intent detection (LLM-based) -----------------------------------------
 
@@ -1423,17 +1270,6 @@ function normalizeCreatorContinuousShot(prompt, performanceBeats, dialogueLangua
         body = body.replace(/\s+$/, '') + '\n\n' + timeline.join('\n\n');
     }
     let normalized = text.slice(0, start) + body + text.slice(end);
-    const retention = /retention_analysis\s*:/i.exec(normalized);
-    if (retention) {
-        const sectionStart = retention.index + retention[0].length;
-        const nextSection = /\n\s*\n[a-z_]+\s*:/ig;
-        nextSection.lastIndex = sectionStart;
-        const next = nextSection.exec(normalized);
-        const sectionEnd = next ? next.index : normalized.length;
-        const section = normalized.slice(sectionStart, sectionEnd)
-            .replace(/(?:\[Shot\s+\d+\](?:\s*,\s*\[Shot\s+\d+\])*)/g, '[Shot 1]');
-        normalized = normalized.slice(0, sectionStart) + section + normalized.slice(sectionEnd);
-    }
     if (!validateCreatorContinuousShot(normalized)) {
         body = '\n[Shot 1] ' + body.replace(/\[Shot\s+\d+\]/g, '').trim();
         normalized = text.slice(0, start) + body + text.slice(end);
@@ -1454,23 +1290,6 @@ function normalizeCreatorContinuousShot(prompt, performanceBeats, dialogueLangua
 const CREATOR_CTA_RE = /\b(?:tell me|let me know|would you|try it|try this|check (?:it|this) out|comment|drop a|follow|share|your thoughts|thoughts\?|go for it|keep going)\b/i;
 // H3 cut timestamps ("At 00:03.500,") never belong in a Creator Studio prompt.
 const CREATOR_TIMESTAMP_RE = /\bAt\s+\d{1,2}:\d{2}(?:\.\d{1,3})?\s*,?|\b\d{2}:\d{2}\.\d{3}\b/i;
-
-function creatorStageName(value) {
-    return String(value || '').trim().toLowerCase().replace(/\s+/g, '_');
-}
-
-function creatorStageLabel(value) {
-    return String(value || '').replace(/_/g, ' ').trim();
-}
-
-function uniqueStages(stages) {
-    const out = [];
-    (Array.isArray(stages) ? stages : []).forEach((stage) => {
-        const name = creatorStageName(stage);
-        if (name && !out.includes(name)) out.push(name);
-    });
-    return out;
-}
 
 // Copy the authoritative fields out of a structured request, accepting the
 // canonical object (new or legacy shape) when present and otherwise mapping the
@@ -1720,107 +1539,11 @@ function normalizeCreatorPromptText(text) {
     return String(text || '').replace(/\s+/g, ' ').trim();
 }
 
-// A legible, physically plausible posture is always supplied even when a legacy
-// canonical object carries no location pose, so the model never floats limbs.
-const CREATOR_DEFAULT_POSE =
-    'standing naturally with an even weight balance, a tall but relaxed spine, shoulders down and hands resting comfortably at the sides';
-
-// Deterministic assembly: given the same canonical dialogue, always the same
-// prompt. It never consults an LLM, never rewrites the speech and never emits a
-// timestamp — H3 determines all timing. Camera behaviour is expanded from the
-// Creator Studio camera-style registry (services/creator-studio.js), so the
-// camera concept stays separate from identity, dialogue and activity logic.
+// Deterministic assembly is owned by the shared H3 I2V prompt system
+// (services/h3-prompt.js). The camera-style registry stays in Creator Studio,
+// so it is injected here.
 function buildCreatorStudioPrompt(canonical) {
-    const c = canonical && typeof canonical === 'object' ? canonical : {};
-    const guide = c.guide && typeof c.guide === 'object' ? c.guide : {};
-    const creator = c.creator && typeof c.creator === 'object' ? c.creator : {};
-    const shot = c.shot && typeof c.shot === 'object' ? c.shot : {};
-    const dialogue = c.dialogue && typeof c.dialogue === 'object' ? c.dialogue : {};
-    const lines = Array.isArray(dialogue.lines) ? dialogue.lines : [];
-    const performance = Array.isArray(c.performance) ? c.performance : [];
-    const language = String(c.language || 'English').trim() || 'English';
-    const name = String(creator.name || 'the creator').trim() || 'the creator';
-    const identity = String(creator.identityDescription || '').trim();
-    const reference = String(creator.referenceDescription || 'the opening frame supplied as <Picture 1>').trim();
-    const cameraStyle = creatorStudio.cameraStyle(shot.cameraStyle);
-    const camera = String(shot.cameraDirection || '').trim();
-    const environment = String(shot.environment || 'a relaxed, uncluttered everyday creator setting').trim();
-    const wardrobe = String(shot.wardrobe || 'natural, scene-appropriate clothing').trim();
-    const onCameraAction = String(shot.action || '').trim();
-    const pose = String(shot.pose || '').trim() || CREATOR_DEFAULT_POSE;
-    const guideName = String(guide.name || 'Creator Studio').trim();
-    const guideStages = Array.isArray(guide.stages) && guide.stages.length
-        ? guide.stages
-        : uniqueStages(guide.structure).map(creatorStageLabel);
-    const scriptText = String(dialogue.text || lines.map((line) => line.speech).filter(Boolean).join(' ')).trim();
-    // A supported phone (tripod/stand/mount/hands-free) frees both hands; a
-    // handheld selfie means one hand holds the phone. Never force a specific
-    // holding pose when the scene does not call for one.
-    const phoneSupported = /\b(?:tripod|stand|mount|propped|hands[- ]?free|supported)\b/i
-        .test([camera, environment, onCameraAction, pose].filter(Boolean).join(' '));
-    const gestureRule = phoneSupported ? cameraStyle.gesturesSupported : cameraStyle.gesturesHandheld;
-
-    const subject = 'subject_definitions:\n' +
-        '<Subject 1> is ' + name + ', the fictional creator shown in ' + reference + '. ' +
-        (identity ? 'Their identity: ' + identity + '. ' : '') +
-        'Preserve their exact facial identity and facial structure, eyes, nose, lips, jawline, hairstyle, hair colour, ' +
-        'complexion and undertone, body proportions and distinctive features throughout, together with the scene, ' +
-        'wardrobe, framing and lighting established by the opening frame. Do not redesign the character or the ' +
-        'environment, and never generate a character sheet, collage, turnaround or multi-panel reference. Creator ' +
-        'identity is locked; only facial expression, gestures and performance change across the recording.';
-
-    const summary = 'summary:\n' +
-        'A personality-led social creator video in [Shot 1]: ' + name + ' is a creator recording herself with a ' +
-        'smartphone front-facing selfie camera and speaks the complete script on screen in one continuous take. ' +
-        'Every line is performed with visible, natural lip synchronization and is never narrated.';
-
-    const retention = 'retention_analysis:\n' +
-        '<Subject 1> (appears in [Shot 1]): fully_preserved - facial identity, complexion, hairstyle, distinctive ' +
-        'physical features, wardrobe, environment, framing and lighting established by the opening frame.';
-
-    const cameraBlock = 'Creator Studio camera style: ' + cameraStyle.id + '. ' + cameraStyle.concept + ' ' +
-        cameraStyle.camera + (camera ? ' Framing: ' + camera + (/[.!?]$/.test(camera) ? '' : '.') + ' ' : '') +
-        cameraStyle.handheld + ' ' + cameraStyle.framing;
-
-    const groundedBlock = cameraStyle.grounded + ' ' + gestureRule;
-
-    const continuityRule = 'This is one continuous recording with no cuts, scene changes, camera-angle changes or ' +
-        'wardrobe or location changes.';
-
-    const setting = name + ' is in ' + environment + ', wearing ' + wardrobe + ', ' + pose + '.';
-
-    const dialogueBlock = 'Dialogue (the complete script ' + name + ' speaks — every word below is spoken on screen with ' +
-        'visible, natural lip synchronization):\n' +
-        '<Subject 1> (S1) says: <d>[' + language + '] ' + scriptText + '</d>';
-
-    const performanceLines = (performance.length ? performance : lines).map((beat) => {
-        const label = String(beat.label || creatorStageLabel(beat.stage) || 'beat').trim();
-        const detail = [beat.expression, beat.gaze, beat.body].map((part) => String(part || '').trim()).filter(Boolean).join('; ');
-        return '- ' + label + ': ' + (detail || 'continues the performance naturally') + '.';
-    });
-    const performanceBlock = 'Performance (natural expression and body-language progression for the ' + guideName + ' ' +
-        'structure' + (guideStages.length ? ' — ' + guideStages.join(' → ') : '') + '; timing comes from the spoken dialogue, not from timestamps):\n' +
-        performanceLines.join('\n') + '\n' +
-        'All expression and body-language transitions happen naturally while the complete dialogue is spoken.';
-
-    const timingRule = 'TIMING (H3): The creator must speak the complete dialogue from beginning to end. Do not skip, ' +
-        'shorten, summarize, paraphrase, reorder or omit any dialogue. Use natural conversational pacing and pauses. ' +
-        'Determine the timing of speech, pauses and performance naturally from the dialogue. Expression changes occur ' +
-        'naturally at appropriate moments in the spoken performance rather than at predetermined timestamps.';
-
-    const actionDirection = onCameraAction
-        ? 'On-camera action (visual direction only; this is NOT dialogue and must never be spoken): ' + onCameraAction + '\n'
-        : '';
-    const detailed = 'detailed_description:\n' + setting + ' ' + cameraBlock + ' ' + groundedBlock + ' ' +
-        cameraStyle.distance + ' ' + continuityRule + ' ' + cameraStyle.authenticity + '\n' +
-        actionDirection + '[Shot 1]\n' + dialogueBlock + '\n\n' + performanceBlock + '\n\n' + timingRule;
-
-    const soundscape = 'overall_soundscape:\nNatural room tone and the creator\'s on-screen voice with exact, lip-synced ' +
-        'delivery; ambient environmental sounds matching the scene.';
-
-    const music = 'non_diegetic_music:\nN/A';
-
-    return [subject, summary, retention, detailed, soundscape, music].join('\n\n');
+    return h3Prompt.buildCreatorStudioPrompt(canonical, creatorStudio.cameraStyle);
 }
 
 // Reject a prompt that still shows unresolved values, lost/truncated dialogue or
@@ -1908,19 +1631,19 @@ function formatCreatorStudioDebug(canonical) {
 function buildMultiShotFallbackPrompt({ shotPlan, hasReferenceImage, durationSeconds }) {
     const shots = Array.isArray(shotPlan) ? shotPlan.filter(Boolean) : [];
     if (!shots.length) return '';
-    const alignmentLine = hasReferenceImage
-        ? 'For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\n\n'
-        : '';
     const duration = Number(durationSeconds) > 0 ? Number(durationSeconds) : 0;
     const parts = shots.map((desc, index) => {
         if (index === 0) return '[Shot 1] ' + desc;
         const cut = duration > 0 ? (duration * index) / shots.length : index;
         return '[Shot ' + (index + 1) + '] At ' + formatCutTime(cut) + ', the camera cuts to ' + desc;
     });
-    return alignmentLine +
-        'integrated_multimodal_description:\n' + parts.join(' ') + '\n\n' +
-        'overall_soundscape:\nAmbient environmental sounds and physical action sounds matching the scene.\n\n' +
-        'non_diegetic_music:\nN/A';
+    return h3Prompt.buildPromptDocument({
+        alignment: hasReferenceImage ? h3Prompt.firstFrameAlignmentLine() : '',
+        summary: 'A short video that develops through ' + shots.length + ' shots, animating the supplied first frame forward.',
+        detailedDescription: parts.join(' '),
+        soundscape: 'Ambient environmental sounds and physical action sounds matching the scene.',
+        music: 'N/A'
+    });
 }
 
 // --- Dialogue repair ----------------------------------------------------------
@@ -1965,8 +1688,8 @@ function findDescriptionEnd(text, start) {
     return cut === -1 ? String(text).length : start + cut;
 }
 
-// Repair the description body only, so [Shot N] references inside
-// retention_analysis (full-reference format) are never mistaken for shots.
+// Repair the description body only, so [Shot N] references elsewhere in the
+// document are never mistaken for shots.
 function repairDialogueInBody(body, dialogues, defaultLanguage) {
     const lang = defaultLanguage || 'English';
     const markers = [];
@@ -2260,16 +1983,35 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
         structuredRequest.dialogue_language || structuredRequest.dialogueLanguage || ''
     ).trim();
     // The approved dialogue is authoritative; repair the finished prompt so the
-    // exact words + language tag always reach H3 (see ensureShotDialogue).
+    // exact words + language tag always reach H3 (see ensureShotDialogue). The
+    // shared sanitizer also guarantees the I2V four-section structure and strips
+    // any legacy reference-video sections the LLM may still emit.
+    // Natural teeth realism is added once whenever a subject may show their
+    // teeth (creator/character footage, a supplied first frame, dialogue, or a
+    // talking/smiling cue). It never becomes a focal point.
+    const teethContext = [
+        creatorIdentityOnly ? 'creator speaks' : '',
+        has_reference_image ? 'subject' : '',
+        structuredRequest.creator_action,
+        structuredRequest.creator_direction,
+        user_prompt,
+        isModify ? structuredRequest.modification : '',
+        shotPlan.join(' ')
+    ].filter(Boolean).join(' ');
+    const wantsTeeth = h3Prompt.shouldIncludeTeeth(teethContext);
     const finalizePrompt = (p) => {
+        const sanitized = h3Prompt.stripLegacyReferenceLanguage(p);
+        let finished;
         if (continuousCreator) {
-            const continuous = normalizeCreatorContinuousShot(p, creatorBeatsForPrompt, dialogueLanguage, structuredRequest.creator_camera_direction);
-            return ensureCreatorCameraDirection(continuous, structuredRequest.creator_camera_direction);
+            const continuous = normalizeCreatorContinuousShot(sanitized, creatorBeatsForPrompt, dialogueLanguage, structuredRequest.creator_camera_direction);
+            finished = ensureCreatorCameraDirection(continuous, structuredRequest.creator_camera_direction);
+        } else {
+            const withDialogue = ensureShotDialogue(sanitized, shotPlan, dialogueLanguage);
+            finished = creatorIdentityOnly
+                ? ensureCreatorCameraDirection(withDialogue, structuredRequest.creator_camera_direction)
+                : withDialogue;
         }
-        const withDialogue = ensureShotDialogue(p, shotPlan, dialogueLanguage);
-        return creatorIdentityOnly
-            ? ensureCreatorCameraDirection(withDialogue, structuredRequest.creator_camera_direction)
-            : withDialogue;
+        return wantsTeeth ? h3Prompt.ensureTeethRealism(finished) : finished;
     };
 
     let visionAvailable = false;
@@ -2283,7 +2025,7 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
                 try {
                     sourceImageBase64 = fs.readFileSync(filePath).toString('base64');
                     visionAvailable = true;
-                    console.log('[video] vision-capable model detected, sending reference image to LLM');
+                    console.log('[video] vision-capable model detected, sending the first frame to LLM');
                 } catch (err) {
                     console.warn('[video] failed to read source image for vision:', err.message);
                 }
@@ -2364,17 +2106,18 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
         let sourceNote;
         if (has_reference_image && visionAvailable) {
             sourceNote =
-                'SOURCE IMAGE: The image is attached directly below. Study it carefully.\n' +
-                'It is the exact first frame of the video at 0.00 seconds. Describe what you see ' +
-                'in [Shot 1] by matching the subject identity, clothing, hairstyle, environment, ' +
-                'composition, lighting, and visual style from the image.\n';
+                'FIRST FRAME: The image is attached directly below. Study it carefully.\n' +
+                'It is the exact first frame of the video at 0.00 seconds. Do NOT re-describe it: ' +
+                'use it only as the starting state and describe what happens FROM it (motion, action, ' +
+                'performance, camera movement and temporal progression).\n';
         } else if (has_reference_image) {
             sourceNote =
-                'SOURCE IMAGE: a previously generated image will serve as <Picture 1>. ' +
-                'It is the exact first frame of the video at 0.00 seconds. Preserve its subject, ' +
-                'identity, outfit, setting, composition, lighting, and visual style in [Shot 1].\n';
+                'FIRST FRAME: a previously generated image is the exact first frame at 0.00 seconds ' +
+                'and is referenced as <Picture 1>. It is not a loose reference: keep its subject ' +
+                'identity, outfit, setting, composition, lighting and visual style consistent, and ' +
+                'describe what happens FROM that frame onward.\n';
         } else {
-            sourceNote = 'SOURCE IMAGE: none. This is text-only T2VA.\n';
+            sourceNote = 'FIRST FRAME: none. This is text-only T2VA.\n';
         }
         userMessage =
             sourceNote +
@@ -2394,8 +2137,9 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
     }
 
     // Director mode: hand the H3 director the explicit cut plan so its rewrite
-    // covers every planned shot with strictly increasing cut times. In reference
-    // mode each shot is tied to its approved reference frame.
+    // covers every planned shot with strictly increasing cut times. [Shot 1]
+    // starts from the supplied first frame; later shots continue that same scene
+    // and world state.
     if (multiShot && !isModify) {
         const planLines = shotPlan.map((desc, index) => '[Shot ' + (index + 1) + '] ' + desc);
         userMessage +=
@@ -2486,13 +2230,13 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
                     height: 768,
                 };
             }
-            const liteAlignment = hasFirstFrameRef
-                ? 'For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\n\n'
-                : '';
-            const litePrompt = liteAlignment +
-                'integrated_multimodal_description:\n[Shot 1] ' + lite + '\n\n' +
-                'overall_soundscape:\nAmbient environmental sounds matching the scene.\n\n' +
-                'non_diegetic_music:\nN/A';
+            const litePrompt = h3Prompt.buildPromptDocument({
+                alignment: hasFirstFrameRef ? h3Prompt.firstFrameAlignmentLine() : '',
+                summary: 'A continuous video that animates the supplied first frame forward.',
+                detailedDescription: '[Shot 1] ' + lite,
+                soundscape: 'Ambient environmental sounds matching the scene.',
+                music: 'N/A'
+            });
             return {
                 mode,
                 prompt: finalizePrompt(litePrompt),
@@ -2523,18 +2267,15 @@ async function buildH3VideoPrompt(structuredRequest, providers, provider, model,
     const concept = stripVideoRequestMeta(requestRaw) || (
         has_reference_image
             ? 'the subject from the opening frame comes to life with natural, continuous motion'
-            : 'a cinematic scene with natural movement and camera motion'
+            : 'a scene with natural movement and camera motion'
     );
-    const alignmentLine = hasFirstFrameRef
-        ? 'For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\n\n'
-        : '';
-    const fallbackPrompt = alignmentLine +
-            'integrated_multimodal_description:\n' +
-            '[Shot 1] ' + concept + '\n\n' +
-            'overall_soundscape:\n' +
-            'Ambient environmental sounds matching the scene.\n\n' +
-            'non_diegetic_music:\n' +
-            'N/A';
+    const fallbackPrompt = h3Prompt.buildPromptDocument({
+        alignment: hasFirstFrameRef ? h3Prompt.firstFrameAlignmentLine() : '',
+        summary: 'A continuous video that animates its first frame forward.',
+        detailedDescription: '[Shot 1] ' + concept,
+        soundscape: 'Ambient environmental sounds matching the scene.',
+        music: 'N/A'
+    });
 
     return {
         mode,
@@ -2562,7 +2303,7 @@ async function modifyH3VideoPrompt(currentPrompt, userMessage, providers, provid
             if (fs.existsSync(filePath)) {
                 try {
                     sourceImageBase64 = fs.readFileSync(filePath).toString('base64');
-                    console.log('[video] modifier using reference image for vision:', sourceImageRawFilename);
+                    console.log('[video] modifier using the first frame for vision:', sourceImageRawFilename);
                 } catch (err) {
                     console.warn('[video] modifier failed to read source image:', err.message);
                 }
@@ -2571,7 +2312,7 @@ async function modifyH3VideoPrompt(currentPrompt, userMessage, providers, provid
     }
     const modifierMessage =
         (sourceImageBase64
-            ? 'REFERENCE IMAGE: attached below — it is the video\'s exact first frame (<Picture 1>). Preserve its subject, identity, outfit, setting, composition, lighting, and visual style unless the modification explicitly changes them.\n\n'
+            ? 'FIRST FRAME: attached below — it is the video\'s exact first frame (<Picture 1>). The prompt must describe what happens FROM this frame onward; keep the subject, identity, outfit, setting, composition, lighting, and visual style consistent unless the modification explicitly changes them.\n\n'
             : '') +
         'CURRENT H3 VIDEO PROMPT:\n"' + currentPrompt + '"\n\n' +
         'USER MODIFICATION:\n"' + userMessage + '"\n\n' +

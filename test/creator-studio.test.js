@@ -65,9 +65,11 @@ test('buildFrameDirection turns the chosen camera into an explicit first-frame f
     assert.match(low, /FIRST FRAME FRAMING/);
     assert.match(low, /slightly below eye level/i);
     assert.match(low, /Do not default to a front-on/i);
+    // A held selfie names the extended arm so the pose is not reused from the portrait.
+    assert.match(low, /one arm extended at arm's length/i);
 
     const tripod = studio.buildFrameDirection({ camera: 'tripod' });
-    assert.match(tripod, /supported, not held/i);
+    assert.match(tripod, /no arm holds it/i);
 
     const close = studio.buildFrameDirection({ camera: 'close_talking_head' });
     assert.match(close, /close selfie-camera framing/i);
@@ -131,6 +133,16 @@ test('buildFramePrompt is a standalone still-frame brief that respects content, 
     assert.match(directive, /Recompose the shot to exactly match the Close Talking Head camera/i);
     assert.match(directive, /close selfie-camera framing/i);
     assert.match(directive, /must visibly change from the reference portrait/i);
+    // Framing alone is not enough: the staging must name the selfie pose (an
+    // extended arm + visible phone), or Qwen reuses the portrait's front-on
+    // stance and the frame comes back as a talking head.
+    assert.match(directive, /self-taken selfie/i);
+    assert.match(directive, /one arm extended at arm's length/i);
+
+    // A supported phone is explicitly arm-free.
+    const tripod = studio.buildFrameCameraDirective({ camera: 'tripod' });
+    assert.match(tripod, /no arm holds it/i);
+    assert.doesNotMatch(tripod, /self-taken selfie/i);
 });
 
 test('frameInstruction leads and trails the final edit prompt with the camera directive', () => {
@@ -142,6 +154,9 @@ test('frameInstruction leads and trails the final edit prompt with the camera di
     assert.match(wrapped, /front-facing phone-camera character/i);
     assert.match(wrapped, /mildly wide selfie lens/i);
     assert.match(wrapped, /FINAL REMINDER/);
+    // The trailing reminder must be a clean instruction, not a re-glued fragment.
+    assert.match(wrapped, /MUST recompose the frame/i);
+    assert.doesNotMatch(wrapped, /the camera is the Recompose/i);
     assert.ok(wrapped.indexOf('IDENTITY:') > wrapped.indexOf('SHOT / CAMERA'));
     // A missing camera directive leaves the instruction untouched.
     assert.equal(studio.frameInstruction('BASE', ''), 'BASE');
@@ -187,7 +202,19 @@ test('generateFramePlan refines the premise from the LLM but rejects production 
 test('normalizeAction accepts the Creator Studio frame actions', () => {
     assert.deepEqual(studio.normalizeAction({ type: 'create_video' }), { type: 'create_video' });
     assert.deepEqual(studio.normalizeAction({ type: 'regenerate_frame' }), { type: 'regenerate_frame' });
+    assert.deepEqual(studio.normalizeAction({ type: 'modify_frame', instruction: 'make her smile' }),
+        { type: 'modify_frame', instruction: 'make her smile' });
     assert.equal(studio.normalizeAction({ type: 'bogus' }), null);
+});
+
+test('frameEditInstruction edits only the requested change and preserves identity and camera', () => {
+    const text = studio.frameEditInstruction({ camera: 'low_angle_front' }, 'make her smile and warm the lighting');
+    assert.match(text, /make her smile and warm the lighting/);
+    assert.match(text, /same creator identity/i);
+    assert.match(text, /Slightly low angle/);
+    assert.match(text, /Change only what the request names/i);
+    // The change text is what varies; an empty request still yields a valid edit.
+    assert.match(studio.frameEditInstruction({ camera: 'phone_selfie' }, ''), /subtle natural improvement/i);
 });
 
 test('recordVideo consumes the opening frame so the approval card goes stale', () => {
@@ -657,7 +684,10 @@ test('Creator performance beats become timestamped events inside exactly one con
     assert.doesNotMatch(result.prompt, /\bAt\s+\d{1,2}:\d{2}/);
     // One complete dialogue block plus explicit natural-timing guidance.
     assert.match(result.prompt, /Dialogue \(the complete script/);
-    assert.match(result.prompt, /<Subject 1> \(S1\) says: <d>\[English\]/);
+    assert.match(result.prompt, /\(S1\) says: <d>\[English\]/);
+    assert.match(result.prompt, /^For the target video, at 0\.00 seconds into the target video, <Picture 1> \(from \[Shot 1\]\) is fully referenced\./);
+    assert.doesNotMatch(result.prompt, /subject_definitions:|retention_analysis:/);
+    assert.doesNotMatch(result.prompt, /<Subject 1>/);
     assert.match(result.prompt, /TIMING \(H3\): The creator must speak the complete dialogue from beginning to end/);
     assert.match(result.prompt, /Do not skip, shorten, summarize, paraphrase, reorder or omit any dialogue/);
     assert.match(result.prompt, /Creator Studio camera style: SELFIE_SMARTPHONE_FRONT_CAMERA/);
@@ -748,14 +778,20 @@ test('Test B — multiple guide beats remain inside one [Shot 1] with no timesta
     }
 });
 
-test('Test C — creator name and reference information are populated', () => {
+test('Test C — creator name and first-frame instruction are populated', () => {
     const canonical = canonicalDialogue();
     const prompt = videoGenerator.buildCreatorStudioPrompt(canonical);
-    assert.match(prompt, /<Subject 1> is Sofia/);
+    assert.match(prompt, /Sofia \(S1\) says: <d>\[English\]/);
     assert.match(prompt, /<Picture 1>/);
-    assert.ok(prompt.includes(canonical.creator.identityDescription));
-    assert.ok(prompt.includes(canonical.creator.referenceDescription));
-    assert.match(prompt, /<Subject 1> \(S1\) says: <d>\[English\]/);
+    assert.match(prompt, /remains visually consistent with the appearance, wardrobe, environment, framing and lighting established in that first frame/);
+    // One shared I2V structure, no legacy full-reference sections or labels.
+    assert.match(prompt, /\nsummary:\n/);
+    assert.match(prompt, /\ndetailed_description:\n/);
+    assert.doesNotMatch(prompt, /subject_definitions:/);
+    assert.doesNotMatch(prompt, /retention_analysis:/);
+    assert.doesNotMatch(prompt, /<Subject 1>/);
+    // The initial frame already carries the appearance, so no long identity block.
+    assert.ok(!prompt.includes(canonical.creator.identityDescription));
 });
 
 test('Test D — a missing optional identity description falls back without malformed prose', () => {
@@ -892,6 +928,52 @@ test('a paraphrased script is repaired to retain a required topic point', async 
     assert.equal(videoGenerator.validateCreatorDialogue(content.creatorDialogue).ok, true);
 });
 
+test('an LLM closing line without a call to action is repaired, not rejected', async () => {
+    const providers = {
+        chat: async () => JSON.stringify({
+            segments: [
+                { stage: 'hook', text: 'Okay, quick one about my morning.' },
+                { stage: 'main_point', text: 'The main thing is pretty simple.' },
+                { stage: 'reaction', text: 'It genuinely surprised me.' },
+                { stage: 'closing', text: 'Thanks for watching, that is all for today.' }
+            ]
+        })
+    };
+    const content = await studio.buildCreatorContent({
+        characterId: 'maya-id',
+        personality: ['playful'],
+        concept: 'my favorite hobby',
+        contentType: 'talking',
+        duration: 15
+    }, makeCharacter('29-year-old'), { providers, provider: 'ollama', model: 'test-model' });
+    const closing = content.creatorDialogue.dialogue.lines[content.creatorDialogue.dialogue.lines.length - 1].speech;
+    assert.match(closing, /thanks for watching, that is all for today\./i);
+    assert.match(closing, /let me know what you think/i);
+    assert.equal(content.creatorDialogue.guide.ctaRequired, true);
+    assert.equal(videoGenerator.validateCreatorDialogue(content.creatorDialogue).ok, true);
+});
+
+test('a preserved script missing its call to action is repaired when the canonical dialogue is built', () => {
+    const content = {
+        contentType: 'talking',
+        concept: 'my favorite hobby',
+        creatorName: 'Maya',
+        personality: ['playful'],
+        cameraDirection: 'front-facing smartphone',
+        scene: 'a relaxed bedroom',
+        outfit: 'a cream knit sweater',
+        performanceBeats: [
+            { stage: 'hook', speech: 'Okay, quick one about my hobby.', gaze: 'eye contact', gesture: 'a small gesture' },
+            { stage: 'main_point', speech: 'I keep coming back to it.', gaze: 'eye contact', gesture: 'a small gesture' },
+            { stage: 'reaction', speech: 'It still surprises me.', gaze: 'eye contact', gesture: 'a small gesture' },
+            { stage: 'closing', speech: 'Thanks for watching.', gaze: 'eye contact', gesture: 'a small gesture' }
+        ]
+    };
+    const canonical = studio.buildCanonicalDialogue(content, makeCharacter('29-year-old'));
+    assert.match(canonical.dialogue.lines[3].speech, /let me know what you think/i);
+    assert.equal(videoGenerator.validateCreatorDialogue(canonical).ok, true);
+});
+
 test('resolveCreatorCanonical preserves a complete canonical dialogue object', () => {
     const canonical = videoGenerator.resolveCreatorCanonical({ creator_dialogue: canonicalDialogue() });
     assert.equal(canonical.creator.name, 'Sofia');
@@ -986,6 +1068,41 @@ test('a scene change moves the creator posture with the location', async () => {
     assert.equal(moved.poseId, 'kitchen');
     assert.equal(moved.pose, studio.LOCATION_POSES.kitchen.phrase);
     assert.equal(moved.creatorDialogue.shot.pose, studio.LOCATION_POSES.kitchen.phrase);
+});
+
+test('an inferred scene is never presented as a user-typed custom scene', async () => {
+    const character = makeCharacter('29-year-old');
+
+    // No scene chosen ("Auto") infers a concrete scene but marks it automatic,
+    // so the UI must not re-fill the "Custom scene" field with it.
+    const inferred = await studio.buildCreatorContent({
+        characterId: 'maya-id', concept: 'a quick lifestyle update', scene: 'Auto', duration: 15
+    }, character);
+    assert.equal(inferred.sceneSource, 'automatic');
+    assert.notEqual(inferred.scene, 'Auto');
+
+    // A user-typed scene is explicit and kept verbatim.
+    const custom = await studio.buildCreatorContent({
+        characterId: 'maya-id', concept: 'a quick lifestyle update', sceneId: '', scene: 'a rooftop at sunset', duration: 15
+    }, character);
+    assert.equal(custom.sceneSource, 'explicit');
+    assert.equal(custom.scene, 'a rooftop at sunset');
+
+    // Clearing an explicit scene back to Auto re-infers instead of carrying the
+    // custom wording forward, so the custom scene can actually be removed.
+    const cleared = await studio.buildCreatorContent({
+        characterId: 'maya-id', sceneId: '', scene: 'Auto', duration: 15
+    }, character, { previousSession: { characterId: character.id, content: custom } });
+    assert.equal(cleared.sceneSource, 'automatic');
+    assert.notEqual(cleared.scene, 'a rooftop at sunset');
+    assert.notEqual(cleared.scene, 'Auto');
+
+    // An automatic scene still carries forward across a non-scene regeneration.
+    const regenerated = await studio.buildCreatorContent({
+        characterId: 'maya-id', sceneId: '', scene: 'Auto', message: 'make her smile more', duration: 15
+    }, character, { previousSession: { characterId: character.id, content: inferred } });
+    assert.equal(regenerated.sceneSource, 'automatic');
+    assert.equal(regenerated.scene, inferred.scene);
 });
 
 test('Creator Studio selfie camera style holds across talking, activity, gesture and wider-framing scenarios', async () => {

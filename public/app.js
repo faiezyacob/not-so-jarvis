@@ -1252,7 +1252,7 @@ function initImageGenSettings() {
         });
     }
 
-    // Aspect Ratio + Size (S/M/L) map to Krea2 latent dimensions server-side.
+    // Aspect Ratio + Size (S/M/L/XL) map to Krea2 latent dimensions server-side.
     // Selecting the "Custom" size reveals explicit Width/Height inputs, which
     // override the aspect ratio with exact pixel dimensions.
     const persistSelect = async (key, select) => {
@@ -1901,7 +1901,7 @@ function syncLatentUpscaleVisibility() {
     syncLatentUpscaleSizeWarning();
 }
 
-// Warn when latent upscale is on and the output size is L (1.75MP): the
+// Warn when latent upscale is on and the output size is XL (1.75MP): the
 // refinement pass runs at that large target resolution, so the whole render
 // takes noticeably longer than direct H3 or a smaller size.
 function syncLatentUpscaleSizeWarning() {
@@ -1911,10 +1911,10 @@ function syncLatentUpscaleSizeWarning() {
     const sizeSel = document.getElementById('videoSizeScale');
     const mode = modeSel ? modeSel.value : 'off';
     const size = sizeSel ? String(sizeSel.value).trim().toUpperCase() : '';
-    const show = mode !== 'off' && size === 'L';
+    const show = mode !== 'off' && size === 'XL';
     warning.hidden = !show;
     warning.textContent = show
-        ? 'Heads-up: H3 Latent Upscale is on and the video size is L (1.75MP). The high-resolution refinement runs at that full target size, so the render will take noticeably longer (and use more VRAM). Turn off H3 Latent Upscale, or reduce the video size to M/S, for a faster render.'
+        ? 'Heads-up: H3 Latent Upscale is on and the video size is XL (1.75MP). The high-resolution refinement runs at that full target size, so the render will take noticeably longer (and use more VRAM). Turn off H3 Latent Upscale, or reduce the video size to L/M/S, for a faster render.'
         : '';
 }
 

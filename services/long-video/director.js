@@ -474,7 +474,7 @@ function renderStoryboardContent(plan) {
             : '\n\nEach beat continues the previous beat\'s camera and subject motion, then transitions into its new action.')
         : '';
     return '**Long Video Director** \u2014 I\'ve planned your ' + plan.duration + '-second video' +
-        (plan.sourceImage ? ' from your reference image' : '') + ':\n\n' +
+        (plan.sourceImage ? ' from your first frame' : '') + ':\n\n' +
         beatListMarkdown(plan) +
         '\n\n' + count + ' H3 beat' + (count === 1 ? '' : 's') +
         ', capped at 15s each. The LongVideos node chains them into one continuous video.' +

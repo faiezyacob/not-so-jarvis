@@ -3458,6 +3458,7 @@ async function handleCreatorStudioRequest(req, res, ctx) {
         // "Regenerate Frame" makes a fresh frame and returns to the checkpoint.
         const isCreateVideo = action.type === 'create_video';
         const isRegenerateFrame = action.type === 'regenerate_frame';
+        const isModifyFrame = action.type === 'modify_frame';
 
         if (isCreateVideo) {
             const frame = prior && prior.frame;
@@ -3474,6 +3475,30 @@ async function handleCreatorStudioRequest(req, res, ctx) {
                     ? 'Creator Studio clips use the existing H3 limit of 15 seconds; this request was fitted to a single 15-second creator clip.'
                     : ''
             });
+            return;
+        }
+
+        // "Modify Frame": the user's prompt edits the CURRENT starting frame
+        // (identity, wardrobe, setting and framing preserved) instead of making a
+        // fresh one. The new frame replaces the old and returns to approval.
+        if (isModifyFrame) {
+            const frame = prior && prior.frame;
+            const userInstruction = String(action.instruction || ctx.rawMessage || message || '').trim();
+            if (!frame || !frame.filename) {
+                const text = 'Creator Studio — There is no starting frame to modify. Generate the starting frame first.';
+                sseWrite(res, { chunk: text });
+                sseWrite(res, { done: true, fullReply: text });
+                res.end();
+                return;
+            }
+            if (!userInstruction) {
+                const text = 'Creator Studio — Tell me how to change the starting frame.';
+                sseWrite(res, { chunk: text });
+                sseWrite(res, { done: true, fullReply: text });
+                res.end();
+                return;
+            }
+            await runCreatorStudioFrameEdit(req, res, ctx, { character, prior, frame, instruction: userInstruction });
             return;
         }
 
@@ -3574,7 +3599,7 @@ async function handleCreatorStudioRequest(req, res, ctx) {
         // reply carries only the marker (never a duplicate markdown image).
         const frameCard = creatorStudio.frameMarker(session);
         const intro = '**Creator Studio** — Starting frame ready.\n\n' +
-            'This is the frame H3 will animate. **Create Video** when you are happy with it, or **Regenerate Frame** for a different starting image.';
+            'This is the frame H3 will animate. **Create Video** when you are happy with it, **Modify Frame** to change it, or **Regenerate Frame** for a different starting image.';
         const reply = intro + frameCard;
         sseWrite(res, { creatorStudioProgress: { label: 'Starting frame ready — waiting for your approval.', percent: 60, state: 'complete' } });
         sseWrite(res, { creatorStudioFrame: { sessionId: session.id, frame: session.frame, content, status: session.status } });
@@ -3688,6 +3713,81 @@ async function runCreatorStudioVideoStage(req, res, ctx, { conversationId, chara
         taskState.setTask(conversationId, { status: 'failed' });
         console.error('[creator-studio] Video stage failed:', err.message);
         sseWrite(res, { error: err.message || 'Creator Studio could not render this video.' });
+        res.end();
+    }
+}
+
+// Apply a user-requested change to the current starting frame with Qwen Image
+// 2.1 Edit. The existing frame is the edit source, and the approved Character
+// portrait rides along as a secondary reference so identity cannot drift. The
+// edited frame replaces the previous one and returns to the approval card.
+async function runCreatorStudioFrameEdit(req, res, ctx, { character, prior, frame, instruction }) {
+    const { conversationId, provider, model } = ctx;
+    const content = prior.content;
+    try {
+        sseWrite(res, { creatorStudioProgress: { label: 'Modifying the starting frame…', percent: 30 } });
+        const identity = resolveIdentityConditioning([character], content.userPrompt, { defaults: false });
+        const frameAbs = path.join(GENERATED_DIR, path.basename(frame.filename));
+        if (!fs.existsSync(frameAbs)) {
+            sseWrite(res, { error: 'Creator Studio — The starting frame file is missing on disk. Regenerate it first.' });
+            res.end();
+            return;
+        }
+        // Same camera-priority treatment as the initial frame so an edit never
+        // drifts the framing back to the reference portrait's composition.
+        const editInstruction = creatorStudio.frameInstruction(
+            creatorStudio.frameEditInstruction(content, instruction),
+            creatorStudio.buildFrameCameraDirective(content)
+        );
+        await vramManager.freeVRAMBeforeImage();
+        const genSettings = imageGenerator.effectiveSettings();
+        const videoSettings = videoGenerator.effectiveVideoSettings();
+        const frameDims = videoGenerator.h3DimensionsForAspectRatio(
+            videoSettings.videoAspectRatio,
+            videoSettings.h3Size
+        );
+        const editedFrame = await imageGenerator.editImage(frameAbs, editInstruction, {
+            references: identity ? [identity.sourceAbs].concat(identity.references || []) : [],
+            width: frameDims.W,
+            height: frameDims.H,
+            provider, model, conversationId,
+            seed: Math.floor(Math.random() * 2 ** 32),
+            label: 'creator frame edit',
+            kind: 'image_edit',
+            hidden: true
+        });
+
+        const session = creatorStudio.createOpeningFrame(prior, content, {
+            filename: editedFrame.filename,
+            url: editedFrame.url,
+            prompt: editInstruction,
+            seed: editedFrame.seed
+        });
+        session.creatorName = character.name;
+        creatorStudio.setSession(conversationId, session);
+        taskState.setTask(conversationId, {
+            type: 'image',
+            operation: 'edit',
+            prompt: editInstruction,
+            lastAction: 'Creator Studio · ' + content.recipe.name,
+            status: 'completed'
+        });
+
+        const reply = '**Creator Studio** — Starting frame updated.\n\n' +
+            '**Change:** ' + instruction + '\n\n' +
+            'Create the video when you are happy with it, or modify/regenerate the frame again.' +
+            creatorStudio.frameMarker(session);
+        sseWrite(res, { creatorStudioProgress: { label: 'Starting frame updated — waiting for your approval.', percent: 60, state: 'complete' } });
+        sseWrite(res, { creatorStudioFrame: { sessionId: session.id, frame: session.frame, content, status: session.status } });
+        sseWrite(res, { chunk: reply });
+        sseWrite(res, { done: true, fullReply: reply });
+        res.end();
+    } catch (err) {
+        const current = creatorStudio.getSession(conversationId);
+        if (current) creatorStudio.setSession(conversationId, Object.assign({}, current, { status: 'failed', error: err.message }));
+        taskState.setTask(conversationId, { status: 'failed' });
+        console.error('[creator-studio] Frame edit failed:', err.message);
+        sseWrite(res, { error: friendlyImageError(err) });
         res.end();
     }
 }

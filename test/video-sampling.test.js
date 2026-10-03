@@ -59,6 +59,15 @@ test('h3DimensionsForAspectRatio creates portrait, square, and landscape canvase
     assert.ok(Math.abs(portrait.W / portrait.H - 9 / 16) < 0.01);
 });
 
+test('h3 size tiers add L (1.25MP) below the XL (native) default', () => {
+    assert.equal(videoGenerator.H3_SIZE_SCALES.L, 0.8333);
+    assert.equal(videoGenerator.H3_SIZE_SCALES.XL, 1);
+    assert.equal(videoGenerator.H3_DEFAULTS.h3Size, 'XL');
+    const l = videoGenerator.h3DimensionsForAspectRatio('16:9', 'L');
+    const xl = videoGenerator.h3DimensionsForAspectRatio('16:9', 'XL');
+    assert.ok(l.W < xl.W && l.H < xl.H);
+});
+
 test('H3 Turbo is enabled by default', () => {
     assert.equal(videoGenerator.H3_DEFAULTS.h3TurboEnabled, true);
     const turbo = videoGenerator.normalizeH3Turbo({});

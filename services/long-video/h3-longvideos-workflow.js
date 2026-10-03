@@ -55,7 +55,7 @@ function pickResolution({ aspectRatio, sourceWidth, sourceHeight } = {}) {
 }
 
 // megapixels mirrors the H3 size tiers used by the normal video pipeline:
-// S (0.5), M (0.75), L (1.0, the node's own native budget).
+// S (0.5), M (0.75), L (0.8333), XL (1.0, the node's own native budget).
 function megapixelsForSize(size) {
     const scale = videoGenerator.h3SizeScale(size);
     if (!Number.isFinite(scale) || scale <= 0) return 1.0;
