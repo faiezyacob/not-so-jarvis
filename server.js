@@ -2014,9 +2014,25 @@ function handleDeleteConversation(req, res, id) {
     }
     removeConversationImages(messages, id);
     removeUGCMedia(id);
+    removeDirectorMedia(id);
     taskState.clearTask(id);
     director.removeProduction(id);
     json(res, 200, { ok: true });
+}
+
+// Director opening frames (and their upscales) are hidden from the gallery but
+// stay tied to the conversation. The approval card links them, so
+// removeConversationImages usually finds them — this drops the production's
+// current frame explicitly so an unlinked frame (e.g. still generating when the
+// conversation is deleted) never orphans a file.
+function removeDirectorMedia(conversationId) {
+    const production = director.getProduction(conversationId);
+    if (!production) return;
+    const protectedNames = characterContext.characterMediaFilenames();
+    director.mediaFilenames(production).forEach((name) => {
+        if (protectedNames.has(name)) return;
+        try { generatedHistory.removeByFilename(name); } catch (err) { /* ignore */ }
+    });
 }
 
 // UGC reference frames are hidden from the gallery and never linked from chat
@@ -5554,6 +5570,9 @@ async function runDirectorUpscaleStage(req, res, ctx, production) {
             provider,
             model,
             conversationId,
+            // The upscaled opening frame stays internal media like the frame
+            // itself: approval card only, never the public gallery.
+            hidden: true,
             label: 'director frame upscale',
             kind: 'image_upscale'
         });
@@ -6059,11 +6078,17 @@ async function handleImageGenerationStream(req, res, opts) {
                     height: genSettings.height,
                     provider, model, conversationId, onQueued, onStart,
                     seed: baseSeed + i,
+                    // The Director opening frame is internal media: it lives on
+                    // the approval card, never in the public gallery.
+                    hidden: Boolean(opts.director),
                     label: 'identity image generation', kind: 'image_generation'
                 })
                 : imageGenerator.generateImage(imagePrompt, {
                     provider, model, conversationId, onQueued, onStart,
                     seed: baseSeed + i,
+                    // The Director opening frame is internal media: it lives on
+                    // the approval card, never in the public gallery.
+                    hidden: Boolean(opts.director),
                     label: 'image generation', kind: 'image_generation'
                 });
             queueId = promise.queueId || null;

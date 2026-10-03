@@ -1900,6 +1900,9 @@ async function upscaleImage(rawFilename, options = {}) {
             width,
             height,
             generationMs: Date.now() - startedAt,
+            // Internal media (e.g. a Director opening-frame upscale) is tracked
+            // for cleanup but never shown in the public gallery.
+            hidden: options.hidden === true,
             upscale: {
                 engine,
                 profile: effectiveProfile ? effectiveProfile.key : null,

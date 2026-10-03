@@ -609,6 +609,29 @@ function buildCard(production, content) {
     };
 }
 
+// Every generated frame file the production owns. Opening frames (and their
+// upscales) are hidden from the gallery but stay tied to the conversation, so
+// deleting that conversation must remove them explicitly by filename — mirroring
+// UGC Studio's referenceFilenames. Character identity media is never owned here
+// (callers must skip protected names); a from-source production only echoes the
+// existing source file, which conversation cleanup already handles.
+function mediaFilenames(production) {
+    if (!production) return [];
+    const names = new Set();
+    const add = (value) => {
+        if (!value) return;
+        const raw = String(value).split('?')[0];
+        const base = raw.slice(raw.lastIndexOf('/') + 1);
+        if (base) names.add(base);
+    };
+    if (production.image) {
+        add(production.image.rawFilename);
+        add(production.image.url);
+        add(production.image.upscaledFrom);
+    }
+    return Array.from(names);
+}
+
 module.exports = {
     STATUS: productionPlan.STATUS,
     ACTIONS: approval.ACTIONS,
@@ -649,6 +672,7 @@ module.exports = {
     normalizeAction: approval.normalizeAction,
     classifyMessage: approval.classifyMessage,
     validateAction: approval.validate,
+    mediaFilenames,
     // exposed for tests
     parseBriefJson,
     mergeBrief,
