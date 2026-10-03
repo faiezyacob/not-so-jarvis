@@ -1264,6 +1264,9 @@ const UGCUI = (() => {
     // hardcodes them.
 
     let ugcOptions = null;
+    // The Outfit selector is the shared card grid: '' = Auto, a pack id, or
+    // 'custom' (with the free-text override revealed).
+    let ugcOutfitChoice = '';
 
     function selectOption(value, label) {
         const node = document.createElement('option');
@@ -1290,6 +1293,32 @@ const UGCUI = (() => {
         return ugcOptions;
     }
 
+    // The Outfit selector uses the shared Outfit Pack card grid (Creative
+    // Playground / Creator Studio) so the wardrobe is browsable, not a dropdown.
+    function renderUgcOutfitPacks() {
+        const container = document.getElementById('ugcOutfitPacks');
+        if (!container || typeof window.OutfitPackUI === 'undefined') return;
+        window.OutfitPackUI.render(container, {
+            packs: (ugcOptions && ugcOptions.outfitPacks) || [],
+            selected: ugcOutfitChoice,
+            autoLabel: 'Auto',
+            autoDescription: 'Let the scene, activity and creator decide the outfit.',
+            onSelect: setUgcOutfit
+        });
+    }
+
+    function setUgcOutfit(id) {
+        ugcOutfitChoice = id || '';
+        syncUgcOutfitCustom();
+    }
+
+    function syncUgcOutfitCustom() {
+        const custom = document.getElementById('ugcOutfitCustom');
+        if (!custom) return;
+        custom.hidden = ugcOutfitChoice !== 'custom';
+        if (!custom.hidden) custom.focus();
+    }
+
     function productSelectOptions(options) {
         const items = (options.products || []).map((p) => ({
             value: 'product:' + p.id,
@@ -1297,6 +1326,54 @@ const UGCUI = (() => {
         }));
         items.push({ value: 'new', label: '+ New product\u2026' });
         return items;
+    }
+
+    // The delete control only applies to a saved product; the "New product"
+    // entry has nothing to remove.
+    function syncUgcProductDelete() {
+        const select = document.getElementById('ugcProductSelect');
+        const del = document.getElementById('ugcProductDelete');
+        if (!del) return;
+        del.hidden = !(select && select.value.indexOf('product:') === 0);
+    }
+
+    // Delete the saved product currently selected in the popup, mirroring the
+    // saved-character delete in the Creative Playground: confirm, remove from
+    // the library, then refresh only the product list (the rest of the setup
+    // form is left untouched).
+    async function deleteSelectedUgcProduct() {
+        const select = document.getElementById('ugcProductSelect');
+        if (!select || select.value.indexOf('product:') !== 0) return;
+        const id = select.value.slice('product:'.length);
+        const product = ((ugcOptions && ugcOptions.products) || []).find((p) => p.id === id);
+        const label = product && product.name ? product.name : 'this product';
+        let confirmed = true;
+        if (typeof Dialog !== 'undefined' && Dialog.confirm) {
+            confirmed = await Dialog.confirm({
+                title: 'Delete product',
+                message: 'Delete "' + label + '" from your product library? This cannot be undone.',
+                confirmText: 'Delete',
+                danger: true
+            });
+        }
+        if (!confirmed) return;
+        const button = document.getElementById('ugcProductDelete');
+        if (button) button.disabled = true;
+        try {
+            const res = await fetch('/api/ugc/products/' + encodeURIComponent(id), { method: 'DELETE' });
+            if (!res.ok) throw new Error('request failed');
+            ugcOptions = null;
+            const options = await loadUgcOptions();
+            const products = options.products || [];
+            fillUgcSelect(select, productSelectOptions(options), products[0] ? 'product:' + products[0].id : 'new');
+            syncUgcPopupVisibility();
+            syncUgcProductDelete();
+        } catch (e) {
+            if (typeof Dialog !== 'undefined' && Dialog.alert) {
+                Dialog.alert({ title: 'Could not delete product', message: 'Please try again.' });
+            }
+            if (button) button.disabled = false;
+        }
     }
 
     function creatorSelectOptions(options) {
@@ -1361,13 +1438,16 @@ const UGCUI = (() => {
         const products = options.products || [];
         fillUgcSelect(document.getElementById('ugcProductSelect'),
             productSelectOptions(options), products[0] ? 'product:' + products[0].id : 'new');
+        syncUgcProductDelete();
         fillUgcSelect(document.getElementById('ugcCreatorSelect'), creatorSelectOptions(options), 'random');
         fillUgcSelect(document.getElementById('ugcContentType'),
             (options.contentTypes || []).map((c) => ({ value: c.id, label: c.label })),
             (options.contentTypes && options.contentTypes[0] || {}).id);
-        fillUgcSelect(document.getElementById('ugcOutfit'),
-            [{ value: 'auto', label: 'Auto' }].concat((options.outfitPacks || []).map((p) => ({ value: p.id, label: p.label }))),
-            'auto');
+        ugcOutfitChoice = '';
+        const ugcOutfitCustomEl = document.getElementById('ugcOutfitCustom');
+        if (ugcOutfitCustomEl) ugcOutfitCustomEl.value = '';
+        renderUgcOutfitPacks();
+        syncUgcOutfitCustom();
         fillUgcSelect(document.getElementById('ugcEnvironment'),
             (options.environments || []).filter((e) => e.id !== 'custom')
                 .map((e) => ({ value: e.id, label: e.label })), 'home');
@@ -1401,7 +1481,6 @@ const UGCUI = (() => {
         const productValue = value('ugcProductSelect');
         const creatorValue = value('ugcCreatorSelect');
         const environmentId = value('ugcEnvironment');
-        const outfit = value('ugcOutfit');
         const environmentCustom = value('ugcEnvironmentCustom');
         const outfitCustom = value('ugcOutfitCustom');
         const setup = {
@@ -1415,11 +1494,11 @@ const UGCUI = (() => {
             duration: Number(value('ugcDuration')) || 15,
             platform: value('ugcPlatform'),
             contentTypeId: value('ugcContentType'),
-            // A non-empty custom value always wins over the dropdown pick.
+            // The custom text override is only meaningful on the Custom card.
             environmentId: environmentCustom ? 'custom' : environmentId,
             environmentCustom,
-            outfitPack: outfitCustom ? 'custom' : (outfit === 'auto' ? '' : outfit),
-            outfitPackCustom: outfitCustom
+            outfitPack: (ugcOutfitChoice === 'custom' && outfitCustom) ? 'custom' : (ugcOutfitChoice === 'custom' ? '' : ugcOutfitChoice),
+            outfitPackCustom: ugcOutfitChoice === 'custom' ? outfitCustom : ''
         };
         if (productValue === 'new') {
             setup.product = { name: value('ugcProductName'), brand: value('ugcProductBrand') };
@@ -1563,7 +1642,12 @@ const UGCUI = (() => {
         if (returnButton) returnButton.addEventListener('click', returnToProject);
         if (overlay) overlay.addEventListener('click', (event) => { if (event.target === overlay) close(); });
         const productSelect = document.getElementById('ugcProductSelect');
-        if (productSelect) productSelect.addEventListener('change', syncUgcPopupVisibility);
+        if (productSelect) productSelect.addEventListener('change', () => {
+            syncUgcPopupVisibility();
+            syncUgcProductDelete();
+        });
+        const productDelete = document.getElementById('ugcProductDelete');
+        if (productDelete) productDelete.addEventListener('click', deleteSelectedUgcProduct);
         const creatorSelect = document.getElementById('ugcCreatorSelect');
         if (creatorSelect) creatorSelect.addEventListener('change', () => {
             syncUgcPopupVisibility();

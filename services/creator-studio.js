@@ -2027,7 +2027,7 @@ function catalog() {
         cameraStyles: Object.values(CAMERA_STYLES).map((x) => ({ id: x.id, label: x.label })),
         expressionArcs: EXPRESSION_ARCS.map((x) => ({ id: x.id, label: x.label })),
         bodyActions: BODY_ACTIONS.map((x) => ({ id: x.id, label: x.label })),
-        outfitPacks: outfitPacks.listPacks().map((pack) => ({ id: pack.id, label: pack.label })),
+        outfitPacks: outfitPacks.listPacks().map((pack) => ({ id: pack.id, label: pack.label, description: pack.description, palette: pack.palette })),
         faceActions: faceActions.listFaceActions(),
         // The shared Scene/Location Library: Creator Studio labels these "Scene",
         // UGC Studio labels the same objects "Environment".

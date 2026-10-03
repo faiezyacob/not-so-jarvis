@@ -2011,7 +2011,7 @@ function buildCard(project) {
         });
     }
     if (project.stage === STAGES.CREATIVE_DIRECTION) {
-        card.outfitPacks = outfitPacks.listPacks().map((p) => ({ id: p.id, label: p.label, description: p.description }));
+        card.outfitPacks = outfitPacks.listPacks().map((p) => ({ id: p.id, label: p.label, description: p.description, palette: p.palette }));
         card.environments = sceneLibrary.listOptions().map((e) => ({
             id: e.id, label: e.label, category: e.category, description: e.description
         }));

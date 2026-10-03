@@ -19,6 +19,10 @@ const CreatorStudioUI = (() => {
     // Tracks the value the UI last wrote into #creatorSceneCustom so the 2.5s
     // session poll only resyncs a field the user has not edited in the meantime.
     let lastSceneCustomValue = null;
+    // The Outfit selector is a card grid (shared with the Creative Playground
+    // and UGC Studio): '' = Auto · Character wardrobe, a pack id, or 'custom'.
+    let outfitPackChoice = '';
+    let lastOutfitPackValue = null;
 
     // The opening-frame approval card persists as a [[creator-frame:{...}]]
     // marker in the assistant message, so it survives a reload and stays
@@ -180,14 +184,44 @@ const CreatorStudioUI = (() => {
     }
 
     // The Outfit selector mirrors the Scene selector: "Auto" lets the Character
-    // wardrobe decide; a non-empty custom outfit always overrides the pick. Any
-    // other selection sends its Outfit Pack id.
+    // wardrobe decide and a "Custom" pick describes the exact outfit. It is
+    // rendered as the shared Outfit Pack card grid so it matches the Creative
+    // Playground and UGC Studio.
+    function renderOutfitPacks() {
+        const container = $('creatorOutfitPacks');
+        if (!container) return;
+        if (typeof window.OutfitPackUI === 'undefined') return;
+        window.OutfitPackUI.render(container, {
+            packs: (catalogs && Array.isArray(catalogs.outfitPacks)) ? catalogs.outfitPacks : [],
+            selected: outfitPackChoice,
+            autoLabel: 'Auto · Character wardrobe',
+            autoDescription: 'Use the Character\u2019s own wardrobe for this look.',
+            onSelect: setOutfitPack
+        });
+    }
+
+    function setOutfitPack(id) {
+        outfitPackChoice = id || '';
+        syncOutfitCustom();
+    }
+
+    function syncOutfitCustom() {
+        const custom = $('creatorOutfitCustom');
+        if (!custom) return;
+        custom.hidden = outfitPackChoice !== 'custom';
+        if (!custom.hidden && !custom.value) custom.focus();
+    }
+
     function outfitPayload() {
-        const custom = $('creatorOutfitCustom') ? $('creatorOutfitCustom').value.trim() : '';
+        const custom = outfitPackChoice === 'custom' && $('creatorOutfitCustom')
+            ? $('creatorOutfitCustom').value.trim()
+            : '';
         if (custom) return { outfitPack: 'custom', outfit: custom, outfitPackCustom: custom };
-        const select = $('creatorOutfit');
-        const value = select ? String(select.value || '') : '';
-        return { outfitPack: value || '', outfit: 'Auto', outfitPackCustom: '' };
+        return {
+            outfitPack: outfitPackChoice === 'custom' ? '' : outfitPackChoice,
+            outfit: 'Auto',
+            outfitPackCustom: ''
+        };
     }
 
     function renderTraits(selected) {
@@ -252,7 +286,11 @@ const CreatorStudioUI = (() => {
         fillSelect($('creatorCameraMotion'), catalogs.cameraMotions, 'subtle_handheld');
         fillSelect($('creatorExpressionArc'), catalogs.expressionArcs, 'auto');
         fillSelect($('creatorBodyAction'), catalogs.bodyActions, 'conversational_gesture');
-        fillSelect($('creatorOutfit'), catalogs.outfitPacks, '', 'Auto · Character wardrobe');
+        outfitPackChoice = '';
+        lastOutfitPackValue = null;
+        if ($('creatorOutfitCustom')) $('creatorOutfitCustom').value = '';
+        renderOutfitPacks();
+        syncOutfitCustom();
         fillSelect($('creatorScene'), catalogs.scenes, '', 'Auto · let the concept decide');
     }
 
@@ -335,12 +373,15 @@ const CreatorStudioUI = (() => {
                 sceneCustom.value = '';
                 lastSceneCustomValue = '';
             }
-            const outfitSelect = $('creatorOutfit');
-            if (outfitSelect && session.content && session.content.outfitPack
-                && Array.from(outfitSelect.options).some((opt) => opt.value === session.content.outfitPack)) {
-                outfitSelect.value = session.content.outfitPack;
-            } else if ($('creatorOutfitCustom') && session.content && session.content.outfitPack === 'custom') {
-                $('creatorOutfitCustom').value = session.content.outfit || '';
+            const storedPack = (session.content && session.content.outfitPack) || '';
+            const storedOutfit = storedPack === 'custom' ? (session.content.outfit || '') : '';
+            const key = storedPack + '|' + storedOutfit;
+            if (key !== lastOutfitPackValue) {
+                lastOutfitPackValue = key;
+                outfitPackChoice = storedPack;
+                if ($('creatorOutfitCustom')) $('creatorOutfitCustom').value = storedOutfit;
+                renderOutfitPacks();
+                syncOutfitCustom();
             }
         }
         renderSession();

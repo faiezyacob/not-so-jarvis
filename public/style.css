@@ -6646,14 +6646,16 @@ a.modal-btn {
     color: var(--accent);
 }
 
-.playground-outfit-packs {
+.playground-outfit-packs,
+.outfit-pack-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 4px;
     padding-right: 2px;
 }
 
-.playground-outfit-group {
+.playground-outfit-group,
+.outfit-pack-group {
     grid-column: 1 / -1;
     margin-top: 4px;
     font-family: var(--font-mono);
@@ -6663,7 +6665,8 @@ a.modal-btn {
     color: var(--text-dim);
 }
 
-.playground-outfit-card {
+.playground-outfit-card,
+.outfit-pack-card {
     display: flex;
     flex-direction: column;
     gap: 2px;
@@ -6679,46 +6682,58 @@ a.modal-btn {
     transition: border-color 0.15s ease, background 0.15s ease;
 }
 
-.playground-outfit-card:hover {
+.playground-outfit-card:hover,
+.outfit-pack-card:hover {
     border-color: var(--border-focus);
 }
 
-.playground-outfit-card--active {
+.playground-outfit-card--active,
+.outfit-pack-card--active {
     border-color: var(--accent);
     background: var(--accent-faint);
 }
 
-.playground-outfit-name {
+.playground-outfit-name,
+.outfit-pack-name {
     font-size: var(--fs-sm);
     font-weight: 600;
 }
 
-.playground-outfit-card--active .playground-outfit-name {
+.playground-outfit-card--active .playground-outfit-name,
+.outfit-pack-card--active .outfit-pack-name {
     color: var(--accent);
 }
 
-.playground-outfit-desc {
+.playground-outfit-desc,
+.outfit-pack-desc {
     font-size: var(--fs-2xs);
     line-height: 1.35;
     color: var(--text-dim);
 }
 
-.playground-outfit-palette {
+.playground-outfit-palette,
+.outfit-pack-palette {
     display: flex;
     gap: 3px;
     margin-top: 2px;
 }
 
-.playground-outfit-dot {
+.playground-outfit-dot,
+.outfit-pack-dot {
     width: 9px;
     height: 9px;
     border-radius: 50%;
     border: 1px solid rgba(255, 255, 255, 0.18);
 }
 
-.playground-outfit-custom {
+.playground-outfit-custom,
+.outfit-pack-custom {
     width: 100%;
     height: 34px;
+}
+
+.outfit-pack-grid {
+    margin-bottom: 10px;
 }
 
 .playground-prompt-input {
@@ -8308,6 +8323,7 @@ a.modal-btn {
     .playground-character-trigger,
     .chat-playground-popup .settings-select,
     .playground-outfit-custom,
+    .outfit-pack-custom,
     .playground-submit {
         min-height: 40px;
     }
@@ -9120,6 +9136,24 @@ a.modal-btn {
 .ugc-studio-form .creator-studio-actions { margin-top: 18px; }
 .ugc-studio-form .creator-studio-field--wide { grid-column: 1 / -1; }
 .ugc-studio-form .creator-studio-row[hidden] { display: none; }
+.ugc-product-control { display: flex; align-items: center; gap: 8px; }
+.ugc-product-control select { flex: 1 1 auto; min-width: 0; }
+.ugc-product-delete {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 37px;
+    height: 37px;
+    border: 1px solid var(--border-color);
+    border-radius: 5px;
+    background: var(--bg-input);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: color .15s ease, border-color .15s ease;
+}
+.ugc-product-delete:hover { border-color: #c66a63; color: #c66a63; }
+.ugc-product-delete[hidden] { display: none; }
 
 @media (max-width: 760px) {
     .creator-studio-overlay { padding: 8px; }

@@ -732,7 +732,7 @@ const PlaygroundUI = (() => {
     const OUTFIT_PACK_GROUPS = [
         { label: 'Everyday', ids: ['casual-everyday', 'lounge-home', 'soft-feminine-casual'] },
         { label: 'Scene & Activity', ids: ['vacation-summer', 'gym-activewear', 'casual-smart', 'casual-night-out'] },
-        { label: 'Style', ids: ['casual-streetwear', 'minimalist-neutral', 'edgy-alternative', 'glam-boudoir'] }
+        { label: 'Style', ids: ['casual-streetwear', 'minimalist-neutral', 'edgy-alternative', 'glam-boudoir', 'confident-seductive'] }
     ];
 
     const SWATCHES = {

@@ -968,7 +968,7 @@ async function handleAPI(req, res, urlPath) {
             contentTypes: ugcStudio.listContentTypes(),
             environments: ugcStudio.listEnvironments(),
             platforms: ugcStudio.listPlatforms(),
-            outfitPacks: ugcStudio.listOutfitPacks().map((p) => ({ id: p.id, label: p.label, description: p.description })),
+            outfitPacks: ugcStudio.listOutfitPacks().map((p) => ({ id: p.id, label: p.label, description: p.description, palette: p.palette })),
             characters: characterContext.listCharacterOptions().map((c) => ({
                 id: c.id,
                 name: c.name,

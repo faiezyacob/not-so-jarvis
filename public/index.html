@@ -938,10 +938,15 @@
                 <div class="ugc-studio-form">
                     <div class="creator-studio-section-label">PRODUCT</div>
                     <div class="creator-studio-row">
-                        <label class="creator-studio-field creator-studio-field--wide">
+                        <div class="creator-studio-field creator-studio-field--wide">
                             <span>Product</span>
-                            <select id="ugcProductSelect"></select>
-                        </label>
+                            <div class="ugc-product-control">
+                                <select id="ugcProductSelect"></select>
+                                <button class="ugc-product-delete" id="ugcProductDelete" type="button" title="Delete saved product" aria-label="Delete saved product" hidden>
+                                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"></path><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"></path><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path></svg>
+                                </button>
+                            </div>
+                        </div>
                     </div>
                     <div class="creator-studio-row" id="ugcNewProductRow" hidden>
                         <label class="creator-studio-field"><span>New product name</span><input id="ugcProductName" type="text" maxlength="120" placeholder="Glow Serum"></label>
@@ -972,12 +977,13 @@
                     <div class="creator-studio-section-label">CREATIVE DIRECTION</div>
                     <div class="creator-studio-row">
                         <label class="creator-studio-field"><span>Content type</span><select id="ugcContentType"></select></label>
-                        <label class="creator-studio-field"><span>Outfit</span><select id="ugcOutfit"></select></label>
-                    </div>
-                    <div class="creator-studio-row">
-                        <label class="creator-studio-field"><span>Custom outfit (overrides the pick)</span><input id="ugcOutfitCustom" type="text" maxlength="400" placeholder="e.g. a cream knit sweater with wide-leg jeans"></label>
                         <label class="creator-studio-field"><span>Environment</span><select id="ugcEnvironment"></select></label>
                     </div>
+                    <div class="creator-studio-field">
+                        <span>Outfit</span>
+                        <div class="outfit-pack-grid" id="ugcOutfitPacks"></div>
+                    </div>
+                    <input type="text" class="settings-input outfit-pack-custom" id="ugcOutfitCustom" maxlength="400" placeholder="Describe the exact outfit yourself" autocomplete="off" hidden>
                     <div class="creator-studio-row" id="ugcEnvironmentCustomRow">
                         <label class="creator-studio-field creator-studio-field--wide"><span>Custom environment (overrides the pick)</span><input id="ugcEnvironmentCustom" type="text" maxlength="300" placeholder="e.g. a sunlit modern bathroom"></label>
                     </div>
@@ -1083,10 +1089,13 @@
                     <div class="creator-studio-row">
                         <label class="creator-studio-field"><span>Voice</span><select id="creatorVoice"><option value="">Default creator voice</option></select></label>
                         <label class="creator-studio-field"><span>Scene</span><select id="creatorScene"><option value="">Auto · let the concept decide</option></select></label>
-                        <label class="creator-studio-field"><span>Outfit</span><select id="creatorOutfit"></select></label>
                     </div>
                     <label class="creator-studio-field" id="creatorSceneCustomField"><span>Custom scene (overrides the pick)</span><input id="creatorSceneCustom" type="text" maxlength="200" placeholder="e.g. a sunlit loft with plants"></label>
-                    <label class="creator-studio-field" id="creatorOutfitCustomField"><span>Custom outfit (overrides the pick)</span><input id="creatorOutfitCustom" type="text" maxlength="200" placeholder="e.g. a cream knit sweater with wide-leg jeans"></label>
+                    <div class="creator-studio-field">
+                        <span>Outfit</span>
+                        <div class="outfit-pack-grid" id="creatorOutfitPacks"></div>
+                    </div>
+                    <input type="text" class="settings-input outfit-pack-custom" id="creatorOutfitCustom" maxlength="200" placeholder="Describe the exact outfit yourself" autocomplete="off" hidden>
 
                     <details class="creator-studio-advanced">
                         <summary>Advanced performance</summary>
@@ -1597,8 +1606,9 @@
     <script src="js/director.js"></script>
 <script src="js/long-video.js"></script>
 <script src="js/character-identity.js"></script>
-<script src="js/playground.js"></script>
-<script src="js/mention-picker.js"></script>
+    <script src="js/outfit-packs-ui.js"></script>
+    <script src="js/playground.js"></script>
+    <script src="js/mention-picker.js"></script>
 <script src="js/ugc.js"></script>
 <script src="js/creator-studio.js"></script>
 <script src="js/chat-suggestions.js"></script>
