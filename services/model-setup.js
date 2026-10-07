@@ -107,6 +107,11 @@ const KNOWN_FILES = {
         hfPath: 'text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors',
         approxMB: 16000
     },
+    'minimax_h3_video_vae_int8_convrot.safetensors': {
+        repo: 'Comfy-Org/MiniMax-H3',
+        hfPath: 'vae/minimax_h3_video_vae_int8_convrot.safetensors',
+        approxMB: 2681
+    },
     'minimax_h3_video_vae_fp16.safetensors': {
         repo: 'Comfy-Org/MiniMax-H3',
         hfPath: 'vae/minimax_h3_video_vae_fp16.safetensors',

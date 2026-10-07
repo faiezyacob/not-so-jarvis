@@ -1624,7 +1624,7 @@ const VIDEO_NUMBER_FIELDS = [
 const VIDEO_HINTS = {
     videoUnet: 'minimax_h3_fl2va_pruned_int8_convrot.safetensors',
     videoClip: 'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors',
-    videoVae: 'minimax_h3_video_vae_fp16.safetensors',
+    videoVae: 'minimax_h3_video_vae_int8_convrot.safetensors',
     videoAudioVae: 'minimax_h3_audio_vae_fp32.safetensors',
     videoTurboLora: 'minimax_h3_turbo_v4_step600_ema.safetensors'
 };

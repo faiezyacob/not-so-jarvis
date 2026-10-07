@@ -851,6 +851,10 @@ function buildImageRequest(session) {
                 || c.customDirection || ''
         },
         user_prompt: conceptEngine.conceptToDirection(session.concept),
+        // The raw prompt the user typed, when they supplied one. The prompt
+        // builder treats it as authoritative and deterministically re-appends any
+        // clause its enhancer drops, so a multi-part request cannot be halved.
+        authoritativeUserPrompt: userPrompt,
         previous_prompt: '',
         creative_mode: 'light',
         explicit_constraints: constraints,

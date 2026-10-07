@@ -25,6 +25,7 @@ const playground = require('../services/playground/playground');
 const characterGen = require('../services/playground/character');
 const characterPresets = require('../services/character-presets');
 const characterStudio = require('../services/character-studio');
+const imageGenerator = require('../services/image-generator');
 
 // Deterministic rng: always returns the first option so assertions are stable.
 const first = () => 0;
@@ -963,6 +964,32 @@ test('a user prompt survives "Surprise Me Again" and a custom prompt with no cha
     const request = playground.buildImageRequest(session);
     assert.equal(request.subject.identityText, '');
     assert.ok(request.user_prompt.includes('a quiet library with tall windows'));
+});
+
+test('the image request carries the raw user prompt as an authoritative field', () => {
+    const id = conversationId('authoritative-prompt');
+    const session = playground.start({
+        conversationId: id, themeId: 'anything', mode: 'none',
+        customPrompt: 'sitting on a couch leaning forward while reading a book', rng: first
+    });
+    const request = playground.buildImageRequest(session);
+    assert.equal(request.authoritativeUserPrompt, 'sitting on a couch leaning forward while reading a book');
+});
+
+test('a clause the prompt enhancer drops is re-appended verbatim', () => {
+    const userPrompt = 'sitting on a couch leaning forward while reading a book';
+    // The enhancer kept the pose but lost the action.
+    const enhanced = 'A woman sitting on a couch, leaning forward in warm light.';
+    const guarded = imageGenerator.ensureUserPromptPreserved(enhanced, userPrompt);
+    assert.ok(/reading a book/.test(guarded));
+    assert.ok(/sitting on a couch/.test(guarded));
+});
+
+test('a fully represented user prompt is not duplicated', () => {
+    const userPrompt = 'sitting on a couch leaning forward while reading a book';
+    const enhanced = 'Sitting on a couch and leaning forward while reading a book.';
+    const guarded = imageGenerator.ensureUserPromptPreserved(enhanced, userPrompt);
+    assert.equal(guarded, enhanced);
 });
 
 // --- Lifestyle outfit variety (component system) -----------------------------

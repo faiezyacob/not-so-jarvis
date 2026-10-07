@@ -431,7 +431,7 @@ const PROMPT_BUILDER_SYSTEM_PROMPT =
     'structured attribute fields. Empty string "" when an attribute is not ' +
     'present or applicable:\n' +
     '- subject: who/what the image shows\n' +
-    '- appearance: hair, build, distinguishing physical traits\n' +
+    '- appearance: hair, build, body proportions, distinguishing physical traits\n' +
     '- top: the upper-body clothing\n' +
     '- bottom: the lower-body clothing\n' +
     '- pose: pose / action / body position\n' +
@@ -441,6 +441,23 @@ const PROMPT_BUILDER_SYSTEM_PROMPT =
     '- lighting: light source, direction, quality, intensity, time of day\n' +
     '- focus: depth of field, focus behavior, sharpness\n' +
     '- style: visual medium, photographic aesthetic, artistic style, color grade\n\n' +
+
+    'ANATOMICAL PROPORTION CONSISTENCY:\n' +
+    'When an image contains a human character, maintain natural and consistent human ' +
+    'anatomical proportions. The head, neck, shoulders, torso, arms, hands, hips, and ' +
+    'legs should remain proportionally consistent with one another. Do not unintentionally ' +
+    'enlarge or shrink the head relative to the body, lengthen the torso, shorten the limbs, ' +
+    'or otherwise distort the character\'s anatomy when completing or refining the prompt.\n' +
+    'For full-body or near-full-body compositions, maintain a natural adult head-to-body ' +
+    'proportion and ensure the head does not appear disproportionately large relative to ' +
+    'the character\'s frame. For close-ups, portraits, selfies, wide-angle compositions, ' +
+    'or perspective-distorted shots, preserve the requested camera perspective rather than ' +
+    'forcing a fixed body proportion. Anatomical consistency must coexist with the specified ' +
+    'camera angle, lens, perspective, pose, and framing.\n' +
+    'When modifying an existing character, preserve the established character identity and ' +
+    'body proportions unless the user explicitly requests a proportional change. Do not ' +
+    'change facial identity, hairstyle, body shape, or other character-defining traits merely ' +
+    'to correct an anatomical proportion issue.\n\n' +
 
     'The attribute fields are a structured representation of the image concept. ' +
     'Do not force information into an inappropriate field. Preserve meaningful ' +
@@ -699,7 +716,7 @@ const PROMPT_BUILDER_LITE_SYSTEM_PROMPT =
 // The enhancer is retried, then a plain-text rewrite is attempted, and only if
 // both fail does it fall back to a sanitized concept (never the raw request).
 async function buildImagePrompt(structuredRequest, providers, provider, model, think) {
-    const { user_prompt, creative_mode, explicit_constraints, authoritativeConstraints, base_prompt, modification, previous_prompt, base_attributes } = structuredRequest;
+    const { user_prompt, creative_mode, explicit_constraints, authoritativeConstraints, base_prompt, modification, previous_prompt, base_attributes, authoritativeUserPrompt } = structuredRequest;
     const subject = structuredRequest.subject && typeof structuredRequest.subject === 'object' ? structuredRequest.subject : null;
     const scene = structuredRequest.scene && typeof structuredRequest.scene === 'object' ? structuredRequest.scene : null;
     if (structuredRequest.portrait && scene && Object.values(scene).some(Boolean)) {
@@ -761,7 +778,7 @@ async function buildImagePrompt(structuredRequest, providers, provider, model, t
                 if (isModify) {
                     attributes = mergeVisualAttributes(base_attributes, parsed.attributes, parsed.changed);
                 }
-                return { prompt, attributes, builderVersion: 'structured-1' };
+                return { prompt: ensureUserPromptPreserved(prompt, authoritativeUserPrompt), attributes, builderVersion: 'structured-1' };
             }
             console.warn('[image-generator] Prompt builder returned an invalid or echoing prompt (attempt ' + (attempt + 1) + ')');
         } catch (err) {
@@ -778,7 +795,7 @@ async function buildImagePrompt(structuredRequest, providers, provider, model, t
         const lite = String(raw || '').trim();
         if (looksLikeValidLitePrompt(lite) && !/^\{/.test(lite) && !isImagePromptEcho(lite, requestRaw) && validateStructuredPrompt(lite, structuredRequest)) {
             return {
-                prompt: lite,
+                prompt: ensureUserPromptPreserved(lite, authoritativeUserPrompt),
                 attributes: isModify ? (base_attributes || null) : null,
                 builderVersion: 'structured-lite-1'
             };
@@ -801,7 +818,7 @@ async function buildImagePrompt(structuredRequest, providers, provider, model, t
     );
     const fallback = sanitized || String(user_prompt || '').trim() || 'a detailed imaginative scene';
     return {
-        prompt: repairStructuredPrompt(fallback, structuredRequest),
+        prompt: ensureUserPromptPreserved(repairStructuredPrompt(fallback, structuredRequest), authoritativeUserPrompt),
         attributes: null,
         builderVersion: 'structured-fallback-1'
     };
@@ -838,6 +855,44 @@ function repairStructuredPrompt(prompt, request) {
     if (!terms.length) return prompt;
     const missing = terms.filter((term) => !String(prompt).toLowerCase().includes(term.toLowerCase()));
     return missing.length ? String(prompt).trim() + '. ' + missing.join('. ') : String(prompt).trim();
+}
+
+// The user's own prompt is authoritative. The enhancer may reword the request
+// and silently drop a clause (e.g. keep "sitting on a couch" but lose
+// "reading a book"), so each clause not represented in the final prompt is
+// re-appended verbatim. This keeps a multi-part request intact instead of
+// losing half of it, without rejecting an otherwise usable prompt.
+const PRESERVE_STOPWORDS = new Set([
+    'the', 'and', 'her', 'his', 'their', 'my', 'our', 'your', 'with', 'while',
+    'into', 'onto', 'over', 'under', 'from', 'that', 'this', 'these', 'those',
+    'are', 'was', 'were', 'been', 'being', 'she', 'he', 'they', 'them', 'for',
+    'but', 'not', 'its', 'him', 'who', 'whom', 'then', 'than'
+]);
+
+function normalizePromptCompare(text) {
+    return String(text || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function promptClausePresent(clause, normalizedPrompt) {
+    const tokens = normalizePromptCompare(clause).split(' ')
+        .filter((token) => token.length > 2 && !PRESERVE_STOPWORDS.has(token));
+    if (!tokens.length) return true;
+    return tokens.every((token) => normalizedPrompt.includes(token));
+}
+
+function ensureUserPromptPreserved(prompt, userPrompt) {
+    const base = String(prompt || '').trim();
+    const raw = String(userPrompt || '').trim();
+    if (!base || !raw) return base;
+    const normalizedBase = normalizePromptCompare(base);
+    if (normalizedBase.includes(normalizePromptCompare(raw))) return base;
+    const clauses = raw
+        .split(/(?:,|;|\bwhile\b|\band\b|\bthen\b)/i)
+        .map((clause) => clause.trim())
+        .filter(Boolean);
+    const missing = clauses.filter((clause) => !promptClausePresent(clause, normalizedBase));
+    if (!missing.length) return base;
+    return base.replace(/[.\s]+$/, '') + '. ' + missing.join(', ') + '.';
 }
 
 // --- Resolution (Aspect Ratio + Size) ------------------------------------------
@@ -2498,6 +2553,8 @@ module.exports = {
     detectIntent,
     buildImagePrompt,
     validateStructuredPrompt,
+    repairStructuredPrompt,
+    ensureUserPromptPreserved,
     parseEnhancerJson,
     isImagePromptEcho,
     repairJsonControlChars,
