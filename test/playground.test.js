@@ -190,6 +190,19 @@ test('buildImageRequest appends the Lifestyle theme guidance', () => {
     assert.ok(/Social-media category:/.test(request.user_prompt));
 });
 
+test('applyThemeImageStyle adds the phone treatment to Lifestyle & Candid only', () => {
+    const style = /authentic handheld iPhone 16 Pro/;
+    const lifestyle = { themeId: 'lifestyle-candid' };
+    const styled = playground.applyThemeImageStyle(lifestyle, 'a scene');
+    assert.match(styled, style);
+    // Idempotent: a prompt that already carries the treatment is not doubled.
+    assert.equal(playground.applyThemeImageStyle(lifestyle, styled), styled);
+    // Every other theme and the empty prompt are left untouched.
+    assert.equal(playground.applyThemeImageStyle({ themeId: 'cinematic-storytelling' }, 'a scene'), 'a scene');
+    assert.equal(playground.applyThemeImageStyle({ themeId: 'anything' }, 'a scene'), 'a scene');
+    assert.equal(playground.applyThemeImageStyle(lifestyle, ''), '');
+});
+
 // --- Concept assembly --------------------------------------------------------
 
 test('assembleConcept always preserves a selected character identity', () => {

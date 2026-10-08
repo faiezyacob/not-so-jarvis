@@ -1656,7 +1656,24 @@ function findHistoryMeta(rawFilename) {
 // concept questions ("what is upscaling?") and passing mentions ("upscaling is
 // slow") do not.
 
-const UPSCALE_SIGNAL_RE = /\b(?:up\s*scale\w*|up\s*res\w*|super\s*res\w*|higher\s*res\w*|hi\s*res\b|increase\w*\s+(?:the\s+)?res\w*|improve\w*\s+(?:the\s+)?(?:res\w*|image\w*|picture\w*|photo\w*)|make\s+(?:it|this|that)\s+(?:bigger|larger|sharper|crisper|clearer|higher\s*res)|sharpen\w*|enlarge\w*)\b/i;
+// The upscale verb must read as an ACTION on a reference, never an adjective
+// ("upscale apartment") or a quality noun ("smartphone sharpening"). Only the
+// ambiguous verbs (upscale/sharpen/enlarge) require a directed object; the
+// resolution phrases are already unambiguous.
+const UPSCALE_OBJECT = '(?:this|that|it|them|these|those|my|your|the|image|photo|picture|portrait|render|shot|wallpaper|poster|logo|avatar|graphic|resolution|res|detail|quality|\\d+)';
+const UPSCALE_SIGNAL_RE = new RegExp(
+    '(?:' +
+    '\\bup\\s*scale\\w*\\s+(?:the\\s+)?' + UPSCALE_OBJECT + '\\b' +
+    '|\\bsharpen\\w*\\s+(?:the\\s+)?' + UPSCALE_OBJECT + '\\b' +
+    '|\\benlarge\\w*\\s+(?:the\\s+)?' + UPSCALE_OBJECT + '\\b' +
+    '|\\bup\\s*res\\w*' +
+    '|\\bsuper\\s*res\\w*' +
+    '|\\bhigher\\s*res\\w*' +
+    '|\\bhi\\s*res\\b' +
+    '|\\bincrease\\w*\\s+(?:the\\s+)?res\\w*' +
+    '|\\bimprove\\w*\\s+(?:the\\s+)?(?:res\\w*|image\\w*|picture\\w*|photo\\w*)' +
+    '|\\bmake\\s+(?:it|this|that)\\s+(?:bigger|larger|sharper|crisper|clearer|higher\\s*res)' +
+    ')', 'i');
 const UPSCALE_REF_RE = /\b(?:image\w*|pict\w*|pic\b|photo\w*|artw?o?r?k?|illustr\w*|paint\w*|render\w*|screenshot\w*|wallpaper\w*|poster\w*|logo\w*|avatar\w*|graphic\w*|shot\b|this\b|that\b|it\b|them\b|one\b|the last\b|previous\b|generated\b)\b/i;
 
 function detectUpscaleIntent(message) {
@@ -1704,10 +1721,14 @@ function hasFuzzyUpscaleSignal(norm) {
     for (const raw of tokens) {
         const token = String(raw || '').replace(/[^a-z]/g, '');
         if (token.length < 5 || token.length > 10) continue;
+        let best = Infinity;
         for (const target of targets) {
             if (token[0] !== target[0]) continue;
-            if (levenshteinDistance(token, target) <= 2) return true;
+            best = Math.min(best, levenshteinDistance(token, target));
         }
+        // Only misspellings. An exact "upscale" is handled by the directed
+        // signal regex, so an adjective ("upscale apartment") stays out.
+        if (best >= 1 && best <= 2) return true;
     }
     return false;
 }

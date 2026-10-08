@@ -974,8 +974,14 @@ function registerGenerationLock(imageGen) {
 
 // --- Video intent detection --------------------------------------------------
 
-const VIDEO_SIGNAL_RE = /\b(?:generat|creat|mak|render|produc|record|shoot|animat|turn\s+into|bring\s+to\s+life|make\s+(?:a\s+)?video)\w*\b/i;
-const VIDEO_WORD_RE = /\b(?:video|film|clip|movie|animation|reel|footage|scene|walkthrough|timelapse|time\s*lapse)\b/i;
+// Full verb inflections only — never bare stems. A prefix match like /mak\w*/
+// hits prompt nouns ("makeup"), /creat\w*/ hits "creative" and /produc\w*/ hits
+// "product", which made ordinary image prompts look like video requests.
+const VIDEO_SIGNAL_RE = /\b(?:generate|generates|generating|generated|generation|create|creates|creating|created|make|makes|making|render|renders|rendering|rendered|produce|produces|producing|produced|record|records|recording|recorded|shoot|shoots|shooting|animate|animates|animating|animated|animation|turn\s+into|bring\s+to\s+life|make\s+(?:a\s+)?video)\b/i;
+// "scene" is deliberately absent: it is overwhelmingly an image-prompt word
+// ("SCENE" section headers, "a night scene") rather than a video noun, and a
+// video request that truly needs it also names video/film/clip/movie/reel.
+const VIDEO_WORD_RE = /\b(?:video|film|clip|movie|animation|reel|footage|walkthrough|timelapse|time\s*lapse)\b/i;
 const VIDEO_REQUEST_RE = /\b(?:generate|create|make|render|produce|record|shoot|animate)\w*\s+(?:a\s+)?(?:video|film|clip|movie|animation|reel|footage)\b/i;
 
 // Image-to-video reference phrases: "use this image", "animate this",
@@ -1874,7 +1880,21 @@ async function detectVideoIntent(message, providers, provider, model, think) {
 // "upscale this image" still routes to the image pipeline. Concept questions
 // ("what is upscaling?") never fire.
 
-const VIDEO_UPSCALE_SIGNAL_RE = /\b(?:up\s*scale\w*|up\s*res\w*|super\s*res\w*|higher\s*res\w*|hi\s*res\b|increase\w*\s+(?:the\s+)?res\w*|improve\w*\s+(?:the\s+)?(?:res\w*|video\w*|clip\w*|film\w*|movie\w*|footage\w*)|make\s+(?:it|this|that)\s+(?:bigger|larger|sharper|crisper|clearer|higher\s*res)|sharpen\w*|enlarge\w*|4k\b)\b/i;
+const VIDEO_UPSCALE_OBJECT = '(?:this|that|it|them|these|those|my|your|the|video|film|clip|movie|footage|animation|reel|resolution|res|detail|quality|\\d+)';
+const VIDEO_UPSCALE_SIGNAL_RE = new RegExp(
+    '(?:' +
+    '\\bup\\s*scale\\w*\\s+(?:the\\s+)?' + VIDEO_UPSCALE_OBJECT + '\\b' +
+    '|\\bsharpen\\w*\\s+(?:the\\s+)?' + VIDEO_UPSCALE_OBJECT + '\\b' +
+    '|\\benlarge\\w*\\s+(?:the\\s+)?' + VIDEO_UPSCALE_OBJECT + '\\b' +
+    '|\\bup\\s*res\\w*' +
+    '|\\bsuper\\s*res\\w*' +
+    '|\\bhigher\\s*res\\w*' +
+    '|\\bhi\\s*res\\b' +
+    '|\\bincrease\\w*\\s+(?:the\\s+)?res\\w*' +
+    '|\\bimprove\\w*\\s+(?:the\\s+)?(?:res\\w*|video\\w*|clip\\w*|film\\w*|movie\\w*|footage\\w*)' +
+    '|\\bmake\\s+(?:it|this|that)\\s+(?:bigger|larger|sharper|crisper|clearer|higher\\s*res)' +
+    '|\\b4k\\b' +
+    ')', 'i');
 const VIDEO_UPSCALE_REF_RE = /\b(?:video\w*|film\w*|clip\w*|movie\w*|footage\w*|animation\w*|reel\w*|mp4\b|webm\b|mov\b|this\b|that\b|it\b|them\b|one\b|the last\b|previous\b|generated\b)\b/i;
 
 function detectVideoUpscaleIntent(message) {
@@ -1921,13 +1941,17 @@ function hasFuzzyVideoUpscaleSignal(norm) {
     for (const raw of tokens) {
         const token = String(raw || '').replace(/[^a-z]/g, '');
         if (token.length < 5 || token.length > 10) continue;
+        let best = Infinity;
         for (const target of targets) {
             // Keep the head of the verb: misspelled upscales start with "u",
             // while "scale"/"scaled"/"scaling"/"scaler" (distance 2) are plain
             // prompt words and must not hijack a generation request.
             if (token[0] !== target[0]) continue;
-            if (levenshteinDistance(token, target) <= 2) return true;
+            best = Math.min(best, levenshteinDistance(token, target));
         }
+        // Only misspellings. An exact "upscale" is handled by the directed
+        // signal regex so an adjective ("upscale apartment") stays out.
+        if (best >= 1 && best <= 2) return true;
     }
     return false;
 }

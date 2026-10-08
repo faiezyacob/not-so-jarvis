@@ -5018,7 +5018,9 @@ async function runPlaygroundGenerate(req, res, ctx, session, rawMessage) {
     vramManager.rememberChatModel(provider, model);
     await vramManager.freeVRAMBeforeChat();
     const enhanced = await imageGenerator.buildImagePrompt(request, providers, provider, model, think);
-    const imagePrompt = enhanced ? enhanced.prompt : request.user_prompt;
+    // Lifestyle & Candid carries one extra photographic treatment; every other
+    // playground theme and the rest of the image pipeline are untouched.
+    const imagePrompt = playground.applyThemeImageStyle(session, enhanced ? enhanced.prompt : request.user_prompt);
     const attributes = enhanced ? enhanced.attributes : null;
     session.generatedPrompt = {
         prompt: imagePrompt,

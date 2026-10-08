@@ -114,6 +114,14 @@ test('detectUpscaleIntent: prompt words near "upscale" do not hijack a generatio
     assert.equal(imageGenerator.detectUpscaleIntent('draw an image with scaling patterns'), null);
 });
 
+test('detectUpscaleIntent: an "upscale" adjective or a quality noun is not a request', () => {
+    assert.equal(imageGenerator.detectUpscaleIntent('generate an image, upscale apartment nightlife feel'), null);
+    assert.equal(imageGenerator.detectUpscaleIntent('generate an image with gentle smartphone sharpening'), null);
+    // A directed verb still fires.
+    assert.deepEqual(imageGenerator.detectUpscaleIntent('sharpen this image'), { intent: 'image_upscale' });
+    assert.deepEqual(imageGenerator.detectUpscaleIntent('enlarge the photo'), { intent: 'image_upscale' });
+});
+
 // --- videoRequestStrength ----------------------------------------------------
 
 test('videoRequestStrength: explicit video requests are definite', () => {
@@ -129,6 +137,14 @@ test('videoRequestStrength: still-image clothing tweaks are never video', () => 
 
 test('videoRequestStrength: concept questions are null', () => {
     assert.equal(videoGenerator.videoRequestStrength('what is a video?'), null);
+});
+
+test('videoRequestStrength: image-prompt words (SCENE header, makeup) are not video', () => {
+    const prompt = 'generate image: a portrait. SCENE: a Kyoto garden. soft Korean makeup.';
+    assert.notEqual(videoGenerator.videoRequestStrength(prompt), 'definite');
+    assert.equal(videoGenerator.VIDEO_WORD_RE.test('a quiet night scene'), false);
+    // A real video request is still definite.
+    assert.equal(videoGenerator.videoRequestStrength('generate a video of a dog'), 'definite');
 });
 
 // --- parseRequestedVideoDuration ----------------------------------------------

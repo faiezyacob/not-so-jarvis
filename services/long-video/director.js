@@ -41,7 +41,11 @@ const BUTTON_ACTIONS = new Set(Object.values(ACTIONS));
 // RAW requested length so it can decide whether the request belongs to the
 // existing workflow or the Long Video Director.
 
-const NUM_SECONDS_RE = /(\d+(?:\.\d+)?)\s*(?:-|\u2013|\u2014)?\s*(?:seconds?|secs?|s)\b/gi;
+const NUM_SECONDS_RE = /(\d+(?:\.\d+)?)\s*(?:-|\u2013|\u2014)?\s*(?:seconds?|secs?)\b/gi;
+// The bare "Ns" form is ambiguous: "20s long" is a duration, but "her early
+// 20s" and "90s aesthetic" are ages/decades. It is matched separately so the
+// immediate context can veto a duration reading.
+const NUM_BARE_SECONDS_RE = /(\d+(?:\.\d+)?)\s*(?:-|\u2013|\u2014)?\s*s\b/gi;
 const NUM_MINUTES_RE = /(\d+(?:\.\d+)?)\s*(?:-|\u2013|\u2014)?\s*(?:minutes?|mins?)\b/gi;
 const WORD_NUMBERS = {
     one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8,
@@ -56,6 +60,22 @@ const WORD_MINUTES_RE = new RegExp(
     '\\b(' + Object.keys(WORD_NUMBERS).join('|') + ')\\s*(?:-|to)?\\s*(?:minutes?|mins?)\\b', 'gi');
 const HALF_MINUTE_RE = /\bhalf\s+(?:a|an)\s+(?:minutes?|mins?)\b/i;
 const A_MINUTE_RE = /(?<!half\s)\b(?:a|an)\s+(?:minutes?|mins?)\b/i;
+
+// A bare "Ns" is a duration only when it is not an age or a decade. Prompts
+// routinely say "a woman in her early 20s" or "a 90s aesthetic"; those must
+// never be read as 20s/90s of video.
+const AGE_DECADE_CONTEXT_RE =
+    /\b(?:early|mid|middle|late|aged?|her|his|their|my|your|our|reaching|someone)\s+$/i;
+const DECADE_NOUN_RE =
+    /^\s*(?:aesthetic|aesthetics|style|styling|vibe|vibes|fashion|music|eras?|design|look|looks|inspired|inspiration|period|years?\s+old)\b/i;
+
+function bareSecondsIsDuration(text, match) {
+    const before = text.slice(Math.max(0, match.index - 24), match.index);
+    if (AGE_DECADE_CONTEXT_RE.test(before)) return false;
+    const after = text.slice(match.index + match[0].length);
+    if (DECADE_NOUN_RE.test(after)) return false;
+    return true;
+}
 
 // Return the largest explicitly named duration in seconds, or null. "the last
 // 10 seconds of a 30 second movie" resolves to 30 (the total the user named).
@@ -72,6 +92,10 @@ function parseRequestedSeconds(message) {
     let match;
     NUM_SECONDS_RE.lastIndex = 0;
     while ((match = NUM_SECONDS_RE.exec(text))) consider(Number(match[1]));
+    NUM_BARE_SECONDS_RE.lastIndex = 0;
+    while ((match = NUM_BARE_SECONDS_RE.exec(text))) {
+        if (bareSecondsIsDuration(text, match)) consider(Number(match[1]));
+    }
     NUM_MINUTES_RE.lastIndex = 0;
     while ((match = NUM_MINUTES_RE.exec(text))) consider(Number(match[1]) * 60);
     WORD_SECONDS_RE.lastIndex = 0;

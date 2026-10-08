@@ -51,6 +51,23 @@ const STATUS = {
 
 const MARKER_RE = /\[\[playground:(\{[^\n]*?\})\]\]/g;
 
+// Theme-scoped photographic treatment. Only the Creative Playground's
+// Lifestyle & Candid theme carries this suffix so its concepts read as an
+// authentic handheld-phone snapshot; every other theme and the rest of the
+// image pipeline (chat, edit, UGC, Director, Creator Studio) stay untouched.
+const THEME_IMAGE_STYLES = {
+    'lifestyle-candid': 'An ultra-realistic photoreal image captured with an authentic handheld iPhone 16 Pro, ' +
+        'styled as a casual Instagram lifestyle photo'
+};
+
+function applyThemeImageStyle(session, prompt) {
+    const style = session && THEME_IMAGE_STYLES[session.themeId];
+    if (!style) return String(prompt || '');
+    const text = String(prompt || '').trim();
+    if (!text || text.includes(style)) return text;
+    return text + '. ' + style;
+}
+
 function markerLine(card) {
     return '[[playground:' + JSON.stringify(card) + ']]';
 }
@@ -1121,6 +1138,7 @@ module.exports = {
     modify,
     buildImageRequest,
     buildPortraitRequest,
+    applyThemeImageStyle,
     needsCharacterImage,
     setCharacterImage,
     setIdentityCharacter,

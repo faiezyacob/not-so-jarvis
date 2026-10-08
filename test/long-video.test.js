@@ -62,6 +62,22 @@ test('parseRequestedSeconds reads digits, minutes and words', () => {
     assert.equal(director.parseRequestedSeconds('no duration here'), null);
 });
 
+test('parseRequestedSeconds ignores an age/decade "Ns", not a duration', () => {
+    assert.equal(director.parseRequestedSeconds('a woman in her early 20s'), null);
+    assert.equal(director.parseRequestedSeconds('a man in his 30s'), null);
+    assert.equal(director.parseRequestedSeconds('a 90s aesthetic portrait'), null);
+    // A real bare duration still reads.
+    assert.equal(director.parseRequestedSeconds('render it 20s long'), 20);
+    assert.equal(director.parseRequestedSeconds('a 30s clip'), 30);
+});
+
+test('duration router: a still-image prompt is never a long video', () => {
+    const imagePrompt =
+        'generate image: portrait of a woman in her early 20s. SCENE: a ryokan. ' +
+        'STYLE: soft Korean makeup, gentle smartphone sharpening. 2:3.';
+    assert.equal(director.isLongVideoRequest(imagePrompt), false);
+});
+
 test('duration router: <=15s stays on the existing workflow', () => {
     assert.equal(director.isLongVideoRequest('generate a 10 second video of a cat'), false);
     assert.equal(director.isLongVideoRequest('make a 15-second clip of rain'), false);
