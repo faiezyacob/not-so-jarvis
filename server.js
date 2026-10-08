@@ -5864,7 +5864,29 @@ async function handleLongVideoStream(req, res, opts) {
             }
         });
         queueId = promise.queueId || null;
-        const result = await promise;
+        let result = await promise;
+
+        // Auto-upscale (Settings > Video): generateLongVideo flags the result
+        // only when the clip is within the safe duration cap. The upscale runs
+        // here after the generation lock is released so the two locks never
+        // nest. Best-effort — a failure keeps the base long video.
+        if (result && result.autoUpscale) {
+            sseWrite(res, { generating: 'Long Video Director \u2014 Upscaling video\u2026' });
+            const upscalePromise = videoGenerator.autoUpscaleGenerated(result, {
+                conversationId,
+                label: 'long video auto-upscale',
+                kind: 'long_video_generation',
+                onQueued,
+                onStart,
+                onProgress: (value) => {
+                    if (value === 'auto-upscale') {
+                        sseWrite(res, { generating: 'Long Video Director \u2014 Upscaling video\u2026' });
+                    }
+                }
+            });
+            queueId = upscalePromise.queueId || queueId;
+            result = await upscalePromise;
+        }
 
         longVideoDirector.completeStages(plan);
         longVideoDirector.patchPlan(conversationId, {

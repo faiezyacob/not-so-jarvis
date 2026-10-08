@@ -27,6 +27,19 @@ const GENERATED_DIR = path.join(__dirname, '..', '..', 'data', 'generated');
 const LONG_VIDEO_TIMEOUT_MS = Number(process.env.H3_LONGVIDEO_TIMEOUT_MS) || 90 * 60 * 1000;
 const LONG_VIDEO_STEPS = Number(process.env.H3_LONGVIDEO_STEPS) || videoGenerator.H3_DEFAULT_STEPS;
 
+// Auto-upscale (Settings > Video) can be applied to a long video, but the
+// file-based upscale graph loads the ENTIRE clip into one batch (VHS_LoadVideo
+// frame_load_cap 0), so cost scales with duration. Cap it at a safe length:
+// anything longer is skipped (and logged) instead of risking an OOM.
+const LONG_VIDEO_UPSCALE_MAX_SECONDS = Number(process.env.H3_LONGVIDEO_UPSCALE_MAX_SECONDS) || 20;
+
+function shouldAutoUpscaleLongVideo(settings, durationSeconds) {
+    if (!settings || !settings.autoUpscaleEnabled) return false;
+    const duration = Number(durationSeconds);
+    if (!Number.isFinite(duration) || duration <= 0) return false;
+    return duration <= LONG_VIDEO_UPSCALE_MAX_SECONDS;
+}
+
 function ensureGeneratedDir() {
     if (!fs.existsSync(GENERATED_DIR)) {
         fs.mkdirSync(GENERATED_DIR, { recursive: true });
@@ -286,6 +299,15 @@ async function generateLongVideo(plan, options = {}) {
                 .filter((l) => l && l.on !== false && l.name)
                 .map((l) => ({ name: l.name, strength: Number(l.strength) || 0, triggerWord: l.triggerWord || '' }));
             const beatCount = (plan && plan.beats && plan.beats.length) || 0;
+            const planDuration = (plan && plan.duration) || null;
+            // Auto-upscale (Settings > Video): flag the result so the server runs
+            // the upscale AFTER the generation lock releases (upscaleVideo takes
+            // the same lock, so it cannot nest here). Skipped for long clips.
+            const autoUpscale = shouldAutoUpscaleLongVideo(settings, planDuration);
+            if (settings.autoUpscaleEnabled && !autoUpscale && planDuration) {
+                console.log('[long-video] auto-upscale skipped: ' + planDuration + 's exceeds the ' +
+                    LONG_VIDEO_UPSCALE_MAX_SECONDS + 's safe cap (H3_LONGVIDEO_UPSCALE_MAX_SECONDS)');
+            }
             const meta = generatedHistory.add({
                 file: '/generated/' + encodeURIComponent(basename),
                 rawFilename: basename,
@@ -298,7 +320,7 @@ async function generateLongVideo(plan, options = {}) {
                 seed,
                 generationMs: Date.now() - startedAt,
                 video: {
-                    duration: (plan && plan.duration) || null,
+                    duration: planDuration,
                     frames: null,
                     fps: videoGenerator.H3_FPS,
                     mode: 'long',
@@ -317,7 +339,7 @@ async function generateLongVideo(plan, options = {}) {
                 filename: basename,
                 width: dims.width || null,
                 height: dims.height || null,
-                duration: (plan && plan.duration) || null,
+                duration: planDuration,
                 shots: beatCount,
                 fps: videoGenerator.H3_FPS,
                 mode: 'long',
@@ -326,6 +348,7 @@ async function generateLongVideo(plan, options = {}) {
                 acceleration,
                 engine: useLongTake ? 'longtake' : 'h3longvideos',
                 engineFallback: !useLongTake && desiredEngine !== 'h3longvideos',
+                autoUpscale,
                 promptId: pid,
                 meta
             };
@@ -339,6 +362,8 @@ async function generateLongVideo(plan, options = {}) {
 
 module.exports = {
     generateLongVideo,
+    shouldAutoUpscaleLongVideo,
     LONG_VIDEO_TIMEOUT_MS,
-    LONG_VIDEO_STEPS
+    LONG_VIDEO_STEPS,
+    LONG_VIDEO_UPSCALE_MAX_SECONDS
 };

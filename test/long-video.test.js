@@ -19,6 +19,7 @@ const workflow = require('../services/long-video/h3-longvideos-workflow');
 const longTake = require('../services/long-video/long-take');
 const longTakeGraph = require('../services/long-video/long-take-graph');
 const longTakeInstaller = require('../services/long-take');
+const longVideoGenerator = require('../services/long-video/generator');
 const director = require('../services/long-video/director');
 
 const originalChat = providers.chat;
@@ -431,6 +432,16 @@ test('buildLongTakeGraph can disable the refine/blend and tune its parameters', 
     assert.equal(tuned.scheduler_refine_0.inputs.denoise, 0.3);
     assert.equal(tuned.scheduler_refine_0.inputs.steps, 4);
     assert.equal(tuned.blend_0.inputs.keyframes, '0:0, 40:0, 80:1');
+});
+
+test('long-video auto-upscale is gated by the toggle and the safe duration cap', () => {
+    assert.equal(longVideoGenerator.LONG_VIDEO_UPSCALE_MAX_SECONDS, 20);
+    assert.equal(longVideoGenerator.shouldAutoUpscaleLongVideo({ autoUpscaleEnabled: true }, 20), true);
+    assert.equal(longVideoGenerator.shouldAutoUpscaleLongVideo({ autoUpscaleEnabled: true }, 21), false);
+    assert.equal(longVideoGenerator.shouldAutoUpscaleLongVideo({ autoUpscaleEnabled: true }, 60), false);
+    assert.equal(longVideoGenerator.shouldAutoUpscaleLongVideo({ autoUpscaleEnabled: false }, 15), false);
+    assert.equal(longVideoGenerator.shouldAutoUpscaleLongVideo({}, 15), false);
+    assert.equal(longVideoGenerator.shouldAutoUpscaleLongVideo({ autoUpscaleEnabled: true }, null), false);
 });
 
 test('longTakeGraph.frameSize mirrors the node resolution presets', () => {
