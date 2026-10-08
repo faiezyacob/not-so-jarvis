@@ -16,6 +16,9 @@ const planStore = require('../services/long-video/plan');
 const prompts = require('../services/long-video/prompts');
 const motion = require('../services/long-video/motion');
 const workflow = require('../services/long-video/h3-longvideos-workflow');
+const longTake = require('../services/long-video/long-take');
+const longTakeGraph = require('../services/long-video/long-take-graph');
+const longTakeInstaller = require('../services/long-take');
 const director = require('../services/long-video/director');
 
 const originalChat = providers.chat;
@@ -174,7 +177,270 @@ test('pickResolution honours an explicit aspect and falls back to source ratio',
     assert.equal(workflow.pickResolution({}), '16:9');
 });
 
-// --- Plan lifecycle (LLM stubbed) --------------------------------------------
+// --- H3 Long-Take re-anchor --------------------------------------------------
+
+const longTakeBible = {
+    characters: [{
+        id: 'character_1',
+        name: 'Mara',
+        appearance: 'tall, red hair',
+        clothing: 'green jacket',
+        persistentAttributes: ['a scar above the left eyebrow']
+    }],
+    environment: { location: 'a rainy Tokyo street', timeOfDay: 'night', weather: 'rain', lighting: 'neon' },
+    props: [],
+    visualStyle: 'anamorphic',
+    cameraStyle: 'handheld',
+    continuityRules: [],
+    storySummary: 'A woman walks through Tokyo.'
+};
+
+test('longTake.buildCharacterMemory pins identity, wardrobe and persistent attributes', () => {
+    const memory = longTake.buildCharacterMemory(longTakeBible);
+    assert.match(memory, /Mara/);
+    assert.match(memory, /tall, red hair/);
+    assert.match(memory, /green jacket/);
+    assert.match(memory, /scar above the left eyebrow/);
+});
+
+test('longTake.buildAnchor pins scene, lighting, style and camera language', () => {
+    const anchor = longTake.buildAnchor(longTakeBible);
+    assert.match(anchor, /night/);
+    assert.match(anchor, /rain/);
+    assert.match(anchor, /rainy Tokyo street/);
+    assert.match(anchor, /neon/);
+    assert.match(anchor, /anamorphic/);
+    assert.match(anchor, /handheld/);
+});
+
+test('longTake composers are empty-safe and never invent detail', () => {
+    assert.equal(longTake.buildAnchor({}), '');
+    assert.equal(longTake.buildAnchor(null), '');
+    assert.equal(longTake.buildCharacterMemory({}), '');
+    assert.equal(longTake.buildCharacterMemory({ characters: [{ name: 'Mara' }] }), 'Mara');
+});
+
+test('normalizeLongTakeSettings defaults on and honours the explicit override', () => {
+    assert.equal(longTake.normalizeLongTakeSettings({}).reanchor, true);
+    assert.equal(longTake.normalizeLongTakeSettings({ longTake: { reanchor: false } }).reanchor, false);
+    assert.equal(longTake.normalizeLongTakeSettings({ longTake: { reanchor: true } }).reanchor, true);
+});
+
+test('buildLongTakeContext produces the re-anchor wires and lock flags', () => {
+    const ctx = longTake.buildLongTakeContext({ bible: longTakeBible, settings: {} });
+    assert.equal(ctx.enabled, true);
+    assert.equal(ctx.identityLocked, true);
+    assert.equal(ctx.sceneLocked, true);
+    assert.match(ctx.characterMemory, /Mara/);
+    assert.match(ctx.anchor, /rainy Tokyo/);
+    const off = longTake.buildLongTakeContext({
+        bible: longTakeBible,
+        settings: { longTake: { reanchor: false } }
+    });
+    assert.equal(off.enabled, false);
+    assert.equal(off.characterMemory, '');
+    assert.equal(off.anchor, '');
+});
+
+test('buildLongVideoGraph wires the re-anchor channels only when provided', () => {
+    const withReanchor = workflow.buildLongVideoGraph({
+        prompt: 'scene\n\nbeat',
+        seed: 3,
+        characterMemory: 'Mara: green jacket',
+        anchor: 'night, rainy Tokyo, neon'
+    });
+    assert.equal(withReanchor.longvideos.inputs.character_memory, 'Mara: green jacket');
+    assert.equal(withReanchor.longvideos.inputs.anchor, 'night, rainy Tokyo, neon');
+
+    const without = workflow.buildLongVideoGraph({ prompt: 'scene', seed: 3 });
+    assert.equal(without.longvideos.inputs.character_memory, undefined);
+    assert.equal(without.longvideos.inputs.anchor, undefined);
+});
+
+// --- H3 LongTake engine ------------------------------------------------------
+
+const longTakeNodesInfo = {
+    MiniMaxH3MotionContext: {},
+    MiniMaxH3MotionContextTrim: {},
+    H3BlendLatentsByFrames: {}
+};
+
+function buildLT(overrides) {
+    return workflow.buildLongTakeGraph(Object.assign({
+        prompt: 'A woman walks through an apartment.\n\nShe reaches the window.\n\nThe camera follows her.',
+        beats: [{ duration: 10 }, { duration: 10 }],
+        seed: 5,
+        settings: {},
+        resolution: '16:9',
+        megapixels: 1.0,
+        steps: 20
+    }, overrides || {}));
+}
+
+test('buildLongTakeGraph unrolls one motion-context segment per beat', () => {
+    const graph = buildLT();
+    assert.equal(graph.motion_0.class_type, 'MiniMaxH3MotionContext');
+    assert.equal(graph.motion_1.class_type, 'MiniMaxH3MotionContext');
+    assert.equal(graph.motion_0.inputs.context_length, '22');
+    // Beat 1 opens from beat 0's sampler-output latent, not a decoded frame.
+    assert.equal(graph.motion_0.inputs.context_latent, undefined);
+    assert.deepEqual(graph.motion_1.inputs.context_latent, ['sample_0', 0]);
+    // Each beat samples its own conditioning latent.
+    assert.deepEqual(graph.sample_0.inputs.latent_image, ['condition_0', 1]);
+});
+
+test('buildLongTakeGraph adds the reference refine resample only when enabled', () => {
+    // Refine is opt-in (off by default).
+    const off = buildLT();
+    assert.equal(off.refine_0, undefined);
+    assert.equal(off.blend_0, undefined);
+    assert.deepEqual(off.decode_0.inputs.samples, ['sample_0', 0]);
+
+    const graph = buildLT({ settings: { longTake: { refine: true } } });
+    assert.equal(graph.scheduler_refine_0.class_type, 'BasicScheduler');
+    assert.equal(graph.scheduler_refine_0.inputs.denoise, 0.5);
+    assert.equal(graph.scheduler_refine_0.inputs.steps, 2);
+    assert.deepEqual(graph.refine_0.inputs.latent_image, ['sample_0', 0]);
+});
+
+test('buildLongTakeGraph blends raw sample into refined latent by frame', () => {
+    const graph = buildLT({ settings: { longTake: { refine: true } } });
+    assert.equal(graph.blend_0.class_type, 'H3BlendLatentsByFrames');
+    assert.equal(graph.blend_0.inputs.keyframes, '0:0, 22:0, 44:1');
+    assert.deepEqual(graph.blend_0.inputs.latent1, ['sample_0', 0]);
+    assert.deepEqual(graph.blend_0.inputs.latent2, ['refine_0', 1]);
+    assert.equal(graph.blend_0.inputs.audio_source, 'latent1');
+    assert.equal(graph.blend_0.inputs.blend_audio, false);
+    // The blended latent is what the next beat pins.
+    assert.equal(graph.motion_1.inputs.context_latent[0], 'blend_0');
+});
+
+test('buildLongTakeGraph trims the pinned head and joins beats into one video', () => {
+    const graph = buildLT();
+    assert.equal(graph.trim_0.class_type, 'MiniMaxH3MotionContextTrim');
+    assert.deepEqual(graph.trim_0.inputs.trim_frames, ['motion_0', 1]);
+    assert.deepEqual(graph.trim_0.inputs.audio, ['decode_audio_0', 0]);
+    assert.equal(graph.imgcat_1.class_type, 'ImageBatch');
+    assert.equal(graph.audiocat_1.class_type, 'AudioConcat');
+    assert.deepEqual(graph.video.inputs.images, ['imgcat_1', 0]);
+    assert.deepEqual(graph.video.inputs.audio, ['audiocat_1', 0]);
+    assert.equal(graph.save.class_type, 'SaveVideo');
+});
+
+test('buildLongTakeGraph keeps the first frame on beat 0 only', () => {
+    const withFrame = buildLT({ firstImageName: 'ref.png' });
+    assert.deepEqual(withFrame.condition_0.inputs.first_frame, ['first_image', 0]);
+    assert.equal(withFrame.condition_1.inputs.first_frame, undefined);
+});
+
+test('buildLongTakeGraph handles a single beat without concat nodes', () => {
+    const graph = buildLT({ beats: [{ duration: 12 }], prompt: 'A single continuous scene.' });
+    assert.equal(graph.video.inputs.images[0], 'trim_0');
+    assert.equal(graph.imgcat_1, undefined);
+    assert.equal(graph.audiocat_1, undefined);
+});
+
+test('longTakeNodesAvailable + validateLongTakeGraph gate on the node packs', () => {
+    const graph = buildLT();
+    const info = {};
+    for (const node of Object.values(graph)) {
+        if (node && node.class_type) info[node.class_type] = {};
+    }
+    assert.equal(longTakeGraph.longTakeNodesAvailable(longTakeNodesInfo), true);
+    assert.equal(longTakeGraph.longTakeNodesAvailable({}), false);
+    assert.equal(workflow.validateLongTakeGraph(info, graph), true);
+    assert.throws(() => workflow.validateLongTakeGraph({}, graph), (err) => err.code === 'longvideo_longtake_nodes_missing');
+});
+
+test('resolveLongVideoEngine prefers LongTake when installed and honours overrides', () => {
+    assert.equal(workflow.resolveLongVideoEngine({}, null), 'h3longvideos');
+    assert.equal(workflow.resolveLongVideoEngine({}, longTakeNodesInfo), 'longtake');
+    assert.equal(workflow.resolveLongVideoEngine({ longVideoEngine: 'h3longvideos' }, longTakeNodesInfo), 'h3longvideos');
+    assert.equal(workflow.resolveLongVideoEngine({ longVideoEngine: 'longtake' }, null), 'longtake');
+});
+
+test('buildLongTakeGraph applies the attention backend and mirrors the scheduler model', () => {
+    const sage = buildLT({ settings: { attentionBackend: 'sageattention', longTake: { refine: true } } });
+    assert.equal(sage.sage_attention.class_type, 'PathchSageAttentionKJ');
+    assert.deepEqual(sage.guider_0.inputs.model, ['sage_attention', 0]);
+    // Non-SLA: the scheduler reads the pre-attention model (the UNETLoader here).
+    assert.deepEqual(sage.scheduler_0.inputs.model, ['model', 0]);
+    assert.deepEqual(sage.scheduler_refine_0.inputs.model, ['model', 0]);
+
+    const sla = buildLT({ settings: { attentionBackend: 'sla', longTake: { refine: true } } });
+    assert.equal(sla.sla_attention.class_type, 'H3SLAAttention');
+    assert.deepEqual(sla.guider_0.inputs.model, ['sla_attention', 0]);
+    // SLA shapes the schedule: the scheduler also reads the patched model.
+    assert.deepEqual(sla.scheduler_0.inputs.model, ['sla_attention', 0]);
+});
+
+test('long-take installer pins the motion-context pack to the ComfyUI layout', () => {
+    assert.deepEqual(longTakeInstaller.parseVersion('0.34.2'), [0, 34, 2]);
+    assert.equal(longTakeInstaller.versionAtLeast('0.34.0', [0, 34, 0]), true);
+    assert.equal(longTakeInstaller.versionAtLeast('0.33.4', [0, 34, 0]), false);
+    assert.equal(longTakeInstaller.versionAtLeast('0.40.1', [0, 34, 0]), true);
+    const motion = longTakeInstaller.PACKS.find((p) => p.key === 'motionContext');
+    assert.equal(motion.refFor('0.33.4'), 'v0.3.1');
+    assert.equal(motion.refFor('0.34.0'), null);
+    assert.equal(motion.refFor(''), null);
+});
+
+test('isLayoutMismatchError recognises the motion-context layout failure', () => {
+    const err = new Error('h3_motion_context: the layout patch could not be applied, so interior anchors would be rejected by ComfyUI.');
+    assert.equal(longTakeInstaller.isLayoutMismatchError(err), true);
+    assert.equal(longTakeInstaller.isLayoutMismatchError(new Error('comfyui timeout')), false);
+});
+
+test('quarantineDuplicatePackDirs moves renamed/duplicate pack folders out of custom_nodes', () => {
+    const os = require('os');
+    const fs = require('fs');
+    const path = require('path');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'jarvis-lt-'));
+    const nodesDir = path.join(root, 'custom_nodes');
+    fs.mkdirSync(path.join(nodesDir, 'ComfyUI-H3-Motion-Context'), { recursive: true });
+    fs.mkdirSync(path.join(nodesDir, 'ComfyUI-H3-Motion-Context.bak-1'), { recursive: true });
+    fs.mkdirSync(path.join(nodesDir, 'ComfyUI-H3-Motion-Context-main'), { recursive: true });
+    fs.mkdirSync(path.join(nodesDir, 'SomeOtherPack'), { recursive: true });
+    const moved = longTakeInstaller.quarantineDuplicatePackDirs(nodesDir, 'ComfyUI-H3-Motion-Context');
+    assert.equal(moved.length, 2);
+    assert.ok(fs.existsSync(path.join(nodesDir, 'ComfyUI-H3-Motion-Context')));
+    assert.ok(fs.existsSync(path.join(nodesDir, 'SomeOtherPack')));
+    assert.ok(!fs.existsSync(path.join(nodesDir, 'ComfyUI-H3-Motion-Context.bak-1')));
+    assert.ok(!fs.existsSync(path.join(nodesDir, 'ComfyUI-H3-Motion-Context-main')));
+    assert.ok(fs.existsSync(path.join(root, 'custom_nodes_disabled')));
+    fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('motionContextRefFor pins the pack to the ComfyUI H3 layout version', () => {
+    assert.equal(longTakeInstaller.motionContextRefFor('0.33.4'), 'v0.3.1');
+    assert.equal(longTakeInstaller.motionContextRefFor('0.34.0'), null);
+    assert.equal(longTakeInstaller.motionContextRefFor(''), null);
+});
+
+test('buildLongTakeGraph can disable the refine/blend and tune its parameters', () => {
+    const on = buildLT({ settings: { longTake: { refine: true } } });
+    assert.ok(on.blend_0 && on.refine_0);
+    const off = buildLT({ settings: { longTake: { refine: false } } });
+    assert.equal(off.blend_0, undefined);
+    assert.equal(off.refine_0, undefined);
+    assert.deepEqual(off.motion_1.inputs.context_latent, ['sample_0', 0]);
+    assert.deepEqual(off.decode_0.inputs.samples, ['sample_0', 0]);
+    const tuned = buildLT({
+        settings: { longTake: { refine: true, refineDenoise: 0.3, refineSteps: 4, blendKeyframes: '0:0, 40:0, 80:1' } }
+    });
+    assert.equal(tuned.scheduler_refine_0.inputs.denoise, 0.3);
+    assert.equal(tuned.scheduler_refine_0.inputs.steps, 4);
+    assert.equal(tuned.blend_0.inputs.keyframes, '0:0, 40:0, 80:1');
+});
+
+test('longTakeGraph.frameSize mirrors the node resolution presets', () => {
+    assert.deepEqual(longTakeGraph.frameSize('16:9', 1.0), [1344, 768]);
+    assert.deepEqual(longTakeGraph.frameSize('9:16', 1.0), [768, 1344]);
+    assert.equal(longTakeGraph.frameSize('16:9', 0.5)[0] % 32, 0);
+    assert.equal(longTakeGraph.frameSize('16:9', 0.5)[1] % 32, 0);
+});
+
+
 
 function stubPlanner({ bible, beats }) {
     providers.chat = async (provider, messages) => {
@@ -567,4 +833,18 @@ test('marker extraction strips the storyboard marker from model context', () => 
     const stripped = director.stripMarkers(content);
     assert.doesNotMatch(stripped, /\[\[longvideo:/);
     assert.match(stripped, /Long Video Director/);
+});
+
+test('renderCompleteContent names the engine and warns on the legacy fallback', () => {
+    const base = makePlan(planStore.STATUS.COMPLETED);
+    base.beats = [];
+    const lt = director.renderCompleteContent(Object.assign({}, base, { engine: 'longtake' }), '<video></video>');
+    assert.match(lt, /LongTake engine/);
+    assert.doesNotMatch(lt, /legacy last-frame/);
+    const legacy = director.renderCompleteContent(
+        Object.assign({}, base, { engine: 'h3longvideos', engineFallback: true }), '<video></video>');
+    assert.match(legacy, /legacy last-frame chain/);
+    // The engine + fallback ride the persisted marker too.
+    const marker = director.markerData(Object.assign({}, base, { engine: 'longtake' }));
+    assert.equal(marker.engine, 'longtake');
 });

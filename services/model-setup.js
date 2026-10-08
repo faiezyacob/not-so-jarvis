@@ -35,6 +35,7 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const comfyui = require('./comfyui');
 const configManager = require('../server/config-manager');
+const longTake = require('./long-take');
 
 // --- Known Hugging Face files -------------------------------------------------
 // Maps an exact ComfyUI filename to the repo + path it downloads from.
@@ -244,6 +245,20 @@ const NODE_CATALOG = [
         nodes: ['MiniMaxH3ImageToVideo'],
         repo: null, dir: null,
         note: 'Ships with current ComfyUI. If missing, update ComfyUI (or install the H3 nodes via ComfyUI Manager search "MiniMax H3").'
+    },
+    {
+        id: 'h3_motion_context', label: 'MiniMax H3 Motion Context (LongTake engine)', required: false,
+        nodes: ['MiniMaxH3MotionContext', 'MiniMaxH3MotionContextTrim'],
+        repo: 'https://github.com/NikoDemon80/ComfyUI-H3-Motion-Context',
+        dir: 'ComfyUI-H3-Motion-Context', recursive: false,
+        note: 'Latent motion-context handoff for the H3 LongTake long-video engine (>15s videos). Clone into ComfyUI/custom_nodes and restart.'
+    },
+    {
+        id: 'longtake_nocuts', label: 'H3-LongTakeNoCuts (latent frame-blend)', required: false,
+        nodes: ['H3BlendLatentsByFrames'],
+        repo: 'https://github.com/xyzDist/H3-LongTakeNoCuts',
+        dir: 'H3-LongTakeNoCuts', recursive: false,
+        note: 'Refine + latent frame-blend for the H3 LongTake long-video engine (>15s videos). Clone into ComfyUI/custom_nodes and restart.'
     },
     {
         id: 'h3_turbo', label: 'MiniMax H3 Turbo', required: false,
@@ -603,13 +618,36 @@ async function runNodeInstallJob(ids) {
         const packs = NODE_CATALOG.filter((n) => wanted.has(n.id) && n.repo);
         if (!packs.length) throw new Error('No installable node packs selected (built-in nodes ship with ComfyUI — update it instead).');
         job.total = packs.length;
+        const comfyVersion = await longTake.comfyVersion();
         for (const pack of packs) {
             const dir = path.join(nodesDir, pack.dir);
-            const args = fs.existsSync(path.join(dir, '.git'))
-                ? ['-C', dir, 'pull', '--ff-only']
-                : ['clone'].concat(pack.recursive ? ['--recursive'] : []).concat([pack.repo, dir]);
+            // Keep exactly one copy: ComfyUI loads every folder in custom_nodes,
+            // so a renamed backup or a second clone is a silent second node
+            // registration (the usual cause of a layout self-test failure).
+            const moved = longTake.quarantineDuplicatePackDirs(nodesDir, pack.dir, logLine);
+            if (moved.length) {
+                logLine(pack.label + ': moved ' + moved.length + ' duplicate folder(s) out of custom_nodes.');
+            }
+            // The motion-context pack is version-split on the H3 packed layout
+            // (ComfyUI 0.34.0); pin the matching ref so setup cannot install an
+            // incompatible copy.
+            const ref = pack.id === 'h3_motion_context' ? longTake.motionContextRefFor(comfyVersion) : null;
+            const isGit = fs.existsSync(path.join(dir, '.git'));
+            let args;
+            if (isGit) {
+                if (ref) {
+                    runCommand('git', ['-C', dir, 'fetch', '--depth', '1', 'origin',
+                        'refs/tags/' + ref + ':refs/tags/' + ref], { timeoutMs: 180000 });
+                    args = ['-C', dir, 'checkout', '--force', ref];
+                } else {
+                    args = ['-C', dir, 'pull', '--ff-only'];
+                }
+            } else {
+                args = ['clone'].concat(pack.recursive ? ['--recursive'] : [])
+                    .concat(ref ? ['--branch', ref] : []).concat([pack.repo, dir]);
+            }
             job.current = { id: pack.id, label: pack.label, filename: '', received: 0, total: 0 };
-            logLine((fs.existsSync(path.join(dir, '.git')) ? 'Updating ' : 'Cloning ') + pack.repo + ' ...');
+            logLine((isGit ? 'Updating ' : 'Cloning ') + pack.repo + (ref ? ' (' + ref + ')' : '') + ' ...');
             const res = runCommand('git', args, { timeoutMs: 10 * 60 * 1000 });
             if (!res.ok && !fs.existsSync(dir)) {
                 throw new Error('Could not clone ' + pack.repo + ': ' + (res.stderr || res.error || 'git failed') + '. Check your network connection.');

@@ -15,6 +15,7 @@
 
 const WORKFLOW = require('./workflows/h3-longvideos.json');
 const videoGenerator = require('../video-generator');
+const longTakeGraph = require('./long-take-graph');
 
 const REQUIRED_NODE = WORKFLOW.requiredNode || 'H3LongVideos';
 const OUTPUT_NODE = WORKFLOW.outputNode || 'save';
@@ -105,7 +106,9 @@ function buildLongVideoGraph(opts = {}) {
         shotSeconds = 15,
         steps = videoGenerator.H3_DEFAULT_STEPS,
         firstImageName = null,
-        firstBlockCacheInputs = null
+        firstBlockCacheInputs = null,
+        characterMemory = null,
+        anchor = null
     } = opts;
 
     const graph = clone(WORKFLOW.nodes);
@@ -182,7 +185,12 @@ function buildLongVideoGraph(opts = {}) {
         sampler_name: 'res_multistep',
         scheduler: 'simple',
         seed: Number.isFinite(Number(seed)) ? Math.max(0, Math.floor(Number(seed))) : 0,
-        first_frame: firstFrameWire
+        first_frame: firstFrameWire,
+        // H3-LongTake-style re-anchor: re-establish the pristine identity and
+        // scene on every shot instead of trusting only the degraded previous
+        // segment. Both are optional; absent wires keep the node's defaults.
+        character_memory: String(characterMemory || '').trim() || undefined,
+        anchor: String(anchor || '').trim() || undefined
     };
 
     return resolvePlaceholders(graph, wires);
@@ -214,6 +222,25 @@ function graphHasLongVideoNode(info) {
     return Boolean(info && info[REQUIRED_NODE]);
 }
 
+// Which long-video engine to run. `auto` (default) uses the LongTake engine
+// whenever its node packs are installed and falls back to the legacy AIO node
+// otherwise, so an existing install keeps working untouched.
+function normalizeLongVideoEngine(value) {
+    const v = String(value || '').trim().toLowerCase();
+    if (v === 'longtake' || v === 'long-take' || v === 'longtakenocuts') return 'longtake';
+    if (v === 'h3longvideos' || v === 'aio' || v === 'node') return 'h3longvideos';
+    return 'auto';
+}
+
+function resolveLongVideoEngine(settings = {}, info = null) {
+    const configured = normalizeLongVideoEngine(
+        (settings && settings.longVideoEngine) || process.env.H3_LONGVIDEO_ENGINE || 'auto'
+    );
+    if (configured === 'longtake') return 'longtake';
+    if (configured === 'h3longvideos') return 'h3longvideos';
+    return longTakeGraph.longTakeNodesAvailable(info) ? 'longtake' : 'h3longvideos';
+}
+
 module.exports = {
     WORKFLOW,
     REQUIRED_NODE,
@@ -223,5 +250,10 @@ module.exports = {
     megapixelsForSize,
     buildLongVideoGraph,
     validateLongVideoGraph,
-    graphHasLongVideoNode
+    graphHasLongVideoNode,
+    buildLongTakeGraph: longTakeGraph.buildLongTakeGraph,
+    validateLongTakeGraph: longTakeGraph.validateLongTakeGraph,
+    longTakeNodesAvailable: longTakeGraph.longTakeNodesAvailable,
+    normalizeLongVideoEngine,
+    resolveLongVideoEngine
 };

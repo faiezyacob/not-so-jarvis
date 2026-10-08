@@ -6,6 +6,8 @@
   "description": "JARVIS workflow configuration for the installed MiniMax H3 LongVideos ComfyUI node (Smite79/MiniMax-H3-LongVideos). This file is the ONLY place the LongVideos ComfyUI graph is described. The Long Video Director fills in $placeholders; it never hardcodes the node graph itself, so the underlying workflow can be swapped without touching the director.",
   "notes": {
     "prompt": "Paragraph 1 is the SCENE (prepended to every shot). Every later paragraph is one beat = one shot. The node chains the shots internally: it decodes a beat, pins its final frame as the keyframe conditioning for the next beat, handles the seam, and returns ONE continuous video. JARVIS must never extract frames or concatenate clips itself.",
+    "anchor": "Optional scene/style/lighting re-anchor, prepended to every shot. Filled from the Story Bible so environment, lighting and style are re-established on every continuation (H3-LongTake-style re-anchor against cumulative drift).",
+    "character_memory": "Optional identity/wardrobe re-anchor and the node's only mid-chain channel. Filled from the Story Bible so identity, appearance and clothing cannot drift across the decode/handoff chain.",
     "resolution": "Aspect ratio preset: 16:9, 9:16, 4:3, 3:4, 1:1, 21:9 or 9:21.",
     "megapixels": "1.0 = H3's native pixel budget; lower is faster and leaner.",
     "shot_seconds": "Maximum length of a single generated beat (1-15s). Beats are planned by the director at or below this cap.",
@@ -26,6 +28,8 @@
         "vae": "$video_vae",
         "audio_vae": "$audio_vae",
         "prompt": ["prompt", 0],
+        "anchor": "$optional:anchor",
+        "character_memory": "$optional:character_memory",
         "resolution": "$resolution",
         "megapixels": "$megapixels",
         "shot_seconds": "$shot_seconds",

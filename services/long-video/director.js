@@ -454,6 +454,8 @@ function markerData(plan) {
         composer: plan.composer,
         video: plan.videoUrl || null,
         error: plan.error || '',
+        engine: plan.engine || null,
+        engineFallback: Boolean(plan.engineFallback),
         beats: compactBeats(plan),
         stages: (plan.stages || []).map((s) => ({ id: s.id, status: s.status }))
     };
@@ -511,9 +513,16 @@ function renderGeneratingContent(plan) {
         markerLine(plan);
 }
 
-function renderCompleteContent(plan, videoMarkdown) {    return '**Long Video Director** \u2014 Your ' + plan.duration + '-second video is ready' +
+function renderCompleteContent(plan, videoMarkdown) {
+    const engineNote = plan.engine === 'longtake'
+        ? '\n\n_Rendered with the H3 LongTake engine (latent motion-context + refine + blend \u2014 no last-frame re-encode)._'
+        : (plan.engineFallback
+            ? '\n\n_Rendered with the legacy last-frame chain because the LongTake node packs are not installed yet. ' +
+              'They are installing in the background \u2014 restart ComfyUI, then retry to use the higher-consistency engine._'
+            : '');
+    return '**Long Video Director** \u2014 Your ' + plan.duration + '-second video is ready' +
         ((plan.beats || []).length ? ' (' + plan.beats.length + ' beats)' : '') + '.\n\n' +
-        videoMarkdown + markerLine(plan);
+        videoMarkdown + engineNote + markerLine(plan);
 }
 
 function renderFailureContent(plan, message) {

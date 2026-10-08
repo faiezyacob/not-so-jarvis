@@ -17,7 +17,10 @@ const comfyui = require('../comfyui');
 const generatedHistory = require('../generated-history');
 const generationQueue = require('../generation-queue');
 const videoGenerator = require('../video-generator');
+const configManager = require('../../server/config-manager');
 const workflow = require('./h3-longvideos-workflow');
+const longTakeLayer = require('./long-take');
+const longTakeInstaller = require('../long-take');
 
 const GENERATED_DIR = path.join(__dirname, '..', '..', 'data', 'generated');
 
@@ -134,6 +137,30 @@ async function generateLongVideo(plan, options = {}) {
             throw error;
         }
 
+        // H3-LongTake-style re-anchor: re-establish the pristine identity and
+        // scene on every shot from the approved Story Bible, so the node's
+        // decode/handoff chain cannot let identity, wardrobe, environment or
+        // lighting drift as the video gets longer. Default on; disable with
+        // settings.longTake.reanchor=false or H3_LONGTAKE_REANCHOR=false.
+        const storedVideo = configManager.getVideoSettings() || {};
+        if (options.longTake !== undefined && options.longTake !== null) {
+            settings.longTake = options.longTake;
+        } else if (storedVideo && typeof storedVideo.longTake === 'object' && storedVideo.longTake) {
+            settings.longTake = storedVideo.longTake;
+        }
+        if (storedVideo && storedVideo.longVideoEngine) {
+            settings.longVideoEngine = storedVideo.longVideoEngine;
+        }
+        const longTake = longTakeLayer.buildLongTakeContext({
+            bible: plan && plan.storyBible,
+            settings
+        });
+        if (longTake.enabled) {
+            console.log('[long-video] re-anchor: identity=' +
+                (longTake.identityLocked ? 'on' : 'none') + ', scene=' +
+                (longTake.sceneLocked ? 'on' : 'none'));
+        }
+
         report('preparing');
 
         let firstImageName = null;
@@ -163,26 +190,73 @@ async function generateLongVideo(plan, options = {}) {
             }
             console.log('[long-video] acceleration:',
                 videoGenerator.formatAccelerationDiagnostics(acceleration).replace(/\n/g, ' | '));
-            const graph = workflow.buildLongVideoGraph({
-                prompt,
-                seed,
-                settings,
-                resolution,
-                megapixels,
-                shotSeconds,
-                steps: options.steps || LONG_VIDEO_STEPS,
-                firstImageName,
-                // Match the installed node's exact input names so required-input
-                // validation passes even if the node pack renames a field.
-                firstBlockCacheInputs: videoGenerator.resolveFirstBlockCacheInputNames(info)
-            });
 
-            await workflow.validateLongVideoGraph(info, graph);
+            // Engine selection. `auto` uses the LongTake engine (motion-context
+            // + refine + latent frame-blend) whenever its node packs are
+            // installed, and falls back to the legacy AIO node otherwise so an
+            // existing install keeps working. An explicit `longtake` request
+            // installs the missing packs and stops with an actionable error.
+            const desiredEngine = workflow.normalizeLongVideoEngine(
+                settings.longVideoEngine || process.env.H3_LONGVIDEO_ENGINE
+            );
+            const longTakeReady = workflow.longTakeNodesAvailable(info);
+            if (desiredEngine !== 'h3longvideos' && !longTakeReady) {
+                try { longTakeInstaller.ensureAutoInstall(); } catch { /* install is best-effort */ }
+                if (desiredEngine === 'longtake') {
+                    const error = new Error(
+                        'The H3 LongTake long-video engine needs two ComfyUI node packs. ' +
+                        'Installing them now \u2014 restart ComfyUI when the install finishes, then retry ' +
+                        '(your approved storyboard is saved).'
+                    );
+                    error.code = 'longvideo_longtake_install_started';
+                    throw error;
+                }
+            }
+            const useLongTake = desiredEngine !== 'h3longvideos' && longTakeReady;
+
+            let graph;
+            if (useLongTake) {
+                graph = workflow.buildLongTakeGraph({
+                    prompt,
+                    beats: (plan && plan.beats) || [],
+                    seed,
+                    settings,
+                    resolution,
+                    megapixels,
+                    shotSeconds,
+                    steps: options.steps || LONG_VIDEO_STEPS,
+                    firstImageName,
+                    firstBlockCacheInputs: videoGenerator.resolveFirstBlockCacheInputNames(info)
+                });
+                await workflow.validateLongTakeGraph(info, graph);
+                console.log('[long-video] engine: longtake (' +
+                    ((plan && plan.beats && plan.beats.length) || 0) +
+                    ' beats, motion-context + refine + latent blend)');
+            } else {
+                graph = workflow.buildLongVideoGraph({
+                    prompt,
+                    seed,
+                    settings,
+                    resolution,
+                    megapixels,
+                    shotSeconds,
+                    steps: options.steps || LONG_VIDEO_STEPS,
+                    firstImageName,
+                    characterMemory: longTake.characterMemory,
+                    anchor: longTake.anchor,
+                    // Match the installed node's exact input names so required-input
+                    // validation passes even if the node pack renames a field.
+                    firstBlockCacheInputs: videoGenerator.resolveFirstBlockCacheInputNames(info)
+                });
+                await workflow.validateLongVideoGraph(info, graph);
+                console.log('[long-video] engine: h3longvideos (AIO node)');
+            }
 
             const pid = await comfyui.queuePrompt(graph);
             console.log('[long-video] queued H3 LongVideos workflow:', pid,
                 '(' + resolution + ', ' + megapixels + 'MP, cap ' + shotSeconds + 's, ' +
-                ((plan && plan.beats && plan.beats.length) || 0) + ' beats)');
+                ((plan && plan.beats && plan.beats.length) || 0) + ' beats, ' +
+                (useLongTake ? 'longtake' : 'h3longvideos') + ')');
 
             report('generating');
             const history = await comfyui.waitForPrompt(pid, { timeoutMs: LONG_VIDEO_TIMEOUT_MS, signal });
@@ -231,7 +305,10 @@ async function generateLongVideo(plan, options = {}) {
                     long: true,
                     shots: beatCount,
                     source: sourceRaw || null,
-                    acceleration
+                    acceleration,
+                    engine: useLongTake ? 'longtake' : 'h3longvideos',
+                    engineFallback: !useLongTake && desiredEngine !== 'h3longvideos',
+                    longtake: longTakeLayer.describeLongTake(longTake)
                 }
             });
 
@@ -247,6 +324,8 @@ async function generateLongVideo(plan, options = {}) {
                 prompt,
                 generationMs: meta.generationMs,
                 acceleration,
+                engine: useLongTake ? 'longtake' : 'h3longvideos',
+                engineFallback: !useLongTake && desiredEngine !== 'h3longvideos',
                 promptId: pid,
                 meta
             };

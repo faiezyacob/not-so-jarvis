@@ -79,6 +79,7 @@ const videoGenerator = require('./services/video-generator');
 const faceRefine = require('./services/face-refine');
 const frameInterp = require('./services/frame-interp');
 const fbcache = require('./services/fbcache');
+const longTakeInstaller = require('./services/long-take');
 const h3LatentUpscale = require('./services/h3-latent-upscale');
 const modelSetup = require('./services/model-setup');
 const generatedHistory = require('./services/generated-history');
@@ -753,6 +754,31 @@ async function handleAPI(req, res, urlPath) {
     if (urlPath === '/api/video/latent-upscale/install' && req.method === 'POST') {
         try {
             const started = h3LatentUpscale.startInstall();
+            json(res, 200, { ok: true, install: started });
+        } catch (err) {
+            json(res, 500, { error: err.message });
+        }
+        return true;
+    }
+
+    // GET /api/video/longtake/status — ComfyUI readiness for the H3 LongTake
+    // long-video engine (motion-context + latent frame-blend node packs) +
+    // install job state.
+    if (urlPath === '/api/video/longtake/status' && req.method === 'GET') {
+        try {
+            json(res, 200, await longTakeInstaller.getStatus());
+        } catch (err) {
+            json(res, 500, { error: err.message });
+        }
+        return true;
+    }
+
+    // POST /api/video/longtake/install — clone the LongTake node packs into
+    // ComfyUI/custom_nodes in the background. Returns immediately; poll the
+    // status endpoint for progress. Restart ComfyUI when it finishes.
+    if (urlPath === '/api/video/longtake/install' && req.method === 'POST') {
+        try {
+            const started = longTakeInstaller.startInstall();
             json(res, 200, { ok: true, install: started });
         } catch (err) {
             json(res, 500, { error: err.message });
@@ -5848,6 +5874,8 @@ async function handleLongVideoStream(req, res, opts) {
             promptId: result.promptId || null,
             generationMs: result.generationMs || null,
             actualSeconds: result.duration || plan.duration,
+            engine: result.engine || null,
+            engineFallback: Boolean(result.engineFallback),
             error: ''
         });
         taskState.setTask(conversationId, {
@@ -5870,6 +5898,11 @@ async function handleLongVideoStream(req, res, opts) {
         res.end();
     } catch (err) {
         console.error('[long-video] generation failed:', err.message, '\n', err.stack);
+        // A motion-context layout mismatch means the installed pack is the wrong
+        // version for this ComfyUI. Repair it in the background and report it.
+        if (longTakeInstaller.isLayoutMismatchError(err)) {
+            try { longTakeInstaller.ensureAutoInstall(); } catch { /* best-effort repair */ }
+        }
         const friendly = friendlyLongVideoError(err);
         if (err.code === 'generation_cancelled') {
             longVideoDirector.patchPlan(conversationId, {
@@ -5897,9 +5930,17 @@ async function handleLongVideoStream(req, res, opts) {
 }
 
 function friendlyLongVideoError(err) {
+    if (longTakeInstaller.isLayoutMismatchError(err)) {
+        return 'The H3 LongTake node pack (ComfyUI-H3-Motion-Context) does not match your ComfyUI ' +
+            'version, so its H3 layout patch was rejected. JARVIS is updating it to the matching ' +
+            'version in the background \u2014 restart ComfyUI when the install finishes, then retry ' +
+            '(your approved storyboard is saved).';
+    }
     switch (err.code) {
         case 'longvideo_node_missing':
         case 'longvideo_prompt_missing':
+        case 'longvideo_longtake_nodes_missing':
+        case 'longvideo_longtake_install_started':
             return err.message;
         case 'comfyui_unavailable':
             return 'ComfyUI is not running. Start ComfyUI, then retry the long video.';
