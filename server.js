@@ -2041,6 +2041,7 @@ function handleDeleteConversation(req, res, id) {
     removeConversationImages(messages, id);
     removeUGCMedia(id);
     removeDirectorMedia(id);
+    removeCreatorStudioMedia(id);
     taskState.clearTask(id);
     director.removeProduction(id);
     json(res, 200, { ok: true });
@@ -2071,6 +2072,21 @@ function removeUGCMedia(conversationId) {
         try { generatedHistory.removeByFilename(name); } catch (err) { /* ignore */ }
     });
     ugcStudio.removeProject(conversationId);
+}
+
+// Creator Studio opening frames are hidden from the gallery and carried only by
+// the approval-card marker (no /generated/ link), so removeConversationImages
+// can't find them, and recordVideo() clears session.frame once the clip consumes
+// it. Drop every frame file the session tracked, then the session record.
+function removeCreatorStudioMedia(conversationId) {
+    const session = creatorStudio.getSession(conversationId);
+    if (!session) return;
+    const protectedNames = characterContext.characterMediaFilenames();
+    creatorStudio.mediaFilenames(session).forEach((name) => {
+        if (protectedNames.has(name)) return;
+        try { generatedHistory.removeByFilename(name); } catch (err) { /* ignore */ }
+    });
+    creatorStudio.clearSession(conversationId);
 }
 
 // Remove generated media files (images and videos) that were linked from a

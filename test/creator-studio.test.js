@@ -227,6 +227,20 @@ test('recordVideo consumes the opening frame so the approval card goes stale', (
     assert.equal(ready.videos.length, 1);
 });
 
+test('mediaFilenames tracks every opening frame even after a video consumes the current one', () => {
+    let session = studio.createOpeningFrame(null, { characterId: 'maya-id', concept: 'c' }, {
+        filename: 'first.png', url: '/generated/first.png'
+    });
+    // A regenerate/modify replaces the current frame but the old file stays tracked.
+    session = studio.createOpeningFrame(session, session.content, {
+        filename: 'second.png', url: '/generated/second.png'
+    });
+    session = studio.recordVideo(session, session.content, { filename: 'clip.mp4', url: '/generated/clip.mp4' });
+    assert.equal(session.frame, null);
+    assert.deepEqual(studio.mediaFilenames(session).sort(), ['first.png', 'second.png']);
+    assert.deepEqual(studio.mediaFilenames(null), []);
+});
+
 test('recordVideo stores a canonical generated-media URL and filename', () => {
     const session = studio.recordVideo(null, {
         characterId: 'maya-id', concept: 'weekend update', contentType: 'talking'

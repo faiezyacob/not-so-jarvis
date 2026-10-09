@@ -1978,9 +1978,38 @@ function createOpeningFrame(session, content, frame) {
         seed: Number.isFinite(Number(frame.seed)) ? Number(frame.seed) : null,
         createdAt: new Date().toISOString()
     };
+    // Every opening-frame file this session has produced (initial render, a
+    // regenerate, or a modify). The frames are hidden from the gallery and only
+    // linked via the approval card marker, so a conversation delete must be able
+    // to remove them by filename. recordVideo() clears result.frame once the
+    // video consumes it, so the history is the durable cleanup source.
+    result.frameFiles = Array.isArray(result.frameFiles) ? result.frameFiles.slice() : [];
+    const frameName = path.basename(String(frame.filename || frame.url || ''));
+    if (frameName && !result.frameFiles.includes(frameName)) result.frameFiles.push(frameName);
     result.videos = Array.isArray(result.videos) ? result.videos : [];
     result.updatedAt = new Date().toISOString();
     return result;
+}
+
+// Every generated opening-frame file the session owns. Opening frames are hidden
+// from the gallery and never linked from chat messages, so deleting the
+// conversation must remove them explicitly by filename — mirroring UGC Studio's
+// referenceFilenames and the Director's mediaFilenames.
+function mediaFilenames(session) {
+    if (!session) return [];
+    const names = new Set();
+    const add = (value) => {
+        if (!value) return;
+        const raw = String(value).split('?')[0];
+        const base = path.basename(raw);
+        if (base) names.add(base);
+    };
+    if (session.frame) {
+        add(session.frame.filename);
+        add(session.frame.url);
+    }
+    (session.frameFiles || []).forEach(add);
+    return Array.from(names);
 }
 
 // Persisted assistant-message marker the UI turns into the frame approval card.
@@ -2094,6 +2123,7 @@ module.exports = {
     normalizeAction,
     identityReferenceFilenames,
     createOpeningFrame,
+    mediaFilenames,
     frameMarker,
     frameEditInstruction,
     buildFrameDirection,
