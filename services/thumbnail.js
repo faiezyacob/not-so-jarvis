@@ -608,13 +608,17 @@ async function generate(rawFilename) {
     } catch (err) {
         return null;
     }
-    if (stat.size > MAX_SOURCE_BYTES) return null;
     if (fs.existsSync(dest)) {
         try {
             if (fs.statSync(dest).mtimeMs >= stat.mtimeMs) return dest;
         } catch (err) { /* regenerate below */ }
     }
+    // Video posters are extracted by ffmpeg, which streams the source and
+    // writes a single small frame, so the size cap must not apply here — an
+    // upscaled clip is routinely larger than the 80 MB image-decode budget but
+    // still deserves a poster. The cap guards only the pure-JS PNG decode below.
     if (isVideoName(name)) return generateVideoPoster(src, dest);
+    if (stat.size > MAX_SOURCE_BYTES) return null;
     let buffer;
     try {
         buffer = fs.readFileSync(src);
