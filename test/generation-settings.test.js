@@ -275,3 +275,171 @@ test('buildKrea2T2IGraph: keeps using the shared steps / cfg', () => {
     assert.equal(graph.sampler.inputs.steps, 12);
     assert.equal(graph.sampler.inputs.cfg, 2.5);
 });
+
+// --- Image-edit engine (Qwen vs Krea 2 Identity Edit) --------------------------
+
+test('normalizeEditEngine: aliases map to the two supported editors', () => {
+    assert.equal(imageGenerator.normalizeEditEngine('qwen'), 'qwen');
+    assert.equal(imageGenerator.normalizeEditEngine('Qwen Image Edit'), 'qwen');
+    assert.equal(imageGenerator.normalizeEditEngine('qwen_image_2_1'), 'qwen');
+    assert.equal(imageGenerator.normalizeEditEngine('krea2'), 'krea2');
+    assert.equal(imageGenerator.normalizeEditEngine('Krea 2 Identity Edit'), 'krea2');
+    assert.equal(imageGenerator.normalizeEditEngine('krea2ref'), 'krea2');
+    assert.equal(imageGenerator.normalizeEditEngine('identity'), 'krea2');
+    assert.equal(imageGenerator.normalizeEditEngine('bogus'), null);
+    assert.equal(imageGenerator.normalizeEditEngine(''), null);
+});
+
+test('defaults expose the edit engine + Krea 2 identity edit settings', () => {
+    const defaults = imageGenerator.getDefaults();
+    assert.ok(['qwen', 'krea2'].includes(defaults.editEngine));
+    assert.equal(defaults.editEngine, 'qwen');
+    assert.equal(defaults.krea2IdentityEditLora, 'krea2_identity_edit_v1_2.safetensors');
+    assert.equal(defaults.krea2EditSteps, 10);
+    assert.equal(defaults.krea2EditCfg, 1);
+});
+
+test('sanitizeSettings: editEngine is validated, Krea 2 edit values are clamped', () => {
+    assert.deepEqual(imageGenerator.sanitizeSettings({ editEngine: 'Krea 2 Identity Edit' }), { editEngine: 'krea2' });
+    assert.deepEqual(imageGenerator.sanitizeSettings({ editEngine: 'nope' }), {});
+    assert.deepEqual(imageGenerator.sanitizeSettings({ krea2EditSteps: 3 }), { krea2EditSteps: 8 });
+    assert.deepEqual(imageGenerator.sanitizeSettings({ krea2EditSteps: 99 }), { krea2EditSteps: 12 });
+    assert.deepEqual(imageGenerator.sanitizeSettings({ krea2EditCfg: 9 }), { krea2EditCfg: 5 });
+    assert.deepEqual(imageGenerator.sanitizeSettings({ krea2EditCfg: 0.2 }), { krea2EditCfg: 1 });
+    assert.deepEqual(
+        imageGenerator.sanitizeSettings({ krea2IdentityEditLora: 'custom_identity.safetensors' }),
+        { krea2IdentityEditLora: 'custom_identity.safetensors' }
+    );
+});
+
+test('normalizeIdentityEditDimensions: snaps to 16, enforces a 256 floor and a 2 MP ceiling', () => {
+    assert.deepEqual(imageGenerator.normalizeIdentityEditDimensions(1024, 1024), { width: 1024, height: 1024 });
+    assert.deepEqual(imageGenerator.normalizeIdentityEditDimensions(100, 100), { width: 256, height: 256 });
+    // A missing/zero size falls back to the 1024 default.
+    assert.deepEqual(imageGenerator.normalizeIdentityEditDimensions(0, 0), { width: 1024, height: 1024 });
+
+    const huge = imageGenerator.normalizeIdentityEditDimensions(4096, 4096);
+    assert.ok(huge.width * huge.height <= 2000000);
+    assert.equal(huge.width % 16, 0);
+    assert.equal(huge.height % 16, 0);
+    assert.ok(huge.width >= 256 && huge.height >= 256);
+});
+
+test('buildKrea2IdentityEditGraph: wires the Identity Edit LoRA + grounded nodes', () => {
+    const settings = imageGenerator.getDefaults();
+    const graph = imageGenerator.buildKrea2IdentityEditGraph('make it sunset', 'jarvis_edit_1.png', {
+        seed: 3,
+        settings,
+        width: 1024,
+        height: 1024
+    });
+
+    assert.equal(graph.clip.class_type, 'CLIPLoader');
+    assert.equal(graph.clip.inputs.type, 'krea2');
+    assert.equal(graph.clip.inputs.clip_name, settings.clip);
+    assert.equal(graph.unet.inputs.unet_name, settings.unet);
+    assert.equal(graph.vae.inputs.vae_name, settings.vae);
+
+    assert.equal(graph.identity_lora.class_type, 'LoraLoaderModelOnly');
+    assert.equal(graph.identity_lora.inputs.lora_name, settings.krea2IdentityEditLora);
+    assert.deepEqual(graph.identity_lora.inputs.model, ['unet', 0]);
+
+    assert.equal(graph.source.class_type, 'LoadImage');
+    assert.equal(graph.source.inputs.image, 'jarvis_edit_1.png');
+    assert.equal(graph.source_latent.class_type, 'VAEEncode');
+    assert.deepEqual(graph.source_latent.inputs.pixels, ['source', 0]);
+
+    assert.equal(graph.model_patch.class_type, 'Krea2EditModelPatch');
+    assert.deepEqual(graph.model_patch.inputs.model, ['identity_lora', 0]);
+    assert.deepEqual(graph.model_patch.inputs.source_image, ['source', 0]);
+    assert.deepEqual(graph.model_patch.inputs.source_latent, ['source_latent', 0]);
+    assert.equal(graph.model_patch.inputs.source_latent_b, undefined);
+
+    assert.equal(graph.positive.class_type, 'Krea2EditGroundedEncode');
+    assert.equal(graph.positive.inputs.prompt, 'make it sunset');
+    assert.deepEqual(graph.positive.inputs.image, ['source', 0]);
+    assert.equal(graph.negative.inputs.prompt, '');
+
+    assert.equal(graph.canvas.class_type, 'EmptySD3LatentImage');
+    assert.equal(graph.canvas.inputs.width, 1024);
+    assert.equal(graph.canvas.inputs.height, 1024);
+    assert.deepEqual(graph.sampler.inputs.latent_image, ['canvas', 0]);
+    assert.deepEqual(graph.sampler.inputs.model, ['model_patch', 0]);
+    assert.equal(graph.sampler.inputs.sampler_name, 'euler');
+    assert.equal(graph.sampler.inputs.scheduler, 'simple');
+    assert.equal(graph.sampler.inputs.steps, 10);
+    assert.equal(graph.sampler.inputs.cfg, 1);
+    assert.equal(graph.sampler.inputs.seed, 3);
+    assert.equal(graph.save.inputs.filename_prefix, 'not-so-jarvis/edit');
+});
+
+test('buildKrea2IdentityEditGraph: a secondary reference wires source_b slots, extras dropped', () => {
+    const settings = imageGenerator.getDefaults();
+    const graph = imageGenerator.buildKrea2IdentityEditGraph('fuse them', 'a.png', {
+        seed: 1,
+        settings,
+        referenceLoadNames: ['b.png', 'c.png']
+    });
+
+    assert.equal(graph.source_b.inputs.image, 'b.png');
+    assert.equal(graph.source_latent_b.class_type, 'VAEEncode');
+    assert.deepEqual(graph.model_patch.inputs.source_latent_b, ['source_latent_b', 0]);
+    assert.deepEqual(graph.model_patch.inputs.source_image_b, ['source_b', 0]);
+    assert.deepEqual(graph.positive.inputs.image_b, ['source_b', 0]);
+    assert.deepEqual(graph.negative.inputs.image_b, ['source_b', 0]);
+    // The node pack fuses at most two images, so the third is ignored.
+    assert.equal(graph.source_c, undefined);
+});
+
+test('buildKrea2IdentityEditGraph: user LoRAs stack model-only after the identity LoRA', () => {
+    const settings = Object.assign({}, imageGenerator.getDefaults(), {
+        loras: [
+            { name: 'style.safetensors', strength: 0.7, on: true },
+            { name: 'off.safetensors', strength: 1, on: false }
+        ]
+    });
+    const graph = imageGenerator.buildKrea2IdentityEditGraph('x', 'a.png', { seed: 1, settings });
+
+    assert.equal(graph.lora1.class_type, 'LoraLoaderModelOnly');
+    assert.deepEqual(graph.lora1.inputs.model, ['identity_lora', 0]);
+    assert.equal(graph.lora1.inputs.lora_name, 'style.safetensors');
+    assert.equal(graph.lora1.inputs.strength_model, 0.7);
+    // The disabled LoRA is skipped, and the patch reads the top of the stack.
+    assert.equal(graph.lora2, undefined);
+    assert.deepEqual(graph.model_patch.inputs.model, ['lora1', 0]);
+});
+
+test('buildKrea2IdentityEditGraph: a user entry matching the identity LoRA is not doubled', () => {
+    const settings = Object.assign({}, imageGenerator.getDefaults(), {
+        loras: [{ name: imageGenerator.getDefaults().krea2IdentityEditLora, strength: 1, on: true }]
+    });
+    const graph = imageGenerator.buildKrea2IdentityEditGraph('x', 'a.png', { seed: 1, settings });
+    assert.equal(graph.lora1, undefined);
+    assert.deepEqual(graph.model_patch.inputs.model, ['identity_lora', 0]);
+});
+
+test('buildKrea2IdentityEditGraph: reads Krea 2 edit steps/cfg from settings', () => {
+    const settings = Object.assign({}, imageGenerator.getDefaults(), {
+        krea2EditSteps: 12,
+        krea2EditCfg: 3
+    });
+    const graph = imageGenerator.buildKrea2IdentityEditGraph('x', 'a.png', { seed: 1, settings });
+    assert.equal(graph.sampler.inputs.steps, 12);
+    assert.equal(graph.sampler.inputs.cfg, 3);
+});
+
+test('buildKrea2IdentityEditGraph: a missing source throws edit_source_missing', () => {
+    const settings = imageGenerator.getDefaults();
+    assert.throws(
+        () => imageGenerator.buildKrea2IdentityEditGraph('x', '', { settings }),
+        (err) => err.code === 'edit_source_missing'
+    );
+});
+
+test('buildKrea2IdentityEditGraph: a missing Identity Edit LoRA throws a clear error', () => {
+    const settings = Object.assign({}, imageGenerator.getDefaults(), { krea2IdentityEditLora: '' });
+    assert.throws(
+        () => imageGenerator.buildKrea2IdentityEditGraph('x', 'a.png', { settings }),
+        (err) => err.code === 'krea2_identity_edit_lora_missing'
+    );
+});

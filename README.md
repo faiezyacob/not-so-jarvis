@@ -55,6 +55,7 @@ Everything runs from a single chat surface — there are no separate tools or da
 
 - **Instruction editing** with Qwen Image 2.1 — attach a photo (or say *"edit this image"*) and describe the change; JARVIS re-stages, recolors, adds, or removes objects while preserving the rest
 - **Multi-reference editing** — attach several images and address each by position (*"make image 1 hold image 2 at image 3"*)
+- **Selectable edit engine** — Settings > Image > IMAGE EDIT chooses between the default Qwen Image Edit and **Krea 2 Identity Edit**, a reference-guided edit that preserves a subject's identity (needs the Krea 2 models, the Identity Edit LoRA and the `comfyui-krea2edit` node pack from Setup)
 - Edited files carry an `_edit_` marker and keep the source untouched
 
 <table align="center">
@@ -160,6 +161,8 @@ If image or video features report missing pieces, open **Settings > Setup**:
 
 Green indicators mean each capability (image, video, upscale, edit) is ready to use.
 
+To use the **Krea 2 Identity Edit** engine, the guide's IMAGE list also carries the **Krea 2 Identity Edit LoRA** (~1.7 GB) and its **comfyui-krea2edit** node pack. Selecting that engine under **Settings > Image > IMAGE EDIT** installs both automatically the first time (or use the one-click **Install Krea 2 edit components** button there / the Setup rows); restart ComfyUI once the node pack finishes cloning.
+
 ## How it works
 
 ### Intent routing
@@ -189,7 +192,7 @@ Chat has no tools, so live machine state is injected as system context when rele
 
 ### Image edit
 
-Attach a photo and describe a change (*"remove the car"*), or say *"edit this image, make it night"* to edit the last generated image. JARVIS resolves the source (a fresh upload wins, otherwise the latest generated image), builds the Qwen Image 2.1 instruction-edit graph, and shows the result inline. Multiple `@` references are wired in as `image 1` … `image N`, so a single instruction can address each by position. Edited files carry an `_edit_` marker. Only explicit edit requests run the edit path — vague tweaks like *"change her dress"* are treated as full re-generations.
+Attach a photo and describe a change (*"remove the car"*), or say *"edit this image, make it night"* to edit the last generated image. JARVIS resolves the source (a fresh upload wins, otherwise the latest generated image), builds the active image-edit graph, and shows the result inline. The engine is chosen in Settings > Image > IMAGE EDIT: the default **Qwen Image Edit** (native instruction editing) or **Krea 2 Identity Edit** (reference-guided identity preservation). With Qwen, multiple `@` references are wired in as `image 1` … `image N`, so a single instruction can address each by position; the Krea 2 engine fuses at most one extra reference. Edited files carry an `_edit_` marker. Only explicit edit requests run the edit path — vague tweaks like *"change her dress"* are treated as full re-generations.
 
 ### Video generation
 

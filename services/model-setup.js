@@ -68,6 +68,11 @@ const KNOWN_FILES = {
         hfPath: 'split_files/vae/wan_2.1_vae.safetensors',
         approxMB: 254
     },
+    'krea2_identity_edit_v1_2.safetensors': {
+        repo: 'conradlocke/krea2-identity-edit',
+        hfPath: 'krea2_identity_edit_v1_2.safetensors',
+        approxMB: 1744
+    },
     'qwen_image_2.1_int8_convrot.safetensors': {
         repo: 'Comfy-Org/Qwen-Image-2.1',
         hfPath: 'diffusion_models/qwen_image_2.1_int8_convrot.safetensors',
@@ -189,9 +194,10 @@ const MODEL_CATALOG = [
     { id: 'krea2_unet', group: 'image', label: 'Krea2 Turbo UNET (FP8)', required: false, dest: 'diffusion_models', file: { settings: 'image', key: 'unet' }, minBytes: 5 * 1024 ** 3, note: 'Needed only when the Krea 2 Turbo image model is selected.' },
     { id: 'krea2_clip', group: 'image', label: 'Krea2 CLIP (Qwen3-VL 4B FP8)', required: false, dest: 'text_encoders', file: { settings: 'image', key: 'clip' }, minBytes: 1 * 1024 ** 3, note: 'Needed only when the Krea 2 Turbo image model is selected.' },
     { id: 'krea2_vae', group: 'image', label: 'Krea2 VAE (Wan 2.1)', required: false, dest: 'vae', file: { settings: 'image', key: 'vae' }, minBytes: 100 * 1024 ** 2, note: 'Needed only when the Krea 2 Turbo image model is selected.' },
-    { id: 'qwen_image_unet', group: 'image', label: 'Qwen Image 2.1 UNET (int8)', required: true, dest: 'diffusion_models', file: { settings: 'image', key: 'qwenUnet' }, minBytes: 5 * 1024 ** 3, note: 'The default image model. Needed for Qwen Image 2.1 generation and for ALL image editing.' },
-    { id: 'qwen_image_clip', group: 'image', label: 'Qwen Image 2.1 text encoder (Qwen3-VL 8B int8)', required: true, dest: 'text_encoders', file: { settings: 'image', key: 'qwenClip' }, minBytes: 5 * 1024 ** 3, note: 'The default image model. Needed for Qwen Image 2.1 generation and for ALL image editing.' },
-    { id: 'qwen_image_vae', group: 'image', label: 'Qwen Image 2.1 VAE', required: true, dest: 'vae', file: { settings: 'image', key: 'qwenVae' }, minBytes: 100 * 1024 ** 2, note: 'The default image model. Needed for Qwen Image 2.1 generation and for ALL image editing.' },
+    { id: 'krea2_identity_edit_lora', group: 'image', label: 'Krea 2 Identity Edit LoRA (v1.2)', required: false, dest: 'loras', file: { settings: 'image', key: 'krea2IdentityEditLora' }, minBytes: 1500 * 1024 ** 2, note: 'Needed only for the Krea 2 Identity Edit engine (Settings > Image > IMAGE EDIT). Pair it with the Krea 2 base models and the comfyui-krea2edit node pack.' },
+    { id: 'qwen_image_unet', group: 'image', label: 'Qwen Image 2.1 UNET (int8)', required: true, dest: 'diffusion_models', file: { settings: 'image', key: 'qwenUnet' }, minBytes: 5 * 1024 ** 3, note: 'The default image model. Needed for Qwen Image 2.1 generation and for the default Qwen Image Edit engine.' },
+    { id: 'qwen_image_clip', group: 'image', label: 'Qwen Image 2.1 text encoder (Qwen3-VL 8B int8)', required: true, dest: 'text_encoders', file: { settings: 'image', key: 'qwenClip' }, minBytes: 5 * 1024 ** 3, note: 'The default image model. Needed for Qwen Image 2.1 generation and for the default Qwen Image Edit engine.' },
+    { id: 'qwen_image_vae', group: 'image', label: 'Qwen Image 2.1 VAE', required: true, dest: 'vae', file: { settings: 'image', key: 'qwenVae' }, minBytes: 100 * 1024 ** 2, note: 'The default image model. Needed for Qwen Image 2.1 generation and for the default Qwen Image Edit engine.' },
     { id: 'h3_unet', group: 'video', label: 'H3 UNET (FL2VA, text- and image-to-video)', required: true, dest: 'diffusion_models', file: { settings: 'video', key: 'h3Unet' }, minBytes: 5 * 1024 ** 3 },
     { id: 'h3_clip', group: 'video', label: 'H3 CLIP (Qwen3-VL 32B NVFP4)', required: true, dest: 'text_encoders', file: { settings: 'video', key: 'h3Clip' }, minBytes: 5 * 1024 ** 3 },
     { id: 'h3_video_vae', group: 'video', label: 'H3 video VAE', required: true, dest: 'vae', file: { settings: 'video', key: 'h3VideoVae' }, minBytes: 100 * 1024 ** 2 },
@@ -218,7 +224,14 @@ const NODE_CATALOG = [
         id: 'qwen_native', label: 'Qwen Image 2.1 edit (built into ComfyUI)', required: false,
         nodes: ['TextEncodeQwenImage21'],
         repo: null, dir: null,
-        note: 'Ships with current ComfyUI. Needed for ALL image editing. If missing, update ComfyUI.'
+        note: 'Ships with current ComfyUI. The default image-edit engine. If missing, update ComfyUI.'
+    },
+    {
+        id: 'krea2_edit', label: 'Krea 2 Identity Edit (comfyui-krea2edit)', required: false,
+        nodes: ['Krea2EditModelPatch', 'Krea2EditGroundedEncode'],
+        repo: 'https://github.com/lbouaraba/comfyui-krea2edit',
+        dir: 'comfyui-krea2edit', recursive: false,
+        note: 'Needed only for the Krea 2 Identity Edit engine (Settings > Image > IMAGE EDIT). Clone into ComfyUI/custom_nodes and restart ComfyUI.'
     },
     {
         id: 'vhs', label: 'VideoHelperSuite', required: true,
@@ -684,6 +697,155 @@ function startNodeInstall(ids) {
     return { started: true, job: jobState() };
 }
 
+// --- Krea 2 Identity Edit readiness (node pack + LoRA) -------------------------
+//
+// The Krea 2 Identity Edit engine (Settings > Image > IMAGE EDIT) needs the
+// `comfyui-krea2edit` node pack AND the Krea 2 Identity Edit LoRA. Both are
+// optional (only used when that engine is selected), so they are offered as
+// normal Setup rows and auto-installed the first time the engine is enabled.
+// One combined single-flight job clones the pack and downloads the LoRA so the
+// two never race the shared `job` slot.
+
+const KREA2_EDIT_LORA_ID = 'krea2_identity_edit_lora';
+const KREA2_EDIT_NODE_ID = 'krea2_edit';
+
+function findCatalogEntry(id) {
+    const entry = MODEL_CATALOG.find((e) => e.id === id);
+    return entry ? resolveCatalogEntry(entry) : null;
+}
+
+function findNodePack(id) {
+    return NODE_CATALOG.find((n) => n.id === id) || null;
+}
+
+// Readiness of the Krea 2 Identity Edit stack: node pack loaded in ComfyUI (or
+// at least cloned) and the LoRA present on disk / listed by ComfyUI.
+async function krea2EditReadiness(info, modelRoot, comfyRoot) {
+    const nodePack = findNodePack(KREA2_EDIT_NODE_ID);
+    const lora = findCatalogEntry(KREA2_EDIT_LORA_ID);
+    const nodesLoaded = Boolean(info) && nodePack
+        ? nodePack.nodes.every((n) => Boolean(info[n]))
+        : false;
+    let packOnDisk = false;
+    if (comfyRoot && nodePack && nodePack.dir) {
+        packOnDisk = fs.existsSync(path.join(comfyRoot, 'custom_nodes', nodePack.dir));
+    }
+    let loraInstalled = false;
+    if (modelRoot && lora && lora.filename) {
+        loraInstalled = Boolean(filePresent(path.join(modelRoot, lora.dest), lora.filename, lora.minBytes));
+    }
+    if (!loraInstalled && info && lora && lora.filename) {
+        loraInstalled = seenChoices(info).loras.has(lora.filename);
+    }
+    return { nodePack, lora, nodesLoaded, packOnDisk, loraInstalled, ready: nodesLoaded && loraInstalled };
+}
+
+async function runKrea2EditJob() {
+    job.running = true;
+    job.done = false;
+    job.ok = false;
+    job.error = null;
+    job.kind = 'krea2_edit';
+    job.startedAt = new Date().toISOString();
+    job.finishedAt = null;
+    job.finished = 0;
+    try {
+        if (!(await comfyui.isAvailable())) {
+            throw new Error('ComfyUI is not reachable at ' + comfyui.COMFYUI_URL + '. Start ComfyUI first, then retry.');
+        }
+        const modelRoot = await getModelRoot();
+        const comfyRoot = await comfyui.resolveComfyRoot();
+        const nodePack = findNodePack(KREA2_EDIT_NODE_ID);
+        const lora = findCatalogEntry(KREA2_EDIT_LORA_ID);
+        job.total = (nodePack ? 1 : 0) + (lora ? 1 : 0);
+
+        // 1) Clone/update the comfyui-krea2edit node pack.
+        if (comfyRoot && nodePack && nodePack.dir && nodePack.repo) {
+            const nodesDir = path.join(comfyRoot, 'custom_nodes');
+            fs.mkdirSync(nodesDir, { recursive: true });
+            const dir = path.join(nodesDir, nodePack.dir);
+            const moved = longTake.quarantineDuplicatePackDirs(nodesDir, nodePack.dir, logLine);
+            if (moved.length) {
+                logLine(nodePack.label + ': moved ' + moved.length + ' duplicate folder(s) out of custom_nodes.');
+            }
+            const isGit = fs.existsSync(path.join(dir, '.git'));
+            if (!isGit && !fs.existsSync(dir)) {
+                const gitCheck = runCommand('git', ['--version'], { timeoutMs: 30000 });
+                if (!gitCheck.ok) {
+                    logLine('git is not on PATH — clone ' + nodePack.repo + ' into ' + nodesDir + ' manually.');
+                } else {
+                    job.current = { id: nodePack.id, label: nodePack.label, filename: '', received: 0, total: 0 };
+                    logLine('Cloning ' + nodePack.repo + ' ...');
+                    const res = runCommand('git', ['clone', '--depth', '1', nodePack.repo, dir], { timeoutMs: 10 * 60 * 1000 });
+                    if (!res.ok && !fs.existsSync(dir)) {
+                        throw new Error('Could not clone ' + nodePack.repo + ': ' + (res.stderr || res.error || 'git failed') + '. Check your network connection.');
+                    }
+                }
+            } else if (isGit) {
+                runCommand('git', ['-C', dir, 'pull', '--ff-only'], { timeoutMs: 3 * 60 * 1000 });
+            }
+            await installPackRequirements(nodePack, comfyRoot, dir);
+            logLine(nodePack.label + ': ready (restart ComfyUI to load it).');
+            job.finished += 1;
+        } else if (!comfyRoot) {
+            logLine('Could not locate the ComfyUI install folder — install ' + (nodePack ? nodePack.repo : 'comfyui-krea2edit') + ' manually.');
+        }
+
+        // 2) Download the Krea 2 Identity Edit LoRA.
+        if (modelRoot && lora && lora.url) {
+            const destPath = path.join(modelRoot, lora.dest, lora.filename);
+            if (filePresent(path.dirname(destPath), lora.filename, lora.minBytes)) {
+                logLine('SKIP ' + lora.label + ': already installed.');
+            } else {
+                job.current = { id: lora.id, label: lora.label, filename: lora.filename, received: 0, total: 0 };
+                logLine('Downloading ' + lora.filename + ' (' + lora.repo + ') ...');
+                const size = await downloadFileTo(lora, destPath);
+                logLine('Saved ' + lora.filename + ' (' + (size / 1024 / 1024).toFixed(0) + ' MB) to models/' + lora.dest + '/.');
+            }
+            job.finished += 1;
+        } else if (!modelRoot) {
+            logLine('Could not locate ComfyUI\'s models/ folder — download ' + (lora ? lora.filename : 'the Identity Edit LoRA') + ' manually.');
+        }
+
+        job.ok = true;
+        logLine('Done. If the node pack was just cloned, RESTART ComfyUI, then retry the edit.');
+    } catch (err) {
+        job.ok = false;
+        job.error = err.message || String(err);
+        logLine('FAILED: ' + job.error);
+    } finally {
+        job.running = false;
+        job.done = true;
+        job.current = null;
+        job.finishedAt = new Date().toISOString();
+    }
+}
+
+function startKrea2EditInstall() {
+    if (job.running) return { started: false, reason: 'already running', job: jobState() };
+    job.log = [];
+    setImmediate(() => { runKrea2EditJob().catch(() => {}); });
+    return { started: true, job: jobState() };
+}
+
+// First-enable hook: installs the Krea 2 Identity Edit stack when it is missing.
+// Never throws, and is a no-op when it is already ready or a job is running.
+async function ensureKrea2EditReady() {
+    try {
+        if (job.running) return { started: false, reason: 'already running', job: jobState() };
+        if (!(await comfyui.isAvailable())) return { started: false, reason: 'comfyui_unavailable' };
+        let info = null;
+        try { info = await comfyui.getObjectInfo(10000); } catch { info = null; }
+        const modelRoot = await getModelRoot().catch(() => null);
+        const comfyRoot = await comfyui.resolveComfyRoot().catch(() => null);
+        const state = await krea2EditReadiness(info, modelRoot, comfyRoot);
+        if (state.ready) return { started: false, reason: 'already_ready' };
+        return startKrea2EditInstall();
+    } catch (err) {
+        return { started: false, reason: err.message || String(err) };
+    }
+}
+
 // --- Token verification --------------------------------------------------------
 // Best-effort: confirms the token with Hugging Face and records the username.
 // Never throws — callers save the token regardless and surface the warning.
@@ -854,6 +1016,10 @@ async function getStatus() {
     status.ready.video = has('h3_unet_t2va') && has('h3_clip') && has('h3_video_vae') && has('h3_audio_vae') && nodeReady('vhs') && nodeReady('h3_native');
     status.ready.upscale = has('seedvr2_dit') && has('seedvr2_vae') && nodeReady('seedvr2_native');
     status.ready.edit = has('qwen_image_unet') && has('qwen_image_clip') && has('qwen_image_vae') && nodeReady('qwen_native');
+    // Krea 2 Identity Edit engine: the Krea 2 base stack + Identity Edit LoRA +
+    // the comfyui-krea2edit node pack.
+    status.ready.krea2Edit = has('krea2_unet') && has('krea2_clip') && has('krea2_vae')
+        && has('krea2_identity_edit_lora') && nodeReady('krea2_edit');
     return status;
 }
 
@@ -864,6 +1030,8 @@ module.exports = {
     verifyToken,
     startDownload,
     startNodeInstall,
+    startKrea2EditInstall,
+    ensureKrea2EditReady,
     jobState,
     resolveCatalogEntry
 };

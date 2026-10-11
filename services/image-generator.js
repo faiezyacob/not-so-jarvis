@@ -996,6 +996,42 @@ function normalizeImageModel(value) {
     return null;
 }
 
+// --- Image-edit engine selection ----------------------------------------------
+// Editing an existing image can run one of two pipelines:
+//   - qwen   (default): the native Qwen Image 2.1 instruction editor
+//                        (TextEncodeQwenImage21), which accepts several
+//                        reference images addressed by position.
+//   - krea2  : the Krea 2 Identity Edit pipeline (Krea2EditModelPatch +
+//              Krea2EditGroundedEncode + the Identity Edit LoRA), a
+//              reference-guided edit that preserves a subject's identity.
+// The choice is a global image setting (`editEngine`) and only affects edits;
+// text-to-image generation keeps its own `model` selection.
+const EDIT_ENGINES = ['qwen', 'krea2'];
+const DEFAULT_EDIT_ENGINE = 'qwen';
+const KREA2_CLIP_TYPE = 'krea2';
+const DEFAULT_KREA2_IDENTITY_EDIT_LORA = 'krea2_identity_edit_v1_2.safetensors';
+// Krea 2 Identity Edit sampling window and caps (mirrors the reference node
+// pack: 8-12 steps, cfg 1-5, a 2 MP output ceiling snapped to the 16px grid).
+const DEFAULT_IDENTITY_EDIT_STEPS = 10;
+const DEFAULT_IDENTITY_EDIT_CFG = 1;
+const DEFAULT_IDENTITY_EDIT_REF_BOOST = 4;
+const DEFAULT_IDENTITY_EDIT_GROUNDING_PX = 768;
+const MAX_IDENTITY_EDIT_PIXELS = 2000000;
+
+function normalizeEditEngine(value) {
+    const v = String(value || '').trim().toLowerCase().replace(/[\s.-]+/g, '_');
+    if (v === 'qwen' || v === 'qwen_edit' || v === 'qwen_image' || v === 'qwen_image_edit' ||
+        v === 'qwen_image_2_1' || v === 'edit') {
+        return 'qwen';
+    }
+    if (v === 'krea2' || v === 'krea_2' || v === 'krea' || v === 'krea2ref' ||
+        v === 'krea2_edit' || v === 'krea_2_edit' || v === 'krea2_identity_edit' ||
+        v === 'krea_2_identity_edit' || v === 'identity') {
+        return 'krea2';
+    }
+    return null;
+}
+
 const DEFAULT_SETTINGS = {
     // Active text-to-image model: 'qwen_image_2_1' (default) or 'krea2'.
     model: normalizeImageModel(process.env.JARVIS_IMAGE_MODEL) || DEFAULT_IMAGE_MODEL,
@@ -1008,6 +1044,15 @@ const DEFAULT_SETTINGS = {
     qwenUnet: process.env.QWEN_IMAGE_UNET || 'qwen_image_2.1_int8_convrot.safetensors',
     qwenClip: process.env.QWEN_IMAGE_CLIP || 'qwen3vl_8b_int8_convrot.safetensors',
     qwenVae: process.env.QWEN_IMAGE_VAE || 'qwen_image_2.1_vae_bf16.safetensors',
+    // Image-edit engine: 'qwen' (default, the Qwen Image 2.1 instruction editor)
+    // or 'krea2' (the Krea 2 Identity Edit pipeline). Only affects edits of an
+    // existing image; text-to-image generation reads `model` above. The Krea 2
+    // engine additionally reads the Krea 2 base models (unet/clip/vae) and the
+    // Identity Edit LoRA, and its own step/CFG window.
+    editEngine: normalizeEditEngine(process.env.JARVIS_EDIT_ENGINE) || DEFAULT_EDIT_ENGINE,
+    krea2IdentityEditLora: process.env.KREA2_IDENTITY_EDIT_LORA || DEFAULT_KREA2_IDENTITY_EDIT_LORA,
+    krea2EditSteps: DEFAULT_IDENTITY_EDIT_STEPS,
+    krea2EditCfg: DEFAULT_IDENTITY_EDIT_CFG,
     // Qwen Image 2.1 samples at its own step/CFG defaults (see DEFAULT_QWEN_*),
     // so the sampling controls are model-scoped like the base-model filenames:
     // Krea 2 reads `steps`/`cfg`, Qwen reads `qwenSteps`/`qwenCfg`.
@@ -1064,7 +1109,7 @@ const DEFAULT_SETTINGS = {
 
 // Fields the user may override through the settings panel / API. Kept
 // separate from DEFAULT_SETTINGS so we only persist explicit overrides.
-const CONFIGURABLE_KEYS = ['model', 'unet', 'clip', 'clipType', 'vae', 'qwenUnet', 'qwenClip', 'qwenVae', 'aspectRatio', 'imageSize', 'width', 'height', 'steps', 'cfg', 'qwenSteps', 'qwenCfg', 'seedMode', 'seed', 'variations', 'loras', 'loraTriggerWords',
+const CONFIGURABLE_KEYS = ['model', 'unet', 'clip', 'clipType', 'vae', 'qwenUnet', 'qwenClip', 'qwenVae', 'editEngine', 'krea2IdentityEditLora', 'krea2EditSteps', 'krea2EditCfg', 'aspectRatio', 'imageSize', 'width', 'height', 'steps', 'cfg', 'qwenSteps', 'qwenCfg', 'seedMode', 'seed', 'variations', 'loras', 'loraTriggerWords',
     'upscaleEngine', 'upscaleMode', 'upscaleResolution', 'upscaleMultiplier', 'upscaleProfile', 'upscaleNoise', 'upscalePreScale',
     'seedvr2Dit', 'seedvr2Vae', 'seedvr2Attention'];
 
@@ -1190,6 +1235,9 @@ function sanitizeSettings(patch) {
         } else if (key === 'model') {
             const v = normalizeImageModel(value);
             if (v) out[key] = v;
+        } else if (key === 'editEngine') {
+            const v = normalizeEditEngine(value);
+            if (v) out[key] = v;
         } else if (key === 'aspectRatio') {
             const v = normalizeAspectRatio(value);
             if (v) out[key] = v;
@@ -1202,6 +1250,12 @@ function sanitizeSettings(patch) {
         } else if (key === 'steps' || key === 'qwenSteps') {
             const n = Math.round(Number(value));
             if (Number.isFinite(n) && n > 0) out[key] = n;
+        } else if (key === 'krea2EditSteps') {
+            const n = Math.round(Number(value));
+            if (Number.isFinite(n)) out[key] = Math.max(8, Math.min(12, n));
+        } else if (key === 'krea2EditCfg') {
+            const n = Number(value);
+            if (Number.isFinite(n)) out[key] = Math.max(1, Math.min(5, n));
         } else if (key === 'cfg' || key === 'qwenCfg') {
             const n = Number(value);
             if (Number.isFinite(n) && n >= 0) out[key] = n;
@@ -2385,6 +2439,172 @@ function buildQwenImage21EditGraph(instruction, loadName, options = {}) {
     return graph;
 }
 
+// --- Krea 2 Identity Edit ------------------------------------------------------
+//
+// The alternate image-edit pipeline, selected by `editEngine: 'krea2'`. It is a
+// reference-guided edit that preserves a subject's identity from a source image
+// (comfyui-krea2edit: Krea2EditModelPatch + Krea2EditGroundedEncode) driven by
+// the full-rank Krea 2 Identity Edit LoRA:
+//
+//   UNETLoader (Krea 2) → CLIPLoader (type krea2) → VAELoader
+//   LoraLoaderModelOnly (Identity Edit LoRA) → user LoRA stack (model-only)
+//   LoadImage (source, + optional source_b) → VAEEncode
+//   Krea2EditModelPatch (model + source latent + grounding) →
+//   Krea2EditGroundedEncode (positive/negative, prompt + grounding_px) →
+//   KSampler (euler / simple, denoise 1) → VAEDecode → SaveImage
+//
+// It differs from the Qwen editor in three ways that matter here:
+//   - it samples from an EmptySD3LatentImage at a fixed canvas (up to 2 MP),
+//     not from the source's own reference latent;
+//   - it accepts at most two images (the base source plus one secondary);
+//   - it needs the Krea 2 base models and the Identity Edit LoRA installed.
+//
+// `normalizeIdentityEditDimensions` caps the canvas at 2 MP, clamps each side
+// to >= 256 and snaps both to the 16px grid, so an oversized global image size
+// can never blow up VRAM in the edit pass.
+function normalizeIdentityEditDimensions(width, height) {
+    let w = Math.max(256, Math.round(Number(width) || 1024));
+    let h = Math.max(256, Math.round(Number(height) || 1024));
+    const pixels = w * h;
+    if (pixels > MAX_IDENTITY_EDIT_PIXELS) {
+        const scale = Math.sqrt(MAX_IDENTITY_EDIT_PIXELS / pixels);
+        w *= scale;
+        h *= scale;
+    }
+    w = Math.max(256, Math.round(w / 16) * 16);
+    h = Math.max(256, Math.round(h / 16) * 16);
+    while (w * h > MAX_IDENTITY_EDIT_PIXELS) {
+        if (w >= h) w -= 16;
+        else h -= 16;
+    }
+    return { width: w, height: h };
+}
+
+function buildKrea2IdentityEditGraph(instruction, loadName, options = {}) {
+    const settings = Object.assign({}, DEFAULT_SETTINGS, options.settings || {});
+    const identityLora = String(settings.krea2IdentityEditLora || '').trim();
+    const loadNames = [loadName]
+        .concat(Array.isArray(options.referenceLoadNames) ? options.referenceLoadNames : [])
+        .map((name) => String(name || '').trim())
+        .filter(Boolean)
+        // The node pack fuses a base source plus one secondary reference.
+        .slice(0, 2);
+    if (!loadNames.length) {
+        const error = new Error('Krea 2 Identity Edit needs a source image.');
+        error.code = 'edit_source_missing';
+        throw error;
+    }
+    if (!identityLora) {
+        const error = new Error('Krea 2 Identity Edit needs the Identity Edit LoRA (Settings > Image, or the Setup guide).');
+        error.code = 'krea2_identity_edit_lora_missing';
+        throw error;
+    }
+
+    const seed = Number.isInteger(options.seed) && options.seed >= 0 ? options.seed : 0;
+    const steps = clampToInt(options.steps, 8, 12, clampToInt(settings.krea2EditSteps, 8, 12, DEFAULT_IDENTITY_EDIT_STEPS));
+    const cfg = clampToRange(options.cfg, 1, 5, clampToRange(settings.krea2EditCfg, 1, 5, DEFAULT_IDENTITY_EDIT_CFG));
+    const refBoost = Math.round(clampToRange(options.refBoost, 0, 20, DEFAULT_IDENTITY_EDIT_REF_BOOST));
+    const groundingPx = Math.round(clampToRange(options.groundingPx, 384, 1024, DEFAULT_IDENTITY_EDIT_GROUNDING_PX));
+    const dimensions = normalizeIdentityEditDimensions(options.width, options.height);
+
+    const graph = {
+        unet: buildDiffusionLoaderNode(settings.unet),
+        clip: { class_type: 'CLIPLoader', inputs: { clip_name: settings.clip, type: settings.clipType || KREA2_CLIP_TYPE, device: 'default' } },
+        vae: { class_type: 'VAELoader', inputs: { vae_name: settings.vae } },
+        // The Identity Edit LoRA is applied model-only, ahead of the user stack.
+        identity_lora: {
+            class_type: 'LoraLoaderModelOnly',
+            inputs: { model: ['unet', 0], lora_name: identityLora, strength_model: 1 }
+        }
+    };
+    let modelLink = ['identity_lora', 0];
+
+    // Stack any attached LoRAs on top (model-only, same as the identity LoRA).
+    // A user entry that duplicates the identity LoRA is skipped so it is never
+    // applied twice.
+    (settings.loras || [])
+        .filter((entry) => entry && entry.on && entry.name && entry.name !== identityLora)
+        .forEach((entry, index) => {
+            const nodeId = 'lora' + (index + 1);
+            graph[nodeId] = {
+                class_type: 'LoraLoaderModelOnly',
+                inputs: {
+                    model: modelLink,
+                    lora_name: entry.name,
+                    strength_model: Number(entry.strength) || 0
+                }
+            };
+            modelLink = [nodeId, 0];
+        });
+
+    // One LoadImage + VAEEncode per reference (source, then optional source_b).
+    loadNames.forEach((name, index) => {
+        const suffix = index ? '_b' : '';
+        graph['source' + suffix] = { class_type: 'LoadImage', inputs: { image: name } };
+        graph['source_latent' + suffix] = {
+            class_type: 'VAEEncode',
+            inputs: { pixels: ['source' + suffix, 0], vae: ['vae', 0] }
+        };
+    });
+
+    const patchInputs = {
+        model: modelLink,
+        source_latent: ['source_latent', 0],
+        ref_boost: refBoost,
+        ref_boost_a: 1,
+        fit_mode: 'fit',
+        vae: ['vae', 0],
+        source_image: ['source', 0]
+    };
+    const positiveInputs = {
+        prompt: String(instruction || ''),
+        grounding_px: groundingPx,
+        clip: ['clip', 0],
+        image: ['source', 0]
+    };
+    const negativeInputs = {
+        prompt: '',
+        grounding_px: groundingPx,
+        clip: ['clip', 0],
+        image: ['source', 0]
+    };
+    if (loadNames[1]) {
+        patchInputs.source_latent_b = ['source_latent_b', 0];
+        patchInputs.source_image_b = ['source_b', 0];
+        positiveInputs.image_b = ['source_b', 0];
+        negativeInputs.image_b = ['source_b', 0];
+    }
+
+    graph.model_patch = { class_type: 'Krea2EditModelPatch', inputs: patchInputs };
+    graph.positive = { class_type: 'Krea2EditGroundedEncode', inputs: positiveInputs };
+    graph.negative = { class_type: 'Krea2EditGroundedEncode', inputs: negativeInputs };
+    graph.canvas = {
+        class_type: 'EmptySD3LatentImage',
+        inputs: { width: dimensions.width, height: dimensions.height, batch_size: 1 }
+    };
+
+    graph.sampler = {
+        class_type: 'KSampler',
+        inputs: {
+            model: ['model_patch', 0],
+            positive: ['positive', 0],
+            negative: ['negative', 0],
+            latent_image: ['canvas', 0],
+            seed,
+            steps,
+            cfg,
+            sampler_name: 'euler',
+            scheduler: 'simple',
+            denoise: 1
+        }
+    };
+
+    graph.decoded = { class_type: 'VAEDecode', inputs: { samples: ['sampler', 0], vae: ['vae', 0] } };
+    graph.save = { class_type: 'SaveImage', inputs: { images: ['decoded', 0], filename_prefix: 'not-so-jarvis/edit' } };
+
+    return graph;
+}
+
 // Extra references beyond the base image (image_1). The Qwen encoder accepts
 // up to image_16, but 5 extra references (6 images total) covers the
 // person + character identity + object + scene combinations the @ picker
@@ -2407,6 +2627,15 @@ async function editImage(sourceAbsPath, instruction, options = {}) {
         const startedAt = Date.now();
 
         const abs = String(sourceAbsPath || '');
+        const settings = effectiveSettings();
+        // Which editor runs: an explicit per-call override wins, then the global
+        // `editEngine` setting, then the Qwen default. The Krea 2 Identity Edit
+        // pipeline fuses at most one secondary reference, so extra @-references
+        // are dropped for that engine.
+        const editEngine = normalizeEditEngine(options.editEngine)
+            || normalizeEditEngine(settings.editEngine)
+            || DEFAULT_EDIT_ENGINE;
+        const maxReferences = editEngine === 'krea2' ? 1 : MAX_EDIT_REFERENCES;
         // Additional @-referenced images become image_2, image_3, … in the
         // encoder. Unreadable/empty/duplicate files are skipped rather than
         // failing the whole edit.
@@ -2416,7 +2645,7 @@ async function editImage(sourceAbsPath, instruction, options = {}) {
                 if (!p || p === abs) return false;
                 try { return fs.existsSync(p) && fs.statSync(p).size > 0; } catch (err) { return false; }
             })
-            .slice(0, MAX_EDIT_REFERENCES);
+            .slice(0, maxReferences);
         if (!abs || !fs.existsSync(abs)) {
             const error = new Error('The image to edit could not be found on disk. It may have been deleted.');
             error.code = 'edit_source_missing';
@@ -2431,13 +2660,12 @@ async function editImage(sourceAbsPath, instruction, options = {}) {
         const seed = Number.isInteger(options.seed) && options.seed >= 0
             ? options.seed
             : Math.floor(Math.random() * 2 ** 32);
-        const settings = effectiveSettings();
 
-        // Editing always uses the Qwen Image 2.1 editor. By default the output
-        // follows the source (sized from image_1, rounded to a multiple of 32);
-        // an explicit width/height pins the canvas to the global image settings
-        // (character scene generation). srcDims is only a metadata fallback when
-        // the output dimensions can't be read.
+        // Editing by default follows the source: the Qwen editor is sized from
+        // image_1 (rounded to a multiple of 32), and the Krea 2 editor samples an
+        // explicit canvas capped at 2 MP. An explicit width/height pins the canvas
+        // to the global image settings (character scene generation). srcDims is
+        // only a metadata fallback when the output dimensions can't be read.
         const srcDims = readImageDimensions(abs);
         const canvasWidth = clampToInt(options.width, 0, 4096, 0);
         const canvasHeight = clampToInt(options.height, 0, 4096, 0);
@@ -2480,24 +2708,39 @@ async function editImage(sourceAbsPath, instruction, options = {}) {
         }
 
         let basename;
+        let usedModel;
         try {
-            const graph = buildQwenImage21EditGraph(finalInstruction, loadName, {
-                settings,
-                seed,
-                steps: options.steps,
-                cfg: options.cfg,
-                resolution: options.resolution,
-                width: canvasWidth,
-                height: canvasHeight,
-                negativePrompt: options.negativePrompt,
-                referenceLoadNames
-            });
+            const graph = editEngine === 'krea2'
+                ? buildKrea2IdentityEditGraph(finalInstruction, loadName, {
+                    settings,
+                    seed,
+                    steps: options.steps,
+                    cfg: options.cfg,
+                    width: dims.width,
+                    height: dims.height,
+                    referenceLoadNames
+                })
+                : buildQwenImage21EditGraph(finalInstruction, loadName, {
+                    settings,
+                    seed,
+                    steps: options.steps,
+                    cfg: options.cfg,
+                    resolution: options.resolution,
+                    width: canvasWidth,
+                    height: canvasHeight,
+                    negativePrompt: options.negativePrompt,
+                    referenceLoadNames
+                });
 
+            const clipType = editEngine === 'krea2'
+                ? String(settings.clipType || KREA2_CLIP_TYPE)
+                : QWEN_IMAGE_CLIP_TYPE;
+            usedModel = editEngine === 'krea2' ? 'Krea 2 Edit' : 'Qwen Image 2.1 Edit';
             const info = await comfyui.getObjectInfo();
-            await validateGraphAgainstComfy(info, graph, QWEN_IMAGE_CLIP_TYPE);
+            await validateGraphAgainstComfy(info, graph, clipType);
 
             const pid = await comfyui.queuePrompt(graph);
-            console.log('[image-generator] queued Qwen Image 2.1 edit workflow:', pid);
+            console.log('[image-generator] queued ' + usedModel + ' workflow:', pid);
 
             const history = await comfyui.waitForPrompt(pid, { timeoutMs: options.timeoutMs, signal });
             const files = comfyui.findOutputFiles(history.outputs || {}, /\.(?:png|jpg|jpeg|webp)$/i);
@@ -2532,7 +2775,7 @@ async function editImage(sourceAbsPath, instruction, options = {}) {
             rawFilename: basename,
             conversationId: options.conversationId || null,
             prompt: finalInstruction,
-            model: 'Qwen Image 2.1 Edit',
+            model: usedModel || 'Qwen Image 2.1 Edit',
             loras: activeLoras,
             width: width || dims.width,
             height: height || dims.height,
@@ -2600,6 +2843,12 @@ module.exports = {
     resolveBaseModels,
     IMAGE_MODELS,
     QWEN_IMAGE_CLIP_TYPE,
+    EDIT_ENGINES,
+    normalizeEditEngine,
+    KREA2_CLIP_TYPE,
+    DEFAULT_KREA2_IDENTITY_EDIT_LORA,
+    normalizeIdentityEditDimensions,
+    buildKrea2IdentityEditGraph,
     buildQwenImage21EditGraph,
     detectEditIntent,
     cleanEditInstruction,

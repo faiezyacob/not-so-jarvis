@@ -21,6 +21,7 @@ const outfitPacks = require('./outfit-packs');
 const activities = require('./activities');
 const faceActions = require('./face-actions');
 const characterStudio = require('../character-studio');
+const lifestylePrompt = require('./lifestyle-prompt');
 
 const ACTIONS = {
     SURPRISE: 'surprise',
@@ -56,16 +57,34 @@ const MARKER_RE = /\[\[playground:(\{[^\n]*?\})\]\]/g;
 // authentic handheld-phone snapshot; every other theme and the rest of the
 // image pipeline (chat, edit, UGC, Director, Creator Studio) stay untouched.
 const THEME_IMAGE_STYLES = {
-    'lifestyle-candid': 'An ultra-realistic photoreal image captured with an authentic handheld iPhone 16 Pro, ' +
-        'styled as a casual Instagram lifestyle photo'
+    'lifestyle-candid': lifestylePrompt.LIFESTYLE_PHOTOGRAPHY_SUFFIX
 };
+
+// Theme-scoped normalization stage. Lifestyle & Candid carries a deterministic
+// post-process (one identity block, scene-consistent lighting, neutral colour
+// guidance) that runs on the built prompt BEFORE applyThemeImageStyle appends
+// the photography suffix. Every other theme passes through untouched.
+function normalizeThemePrompt(session, prompt) {
+    const text = String(prompt || '').trim();
+    if (!session || !THEME_IMAGE_STYLES[session.themeId]) return text;
+    const c = session.concept || {};
+    return lifestylePrompt.normalizeLifestylePrompt(text, {
+        identity: { subject: c.subject, appearance: c.appearance, hair: c.hair },
+        scene: { environment: c.environment, lighting: c.lighting },
+        // A user-supplied prompt is authoritative: its explicit time of day must
+        // not be overwritten by the theme's default lighting.
+        userPrompt: c.userPrompt || '',
+        locks: session.locks,
+        mode: session.mode
+    });
+}
 
 function applyThemeImageStyle(session, prompt) {
     const style = session && THEME_IMAGE_STYLES[session.themeId];
     if (!style) return String(prompt || '');
     const text = String(prompt || '').trim();
     if (!text || text.includes(style)) return text;
-    return text + '. ' + style;
+    return text.replace(/[.\s]+$/, '') + '. ' + style;
 }
 
 function markerLine(card) {
@@ -1138,6 +1157,7 @@ module.exports = {
     modify,
     buildImageRequest,
     buildPortraitRequest,
+    normalizeThemePrompt,
     applyThemeImageStyle,
     needsCharacterImage,
     setCharacterImage,

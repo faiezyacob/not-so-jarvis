@@ -316,6 +316,20 @@
                                 <span class="settings-hint">UNET = diffusion model, CLIP = text encoder, VAE = VAE. Switching models remembers each model's filenames.</span>
                             </div>
                         </div>
+                        <div class="settings-card" data-search="image edit engine qwen krea2 identity instruction reference">
+                            <div class="settings-card-title">IMAGE EDIT</div>
+                            <div class="settings-card-sub">Which pipeline edits an existing image (and character/scene references).</div>
+                            <div class="settings-field">
+                                <label class="settings-field-label" for="imageEditEngine">Edit Engine</label>
+                                <select class="settings-select" id="imageEditEngine">
+                                    <option value="qwen">Qwen Image Edit</option>
+                                    <option value="krea2">Krea 2 Identity Edit</option>
+                                </select>
+                                <span class="settings-hint">Qwen Image Edit (default) is a native instruction editor that accepts several reference images addressed by position. Krea 2 Identity Edit is a reference-guided edit that preserves a subject's identity — it needs the Krea 2 base models, the Identity Edit LoRA and the comfyui-krea2edit node pack (Setup), and it uses at most one extra reference image.</span>
+                                <span class="settings-save-status" id="imageEditEngineStatus"></span>
+                                <button class="settings-browse-btn" id="imageEditEngineInstall" type="button" style="display:none;">Install Krea 2 edit components</button>
+                            </div>
+                        </div>
                         <div class="settings-card" data-search="image aspect ratio size resolution output dimensions">
                             <div class="settings-card-title">OUTPUT</div>
                             <div class="settings-field-row">

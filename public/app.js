@@ -1321,6 +1321,84 @@ function initImageGenSettings() {
     if (seedModeSelect) seedModeSelect.addEventListener('change', () => { syncSeedDisabled(); persistValue('seedMode', seedModeSelect.value, seedModeSelect.value); });
     if (seedInput) seedInput.addEventListener('change', () => persistValue('seed', Math.max(0, Math.floor(Number(seedInput.value) || 0)), seedInput.value));
 
+    // Image edit engine: Qwen Image Edit (default) or Krea 2 Identity Edit.
+    // Applies to every edit of an existing image, including character/scene
+    // reference edits. The Krea 2 engine needs its node pack + Identity Edit
+    // LoRA installed, so its readiness is checked and surfaced here (with a
+    // one-click install) instead of only failing at edit time.
+    const editEngineSelect = document.getElementById('imageEditEngine');
+    const editEngineStatusEl = document.getElementById('imageEditEngineStatus');
+    const editEngineInstallBtn = document.getElementById('imageEditEngineInstall');
+
+    const scheduleEditEngineRecheck = (delay) => {
+        if (!editEngineStatusEl) return;
+        if (editEngineStatusEl.dataset.timer) clearTimeout(Number(editEngineStatusEl.dataset.timer));
+        editEngineStatusEl.dataset.timer = String(setTimeout(() => {
+            delete editEngineStatusEl.dataset.timer;
+            refreshEditEngineReadiness();
+        }, delay));
+    };
+
+    const refreshEditEngineReadiness = async () => {
+        if (!editEngineStatusEl) return;
+        if (!editEngineSelect || editEngineSelect.value !== 'krea2') {
+            editEngineStatusEl.style.display = 'none';
+            if (editEngineInstallBtn) editEngineInstallBtn.style.display = 'none';
+            return;
+        }
+        editEngineStatusEl.style.display = '';
+        editEngineStatusEl.classList.remove('settings-save-status--error');
+        if (editEngineInstallBtn) editEngineInstallBtn.style.display = 'none';
+        try {
+            const res = await fetch('/api/setup/status');
+            const data = await res.json().catch(() => ({}));
+            if (data && data.ready && data.ready.krea2Edit) {
+                editEngineStatusEl.textContent = 'Krea 2 Identity Edit components ready.';
+            } else if (data && data.job && data.job.running && data.job.kind === 'krea2_edit') {
+                editEngineStatusEl.textContent = 'Installing Krea 2 Identity Edit components… restart ComfyUI when it finishes (Settings > Setup).';
+                scheduleEditEngineRecheck(3000);
+            } else if (data && data.job && data.job.running) {
+                editEngineStatusEl.textContent = 'A Setup job is already running — Krea 2 edit components install after it, or use Settings > Setup.';
+                scheduleEditEngineRecheck(5000);
+            } else if (data && data.comfyAvailable === false) {
+                editEngineStatusEl.textContent = 'ComfyUI offline — start it to install the Krea 2 Identity Edit components.';
+                editEngineStatusEl.classList.add('settings-save-status--error');
+                if (editEngineInstallBtn) editEngineInstallBtn.style.display = '';
+            } else {
+                editEngineStatusEl.textContent = 'Krea 2 Identity Edit components missing.';
+                editEngineStatusEl.classList.add('settings-save-status--error');
+                if (editEngineInstallBtn) editEngineInstallBtn.style.display = '';
+            }
+        } catch {
+            editEngineStatusEl.textContent = 'Could not check Krea 2 edit components.';
+            editEngineStatusEl.classList.add('settings-save-status--error');
+        }
+    };
+
+    if (editEngineSelect) {
+        editEngineSelect.addEventListener('change', () => {
+            persistValue(
+                'editEngine',
+                editEngineSelect.value,
+                editEngineSelect.value === 'krea2' ? 'Krea 2 Identity Edit' : 'Qwen Image Edit'
+            );
+            // The settings POST triggers the first-enable auto-install; give it a
+            // moment, then reflect its state.
+            scheduleEditEngineRecheck(1500);
+        });
+    }
+    if (editEngineInstallBtn) {
+        editEngineInstallBtn.addEventListener('click', async () => {
+            editEngineInstallBtn.disabled = true;
+            editEngineStatusEl.textContent = 'Starting Krea 2 Identity Edit install…';
+            try {
+                await fetch('/api/setup/krea2-edit', { method: 'POST' });
+            } catch { /* status refresh reports the state */ }
+            editEngineInstallBtn.disabled = false;
+            scheduleEditEngineRecheck(1200);
+        });
+    }
+
     // Custom width/height (only shown when Size = Custom). Values are clamped
     // to the supported range; the server snaps them to multiples of 32.
     const persistDimension = (key, input) => {
@@ -1409,6 +1487,12 @@ function initImageGenSettings() {
                     : (defaults.seed || 0);
             }
             syncSeedDisabled();
+
+            // Restore the image-edit engine (Qwen default, or Krea 2 identity edit).
+            if (editEngineSelect) {
+                editEngineSelect.value = settings.editEngine || defaults.editEngine || 'qwen';
+            }
+            refreshEditEngineReadiness();
 
             if (!data.comfyAvailable) {
                 setStatus('ComfyUI unreachable — showing defaults only', true);

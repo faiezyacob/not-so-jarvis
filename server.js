@@ -582,7 +582,15 @@ async function handleAPI(req, res, urlPath) {
     if (urlPath === '/api/settings/image' && req.method === 'POST') {
         try {
             const body = await readBody(req);
+            const previous = imageGenerator.effectiveSettings();
             const settings = imageGenerator.saveSettings(body || {});
+            // First-enable auto-install: switching the image-edit engine to Krea 2
+            // kicks off the background install of its comfyui-krea2edit node pack
+            // and Identity Edit LoRA when they are missing. Non-blocking (fire and
+            // forget); the Setup guide reports progress.
+            if (previous.editEngine !== 'krea2' && settings.editEngine === 'krea2') {
+                modelSetup.ensureKrea2EditReady().catch(() => {});
+            }
             json(res, 200, { ok: true, settings });
         } catch (err) {
             json(res, 400, { error: err.message });
@@ -888,6 +896,19 @@ async function handleAPI(req, res, urlPath) {
                 return true;
             }
             const started = modelSetup.startNodeInstall(ids);
+            json(res, started.started ? 200 : 409, { ok: started.started, job: started.job, reason: started.reason || null });
+        } catch (err) {
+            json(res, 500, { error: err.message });
+        }
+        return true;
+    }
+
+    // POST /api/setup/krea2-edit — install the Krea 2 Identity Edit stack
+    // (comfyui-krea2edit node pack + Identity Edit LoRA) in one background job.
+    // Used by the Setup guide and the image-edit engine's first-enable hook.
+    if (urlPath === '/api/setup/krea2-edit' && req.method === 'POST') {
+        try {
+            const started = modelSetup.startKrea2EditInstall();
             json(res, started.started ? 200 : 409, { ok: started.started, job: started.job, reason: started.reason || null });
         } catch (err) {
             json(res, 500, { error: err.message });
@@ -5060,9 +5081,12 @@ async function runPlaygroundGenerate(req, res, ctx, session, rawMessage) {
     vramManager.rememberChatModel(provider, model);
     await vramManager.freeVRAMBeforeChat();
     const enhanced = await imageGenerator.buildImagePrompt(request, providers, provider, model, think);
-    // Lifestyle & Candid carries one extra photographic treatment; every other
-    // playground theme and the rest of the image pipeline are untouched.
-    const imagePrompt = playground.applyThemeImageStyle(session, enhanced ? enhanced.prompt : request.user_prompt);
+    // Lifestyle & Candid first normalizes the built prompt (one identity block,
+    // scene-consistent lighting, neutral colour guidance), then the theme
+    // photography suffix is appended once. Every other playground theme and the
+    // rest of the image pipeline are untouched.
+    const normalizedPrompt = playground.normalizeThemePrompt(session, enhanced ? enhanced.prompt : request.user_prompt);
+    const imagePrompt = playground.applyThemeImageStyle(session, normalizedPrompt);
     const attributes = enhanced ? enhanced.attributes : null;
     session.generatedPrompt = {
         prompt: imagePrompt,
@@ -6507,6 +6531,8 @@ function friendlyImageError(err) {
         case 'generation_cancelled':
             return 'Generation cancelled. It was removed from the queue before it started.';
         case 'edit_source_missing':
+            return err.message;
+        case 'krea2_identity_edit_lora_missing':
             return err.message;
         case 'upscale_source_missing':
             return 'The image to upscale could not be found on disk. It may have been deleted.';

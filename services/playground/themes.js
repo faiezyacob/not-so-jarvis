@@ -606,16 +606,19 @@ const THEMES = [
         ]
     },
     {
-        // Warm, everyday photography — candid moments, selfies, mirror selfies,
+        // Everyday photography — candid moments, selfies, mirror selfies,
         // outfit checks and spontaneous personal photos. The vocabulary stays
         // deliberately "phone-camera" and unposed — no editorial/stock-photo
-        // language — so the result reads like a believable personal post.
-        // Subcategories are data-only bundles; add one by adding a `categories`
-        // entry below. Outfits are assembled from `outfitSystem` below so the
-        // combination space is much larger than the flat `outfits` list.
+        // language — so the result reads like a believable personal post. The
+        // lighting/colour vocabulary is intentionally neutral and true-to-life
+        // (no golden-hour or warm-grade bias) so images do not default to a
+        // golden/yellow cast. Subcategories are data-only bundles; add one by
+        // adding a `categories` entry below. Outfits are assembled from
+        // `outfitSystem` below so the combination space is much larger than the
+        // flat `outfits` list.
         id: 'lifestyle-candid',
         label: 'Lifestyle & Candid',
-        description: 'Warm, everyday moments captured as if they were never posed — selfies, mirror selfies, outfit checks, and spontaneous personal photos.',
+        description: 'Everyday moments captured as if they were never posed — selfies, mirror selfies, outfit checks, and spontaneous personal photos.',
         aspectRatios: ['1:1', '4:5', '16:9', '9:16'],
         // Theme-level fallback pools. Subcategories supply their own
         // environment/activity/camera/composition; these cover the rest and are
@@ -624,7 +627,7 @@ const THEMES = [
             'a sunlit kitchen with a half-drunk cup of coffee',
             'a lived-in living room with linen and houseplants',
             'a neighbourhood café beside a rain-speckled window',
-            'a balcony overlooking quiet rooftops at golden hour',
+            'a balcony overlooking quiet rooftops in soft daylight',
             'a bookshop aisle between tall wooden shelves'
         ],
         activities: [
@@ -920,18 +923,18 @@ const THEMES = [
         ],
         lighting: [
             'soft natural window light',
-            'warm window light with soft shadows',
-            'gentle golden-hour glow through curtains',
+            'soft natural window light with gentle shadows',
             'bright diffused daylight on an overcast afternoon',
             'dappled light through leaves',
-            'the warm pool of a single table lamp at dusk',
-            'warm afternoon daylight',
+            'bright afternoon daylight',
             'bright overcast daylight',
+            'even, neutral indoor lighting',
             'everyday indoor lighting',
-            'warm lamp light in the evening',
-            'the ambient light of a cafe'
+            'soft ambient cafe lighting',
+            'clean natural daylight',
+            'the soft glow of a single table lamp in the evening'
         ],
-        moods: ['relaxed', 'playful', 'effortless', 'warm', 'spontaneous', 'low-key', 'cheerful', 'cosy',
+        moods: ['relaxed', 'playful', 'effortless', 'natural', 'spontaneous', 'low-key', 'cheerful', 'cosy',
             'unguarded', 'content'],
         styles: [
             'authentic phone-camera photo, casual and unposed',
@@ -940,15 +943,16 @@ const THEMES = [
             'candid personal photo, straight off a phone',
             'relaxed lifestyle photo posted to social media',
             'documentary lifestyle photography',
-            'natural light 35mm film look',
+            'natural light photography look',
             'soft editorial lifestyle imagery',
             'Instagram-natural candid photography'
         ],
         // Positive, casual guidance appended to every Lifestyle & Candid concept so the
-        // image never drifts toward a professional photoshoot.
+        // image never drifts toward a professional photoshoot or a warm/golden cast.
         constraints: [
             'Shoot like an everyday phone snapshot: casual, unposed and natural',
-            'Authentic social-media look, not a staged studio session'
+            'Authentic social-media look, not a staged studio session',
+            'Neutral, true-to-life colour and white balance with natural skin tones and no warm, golden or amber cast'
         ],
         categories: [
             {
