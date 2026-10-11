@@ -3291,6 +3291,7 @@ async function bootApp() {
     if (window.PlaygroundUI && typeof window.PlaygroundUI.init === 'function') window.PlaygroundUI.init();
     if (window.CharacterIdentityUI && typeof window.CharacterIdentityUI.init === 'function') window.CharacterIdentityUI.init();
     if (window.UGCUI && typeof window.UGCUI.init === 'function') window.UGCUI.init();
+    if (window.CompanionUI && typeof window.CompanionUI.init === 'function') window.CompanionUI.init();
     await Chat.refreshConversationList();
     renderActiveChat();
 }

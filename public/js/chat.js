@@ -36,6 +36,10 @@ const Chat = (() => {
 
     const BASE_TITLE = document.title || 'NOT-SO-JARVIS';
 
+    // The assistant label shown in the chat. Companion conversations (linked to
+    // a character) show the character's name instead of JARVIS.
+    let assistantDisplayName = 'JARVIS';
+
     function setProgressTitle(text) {
         document.title = text ? text + ' · ' + BASE_TITLE : BASE_TITLE;
     }
@@ -160,6 +164,16 @@ const Chat = (() => {
             title.className = 'conv-title' + (conv.private ? ' conv-title--blurred' : '');
             title.textContent = conv.title || 'Untitled';
             title.title = conv.private ? 'Private conversation' : (conv.title || 'Untitled');
+
+            // Companion chats (linked to a character) are marked with a small
+            // badge so they are distinguishable from ordinary conversations.
+            if (conv.characterId) {
+                const badge = document.createElement('span');
+                badge.className = 'conv-companion-badge';
+                badge.textContent = '◆ companion';
+                badge.title = 'Companion chat';
+                title.appendChild(badge);
+            }
 
             const actions = document.createElement('div');
             actions.className = 'conv-actions';
@@ -531,6 +545,35 @@ const Chat = (() => {
             generatedMetaCache = [];
         }
         return generatedMetaCache;
+    }
+
+    // Apply the assistant display name (character name for companion chats) to
+    // the composer placeholder, the conversation header and any rendered AI
+    // message labels.
+    function applyAssistantName(name) {
+        assistantDisplayName = name || 'JARVIS';
+        if (chatInput) chatInput.placeholder = 'Message ' + assistantDisplayName + '...';
+        document.querySelectorAll('.message--ai .message-role').forEach((node) => {
+            node.textContent = assistantDisplayName;
+        });
+    }
+
+    // Resolve the current conversation's character (if any) and update the label.
+    async function resolveAssistantName() {
+        let name = 'JARVIS';
+        try {
+            const conversations = await Conversations.list();
+            const currentId = Conversations.currentId();
+            const conv = conversations.find((c) => c.id === currentId);
+            if (conv && conv.characterId) {
+                const options = await characterOptions();
+                const match = options.find((c) => c.id === conv.characterId);
+                if (match && match.name) name = match.name;
+            }
+        } catch (e) {
+            name = 'JARVIS';
+        }
+        applyAssistantName(name);
     }
 
     async function characterOptions() {
@@ -1006,7 +1049,12 @@ const Chat = (() => {
         const creatorFrameParsed = (window.CreatorStudioUI && typeof window.CreatorStudioUI.extract === 'function')
             ? window.CreatorStudioUI.extract(ugcParsed.text)
             : { text: ugcParsed.text, cards: [] };
-        contentEl.innerHTML = Markdown.parse(creatorFrameParsed.text);
+        // Companion photos persist a [[photo-actions]] marker; strip it, then
+        // attach follow-up actions (another photo / back camera / video) below.
+        const photoParsed = (window.PhotoActions && typeof window.PhotoActions.extract === 'function')
+            ? window.PhotoActions.extract(creatorFrameParsed.text)
+            : { text: creatorFrameParsed.text, active: false };
+        contentEl.innerHTML = Markdown.parse(photoParsed.text);
         if (streaming) return;
         collapseUpscalePairs(contentEl);
         attachGeneratedPromptDisclosure(contentEl);
@@ -1030,6 +1078,9 @@ const Chat = (() => {
         }
         if (window.CreatorStudioUI && typeof window.CreatorStudioUI.render === 'function') {
             creatorFrameParsed.cards.forEach((card) => window.CreatorStudioUI.render(contentEl, card));
+        }
+        if (photoParsed.active && window.PhotoActions && typeof window.PhotoActions.attach === 'function') {
+            window.PhotoActions.attach(contentEl);
         }
     }
 
@@ -1093,6 +1144,10 @@ const Chat = (() => {
 
     function renderMessages(messages) {
         chatMessagesEl.innerHTML = '';
+
+        // Keep the assistant label in sync with the conversation (companion vs
+        // ordinary chat). Fire-and-forget; applyAssistantName updates the DOM.
+        resolveAssistantName();
 
         if (!messages || messages.length === 0) {
             const empty = document.createElement('div');
@@ -1163,7 +1218,7 @@ const Chat = (() => {
 
         const roleLabel = document.createElement('div');
         roleLabel.className = 'message-role';
-        roleLabel.textContent = role === 'assistant' ? 'JARVIS' : 'USER';
+        roleLabel.textContent = role === 'assistant' ? assistantDisplayName : 'USER';
 
         const contentEl = document.createElement('div');
         contentEl.className = 'message-content';
@@ -1396,7 +1451,7 @@ const Chat = (() => {
 
             const roleLabel = document.createElement('div');
             roleLabel.className = 'message-role';
-            roleLabel.textContent = 'JARVIS';
+            roleLabel.textContent = assistantDisplayName;
 
             const contentEl = document.createElement('div');
             contentEl.className = 'message-content';
@@ -1746,7 +1801,7 @@ const Chat = (() => {
 
         const roleLabel = document.createElement('div');
         roleLabel.className = 'message-role';
-        roleLabel.textContent = 'JARVIS';
+        roleLabel.textContent = assistantDisplayName;
 
         const dotsContainer = document.createElement('div');
         dotsContainer.className = 'typing-indicator';

@@ -15,6 +15,7 @@
             <span class="header-title">NOT-SO-JARVIS</span>
         </div>
         <div class="header-right">
+            <button class="studio-trigger" id="companionsBtn" type="button" title="Open Companions">COMPANIONS</button>
             <button class="studio-trigger" id="ugcStudioOpen" type="button" title="Open UGC Studio">UGC STUDIO</button>
             <button class="studio-trigger" id="creatorStudioOpen" type="button" title="Open Creator Studio">CREATOR STUDIO</button>
             <button class="settings-btn" id="settingsBtn" aria-label="Settings">
@@ -1644,6 +1645,27 @@
         </div>
     </div>
 
+    <div class="modal-overlay" id="companionOverlay">
+        <div class="modal companion-modal" role="dialog" aria-modal="true" aria-labelledby="companionModalTitle">
+            <div class="modal-header" id="companionModalHeader">
+                <span class="modal-title" id="companionModalTitle">COMPANIONS</span>
+                <button class="identity-modal-close" id="companionClose" type="button" aria-label="Close" title="Close">&times;</button>
+            </div>
+            <div class="companion-layout">
+                <aside class="companion-sidebar">
+                    <div class="companion-sidebar-title">Characters</div>
+                    <div class="companion-list" id="companionList"></div>
+                </aside>
+                <div class="companion-detail-wrap">
+                    <div class="companion-detail-head">
+                        <span class="companion-detail-name" id="companionCharacterName">Companion</span>
+                    </div>
+                    <div class="companion-detail" id="companionDetail"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script src="js/db.js"></script>
     <script src="js/dialog.js"></script>
     <script src="js/markdown.js"></script>
@@ -1660,8 +1682,10 @@
     <script src="js/mention-picker.js"></script>
 <script src="js/ugc.js"></script>
 <script src="js/creator-studio.js"></script>
-<script src="js/chat-suggestions.js"></script>
-<script src="js/chat.js"></script>
+    <script src="js/companion.js"></script>
+    <script src="js/chat-suggestions.js"></script>
+    <script src="js/photo-actions.js"></script>
+    <script src="js/chat.js"></script>
     <script src="js/voice-input.js"></script>
     <script src="js/voice-output.js"></script>
     <script src="js/chat-lora.js"></script>

@@ -19,6 +19,7 @@ const fs = require('fs');
 const path = require('path');
 const characterModel = require('./playground/character');
 const characterIdentity = require('./character-identity');
+const companionStore = require('./companion/store');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 // An explicit path keeps the tests hermetic (they never touch data/).
@@ -30,7 +31,7 @@ const CHARACTER_SCHEMA_VERSION = 2;
 const CHARACTER_FIELDS = [
     'identityText', 'identitySignature', 'appearance', 'hair', 'style',
     'appearanceCategory', 'appearanceCategoryLabel',
-    'outfitPack', 'outfitPackCustom', 'provenance'
+    'outfitPack', 'outfitPackCustom', 'provenance', 'companion'
 ];
 
 const MAX_FIELD_LENGTH = 600;
@@ -84,6 +85,9 @@ function migratePreset(value) {
         appearanceCategoryLabel: clean(src.appearanceCategoryLabel || (structured && structured.appearanceCategoryLabel)),
         outfitPack: clean(src.outfitPack || (normalized.wardrobePreference && normalized.wardrobePreference.packId)),
         outfitPackCustom: clean(src.outfitPackCustom || (normalized.wardrobePreference && normalized.wardrobePreference.customText)),
+        // Optional companionship settings (personality, style, memory toggles).
+        // Absent on legacy characters; sanitize fills safe defaults.
+        companion: companionStore.sanitizeSettings(src.companion),
         // The single-sheet Character Identity package (one base image, one sheet).
         approvedBaseImage: pkg.approvedBaseImage,
         identitySheet: pkg.identitySheet,
@@ -217,6 +221,25 @@ function clearIdentitySheet(id) {
     return preset;
 }
 
+// --- Companionship settings ---
+
+// The character's optional companion settings (personality, style, memory).
+function getCompanion(id) {
+    const preset = get(id);
+    if (!preset) return null;
+    return companionStore.sanitizeSettings(preset.companion);
+}
+
+// Merge a partial companion settings patch onto a character.
+function setCompanion(id, patch) {
+    const preset = get(id);
+    if (!preset) return null;
+    preset.companion = companionStore.sanitizeSettings(Object.assign({}, preset.companion || {}, patch || {}));
+    preset.updatedAt = new Date().toISOString();
+    savePresets();
+    return preset.companion;
+}
+
 module.exports = {
     CHARACTER_SCHEMA_VERSION,
     CHARACTER_FIELDS,
@@ -231,5 +254,7 @@ module.exports = {
     setIdentityPackage,
     setCandidateBaseImage,
     approveBaseImage,
-    clearIdentitySheet
+    clearIdentitySheet,
+    getCompanion,
+    setCompanion
 };

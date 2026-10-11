@@ -63,11 +63,16 @@ function sortMessages(list) {
 
 function createConversation(data, sessionId) {
     const now = Date.now();
+    const characterId = data && typeof data.characterId === 'string' && data.characterId.trim()
+        ? data.characterId.trim() : null;
     const conversation = {
         id: uuid(),
         title: (data && data.title) || 'New Conversation',
         summary: '',
         private: Boolean(data && data.private),
+        // Optional link to a saved character. A conversation with a characterId
+        // is a persistent companion chat; a plain conversation leaves it null.
+        characterId,
         // Owning device session. Conversations are private to the session that
         // created them; a missing value marks a pre-session (legacy) record.
         sessionId: sessionId || null,
@@ -77,6 +82,14 @@ function createConversation(data, sessionId) {
     store.conversations.push(conversation);
     saveStore();
     return conversation;
+}
+
+// Every conversation linked to a character the session may access.
+function getConversationsForCharacter(characterId, sessionId) {
+    const key = String(characterId || '').trim();
+    if (!key) return [];
+    return sortConversations(store.conversations.filter((c) => c.characterId === key &&
+        (!sessionId || !c.sessionId || c.sessionId === sessionId)));
 }
 
 function getConversation(id) {
@@ -243,6 +256,7 @@ module.exports = {
     createConversation,
     getConversation,
     getAllConversations,
+    getConversationsForCharacter,
     canAccessConversation,
     adoptLegacyConversations,
     renameConversation,

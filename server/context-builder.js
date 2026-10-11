@@ -59,6 +59,7 @@ const PLAYGROUND_MARKER_RE = /\n*\[\[playground:\{[^\n]*?\}\]\]/g;
 const UGC_MARKER_RE = /\n*\[\[ugc:\{[^\n]*?\}\]\]/g;
 const CREATOR_FRAME_MARKER_RE = /\n*\[\[creator-frame:\{[^\n]*?\}\]\]/g;
 const PROMPT_SUGGESTION_MARKER_RE = /\n*\[\[prompt-suggestion\]\]/g;
+const PHOTO_ACTIONS_MARKER_RE = /\n*\[\[photo-actions\]\]/g;
 
 function stripDirectorMarkers(content) {
     return String(content === undefined || content === null ? '' : content)
@@ -68,6 +69,7 @@ function stripDirectorMarkers(content) {
         .replace(UGC_MARKER_RE, '')
         .replace(CREATOR_FRAME_MARKER_RE, '')
         .replace(PROMPT_SUGGESTION_MARKER_RE, '')
+        .replace(PHOTO_ACTIONS_MARKER_RE, '')
         .trim();
 }
 
@@ -113,12 +115,20 @@ function getSystemPrompt() {
     return SYSTEM_PROMPT + '\n\nAdditional persona instruction from the user:\n' + custom;
 }
 
-function buildContext(conversationId, userMessage, provider, model, activeTaskContext, images, environmentContext) {
+function buildContext(conversationId, userMessage, provider, model, activeTaskContext, images, environmentContext, companionContext) {
     const recent = getBoundedRecentMessages(conversationId, userMessage);
 
     const messages = [];
 
     messages.push({ role: 'system', content: getSystemPrompt() });
+
+    // Companion persona (identity + personality + retrieved memory + fictional
+    // state) supersedes the generic assistant persona for character chats. It
+    // is placed next to the base prompt so it reads as the authoritative voice,
+    // while the base guardrails (no fake links, no tool JSON) still apply.
+    if (companionContext) {
+        messages.push({ role: 'system', content: companionContext });
+    }
 
     if (environmentContext) {
         messages.push({ role: 'system', content: environmentContext });

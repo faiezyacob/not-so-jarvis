@@ -238,6 +238,26 @@ function setWeather(patch) {
     return current;
 }
 
+// --- Companion chat: memory + fictional-life settings (Settings > Companion) ---
+
+const COMPANION_SETTINGS_KEY = 'companion';
+const companionService = require('../services/companion');
+
+function getCompanionSettings() {
+    const config = loadConfig();
+    const stored = config[COMPANION_SETTINGS_KEY];
+    return companionService.sanitizeGlobalSettings(stored, companionService.DEFAULT_GLOBAL_SETTINGS);
+}
+
+function setCompanionSettings(patch) {
+    const config = loadConfig();
+    const current = companionService.sanitizeGlobalSettings(config[COMPANION_SETTINGS_KEY], companionService.DEFAULT_GLOBAL_SETTINGS);
+    const next = companionService.sanitizeGlobalSettings(Object.assign({}, current, patch || {}), current);
+    config[COMPANION_SETTINGS_KEY] = next;
+    saveConfig(config);
+    return next;
+}
+
 // --- News feeds (dashboard widget + chat context) ---
 
 const NEWS_SETTINGS_KEY = 'news';
@@ -348,4 +368,4 @@ function setComfyUI(patch) {
     return current;
 }
 
-module.exports = { getConfig, setModelConfig, getReasoningEnabled, setReasoningEnabled, getChatSettings, setChatSettings, getImageSettings, setImageSettings, getVideoSettings, setVideoSettings, getHuggingFace, getHuggingFaceToken, setHuggingFace, getWeather, setWeather, getNews, setNews, clearNewsFeeds, getComfyUI, setComfyUI };
+module.exports = { getConfig, setModelConfig, getReasoningEnabled, setReasoningEnabled, getChatSettings, setChatSettings, getImageSettings, setImageSettings, getVideoSettings, setVideoSettings, getHuggingFace, getHuggingFaceToken, setHuggingFace, getWeather, setWeather, getNews, setNews, clearNewsFeeds, getComfyUI, setComfyUI, getCompanionSettings, setCompanionSettings };

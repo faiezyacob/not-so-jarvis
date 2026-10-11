@@ -105,6 +105,8 @@ const characterPresets = require('./services/character-presets');
 const characterStudio = require('./services/character-studio');
 const characterIdentity = require('./services/character-identity');
 const characterContext = require('./services/character-context');
+const companionService = require('./services/companion');
+const characterLife = require('./services/character-life');
 const GENERATED_DIR = path.join(__dirname, 'data', 'generated');
 const IMAGES_DIR = path.join(__dirname, 'data', 'images');
 const UPLOAD_MIME_TO_EXT = {
@@ -1440,11 +1442,259 @@ async function handleAPI(req, res, urlPath) {
         const media = pkg ? characterIdentity.mediaFilenames(pkg) : [];
         const removed = characterPresets.remove(id);
         if (removed) {
+            // Companion memory + fictional life are keyed by characterId; drop
+            // them with the character so no orphaned record survives.
+            companionService.deleteRecord(id);
+            characterLife.clearRecord(id);
             for (const name of Array.from(new Set(media))) {
                 generatedHistory.removeByFilename(name);
             }
         }
         json(res, removed ? 200 : 404, { ok: removed });
+        return true;
+    }
+
+    // --- Companion chat ------------------------------------------------------
+    // Persistent character companionship: per-character personality settings, a
+    // fictional state, and episodic/semantic memory the user can inspect, edit,
+    // pin and delete. Memory is keyed by characterId so characters never share.
+
+    // GET/POST /api/companion/settings — the global Memory & Companion settings.
+    if (urlPath === '/api/companion/settings' && req.method === 'GET') {
+        json(res, 200, { settings: configManager.getCompanionSettings() });
+        return true;
+    }
+    if (urlPath === '/api/companion/settings' && req.method === 'POST') {
+        try {
+            const body = await readBody(req);
+            json(res, 200, { settings: configManager.setCompanionSettings(body || {}) });
+        } catch (err) {
+            json(res, 400, { error: err.message });
+        }
+        return true;
+    }
+
+    // GET /api/companion/:id — profile: settings, fictional state and stats.
+    // GET /api/companion/:id/conversations — companion conversations.
+    // POST /api/companion/:id/conversations — find/create a companion chat.
+    const companionConversationsMatch = urlPath.match(/^\/api\/companion\/([^/]+)\/conversations$/);
+    if (companionConversationsMatch && req.method === 'GET') {
+        const character = characterPresets.get(decodeURIComponent(companionConversationsMatch[1]));
+        if (!character) { json(res, 404, { error: 'Character not found' }); return true; }
+        json(res, 200, { conversations: conversationService.getConversationsForCharacter(character.id, req.jarvisSession) });
+        return true;
+    }
+    if (companionConversationsMatch && req.method === 'POST') {
+        const character = characterPresets.get(decodeURIComponent(companionConversationsMatch[1]));
+        if (!character) { json(res, 404, { error: 'Character not found' }); return true; }
+        let body = {};
+        try { body = await readBody(req); } catch (err) { body = {}; }
+        const recent = conversationService.getConversationsForCharacter(character.id, req.jarvisSession);
+        const conversation = (body && body.new !== true && recent.length)
+            ? recent[0]
+            : conversationService.createConversation(
+                { title: (character.name || 'Character') + ' · Companion', characterId: character.id },
+                req.jarvisSession
+            );
+        json(res, 200, { conversation });
+        return true;
+    }
+
+    // GET/POST /api/companion/:id/state — the character's fictional state.
+    const companionStateMatch = urlPath.match(/^\/api\/companion\/([^/]+)\/state$/);
+    if (companionStateMatch && req.method === 'GET') {
+        const character = characterPresets.get(decodeURIComponent(companionStateMatch[1]));
+        if (!character) { json(res, 404, { error: 'Character not found' }); return true; }
+        json(res, 200, { state: companionService.getState(character.id) });
+        return true;
+    }
+    if (companionStateMatch && req.method === 'POST') {
+        const character = characterPresets.get(decodeURIComponent(companionStateMatch[1]));
+        if (!character) { json(res, 404, { error: 'Character not found' }); return true; }
+        try {
+            const body = await readBody(req);
+            json(res, 200, { state: companionService.setState(character.id, body || {}) });
+        } catch (err) {
+            json(res, 400, { error: err.message });
+        }
+        return true;
+    }
+
+    // GET/POST/DELETE /api/companion/:id/memories — memory browser + clear.
+    const companionMemoriesMatch = urlPath.match(/^\/api\/companion\/([^/]+)\/memories$/);
+    if (companionMemoriesMatch && req.method === 'GET') {
+        const character = characterPresets.get(decodeURIComponent(companionMemoriesMatch[1]));
+        if (!character) { json(res, 404, { error: 'Character not found' }); return true; }
+        const query = new URL(req.url, 'http://localhost').searchParams;
+        json(res, 200, {
+            memories: companionService.listMemories(character.id, {
+                query: query.get('query') || '',
+                type: query.get('type') || '',
+                status: query.get('status') || 'active',
+                pinned: query.get('pinned') === '1' ? true : undefined,
+                limit: query.get('limit') || undefined
+            }),
+            stats: companionService.getStats(character.id)
+        });
+        return true;
+    }
+    if (companionMemoriesMatch && req.method === 'POST') {
+        const character = characterPresets.get(decodeURIComponent(companionMemoriesMatch[1]));
+        if (!character) { json(res, 404, { error: 'Character not found' }); return true; }
+        try {
+            const body = await readBody(req);
+            const memory = companionService.addMemory(character.id, body || {});
+            if (!memory) { json(res, 400, { error: 'A memory needs some text.' }); return true; }
+            json(res, 200, { memory });
+        } catch (err) {
+            json(res, 400, { error: err.message });
+        }
+        return true;
+    }
+    if (companionMemoriesMatch && req.method === 'DELETE') {
+        const character = characterPresets.get(decodeURIComponent(companionMemoriesMatch[1]));
+        if (!character) { json(res, 404, { error: 'Character not found' }); return true; }
+        companionService.clearMemories(character.id);
+        json(res, 200, { ok: true, stats: companionService.getStats(character.id) });
+        return true;
+    }
+
+    // PATCH/DELETE /api/companion/:id/memories/:memoryId — edit/pin/delete one.
+    const companionMemoryMatch = urlPath.match(/^\/api\/companion\/([^/]+)\/memories\/([^/]+)$/);
+    if (companionMemoryMatch && req.method === 'PATCH') {
+        const character = characterPresets.get(decodeURIComponent(companionMemoryMatch[1]));
+        if (!character) { json(res, 404, { error: 'Character not found' }); return true; }
+        try {
+            const body = await readBody(req);
+            const memory = companionService.updateMemory(character.id, decodeURIComponent(companionMemoryMatch[2]), body || {});
+            json(res, memory ? 200 : 404, memory ? { memory } : { error: 'Memory not found' });
+        } catch (err) {
+            json(res, 400, { error: err.message });
+        }
+        return true;
+    }
+    if (companionMemoryMatch && req.method === 'DELETE') {
+        const character = characterPresets.get(decodeURIComponent(companionMemoryMatch[1]));
+        if (!character) { json(res, 404, { error: 'Character not found' }); return true; }
+        const removed = companionService.removeMemory(character.id, decodeURIComponent(companionMemoryMatch[2]));
+        json(res, removed ? 200 : 404, { ok: removed });
+        return true;
+    }
+
+    // GET/POST/DELETE /api/companion/:id — profile / settings / full clear.
+    const companionMatch = urlPath.match(/^\/api\/companion\/([^/]+)$/);
+    if (companionMatch && req.method === 'GET') {
+        const character = characterPresets.get(decodeURIComponent(companionMatch[1]));
+        if (!character) { json(res, 404, { error: 'Character not found' }); return true; }
+        const profile = companionService.getProfile(character.id);
+        json(res, 200, {
+            character: {
+                id: character.id,
+                name: character.name || 'Character',
+                image: (character.approvedBaseImage && character.approvedBaseImage.url) || '',
+                identityText: character.identityText || ''
+            },
+            settings: profile.settings,
+            state: profile.state,
+            stats: profile.stats,
+            life: characterLife.getProfile(character.id),
+            behavior: companionService.behaviorFor(character.id, profile.settings, configManager.getCompanionSettings()),
+            globalSettings: configManager.getCompanionSettings(),
+            conversations: conversationService.getConversationsForCharacter(character.id, req.jarvisSession)
+        });
+        return true;
+    }
+    if (companionMatch && req.method === 'POST') {
+        const character = characterPresets.get(decodeURIComponent(companionMatch[1]));
+        if (!character) { json(res, 404, { error: 'Character not found' }); return true; }
+        try {
+            const body = await readBody(req);
+            const settings = characterPresets.setCompanion(character.id, body || {});
+            json(res, 200, { settings });
+        } catch (err) {
+            json(res, 400, { error: err.message });
+        }
+        return true;
+    }
+    if (companionMatch && req.method === 'DELETE') {
+        // Clears companionship data (settings + state + memories). Conversations
+        // are left intact — deleting chat history is a separate control.
+        const character = characterPresets.get(decodeURIComponent(companionMatch[1]));
+        if (!character) { json(res, 404, { error: 'Character not found' }); return true; }
+        companionService.deleteRecord(character.id);
+        characterPresets.setCompanion(character.id, {});
+        json(res, 200, { ok: true });
+        return true;
+    }
+
+    // --- Character life state --------------------------------------------------
+    // Fictional life state (activity/location/outfit/context/mood/planned), the
+    // recent-activity history and the generated-scene history used for image
+    // continuity. Keyed by characterId and stored separately from memory.
+
+    // GET /api/character-life/:id — life state + history.
+    const lifeMatch = urlPath.match(/^\/api\/character-life\/([^/]+)$/);
+    if (lifeMatch && req.method === 'GET') {
+        const character = characterPresets.get(decodeURIComponent(lifeMatch[1]));
+        if (!character) { json(res, 404, { error: 'Character not found' }); return true; }
+        json(res, 200, {
+            character: { id: character.id, name: character.name || 'Character' },
+            life: characterLife.getLife(character.id),
+            recentActivities: characterLife.getProfile(character.id).recentActivities,
+            sceneHistory: characterLife.listSceneHistory(character.id),
+            behavior: companionService.behaviorFor(character.id, characterPresets.getCompanion(character.id), configManager.getCompanionSettings())
+        });
+        return true;
+    }
+    // POST /api/character-life/:id — edit the life state (user provenance).
+    if (lifeMatch && req.method === 'POST') {
+        const character = characterPresets.get(decodeURIComponent(lifeMatch[1]));
+        if (!character) { json(res, 404, { error: 'Character not found' }); return true; }
+        try {
+            const body = await readBody(req);
+            const life = characterLife.setLife(character.id, body || {}, 'user');
+            json(res, 200, { life });
+        } catch (err) {
+            json(res, 400, { error: err.message });
+        }
+        return true;
+    }
+    // DELETE /api/character-life/:id — clear the life state record entirely.
+    if (lifeMatch && req.method === 'DELETE') {
+        const character = characterPresets.get(decodeURIComponent(lifeMatch[1]));
+        if (!character) { json(res, 404, { error: 'Character not found' }); return true; }
+        characterLife.clearRecord(character.id);
+        json(res, 200, { ok: true });
+        return true;
+    }
+    // DELETE /api/character-life/:id/scenes — clear the scene history only.
+    const lifeScenesMatch = urlPath.match(/^\/api\/character-life\/([^/]+)\/scenes$/);
+    if (lifeScenesMatch && req.method === 'DELETE') {
+        const character = characterPresets.get(decodeURIComponent(lifeScenesMatch[1]));
+        if (!character) { json(res, 404, { error: 'Character not found' }); return true; }
+        characterLife.clearSceneHistory(character.id);
+        json(res, 200, { ok: true });
+        return true;
+    }
+    // POST /api/character-life/:id/evolve — advance the life state once (manual).
+    const lifeEvolveMatch = urlPath.match(/^\/api\/character-life\/([^/]+)\/evolve$/);
+    if (lifeEvolveMatch && req.method === 'POST') {
+        const character = characterPresets.get(decodeURIComponent(lifeEvolveMatch[1]));
+        if (!character) { json(res, 404, { error: 'Character not found' }); return true; }
+        try {
+            const result = await characterLife.evolve({
+                characterId: character.id,
+                character,
+                settings: characterPresets.getCompanion(character.id),
+                provider: configManager.getConfig().provider || 'ollama',
+                model: configManager.getConfig().model || '',
+                providers,
+                now: 0
+            });
+            json(res, 200, { ok: true, result, life: characterLife.getLife(character.id) });
+        } catch (err) {
+            json(res, 200, { ok: false, error: err.message, life: characterLife.getLife(character.id) });
+        }
         return true;
     }
 
@@ -2275,6 +2525,82 @@ async function buildEnvironmentContext(message) {
     return parts.join('\n\n');
 }
 
+// --- Companion chat ---------------------------------------------------------
+//
+// A conversation linked to a saved character (`conversation.characterId`) is a
+// persistent companion chat. Its turns get the character's persona, retrieved
+// memory and fictional state injected, and a deferred, fail-open memory
+// formation pass runs after each reply. Plain conversations are untouched.
+
+function getConversationCharacter(conversationId) {
+    const conversation = conversationService.getConversation(conversationId);
+    if (!conversation || !conversation.characterId) return null;
+    return characterPresets.get(conversation.characterId);
+}
+
+// The companion system context for a turn plus the memory ids it injected.
+function buildCompanionTurnContext(conversationId, query) {
+    const character = getConversationCharacter(conversationId);
+    if (!character) return { text: '', memoryIds: [], character: null, behavior: null };
+    const settings = characterPresets.getCompanion(character.id);
+    const globalSettings = configManager.getCompanionSettings();
+    const result = companionService.buildContextForTurn({
+        characterId: character.id,
+        character,
+        settings,
+        globalSettings,
+        query,
+        lifeText: characterLife.formatForPrompt(character.id)
+    });
+    return {
+        text: result.text,
+        memoryIds: result.memoryIds,
+        character,
+        behavior: companionService.behaviorFor(character.id, settings, globalSettings)
+    };
+}
+
+// A bounded excerpt (recent stored turns + this turn) for memory extraction.
+function buildCompanionExcerpt(conversationId, userMessage, reply) {
+    const stored = conversationService.getMessages(conversationId)
+        .slice(-8)
+        .map((m) => ({ role: m.role, content: contextBuilder.stripDirectorMarkers(m.content) }))
+        .filter((m) => m.content);
+    const transcript = stored.slice();
+    const last = transcript[transcript.length - 1];
+    if (!last || last.role !== 'user' || last.content !== userMessage) {
+        transcript.push({ role: 'user', content: userMessage });
+    }
+    const tail = transcript[transcript.length - 1];
+    if (reply && !(tail && tail.role === 'assistant' && tail.content === reply)) {
+        transcript.push({ role: 'assistant', content: reply });
+    }
+    return companionService.buildTranscript(transcript);
+}
+
+// Deferred automatic memory formation for a finished companion turn. Never
+// throws and never blocks the response (runs on setImmediate).
+function scheduleCompanionMemory(conversationId, character, provider, model, userMessage, reply) {
+    if (!character || !reply) return false;
+    try {
+        const excerpt = buildCompanionExcerpt(conversationId, userMessage, reply);
+        return companionService.scheduleTurnExtraction({
+            characterId: character.id,
+            characterName: character.name,
+            provider,
+            model,
+            conversationId,
+            excerpt,
+            settings: characterPresets.getCompanion(character.id),
+            globalSettings: configManager.getCompanionSettings(),
+            providers
+        });
+    } catch (err) {
+        console.warn('[companion-memory] schedule failed:', err.message);
+        return false;
+    }
+}
+
 // --- Turn serialization ---
 // Every GPU-touching turn (chat, image/video/upscale, Director, UGC, Long
 // Video, Playground) acquires the single turn slot so several clients on the
@@ -2357,8 +2683,15 @@ async function handleChat(req, res) {
 
         const sampling = resolveChatSampling(body);
         const environmentContext = await buildEnvironmentContext(message);
-        const contextMessages = contextBuilder.buildContext(conversationId, message, provider, model, '', chatImages, environmentContext);
-        const reply = await providers.chat(provider, contextMessages, model, { think: resolveChatThink(body), ...sampling });
+        const companion = buildCompanionTurnContext(conversationId, message);
+        const contextMessages = contextBuilder.buildContext(conversationId, message, provider, model, '', chatImages, environmentContext, companion.text || '');
+        const rawReply = await providers.chat(provider, contextMessages, model, { think: resolveChatThink(body), ...sampling });
+        const reply = companion.character ? companionService.casualizeReply(rawReply) : rawReply;
+
+        companionService.markMemoriesUsed(companion.character && companion.character.id, companion.memoryIds);
+        scheduleCompanionMemory(conversationId, companion.character, provider, model, message, reply);
+        recordCompanionOffer(conversationId, companion.character, companion.behavior, reply);
+        scheduleCompanionLife(conversationId, companion.character, companion.behavior);
 
         json(res, 200, { reply });
     } catch (err) {
@@ -2711,6 +3044,40 @@ async function handleChatStream(req, res) {
             explicitCharacterIds,
             decision.intent
         );
+
+        // Companion photo request. A character conversation resolves a photo
+        // request ("send me a pic", "show me your outfit", "show me what you're
+        // eating") through the Camera Director, which derives the viewpoint,
+        // framing and subject from her current life state. A clear request is
+        // generated even when the generic router classified the turn as chat;
+        // ordinary chatter ("what are you doing?") never reaches this gate.
+        // Offer acceptance ("yes, send it") fulfils a photo she offered.
+        if (requestCharacters.length === 1) {
+            const character = requestCharacters[0];
+            const intentInfo = characterLife.detectPhotoIntent(message, { names: [character.name] });
+            const offer = characterLife.getOffer(character.id, conversationId);
+            const routerWorkflow = turnPlan.execution.shouldRun ? turnPlan.execution.workflow : null;
+            // Only a plain image generation (or a chat fallback) is overridden by
+            // the Camera Director; video/edit/upscale keep their own pipeline.
+            const routerAllows = !routerWorkflow || routerWorkflow === 'image';
+            const isReject = characterLife.isRejection(message);
+            let photoRun = null;
+            if (intentInfo.intent !== characterLife.INTENT.NONE && routerAllows) {
+                photoRun = { intent: intentInfo.intent, subject: intentInfo.subject };
+            } else if (offer && characterLife.isAcceptance(message)) {
+                photoRun = { intent: offer.intent, subject: offer.subject, offer: true };
+            } else if (offer && offer.auto && !isReject && routerAllows && intentInfo.intent === characterLife.INTENT.NONE) {
+                photoRun = { intent: offer.intent, subject: offer.subject, offer: true, auto: true };
+            }
+            if (offer && (isReject || photoRun)) characterLife.clearOffer(character.id, conversationId);
+            if (photoRun) {
+                await runCompanionPhoto(req, res, {
+                    provider, model, conversationId, message, think,
+                    character, intent: photoRun.intent, subject: photoRun.subject
+                });
+                return;
+            }
+        }
 
         // Composer "Director Mode" toggle. A fresh video request runs through
         // the Director instead of the normal H3 pipeline. Explicit "just
@@ -3344,6 +3711,10 @@ async function handleChatStream(req, res) {
         // with the actual pixels in view.
         const chatVision = chatImages.concat(referenceVisionImages(referenceImages)).slice(0, CHAT_IMAGES_MAX);
 
+        // Companion persona + retrieved memory + fictional state, when this is a
+        // character conversation. Empty for ordinary chats.
+        const companion = buildCompanionTurnContext(conversationId, message);
+
         const contextMessages = contextBuilder.buildContext(
             conversationId,
             message,
@@ -3355,7 +3726,8 @@ async function handleChatStream(req, res) {
             // returns '' when there is no active task.
             taskRouter.renderActiveTaskContext(taskState.getTask(conversationId)),
             chatVision,
-            await buildEnvironmentContext(message)
+            await buildEnvironmentContext(message),
+            companion.text || ''
         );
 
         let fullReply = '';
@@ -3375,8 +3747,11 @@ async function handleChatStream(req, res) {
         try {
             for await (const chunk of providers.chatStream(provider, contextMessages, model, { think, ...sampling })) {
                 if (chunk.type === 'content') {
-                    fullReply += chunk.text;
-                    res.write(`data: ${JSON.stringify({ chunk: chunk.text })}\n\n`);
+                    // Companion replies get a deterministic casual-style pass so
+                    // em/en dashes never reach the UI or the stored message.
+                    const text = companion.character ? companionService.casualizeReply(chunk.text) : chunk.text;
+                    fullReply += text;
+                    res.write(`data: ${JSON.stringify({ chunk: text })}\n\n`);
                 } else if (chunk.type === 'stats') {
                     res.write(`data: ${JSON.stringify({ stats: chunk })}\n\n`);
                 }
@@ -3448,6 +3823,15 @@ async function handleChatStream(req, res) {
                 fullReply = fullReply.replace(/\s+$/, '') + '\n\n[[prompt-suggestion]]';
             }
             res.write(`data: ${JSON.stringify({ done: true, fullReply })}\n\n`);
+
+            // Companion memory: mark the memories that informed this reply and,
+            // when enabled, form new memories in the background (never blocks).
+            if (companion.character && fullReply) {
+                companionService.markMemoriesUsed(companion.character.id, companion.memoryIds);
+                scheduleCompanionMemory(conversationId, companion.character, provider, model, message, fullReply);
+                recordCompanionOffer(conversationId, companion.character, companion.behavior, fullReply);
+                scheduleCompanionLife(conversationId, companion.character, companion.behavior);
+            }
         } catch (streamErr) {
             res.write(`data: ${JSON.stringify({ error: streamErr.message })}\n\n`);
         }
@@ -4732,7 +5116,12 @@ function resolveRequestCharacters(message, conversationId, explicitIds, action) 
         message,
         action
     });
-    return resolution.characters.map((ref) => characterPresets.get(ref.id)).filter(Boolean);
+    const resolved = resolution.characters.map((ref) => characterPresets.get(ref.id)).filter(Boolean);
+    if (resolved.length) return resolved;
+    // Companion chats: a generation with no explicit/active character belongs to
+    // the conversation's character, so image/video requests stay on-model.
+    const conversationCharacter = getConversationCharacter(conversationId);
+    return conversationCharacter ? [conversationCharacter] : [];
 }
 
 // Resolve (or create) the character a playground identity action operates on.
@@ -6118,6 +6507,173 @@ async function handleStartComfyUIChat(req, res, opts) {
     }
 }
 
+// Run a Camera-Director photo for a companion. Builds the structured spec from
+// the character's life state, then either conditions the existing Qwen identity
+// edit pipeline (front/mirror/group — her identity is preserved and the camera
+// direction becomes the scene) or generates a plain rear-camera shot of the
+// subject/scenery (no character face). The generated file is recorded against
+// the character's scene history for continuity; the persistent life state is
+// never overwritten by a generation.
+async function runCompanionPhoto(req, res, opts) {
+    const { provider, model, conversationId, message, think, character } = opts;
+    const characterId = character.id;
+    let plan;
+    try {
+        plan = characterLife.planPhoto({
+            characterId,
+            intent: opts.intent,
+            subject: opts.subject,
+            characters: [character],
+            message
+        });
+    } catch (err) {
+        console.warn('[camera-director] plan failed:', err.message);
+        plan = null;
+    }
+    if (!plan) {
+        // Fail open: fall back to a plain chat reply rather than a broken image.
+        sseWrite(res, { error: 'I could not work out that photo. Try describing what you want to see.' });
+        res.end();
+        return;
+    }
+    const spec = plan.spec;
+    const displayText = plan.summary || characterLife.cameraLabel(spec) || 'a photo';
+    const clothing = spec.outfit
+        ? [{ name: character.name || 'Character', outfit: spec.outfit, source: 'life', packId: '' }]
+        : null;
+
+    if (plan.request.mode === 'plain') {
+        // Back-camera subject / scenery: no character face, a standalone prompt.
+        taskState.setTask(conversationId, {
+            type: 'image',
+            operation: 'generate',
+            prompt: plan.request.prompt,
+            lastAction: 'generate',
+            status: 'running',
+            originalPrompt: plan.request.prompt,
+            parameters: Object.assign({}, taskState.getTask(conversationId).parameters, {
+                characterId,
+                characterIds: [characterId],
+                photoSpec: spec
+            })
+        });
+        await vramManager.freeVRAMBeforeImage();
+        await handleImageGenerationStream(req, res, {
+            provider, model, conversationId, message,
+            imagePrompt: plan.request.prompt,
+            displayPrompt: displayText,
+            action: 'generate',
+            photoScene: { characterId, spec },
+            think
+        });
+        return;
+    }
+
+    // Front / mirror / group: reference-guided identity edit whose scene is the
+    // camera direction. The life outfit in the instruction suppresses the
+    // automatic clothing fill.
+    const identity = resolveIdentityConditioning([character], plan.request.instruction, {
+        rawPrompt: plan.request.instruction,
+        seed: creativeDefaultSeed(conversationId, plan.request.instruction)
+    });
+    if (!identity) {
+        sseWrite(res, { generating: 'Creating an opening portrait\u2026' });
+        // No approved portrait: fall back to a text-only scene generation so the
+        // feature still works for a basic character.
+        taskState.setTask(conversationId, {
+            type: 'image',
+            operation: 'generate',
+            prompt: plan.request.instruction,
+            lastAction: 'generate',
+            status: 'running',
+            originalPrompt: plan.request.instruction,
+            parameters: Object.assign({}, taskState.getTask(conversationId).parameters, {
+                characterId,
+                characterIds: [characterId],
+                photoSpec: spec
+            })
+        });
+        await vramManager.freeVRAMBeforeImage();
+        await handleImageGenerationStream(req, res, {
+            provider, model, conversationId, message,
+            imagePrompt: plan.request.instruction,
+            displayPrompt: displayText,
+            action: 'generate',
+            photoScene: { characterId, spec },
+            think
+        });
+        return;
+    }
+    taskState.setTask(conversationId, {
+        type: 'image',
+        operation: 'generate',
+        prompt: displayText,
+        lastAction: 'generate',
+        status: 'running',
+        originalPrompt: plan.request.instruction,
+        parameters: Object.assign({}, taskState.getTask(conversationId).parameters, {
+            characterId,
+            characterIds: [characterId],
+            clothing,
+            photoSpec: spec
+        })
+    });
+    await vramManager.freeVRAMBeforeImage();
+    await handleImageGenerationStream(req, res, {
+        provider, model, conversationId, message,
+        imagePrompt: identity.instruction,
+        displayPrompt: displayText,
+        action: 'generate',
+        identity,
+        photoScene: { characterId, spec },
+        think
+    });
+}
+
+// Detect a spontaneous photo offer in a companion reply and remember it so the
+// next acceptance can fulfil it. A `photoSharing: 'auto'` character marks the
+// offer auto so the next turn generates it without an explicit "yes".
+function recordCompanionOffer(conversationId, character, behavior, reply) {
+    if (!character || !reply || !behavior) return;
+    if (behavior.initiative === 'passive') return;
+    if (behavior.photoSharing === 'off') return;
+    try {
+        const offer = characterLife.detectOffer(reply);
+        if (!offer) return;
+        characterLife.setOffer(character.id, conversationId, {
+            intent: offer.intent,
+            subject: offer.subject,
+            auto: behavior.photoSharing === 'auto'
+        });
+    } catch (err) {
+        console.warn('[camera-director] offer detection failed:', err.message);
+    }
+}
+
+// Advance the character's fictional life after an active turn, at most once per
+// configured interval. Deferred + fail-open so it never delays or breaks a turn.
+function scheduleCompanionLife(conversationId, character, behavior) {
+    if (!character || !behavior) return false;
+    if (!behavior.lifeProgression) return false;
+    try {
+        setImmediate(() => {
+            characterLife.evolve({
+                characterId: character.id,
+                character,
+                settings: characterPresets.getCompanion(character.id),
+                provider: 'ollama',
+                model: '',
+                providers,
+                intervalMinutes: behavior.lifeIntervalMinutes
+            }).catch((err) => console.warn('[character-life] evolve failed:', err.message));
+        });
+        return true;
+    } catch (err) {
+        console.warn('[character-life] schedule failed:', err.message);
+        return false;
+    }
+}
+
 // Handle an image-generation chat request over SSE. Emits a "generating"
 // status event, then an "image" event with the chat-ready payload, or an
 // "error" event on failure. The active task is only marked completed after the
@@ -6154,7 +6710,9 @@ async function handleImageGenerationStream(req, res, opts) {
         // identity-guided generation is always a single reference-guided edit.
         const identity = opts.identity && opts.identity.sourceAbs ? opts.identity : null;
         const genSettings = imageGenerator.effectiveSettings();
-        const variations = (opts.director || identity)
+        // A companion photo is a single conversational image, never a numbered
+        // variation set.
+        const variations = (opts.director || identity || opts.photoScene)
             ? 1
             : Math.max(1, Math.min(4, Number(genSettings.variations) || 1));
         const baseSeed = imageGenerator.resolveSeed(
@@ -6250,6 +6808,16 @@ async function handleImageGenerationStream(req, res, opts) {
             }
         }
 
+        // Companion photo: persist the scene spec + file so a later photo can
+        // keep location/outfit continuity. This never overwrites the life state.
+        if (opts.photoScene && opts.photoScene.characterId) {
+            try {
+                characterLife.recordScene(opts.photoScene.characterId, opts.photoScene.spec, result);
+            } catch (err) {
+                console.warn('[camera-director] scene record failed:', err.message);
+            }
+        }
+
         // Tool succeeded — now update task context and generate the user-facing
         // response based on the actual result.
         const existingParams = taskState.getTask(conversationId).parameters || {};
@@ -6294,7 +6862,8 @@ async function handleImageGenerationStream(req, res, opts) {
         const content =
             summary + '\n\n' +
             '**Prompt:** ' + showPrompt + '\n\n' +
-            results.map((r) => '![' + 'image' + '](' + r.url + ')').join('\n\n');
+            results.map((r) => '![' + 'image' + '](' + r.url + ')').join('\n\n') +
+            (opts.photoScene ? '\n\n[[photo-actions]]' : '');
 
         sseWrite(res, {
             image: {
@@ -7415,7 +7984,50 @@ server.listen(PORT, HOST, () => {
     vramManager.reconcileOnStartup().catch((err) => {
         console.warn('[vram-manager] Startup reconcile failed:', err.message);
     });
+    startCharacterLifeScheduler();
 });
+
+// A bounded, opt-in fictional-life scheduler. It only advances the life state of
+// characters explicitly set to the `scheduled` initiative with life progression
+// on, at most once per their configured interval, and never between quiet hours.
+// It does not push messages or generate media (there is no push channel); the
+// advanced state surfaces the next time the companion chat is opened.
+function startCharacterLifeScheduler() {
+    const TICK_MS = 15 * 60 * 1000;
+    const withinQuietHours = (hour, start, end) => {
+        if (start === end) return false;
+        if (start < end) return hour >= start && hour < end;
+        return hour >= start || hour < end;
+    };
+    const tick = () => {
+        let characters;
+        try {
+            characters = characterPresets.list();
+        } catch (err) {
+            return;
+        }
+        const global = configManager.getCompanionSettings();
+        const hour = new Date().getHours();
+        characters.forEach((character) => {
+            try {
+                const behavior = companionService.behaviorFor(character.id, characterPresets.getCompanion(character.id), global);
+                if (behavior.initiative !== 'scheduled' || !behavior.lifeProgression) return;
+                if (withinQuietHours(hour, behavior.quietHoursStart, behavior.quietHoursEnd)) return;
+                characterLife.evolve({
+                    characterId: character.id,
+                    character,
+                    settings: characterPresets.getCompanion(character.id),
+                    providers,
+                    intervalMinutes: behavior.lifeIntervalMinutes
+                }).catch(() => {});
+            } catch (err) {
+                /* keep the scheduler alive */
+            }
+        });
+    };
+    const timer = setInterval(tick, TICK_MS);
+    if (timer.unref) timer.unref();
+}
 
 server.on('error', (err) => {
     if (err.code === 'EADDRINUSE') {
