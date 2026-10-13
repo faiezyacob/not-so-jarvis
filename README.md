@@ -84,9 +84,7 @@ Everything runs from a single chat surface — there are no separate tools or da
   <sub><em>Prompt: generate video donald trump eating ice cream and say in Malay 'sedap juga aiskrim ni'</em></sub>
 </p>
 
-https://github.com/user-attachments/assets/e74c3178-ad92-42bf-a1ca-4f68efde6897
-
-> **Audio note.** Locally the preview above is muted — open [`screenshots/video.mp4`](screenshots/video.mp4) directly to hear the synchronized audio. On GitHub, the attachment player plays with audio.
+[https://github.com/user-attachments/assets/e74c3178-ad92-42bf-a1ca-4f68efde6897](https://github.com/user-attachments/assets/520a7762-214c-44af-8b7d-824428e811a7)
 
 ### UGC Studio
 
