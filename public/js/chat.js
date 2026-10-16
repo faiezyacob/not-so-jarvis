@@ -1664,9 +1664,14 @@ const Chat = (() => {
                         if (data.characterCreated) {
                             // A generated image was promoted into a saved
                             // character: open the identity viewer on the new
-                            // character so its sheet and metadata are shown.
+                            // character so its sheet and metadata are shown. The
+                            // promoted image is now character identity media, so
+                            // refresh the gallery to drop it from the grid.
                             if (generatingEl) generatingEl.remove();
                             setProgressTitle('');
+                            generatedMetaCache = null;
+                            if (window.Gallery) window.Gallery.refresh();
+                            if (window.AssetActions) window.AssetActions.refresh();
                             if (window.CharacterIdentityUI && typeof window.CharacterIdentityUI.open === 'function') {
                                 window.CharacterIdentityUI.open(data.characterCreated.characterId);
                             }

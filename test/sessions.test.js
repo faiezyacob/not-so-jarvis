@@ -142,6 +142,21 @@ test('removeByFilename respects an owning session', () => {
     assert.equal(generatedHistory.removeByFilename('owned.png', 'sess-a'), 1);
 });
 
+test('setHiddenByFilename pulls a promoted image out of the gallery', () => {
+    makeFile('promoted.png');
+    generatedHistory.add({ file: '/generated/promoted.png', rawFilename: 'promoted.png', prompt: 'promoted scene' });
+    assert.equal(generatedHistory.listPublic().some((x) => x.prompt === 'promoted scene'), true);
+    // Promoting it into a character hides it from the gallery but keeps the record.
+    assert.equal(generatedHistory.setHiddenByFilename('promoted.png', true), 1);
+    assert.equal(generatedHistory.listPublic().some((x) => x.prompt === 'promoted scene'), false);
+    assert.equal(generatedHistory.list().some((x) => x.rawFilename === 'promoted.png'), true);
+    // Idempotent, and reversible via the same helper.
+    assert.equal(generatedHistory.setHiddenByFilename('promoted.png', true), 0);
+    assert.equal(generatedHistory.setHiddenByFilename('promoted.png', false), 1);
+    assert.equal(generatedHistory.listPublic().some((x) => x.prompt === 'promoted scene'), true);
+    assert.equal(generatedHistory.removeByFilename('promoted.png'), 1);
+});
+
 test('activity entries carry their conversation id', () => {
     activityLog.record({ type: 'image', title: 'Image generated', conversationId: sessionA.id, file: '/generated/a1.png' });
     activityLog.record({ type: 'system', title: 'Server started' });

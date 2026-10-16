@@ -330,6 +330,29 @@ function removeByFilename(filename, sessionId) {
     return count;
 }
 
+// Mark a media record (by raw filename) as hidden/internal so it leaves the
+// public gallery and the activity feed while staying tracked on disk. Used when
+// a generated image is promoted into a character's approved base portrait: the
+// image becomes character identity media, not a gallery piece. Idempotent.
+// Returns the number of records changed.
+function setHiddenByFilename(filename, hidden) {
+    ensureLoaded();
+    const raw = path.basename(String(filename || '').split('?')[0]);
+    if (!raw) return 0;
+    const next = hidden === true;
+    let count = 0;
+    history.forEach((entry) => {
+        const entryRaw = entry.rawFilename || lastPathSegment(entry.file);
+        if (!entryRaw || path.basename(entryRaw) !== raw) return;
+        if (entry.hidden !== next) {
+            entry.hidden = next;
+            count += 1;
+        }
+    });
+    if (count) saveHistory(history);
+    return count;
+}
+
 module.exports = {
     GENERATED_DIR,
     HISTORY_PATH,
@@ -340,5 +363,6 @@ module.exports = {
     add,
     remove,
     removeByFilename,
+    setHiddenByFilename,
     makeId
 };

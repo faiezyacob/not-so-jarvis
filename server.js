@@ -5546,6 +5546,10 @@ async function handleCharacterFromImage(req, res, ctx, action) {
         prompt: meta ? meta.prompt : ''
     });
     characterPresets.approveBaseImage(character.id);
+    // The promoted image is now the character's identity media, not a gallery
+    // piece: hide it (and, defensively, any leftover sheet record) so no
+    // character-related image ever appears in the shared gallery.
+    generatedHistory.setHiddenByFilename(filename, true);
     activityLog.record({
         type: 'generation',
         title: 'Character saved',
