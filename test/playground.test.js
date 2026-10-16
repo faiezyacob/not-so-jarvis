@@ -903,6 +903,15 @@ test('normalizeAction accepts strings and objects and rejects unknown types', ()
     assert.equal(playground.normalizeAction(null), null);
 });
 
+test('normalizeAction carries the name and filename for character_from_image', () => {
+    const action = playground.normalizeAction({
+        type: 'character_from_image', filename: 'scene.png', name: '  Maya  '
+    });
+    assert.equal(action.type, 'character_from_image');
+    assert.equal(action.filename, 'scene.png');
+    assert.equal(action.name, 'Maya');
+});
+
 test('canonical generated characters round-trip with identity and base image ownership', () => {
     const identity = characterGen.generateRandomIdentity(90210, {
         appearance: 'south_asian', age: 'adult', gender: 'woman'

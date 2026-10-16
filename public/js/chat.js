@@ -1661,6 +1661,16 @@ const Chat = (() => {
                                 window.CharacterIdentityUI.onCard(data.identity.card);
                             }
                         }
+                        if (data.characterCreated) {
+                            // A generated image was promoted into a saved
+                            // character: open the identity viewer on the new
+                            // character so its sheet and metadata are shown.
+                            if (generatingEl) generatingEl.remove();
+                            setProgressTitle('');
+                            if (window.CharacterIdentityUI && typeof window.CharacterIdentityUI.open === 'function') {
+                                window.CharacterIdentityUI.open(data.characterCreated.characterId);
+                            }
+                        }
                         if (data.ugc) {
                             cancelStreamRender();
                             fullReply = data.ugc.content;

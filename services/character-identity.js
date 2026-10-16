@@ -282,6 +282,97 @@ function summary(metadata) {
     return parts.filter(Boolean).join(', ');
 }
 
+// --- Identity from an image ---------------------------------------------------
+//
+// A generated image can be promoted into a character. A vision model returns a
+// compact identity description which is mapped onto the canonical structured
+// identity shape the character generator and metadata reader understand. This is
+// a best-effort signal layered on top of the approved base portrait — the
+// portrait stays the authoritative identity reference. Nothing is invented: an
+// empty or unusable reply yields no identity at all.
+
+const IDENTITY_TEXT_LIMIT = 80;
+
+function shortText(value, limit) {
+    return String(value === undefined || value === null ? '' : value)
+        .replace(/\s+/g, ' ').trim().slice(0, limit || IDENTITY_TEXT_LIMIT);
+}
+
+function normalizeGender(value) {
+    const text = shortText(value).toLowerCase();
+    if (text === 'woman' || text === 'man') return text;
+    if (/\b(?:woman|female|girl|lady)\b/.test(text)) return 'woman';
+    if (/\b(?:man|male|boy|guy)\b/.test(text)) return 'man';
+    return '';
+}
+
+// Map a vision analysis object onto the canonical structured identity shape.
+// Returns null when the image carries no usable person/identity traits.
+function identityFromAnalysis(value) {
+    const src = value && typeof value === 'object' ? value : {};
+    if (src.person === false) return null;
+    const face = src.face && typeof src.face === 'object' ? src.face : {};
+    const eyes = src.eyes && typeof src.eyes === 'object' ? src.eyes : {};
+    const hair = src.hair && typeof src.hair === 'object' ? src.hair : {};
+    const skin = src.skin && typeof src.skin === 'object' ? src.skin : {};
+    const identity = {
+        age: shortText(src.age),
+        ageGroup: shortText(src.ageGroup),
+        gender: normalizeGender(src.gender),
+        skin: {
+            tone: shortText(skin.tone || src.skinTone),
+            undertone: shortText(skin.undertone || src.skinUndertone),
+            group: shortText(skin.group || src.skinGroup)
+        },
+        face: {
+            shape: shortText(face.shape || src.faceShape),
+            nose: shortText(face.nose || src.faceNose),
+            lips: shortText(face.lips || src.faceLips),
+            cheeks: shortText(face.cheeks || src.faceCheeks),
+            jaw: shortText(face.jaw || src.faceJaw)
+        },
+        eyes: {
+            color: shortText(eyes.color || src.eyeColor),
+            shape: shortText(eyes.shape || src.eyeShape)
+        },
+        eyebrows: shortText(src.eyebrows),
+        hair: {
+            color: shortText(hair.color || src.hairColor),
+            texture: shortText(hair.texture || src.hairTexture),
+            style: shortText(hair.style || src.hairStyle)
+        },
+        build: shortText(src.build),
+        distinctiveFeature: shortText(src.distinctiveFeature || src.distinctiveFeatures)
+    };
+    const hasTraits = Boolean(identity.age || identity.gender || identity.skin.tone ||
+        identity.face.shape || identity.face.nose || identity.face.lips || identity.face.cheeks ||
+        identity.face.jaw || identity.eyes.color || identity.eyes.shape || identity.eyebrows ||
+        identity.hair.color || identity.hair.texture || identity.hair.style || identity.build ||
+        identity.distinctiveFeature);
+    return hasTraits ? identity : null;
+}
+
+// A short human-readable identity line (used as the character's identityText).
+// Empty when the analysis carries no traits.
+function identityTextFromAnalysis(analysis) {
+    const identity = identityFromAnalysis(analysis);
+    if (!identity) return '';
+    const parts = [];
+    if (identity.age) parts.push(identity.age);
+    if (identity.gender) parts.push(identity.gender);
+    const descriptor = skinDescriptor(identity.skin);
+    if (descriptor) parts.push(descriptor + ' skin');
+    if (identity.face.shape) parts.push(identity.face.shape);
+    const eyes = [identity.eyes.color, identity.eyes.shape].filter(Boolean).join(' ');
+    if (eyes) parts.push(eyes + ' eyes');
+    if (identity.hair.color || identity.hair.style || identity.hair.texture) {
+        parts.push([identity.hair.color, identity.hair.texture, identity.hair.style, 'hair'].filter(Boolean).join(' '));
+    }
+    if (identity.build) parts.push(identity.build);
+    if (identity.distinctiveFeature) parts.push(identity.distinctiveFeature);
+    return parts.filter(Boolean).join(', ');
+}
+
 function identityPreservationInstructions(metadata) {
     const summaryText = summary(metadata);
     return 'Preserve the exact same character as the identity reference' +
@@ -868,6 +959,9 @@ module.exports = {
     markSheetFailed,
     statusOf,
     mediaFilenames,
+    // identity from an image analysis
+    identityFromAnalysis,
+    identityTextFromAnalysis,
     // skin metadata
     completeSkinMetadata,
     skinDescriptor,

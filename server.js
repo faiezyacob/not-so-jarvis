@@ -107,6 +107,7 @@ const characterStudio = require('./services/character-studio');
 const characterIdentity = require('./services/character-identity');
 const characterContext = require('./services/character-context');
 const companionService = require('./services/companion');
+const companionExtraction = require('./services/companion/extraction');
 const characterLife = require('./services/character-life');
 const GENERATED_DIR = path.join(__dirname, 'data', 'generated');
 const IMAGES_DIR = path.join(__dirname, 'data', 'images');
@@ -5442,6 +5443,133 @@ async function runIdentitySheetStream(req, res, character, ctx) {
     return result;
 }
 
+// --- Create a character from a generated image --------------------------------
+//
+// A generated image can be promoted into a saved character: the image becomes the
+// approved base portrait and the consolidated identity sheet is generated from
+// it. A best-effort vision analysis captures the person's face as structured
+// identity metadata so downstream generations keep the character on-model; a
+// missing vision model or malformed reply simply yields no metadata and the
+// portrait still drives identity.
+
+const IMAGE_IDENTITY_SYSTEM_PROMPT =
+    'You analyze a single image and describe ONLY the physical identity of the main person shown in it. ' +
+    'Ignore clothing, background, pose, lighting, camera and any text. If no person is clearly present, ' +
+    'return {"person": false}. Reply with strict JSON only and no prose.';
+
+const IMAGE_IDENTITY_USER_PROMPT =
+    'Describe the person in this image as strict JSON with exactly these keys: ' +
+    '{"person": true, "gender": "", "age": "", "ageGroup": "", ' +
+    '"skin": {"tone": "", "undertone": "", "group": ""}, ' +
+    '"face": {"shape": "", "nose": "", "lips": "", "cheeks": "", "jaw": ""}, ' +
+    '"eyes": {"color": "", "shape": ""}, "eyebrows": "", ' +
+    '"hair": {"color": "", "texture": "", "style": ""}, "build": "", ' +
+    '"distinctiveFeature": "", "accessories": []}. ' +
+    'Use short factual phrases; leave a value empty when it is not visible. ' +
+    'gender is "woman", "man", or "". ageGroup is "young adult", "adult", "mature", or "older".';
+
+// Best-effort vision analysis of a generated image -> structured identity object
+// (the shape characterIdentity.identityFromAnalysis reads) or null.
+async function analyzeImageIdentity(filename, ctx) {
+    const { provider, model } = ctx;
+    const vision = referenceVisionImages([filename]);
+    if (!vision.length) return null;
+    try {
+        // Prompt building needs the chat model; free ComfyUI first so the vision
+        // pass never stacks on resident image weights.
+        vramManager.rememberChatModel(provider, model);
+        await vramManager.freeVRAMBeforeChat();
+        const raw = await providers.chat(provider, [
+            { role: 'system', content: IMAGE_IDENTITY_SYSTEM_PROMPT },
+            { role: 'user', content: IMAGE_IDENTITY_USER_PROMPT, images: vision }
+        ], model, { temperature: 0, think: false });
+        const parsed = companionExtraction.extractJsonObject(raw);
+        return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch (err) {
+        return null;
+    }
+}
+
+// Handle "Create Character" from a generated image's action row. The image must
+// be a real render of the current conversation; the character is created, its
+// portrait approved, and its consolidated identity sheet generated in one turn.
+async function handleCharacterFromImage(req, res, ctx, action) {
+    const { conversationId } = ctx;
+    const filename = sanitizeReferenceImage(action.filename);
+    const name = String(action.name || '').trim().slice(0, 80);
+    if (!filename) {
+        sseWrite(res, { error: 'Create Character \u2014 a generated image is required.' });
+        res.end();
+        return;
+    }
+    if (!name) {
+        sseWrite(res, { error: 'Create Character \u2014 a character name is required.' });
+        res.end();
+        return;
+    }
+    if (!generatedFilenamesInConversation(conversationId).has(filename)) {
+        sseWrite(res, { error: 'Create Character \u2014 that image is no longer part of this conversation.' });
+        res.end();
+        return;
+    }
+
+    sseWrite(res, { generating: 'Creating the character\u2026' });
+    const analysis = await analyzeImageIdentity(filename, ctx);
+    const identity = analysis ? characterIdentity.identityFromAnalysis(analysis) : null;
+    const identityText = analysis ? characterIdentity.identityTextFromAnalysis(analysis) : '';
+
+    let character;
+    try {
+        character = characterPresets.create({
+            name,
+            identity,
+            identityText,
+            provenance: {
+                type: 'generated-image',
+                filename,
+                conversationId: conversationId || ''
+            }
+        });
+    } catch (err) {
+        sseWrite(res, { error: 'Create Character \u2014 ' + err.message });
+        res.end();
+        return;
+    }
+
+    const meta = findGeneratedMeta(filename);
+    characterPresets.setCandidateBaseImage(character.id, {
+        url: '/generated/' + encodeURIComponent(filename),
+        filename,
+        width: meta ? meta.width : null,
+        height: meta ? meta.height : null,
+        seed: meta ? meta.seed : null,
+        prompt: meta ? meta.prompt : ''
+    });
+    characterPresets.approveBaseImage(character.id);
+    activityLog.record({
+        type: 'generation',
+        title: 'Character saved',
+        detail: character.name || 'Character',
+        conversationId
+    });
+
+    await runIdentitySheetStream(req, res, character, ctx);
+
+    const card = identityCard(character.id);
+    sseWrite(res, {
+        characterCreated: {
+            characterId: character.id,
+            name: character.name || 'Character',
+            card
+        }
+    });
+    const text = 'Created the character ' + (character.name || 'Character') +
+        ' from this image and generated its identity sheet.';
+    sseWrite(res, { chunk: text });
+    sseWrite(res, { done: true, fullReply: text });
+    res.end();
+}
+
 // Stream the persisted concept card and end the turn. `fullReply` carries the
 // marker so the client saves it and the card survives a reload.
 function emitPlaygroundCard(res, session) {
@@ -5687,6 +5815,13 @@ async function handlePlaygroundAction(req, res, ctx, action, rawMessage) {
     const { conversationId, provider, model, think } = ctx;
     let session = playground.getSession(conversationId);
     try {
+        // --- Create a character from a generated image -----------------------
+        // A per-asset action, not a playground concept: the image becomes the
+        // character's approved portrait and its identity sheet is generated.
+        if (action.type === playground.ACTIONS.CHARACTER_FROM_IMAGE) {
+            await handleCharacterFromImage(req, res, ctx, action);
+            return;
+        }
         // --- Today's Playground daily idea set actions -----------------------
         if (action.type === playground.ACTIONS.TODAY_CREATE) {
             await runTodayCreate(req, res, ctx, action, rawMessage);

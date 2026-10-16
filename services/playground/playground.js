@@ -42,6 +42,9 @@ const ACTIONS = {
     // Save the concept as a named character (creates a CANDIDATE image only; the
     // identity sheet is generated after the user approves it).
     SAVE_CHARACTER: 'save_character',
+    // Promote a generated image into a saved character: the image becomes the
+    // approved base portrait and its consolidated identity sheet is generated.
+    CHARACTER_FROM_IMAGE: 'character_from_image',
     // Today's Playground: the daily idea set's own lifecycle actions.
     // `today_refresh` regenerates the day's ideas with the local LLM;
     // `today_create` hands a selected idea to the existing generation pipeline;
@@ -1072,6 +1075,8 @@ function normalizeAction(value) {
         if (value.ideaId) out.ideaId = String(value.ideaId);
         // The character name supplied when saving a concept as a character.
         if (typeof value.name === 'string' && value.name.trim()) out.name = value.name.trim();
+        // The generated image a "create character" action is built from.
+        if (typeof value.filename === 'string' && value.filename.trim()) out.filename = value.filename.trim();
         if (value.mode) out.mode = String(value.mode);
         if (value.locks) out.locks = value.locks;
         if (value.changes) out.changes = value.changes;

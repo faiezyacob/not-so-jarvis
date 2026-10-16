@@ -451,3 +451,67 @@ test('playground concept cards carry a single-image identity summary', () => {
     assert.equal(card.identity.hasApprovedBase, false);
     characterPresets.remove(character.id);
 });
+
+test('identityFromAnalysis maps a vision reply onto the structured identity shape', () => {
+    const structured = identity.identityFromAnalysis({
+        person: true,
+        gender: 'female',
+        age: 'late twenties',
+        ageGroup: 'adult',
+        skin: { tone: 'medium golden', undertone: 'warm', group: 'medium' },
+        face: { shape: 'oval', nose: 'straight', lips: 'full', cheeks: 'high', jaw: 'soft' },
+        eyes: { color: 'hazel', shape: 'almond' },
+        eyebrows: 'arched',
+        hair: { color: 'dark brown', texture: 'wavy', style: 'long' },
+        build: 'slim',
+        distinctiveFeature: 'a small mole on the left cheek'
+    });
+    assert.equal(structured.gender, 'woman');
+    assert.equal(structured.skin.tone, 'medium golden');
+    assert.equal(structured.face.shape, 'oval');
+    assert.equal(structured.eyes.color, 'hazel');
+    assert.equal(structured.hair.style, 'long');
+    assert.equal(structured.build, 'slim');
+    assert.equal(structured.distinctiveFeature, 'a small mole on the left cheek');
+});
+
+test('identityFromAnalysis returns null without a person or traits', () => {
+    assert.equal(identity.identityFromAnalysis({ person: false, gender: 'woman' }), null);
+    assert.equal(identity.identityFromAnalysis({}), null);
+    assert.equal(identity.identityFromAnalysis(null), null);
+});
+
+test('identityTextFromAnalysis produces a readable line and empty fallback', () => {
+    const text = identity.identityTextFromAnalysis({
+        person: true,
+        gender: 'man',
+        age: 'thirties',
+        skin: { tone: 'deep', undertone: 'neutral' },
+        hair: { color: 'black', style: 'short' }
+    });
+    assert.match(text, /thirties/);
+    assert.match(text, /man/);
+    assert.match(text, /deep/);
+    assert.equal(identity.identityTextFromAnalysis({ person: false }), '');
+});
+
+test('a character built from an image analysis carries metadata into the sheet prompt', () => {
+    const analysis = {
+        person: true,
+        gender: 'woman',
+        skin: { tone: 'light', undertone: 'warm' },
+        face: { shape: 'heart-shaped' },
+        hair: { color: 'auburn', style: 'bob' }
+    };
+    const character = characterPresets.create({
+        name: 'From Image',
+        identity: identity.identityFromAnalysis(analysis),
+        identityText: identity.identityTextFromAnalysis(analysis),
+        provenance: { type: 'generated-image', filename: 'scene.png' }
+    });
+    const pkg = characterPresets.getIdentityPackage(character.id);
+    assert.ok(pkg.identityMetadata.face.shape);
+    const prompt = identity.buildIdentitySheetPrompt(character);
+    assert.match(prompt, /same person shown in image 1/);
+    characterPresets.remove(character.id);
+});
