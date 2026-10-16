@@ -95,6 +95,34 @@ test('detectUgcIntent still recognises UGC requests that ask for moving media', 
     assert.equal(studio.detectUgcIntent('Create an Instagram reel for my brand'), true);
 });
 
+test('explicitOutputDirective reads a declared output medium', () => {
+    assert.equal(studio.explicitOutputDirective('generate image: a cat'), 'image');
+    assert.equal(studio.explicitOutputDirective('generate an image of a forest'), 'image');
+    assert.equal(studio.explicitOutputDirective('generate video: a cat'), 'video');
+    assert.equal(studio.explicitOutputDirective('create a clip of a dog'), 'video');
+    assert.equal(studio.explicitOutputDirective('generate ugc content for skincare'), 'ugc');
+    assert.equal(studio.explicitOutputDirective('generate a ugc video'), 'ugc');
+    assert.equal(studio.explicitOutputDirective('make a TikTok ad'), null);
+    assert.equal(studio.explicitOutputDirective('what is a cat'), null);
+});
+
+test('detectUgcIntent honours an explicit output directive over heuristic prose', () => {
+    // The reported false positive: "hair clip" matched VIDEO_CONTEXT_RE, which
+    // defeated the still-image guard and let "lifestyle content" start a project.
+    const prompt =
+        'generate image: A young woman with long wavy brown hair stands on a sunny city sidewalk, ' +
+        'shielding her eyes from the sun with one hand while smiling gently at the camera. ' +
+        'Subject: A young woman wearing a gold hair clip and a delicate necklace with a red flower pendant. ' +
+        'Style Details: The image has a vibrant, high-contrast aesthetic typical of modern smartphone ' +
+        'photography with a focus on fashion and lifestyle content.';
+    assert.equal(studio.detectUgcIntent(prompt), false);
+
+    // An explicit video directive is normal video work unless UGC framing is named.
+    assert.equal(studio.detectUgcIntent('generate video: a cat walking on a beach'), false);
+    assert.equal(studio.detectUgcIntent('generate video: a UGC ad for my product'), true);
+    assert.equal(studio.detectUgcIntent('generate ugc content for skincare'), true);
+});
+
 test('a UGC script request is detected as script-only', () => {
     assert.equal(studio.isScriptOnlyRequest('Write me a UGC script'), true);
     assert.equal(studio.isScriptOnlyRequest('Create a UGC video for my product'), false);
@@ -320,6 +348,18 @@ test('classifyMessage leaves unrelated generation requests to the normal router'
     // A targeted UGC edit is still captured.
     assert.equal(studio.classifyMessage('make the video 20 seconds', project).action, 'edit');
     assert.equal(studio.classifyMessage('put Maya in the gym outfit', project).action, 'edit');
+});
+
+test('classifyMessage ignores an explicit output directive on an open project', () => {
+    const project = baseProject();
+    project.stage = studio.STAGES.SCRIPT_REVIEW;
+    const imagePrompt =
+        'generate image: A woman in a dress on a city street. Camera: close-up selfie. ' +
+        'Style Details: fashion and lifestyle content.';
+    assert.equal(studio.classifyMessage(imagePrompt, project), null);
+    assert.equal(studio.classifyMessage('generate video: a cat on a beach', project), null);
+    // A real UGC edit is still captured.
+    assert.equal(studio.classifyMessage('change the outfit to gym wear', project).action, 'edit');
 });
 
 test('natural editing applies duration, outfit and environment changes', async () => {

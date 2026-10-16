@@ -4519,6 +4519,10 @@ async function handleUGCAction(req, res, ctx, project, action) {
     if (!action.type && action.action && Object.values(UGC_ACTION).includes(action.action)) {
         action = Object.assign({}, action, { type: action.action });
     }
+    // A natural-language edit classified by studio.classifyMessage has no button
+    // twin, so it is dispatched directly rather than validated against the button
+    // action space (which has no 'edit' rule).
+    const isNaturalEdit = !action.type && action.action === 'edit';
 
     if (ugcActionLocks.has(conversationId)) {
         sseWrite(res, { error: 'UGC Studio \u2014 Another action is still running. Try again in a moment.' });
@@ -4526,11 +4530,13 @@ async function handleUGCAction(req, res, ctx, project, action) {
         return;
     }
     // Validate the action against the live stage before any work runs.
-    const validation = ugcStudio.validateAction(project, action.type);
-    if (!validation.ok) {
-        sseWrite(res, { error: 'UGC Studio \u2014 ' + validation.error });
-        res.end();
-        return;
+    if (!isNaturalEdit) {
+        const validation = ugcStudio.validateAction(project, action.type);
+        if (!validation.ok) {
+            sseWrite(res, { error: 'UGC Studio \u2014 ' + validation.error });
+            res.end();
+            return;
+        }
     }
     ugcActionLocks.add(conversationId);
     try {

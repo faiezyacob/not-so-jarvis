@@ -253,9 +253,48 @@ function isStillImageRequest(text) {
         !VIDEO_CONTEXT_RE.test(text);
 }
 
+// An explicit output directive at the start of a message ("generate image:",
+// "generate video:", "generate a UGC video") is an authoritative statement of
+// the requested medium. It must short-circuit the heuristic noun matching below
+// so unrelated prose (a "hair clip", a "lifestyle content" style blurb) can
+// never divert a declared request into a different workflow.
+const EXPLICIT_OUTPUT_DIRECTIVE_RE =
+    /^\s*(?:please\s+|now\s+|ok(?:ay)?\s+)?(?:generate|create|make|render|produce|draw|paint|film|record|shoot|animate|write|draft|design)\s+(?:me\s+)?(?:an?\s+)?([a-z][a-z-]*)/i;
+const DIRECTIVE_IMAGE_NOUNS = /^(?:image|images|picture|pictures|photo|photos|photograph|portrait|illustration|drawing|artwork|render)$/i;
+const DIRECTIVE_VIDEO_NOUNS = /^(?:video|videos|clip|clips|film|films|movie|movies|animation|animations|reel|reels|footage)$/i;
+const DIRECTIVE_UGC_NOUNS = /^(?:ugc)$/i;
+
+// Unambiguous UGC vocabulary. Unlike UGC_NOUN_RE this deliberately omits
+// ambiguous phrasing like "lifestyle content", so a plain video directive only
+// stays UGC when the message explicitly names UGC/creator/product-ad framing.
+const UGC_STRONG_RE =
+    /\b(?:ugc|user[\s-]?generated\s+content|creator[\s-]?style[d]?|influencer|tiktok\s+ad|instagram\s+(?:ad|reel)|product\s+(?:video|ad|demo(?:nstration)?|testimonial|unboxing|showcase|routine)|unboxing\s+video|brand\s+(?:video|content)|testimonial\s+video|routine\s+video)\b/i;
+
+function hasStrongUgcSignal(text) {
+    return UGC_STRONG_RE.test(text) || /\bfor\s+my\s+(?:product|brand|business)\b/i.test(text);
+}
+
+function explicitOutputDirective(message) {
+    const match = String(message || '').match(EXPLICIT_OUTPUT_DIRECTIVE_RE);
+    if (!match) return null;
+    const noun = match[1].toLowerCase();
+    if (DIRECTIVE_IMAGE_NOUNS.test(noun)) return 'image';
+    if (DIRECTIVE_VIDEO_NOUNS.test(noun)) return 'video';
+    if (DIRECTIVE_UGC_NOUNS.test(noun)) return 'ugc';
+    return null;
+}
+
 function detectUgcIntent(message) {
     const text = String(message || '').trim();
     if (!text) return false;
+    // An explicit directive wins: a message that already declares its medium
+    // must not be re-routed by heuristics elsewhere in the prose. UGC Studio
+    // produces video, so an explicit image request is never UGC, and an explicit
+    // video request is only UGC when it also names UGC framing.
+    const directive = explicitOutputDirective(text);
+    if (directive === 'image') return false;
+    if (directive === 'ugc') return true;
+    if (directive === 'video' && !hasStrongUgcSignal(text)) return false;
     if (isStillImageRequest(text)) return false;
     const hasNoun = UGC_NOUN_RE.test(text);
     const hasUgc = /\bugc\b/i.test(text);
@@ -1682,6 +1721,12 @@ const OUTFIT_VERB_RE = /\b(?:put|use|wear|wearing|dress|switch|change)\b/i;
 function classifyMessage(message, project) {
     const text = String(message || '').trim();
     if (!text || !project) return null;
+    // A fresh explicit output directive names a new image/video request, not an
+    // edit of the open project. Without this, ordinary prompt prose ("dress" +
+    // "camera") is misread as a UGC edit and rejected as an unknown action.
+    const directive = explicitOutputDirective(text);
+    if (directive === 'image') return null;
+    if (directive === 'video' && !hasStrongUgcSignal(text)) return null;
     const stage = project.stage;
 
     // Confirm rendering a brief longer than the H3 ceiling at 15 seconds.
@@ -2113,6 +2158,7 @@ module.exports = {
     ACTIONS,
     MARKER_RE,
     detectUgcIntent,
+    explicitOutputDirective,
     isScriptOnlyRequest,
     createProject,
     getProject,
