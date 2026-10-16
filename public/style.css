@@ -6287,6 +6287,222 @@ a.modal-btn {
     color: var(--text-dim);
 }
 
+/* --- Today's Playground --------------------------------------------------- */
+
+.playground-today {
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.playground-today-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.playground-today-refresh {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 9px;
+    border: 1px solid var(--border-color);
+    border-radius: 5px;
+    background: transparent;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    cursor: pointer;
+}
+
+.playground-today-refresh:hover:not(:disabled) {
+    border-color: var(--border-focus);
+    background: var(--accent-faint);
+    color: var(--text-primary);
+}
+
+.playground-today-refresh:disabled {
+    opacity: 0.55;
+    cursor: default;
+}
+
+.playground-today-status {
+    margin: 6px 0 0;
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    line-height: 1.4;
+    color: var(--text-dim);
+}
+
+.playground-today-status--error {
+    color: #ff8f8f;
+}
+
+.playground-today-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.playground-today-list--busy {
+    opacity: 0.7;
+    pointer-events: none;
+}
+
+.playground-today-card {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 9px 10px;
+    border: 1px solid var(--border-color);
+    border-left: 2px solid var(--border-focus);
+    border-radius: 7px;
+    background: var(--bg-input);
+}
+
+.playground-today-card--easy {
+    border-left-color: var(--accent);
+}
+
+.playground-today-card--interesting {
+    border-left-color: #6fa8ff;
+}
+
+.playground-today-card--ambitious {
+    border-left-color: #d9a24a;
+}
+
+.playground-today-card--pending {
+    opacity: 0.6;
+    pointer-events: none;
+}
+
+.playground-today-card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.playground-today-tier {
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    font-weight: 600;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+}
+
+.playground-today-output {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-dim);
+}
+
+.playground-today-thumb {
+    margin: 0;
+    width: 100%;
+    border-radius: 5px;
+    overflow: hidden;
+    border: 1px solid var(--border-color);
+    background: var(--bg-card);
+}
+
+.playground-today-thumb img {
+    display: block;
+    width: 100%;
+    height: 96px;
+    object-fit: cover;
+}
+
+.playground-today-title {
+    margin: 0;
+    font-size: var(--fs-md);
+    font-weight: 600;
+    line-height: 1.25;
+    color: var(--text-primary);
+}
+
+.playground-today-brief {
+    margin: 0;
+    font-size: var(--fs-2xs);
+    line-height: 1.45;
+    color: var(--text-secondary);
+}
+
+.playground-today-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px 12px;
+}
+
+.playground-today-meta-row {
+    display: inline-flex;
+    gap: 4px;
+    font-size: var(--fs-2xs);
+    line-height: 1.4;
+}
+
+.playground-today-meta-label {
+    color: var(--text-dim);
+}
+
+.playground-today-meta-value {
+    color: var(--text-secondary);
+}
+
+.playground-today-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 2px;
+}
+
+.playground-today-dismiss {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 5px 9px;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--text-dim);
+    font-size: var(--fs-2xs);
+    cursor: pointer;
+}
+
+.playground-today-dismiss:hover {
+    border-color: var(--border-color);
+    color: var(--text-primary);
+}
+
+.playground-today-done {
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--accent);
+}
+
+.playground-today-done--active {
+    color: #d9a24a;
+}
+
+.playground-today-error {
+    margin: 0;
+    font-size: var(--fs-2xs);
+    line-height: 1.4;
+    color: #ff8f8f;
+}
+
 .playground-face-advanced {
     margin-top: 2px;
     color: var(--text-secondary);
@@ -9358,6 +9574,14 @@ textarea.companion-input { resize: vertical; font-family: var(--font-sans); }
 .companion-life-scene-item { font-size: var(--fs-xs); color: var(--text-secondary); }
 
 .photo-action-row { margin-top: 8px; }
+
+/* --- Per-asset next-action card (below each generated image/video) --- */
+.asset-action-row {
+    margin: 6px 0 14px;
+}
+.asset-action {
+    letter-spacing: 0.8px;
+}
 
 .companion-btn {
     padding: 7px 14px;

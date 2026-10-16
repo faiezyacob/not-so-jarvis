@@ -238,9 +238,25 @@ const UGC_ACTION_RE =
 // that must NOT trigger image/video generation on their own.
 const UGC_SCRIPT_RE = /\b(?:ugc\s+)?(?:script|storyboard|concept|idea|hook)\b/i;
 
+// An explicit still-image request is never a UGC/video workflow entry, even when
+// the wording name-drops "UGC" or an influencer/creator aesthetic. UGC Studio
+// produces video, so a request asking for an image (with no moving-media context)
+// must fall through to normal image generation.
+const STILL_IMAGE_NOUN_RE = /\b(?:image|picture|photo(?:graph)?|portrait|illustration|drawing|artwork)\b/i;
+const STILL_IMAGE_ACTION_RE = /\b(?:generate|create|make|draw|render|produce|paint)\b/i;
+const VIDEO_CONTEXT_RE =
+    /\b(?:video|clip|reel|ad|advert(?:isement|ising)?|commercial|film|shoot|record|vlog|script|storyboard|footage)\b/i;
+
+function isStillImageRequest(text) {
+    return STILL_IMAGE_NOUN_RE.test(text) &&
+        STILL_IMAGE_ACTION_RE.test(text) &&
+        !VIDEO_CONTEXT_RE.test(text);
+}
+
 function detectUgcIntent(message) {
     const text = String(message || '').trim();
     if (!text) return false;
+    if (isStillImageRequest(text)) return false;
     const hasNoun = UGC_NOUN_RE.test(text);
     const hasUgc = /\bugc\b/i.test(text);
     if (!hasNoun && !hasUgc) return false;

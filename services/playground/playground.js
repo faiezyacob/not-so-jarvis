@@ -41,7 +41,14 @@ const ACTIONS = {
     USE_CHARACTER: 'use_character',
     // Save the concept as a named character (creates a CANDIDATE image only; the
     // identity sheet is generated after the user approves it).
-    SAVE_CHARACTER: 'save_character'
+    SAVE_CHARACTER: 'save_character',
+    // Today's Playground: the daily idea set's own lifecycle actions.
+    // `today_refresh` regenerates the day's ideas with the local LLM;
+    // `today_create` hands a selected idea to the existing generation pipeline;
+    // `today_dismiss` hides an idea without generating it.
+    TODAY_REFRESH: 'today_refresh',
+    TODAY_CREATE: 'today_create',
+    TODAY_DISMISS: 'today_dismiss'
 };
 
 const STATUS = {
@@ -1061,6 +1068,8 @@ function normalizeAction(value) {
         if (value.themeId) out.themeId = String(value.themeId);
         if (value.category) out.category = String(value.category);
         if (value.characterId) out.characterId = String(value.characterId);
+        // Today's Playground targets one daily idea by id.
+        if (value.ideaId) out.ideaId = String(value.ideaId);
         // The character name supplied when saving a concept as a character.
         if (typeof value.name === 'string' && value.name.trim()) out.name = value.name.trim();
         if (value.mode) out.mode = String(value.mode);

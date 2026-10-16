@@ -80,6 +80,21 @@ test('detectUgcIntent ignores ordinary requests', () => {
     assert.equal(studio.detectUgcIntent(''), false);
 });
 
+test('detectUgcIntent ignores still-image requests that name-drop UGC aesthetics', () => {
+    assert.equal(studio.detectUgcIntent(
+        'generate image: Candid iPhone front camera selfie of a young adult woman indoors. ' +
+        'UGC iPhone aesthetic, lifestyle snapshot, modern European influencer vibe, ' +
+        'photorealistic, high detail, 4k quality.'
+    ), false);
+    assert.equal(studio.detectUgcIntent('Generate an image of a UGC creator-style portrait'), false);
+    assert.equal(studio.detectUgcIntent('Create a photo of an influencer in a cafe'), false);
+});
+
+test('detectUgcIntent still recognises UGC requests that ask for moving media', () => {
+    assert.equal(studio.detectUgcIntent('Generate a UGC video with an influencer aesthetic'), true);
+    assert.equal(studio.detectUgcIntent('Create an Instagram reel for my brand'), true);
+});
+
 test('a UGC script request is detected as script-only', () => {
     assert.equal(studio.isScriptOnlyRequest('Write me a UGC script'), true);
     assert.equal(studio.isScriptOnlyRequest('Create a UGC video for my product'), false);

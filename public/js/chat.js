@@ -1082,6 +1082,12 @@ const Chat = (() => {
         if (photoParsed.active && window.PhotoActions && typeof window.PhotoActions.attach === 'function') {
             window.PhotoActions.attach(contentEl);
         }
+        // Each generated asset gets its own next-action card (upscale / modify /
+        // generate video). Companion photos already carry their own action row,
+        // so the generic card skips the duplicate video action for them.
+        if (window.AssetActions && typeof window.AssetActions.attach === 'function') {
+            window.AssetActions.attach(contentEl, { companion: photoParsed.active });
+        }
     }
 
     // Scroll the message pane only when the streaming element actually belongs
@@ -1425,6 +1431,7 @@ const Chat = (() => {
                     message: userText || text,
                     images: visionImages,
                     references: references.map((r) => r.filename),
+                    upscaleSource: override && override.upscaleSource ? override.upscaleSource : undefined,
                     characters: characters.map((c) => c.id),
                     directorAction: override && override.directorAction ? override.directorAction : undefined,
                     longVideoAction: override && override.longVideoAction ? override.longVideoAction : undefined,
@@ -1516,6 +1523,9 @@ const Chat = (() => {
                             // or spoken — only real assistant replies are saved.
                             hadError = true;
                             aiMessageEl.classList.add('message--error');
+                            // A failed upscale/modify must make its asset action
+                            // available again, so re-check the optimistic state.
+                            if (window.AssetActions) window.AssetActions.refresh();
                             continue;
                         }
                         if (data.generating) {
@@ -1567,6 +1577,7 @@ const Chat = (() => {
                             scrollActiveStream(aiMessageEl);
                             generatedMetaCache = null;
                             if (window.Gallery) window.Gallery.refresh();
+                            if (window.AssetActions) window.AssetActions.refresh();
                         }
                         if (data.video) {
                             cancelStreamRender();
@@ -1577,6 +1588,7 @@ const Chat = (() => {
                             scrollActiveStream(aiMessageEl);
                             generatedMetaCache = null;
                             if (window.Gallery) window.Gallery.refresh();
+                            if (window.AssetActions) window.AssetActions.refresh();
                         }
                         if (data.director) {
                             cancelStreamRender();
@@ -1587,6 +1599,7 @@ const Chat = (() => {
                             scrollActiveStream(aiMessageEl);
                             generatedMetaCache = null;
                             if (window.Gallery) window.Gallery.refresh();
+                            if (window.AssetActions) window.AssetActions.refresh();
                             if (window.DirectorUI && typeof window.DirectorUI.hydrate === 'function') {
                                 window.DirectorUI.hydrate(chatMessagesEl, conversationId);
                             }
@@ -1611,6 +1624,7 @@ const Chat = (() => {
                             scrollActiveStream(aiMessageEl);
                             generatedMetaCache = null;
                             if (window.Gallery) window.Gallery.refresh();
+                            if (window.AssetActions) window.AssetActions.refresh();
                             if (window.LongVideoUI && typeof window.LongVideoUI.hydrate === 'function') {
                                 window.LongVideoUI.hydrate(chatMessagesEl, conversationId);
                             }
@@ -1656,6 +1670,7 @@ const Chat = (() => {
                             scrollActiveStream(aiMessageEl);
                             generatedMetaCache = null;
                             if (window.Gallery) window.Gallery.refresh();
+                            if (window.AssetActions) window.AssetActions.refresh();
                             if (window.UGCUI && typeof window.UGCUI.hydrate === 'function') {
                                 // A card action just emitted the next active card;
                                 // bring it into view smoothly instead of leaving the

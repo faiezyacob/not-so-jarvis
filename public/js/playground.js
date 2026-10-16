@@ -14,6 +14,9 @@ const PlaygroundUI = (() => {
     const ICONS = {
         sparkle: '<path d="M12 3v4"></path><path d="M12 17v4"></path><path d="M3 12h4"></path><path d="M17 12h4"></path><path d="m5.6 5.6 2.8 2.8"></path><path d="m15.6 15.6 2.8 2.8"></path><path d="m18.4 5.6-2.8 2.8"></path><path d="m8.4 15.6-2.8 2.8"></path>',
         image: '<rect x="3" y="3" width="18" height="18" rx="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline>',
+        video: '<rect x="2" y="4" width="20" height="16" rx="2"></rect><path d="m10 9 5 3-5 3z"></path>',
+        layers: '<polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline>',
+        x: '<path d="M18 6 6 18"></path><path d="m6 6 12 12"></path>',
         refresh: '<polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>',
         pencil: '<path d="M12 20h9"></path><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path>',
         bookmark: '<path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path>',
@@ -629,8 +632,9 @@ const PlaygroundUI = (() => {
 
     function send(text, playgroundAction) {
         if (typeof Chat !== 'undefined' && Chat && typeof Chat.sendMessage === 'function') {
-            Chat.sendMessage({ text, playgroundAction });
+            return Chat.sendMessage({ text, playgroundAction });
         }
+        return Promise.resolve();
     }
 
     function lock(cardEl) {
@@ -726,6 +730,12 @@ const PlaygroundUI = (() => {
     // untouched.
     let popoverLoaded = false;
     let popoverDirty = false;
+    // Today's Playground: the cached daily set + its DOM/status.
+    let todayEl = null;
+    let todayStatusEl = null;
+    let todayRefreshBtn = null;
+    let todaySet = null;
+    let todayBusy = false;
 
     // Wardrobe grouping for the popover. Data-only: an unknown/future pack is
     // still rendered (appended after the known groups).
@@ -1352,6 +1362,9 @@ const PlaygroundUI = (() => {
         } catch (e) {
             setPopupBusy(false, 'Some options could not be loaded. You can still use the defaults.');
         }
+        // Today's Playground loads independently so an option failure never
+        // hides the daily ideas.
+        await loadToday();
     }
 
     function setPopupBusy(busy, message) {
@@ -1587,6 +1600,226 @@ const PlaygroundUI = (() => {
         return Boolean(popupEl && !popupEl.hidden);
     }
 
+    // --- Today's Playground --------------------------------------------------
+    //
+    // Three daily creative ideas from the existing Creative Playground. The set
+    // is cached server-side per local date, so reopening does not re-run the
+    // LLM. Nothing is generated until the user picks Create: Create hands the
+    // idea to the existing image pipeline or Director Mode.
+
+    function todayOutputIcon(outputType) {
+        if (outputType === 'video') return 'video';
+        if (outputType === 'multi') return 'layers';
+        return 'image';
+    }
+
+    function setTodayStatus(message, isError) {
+        if (!todayStatusEl) return;
+        todayStatusEl.hidden = !message;
+        todayStatusEl.textContent = message || '';
+        todayStatusEl.classList.toggle('playground-today-status--error', Boolean(isError));
+    }
+
+    function setTodayBusy(busy, message) {
+        todayBusy = Boolean(busy);
+        if (todayRefreshBtn) todayRefreshBtn.disabled = todayBusy;
+        if (todayEl) todayEl.classList.toggle('playground-today-list--busy', todayBusy);
+        if (message !== undefined) setTodayStatus(message, false);
+    }
+
+    function todayMeta(label, value) {
+        if (!value) return null;
+        const row = document.createElement('div');
+        row.className = 'playground-today-meta-row';
+        const key = document.createElement('span');
+        key.className = 'playground-today-meta-label';
+        key.textContent = label;
+        const val = document.createElement('span');
+        val.className = 'playground-today-meta-value';
+        val.textContent = value;
+        row.append(key, val);
+        return row;
+    }
+
+    function renderToday() {
+        if (!todayEl) return;
+        todayEl.innerHTML = '';
+        const ideas = todaySet && Array.isArray(todaySet.ideas) ? todaySet.ideas : [];
+        if (!ideas.length) {
+            setTodayStatus('No ideas yet. Tap Refresh to generate today\'s ideas.', false);
+            return;
+        }
+        let visible = 0;
+        ideas.forEach((idea) => {
+            if (idea.status === 'dismissed') return;
+            visible += 1;
+            todayEl.appendChild(todayCard(idea));
+        });
+        if (!visible) setTodayStatus('All of today\'s ideas are dismissed. Tap Refresh for new ones.', false);
+    }
+
+    function todayCard(idea) {
+        const card = document.createElement('article');
+        card.className = 'playground-today-card playground-today-card--' + (idea.tier || 'easy');
+        card.setAttribute('data-idea-id', idea.id);
+        card.setAttribute('data-status', idea.status || 'new');
+
+        const head = document.createElement('div');
+        head.className = 'playground-today-card-head';
+        const tier = document.createElement('span');
+        tier.className = 'playground-today-tier';
+        tier.textContent = idea.tierLabel || idea.tier || '';
+        const out = document.createElement('span');
+        out.className = 'playground-today-output';
+        out.innerHTML = iconSvg(todayOutputIcon(idea.outputType), 12) +
+            '<span>' + (idea.outputLabel || idea.outputType || '') + '</span>';
+        head.append(tier, out);
+        card.appendChild(head);
+
+        if (idea.previewUrl) {
+            const figure = document.createElement('figure');
+            figure.className = 'playground-today-thumb';
+            const img = document.createElement('img');
+            img.src = idea.previewUrl;
+            img.alt = idea.characterName || 'Preview';
+            img.loading = 'lazy';
+            figure.appendChild(img);
+            card.appendChild(figure);
+        }
+
+        const title = document.createElement('h4');
+        title.className = 'playground-today-title';
+        title.textContent = idea.title || 'Idea';
+        card.appendChild(title);
+
+        if (idea.brief) {
+            const brief = document.createElement('p');
+            brief.className = 'playground-today-brief';
+            brief.textContent = idea.brief;
+            card.appendChild(brief);
+        }
+
+        const meta = document.createElement('div');
+        meta.className = 'playground-today-meta';
+        [
+            todayMeta('Character', idea.characterName || (idea.mode === 'random_character' ? 'New random character' : 'No character')),
+            todayMeta('Activity', idea.activityLabel || ''),
+            todayMeta('Location', idea.sceneLabel || ''),
+            todayMeta('Theme', idea.themeLabel || '')
+        ].filter(Boolean).forEach((row) => meta.appendChild(row));
+        card.appendChild(meta);
+
+        if (idea.lastError) {
+            const error = document.createElement('p');
+            error.className = 'playground-today-error';
+            error.textContent = idea.lastError;
+            card.appendChild(error);
+        }
+
+        const actions = document.createElement('div');
+        actions.className = 'playground-today-actions';
+
+        const addDismiss = () => {
+            const dismiss = document.createElement('button');
+            dismiss.type = 'button';
+            dismiss.className = 'playground-today-dismiss';
+            dismiss.title = 'Dismiss this idea';
+            dismiss.innerHTML = iconSvg('x', 13) + '<span>Dismiss</span>';
+            dismiss.addEventListener('click', () => dismissTodayIdea(idea, card));
+            actions.appendChild(dismiss);
+        };
+
+        if (idea.status === 'completed') {
+            const done = document.createElement('span');
+            done.className = 'playground-today-done';
+            done.textContent = 'Created';
+            actions.appendChild(done);
+            if (idea.assetUrl) {
+                const view = document.createElement('button');
+                view.type = 'button';
+                view.className = 'playground-btn';
+                view.innerHTML = iconSvg('image', 13) + '<span class="playground-btn-label">View</span>';
+                view.addEventListener('click', () => openTodayAsset(idea.assetUrl));
+                actions.appendChild(view);
+            }
+        } else if (idea.status === 'started') {
+            const started = document.createElement('span');
+            started.className = 'playground-today-done playground-today-done--active';
+            started.textContent = 'In production';
+            actions.appendChild(started);
+            // Dismiss is the escape hatch: an abandoned production must never
+            // leave the card pinned.
+            addDismiss();
+        } else if (idea.status === 'selected') {
+            const working = document.createElement('span');
+            working.className = 'playground-today-done';
+            working.textContent = 'Creating\u2026';
+            actions.appendChild(working);
+        } else {
+            const create = document.createElement('button');
+            create.type = 'button';
+            create.className = 'playground-btn playground-btn--primary';
+            create.innerHTML = iconSvg(todayOutputIcon(idea.outputType), 13) + '<span class="playground-btn-label">Create</span>';
+            create.addEventListener('click', () => createTodayIdea(idea, card));
+            actions.appendChild(create);
+            addDismiss();
+        }
+        card.appendChild(actions);
+        return card;
+    }
+
+    function openTodayAsset(url) {
+        if (url && window.Gallery && typeof window.Gallery.openFromUrl === 'function') {
+            window.Gallery.openFromUrl(url);
+        }
+    }
+
+    async function loadToday() {
+        if (!todayEl) return;
+        try {
+            const res = await fetch('/api/playground/today');
+            if (!res.ok) throw new Error('request failed');
+            const data = await res.json();
+            todaySet = data && data.today ? data.today : null;
+            renderToday();
+            if (todayBusy) return;
+            if (todaySet && todaySet.pending) {
+                setTodayStatus('Showing starter ideas. Tap Refresh for fresh picks.', false);
+            } else {
+                setTodayStatus('', false);
+            }
+        } catch (e) {
+            renderToday();
+            setTodayStatus('Could not load today\'s ideas. Tap Refresh to try again.', true);
+        }
+    }
+
+    async function runTodayAction(text, action) {
+        setTodayBusy(true, 'Working\u2026');
+        try {
+            await send(text, action);
+        } finally {
+            await loadToday();
+            setTodayBusy(false);
+        }
+    }
+
+    function createTodayIdea(idea, card) {
+        if (card) card.classList.add('playground-today-card--pending');
+        const label = idea.outputType === 'image' ? 'Create this image idea' : 'Create this idea';
+        return runTodayAction(label, { type: 'today_create', ideaId: idea.id });
+    }
+
+    function dismissTodayIdea(idea, card) {
+        if (card) card.classList.add('playground-today-card--pending');
+        return runTodayAction('Dismiss this idea', { type: 'today_dismiss', ideaId: idea.id });
+    }
+
+    function refreshToday() {
+        if (todayBusy) return;
+        return runTodayAction('Refresh today\'s Playground ideas', { type: 'today_refresh' });
+    }
+
     // An app dialog (e.g. the delete-character confirmation) sits above the
     // popover. While it is open, background interactions belong to it — a click
     // or Escape that dismisses the dialog must not also dismiss the popover.
@@ -1620,6 +1853,9 @@ const PlaygroundUI = (() => {
         faceEyesSelect = document.getElementById('playgroundFaceEyes');
         faceHeadSelect = document.getElementById('playgroundFaceHead');
         promptEl = document.getElementById('playgroundPrompt');
+        todayEl = document.getElementById('playgroundToday');
+        todayStatusEl = document.getElementById('playgroundTodayStatus');
+        todayRefreshBtn = document.getElementById('playgroundTodayRefresh');
         const submitBtn = document.getElementById('playgroundSurprise');
 
         buttonEl.addEventListener('click', (e) => {
@@ -1631,6 +1867,7 @@ const PlaygroundUI = (() => {
             if (characterWrap && !characterWrap.contains(e.target)) closeCharacterMenu();
         });
         if (submitBtn) submitBtn.addEventListener('click', submit);
+        if (todayRefreshBtn) todayRefreshBtn.addEventListener('click', () => { refreshToday(); });
         if (closeButtonEl) closeButtonEl.addEventListener('click', close);
         if (characterTrigger) {
             characterTrigger.addEventListener('click', (e) => {

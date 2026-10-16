@@ -1260,6 +1260,23 @@
                 </div>
                 <div class="playground-popup-status" id="playgroundPopupStatus" role="status" hidden>Loading options...</div>
                 <div class="playground-popup-body">
+                    <section class="playground-section playground-today" id="playgroundTodaySection">
+                        <div class="playground-today-head">
+                            <h3 class="playground-section-title">Today's Playground</h3>
+                            <button class="playground-today-refresh" id="playgroundTodayRefresh" type="button" title="Generate fresh ideas for today">
+                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <polyline points="23 4 23 10 17 10"></polyline>
+                                    <polyline points="1 20 1 14 7 14"></polyline>
+                                    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+                                </svg>
+                                <span>Refresh</span>
+                            </button>
+                        </div>
+                        <p class="playground-section-hint">Three ideas for today &mdash; Easy, Interesting and Ambitious. Pick one to create; nothing is generated until you do.</p>
+                        <div class="playground-today-status" id="playgroundTodayStatus" role="status" hidden></div>
+                        <div class="playground-today-list" id="playgroundToday"></div>
+                    </section>
+
                     <section class="playground-section">
                         <h3 class="playground-section-title">Scene</h3>
                         <label class="settings-field-label" for="playgroundTheme">Theme</label>
@@ -1685,6 +1702,7 @@
     <script src="js/companion.js"></script>
     <script src="js/chat-suggestions.js"></script>
     <script src="js/photo-actions.js"></script>
+    <script src="js/asset-actions.js"></script>
     <script src="js/chat.js"></script>
     <script src="js/voice-input.js"></script>
     <script src="js/voice-output.js"></script>

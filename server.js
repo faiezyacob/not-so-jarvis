@@ -97,6 +97,7 @@ const turnQueue = require('./services/turn-queue');
 const director = require('./services/director/director');
 const longVideoDirector = require('./services/long-video/director');
 const playground = require('./services/playground/playground');
+const playgroundToday = require('./services/playground/today');
 const ugcStudio = require('./services/ugc/studio');
 const ugcProducts = require('./services/ugc/products');
 const sceneLibrary = require('./services/scene-library');
@@ -1023,6 +1024,37 @@ async function handleAPI(req, res, urlPath) {
                 ? playground.buildCard(session, playground.resolveCharacter(session.characterId))
                 : null
         });
+        return true;
+    }
+
+    // GET /api/playground/today — Today's Playground daily idea set for this
+    // device session. The set is generated once per local date and cached, so
+    // reopening the Playground does not re-run the LLM. Idea generation is an
+    // LLM turn, so it only runs when no other turn is active (and while holding
+    // the turn slot); when the app is busy a transient deterministic preview is
+    // returned instead and the client can refresh.
+    if (urlPath === '/api/playground/today' && req.method === 'GET') {
+        const sessionId = req.jarvisSession || playgroundToday.DEFAULT_SESSION;
+        let entry = playgroundToday.peekDailySet(sessionId);
+        if (!entry && turnQueue.getStatus().active === null) {
+            let turn = null;
+            try {
+                turn = await turnQueue.acquire({ label: 'playground-today', conversationId: '' });
+                const cfg = configManager.getConfig();
+                const provider = cfg.provider || 'ollama';
+                const model = cfg.model || 'llama3.2';
+                vramManager.rememberChatModel(provider, model);
+                await vramManager.freeVRAMBeforeChat();
+                entry = await playgroundToday.getDailySet({ sessionId, provider, model, think: false });
+            } catch (err) {
+                console.warn('[playground-today] generation failed:', err && err.message);
+                entry = null;
+            } finally {
+                if (turn) turn.release();
+            }
+        }
+        const set = entry ? playgroundToday.clientSet(entry) : playgroundToday.clientSet(playgroundToday.previewFallbackSet({}));
+        json(res, 200, { today: set });
         return true;
     }
 
@@ -2199,6 +2231,17 @@ function sanitizeReferenceImage(value) {
     return safeName;
 }
 
+// Validate an explicit upscale source from the per-asset action card: an image
+// or video filename inside data/generated. Lets "Upscale" target the exact
+// asset the user clicked instead of merely the last generated media.
+function sanitizeUpscaleSource(value) {
+    const safeName = path.basename(String(value || '').split('?')[0]);
+    if (!safeName || !/\.(?:png|jpe?g|webp|mp4|webm|mov|avi)$/i.test(safeName)) return null;
+    const fullPath = path.join(GENERATED_DIR, safeName);
+    if (!fullPath.startsWith(GENERATED_DIR) || !fs.existsSync(fullPath)) return null;
+    return safeName;
+}
+
 // Validate an ordered list of @-picker references, dropping invalid entries
 // while preserving order and position. Order is meaningful: the first is the
 // edit source and each subsequent entry maps to the matching "image N" wording
@@ -2729,6 +2772,16 @@ async function handleChatStream(req, res) {
             if (referenceImages.length > REFERENCE_IMAGES_MAX) referenceImages.length = REFERENCE_IMAGES_MAX;
         }
         const referenceImage = referenceImages[0] || null;
+        // Explicit upscale source from the per-asset action card. Falls back to
+        // a referenced image so "upscale this image" with an @-reference still
+        // targets that image. Only a file the conversation actually rendered is
+        // honored, so an explicit source can never reach another conversation's
+        // (or another device's) media.
+        const requestedUpscaleSource = sanitizeUpscaleSource(body.upscaleSource);
+        const upscaleSource = requestedUpscaleSource &&
+            generatedFilenamesInConversation(conversationId).has(requestedUpscaleSource)
+            ? requestedUpscaleSource
+            : null;
         // Character context is parsed once, here, and passed structured to every
         // media pipeline — no subsystem parses `@Maya` itself. `@Name` mentions
         // are stripped from the working message (the persisted user message keeps
@@ -3101,7 +3154,8 @@ async function handleChatStream(req, res) {
         if (turnPlan.execution.shouldRun && turnPlan.execution.workflow === 'image_upscale') {
             await vramManager.freeVRAMBeforeImage();
             await handleImageUpscaleStream(req, res, {
-                provider, model, conversationId, message
+                provider, model, conversationId, message,
+                sourceFilename: upscaleSource || referenceImage
             });
             return;
         }
@@ -3112,7 +3166,8 @@ async function handleChatStream(req, res) {
         if (turnPlan.execution.shouldRun && turnPlan.execution.workflow === 'video_upscale') {
             await vramManager.freeVRAMBeforeImage();
             await handleVideoUpscaleStream(req, res, {
-                provider, model, conversationId, message
+                provider, model, conversationId, message,
+                sourceFilename: upscaleSource
             });
             return;
         }
@@ -5543,10 +5598,128 @@ async function runPlaygroundGenerate(req, res, ctx, session, rawMessage) {
     });
 }
 
+// Today's Playground: hand a selected daily idea to the EXISTING pipeline. An
+// image idea runs through the Creative Playground concept -> prompt builder ->
+// image pipeline; a video / multi-step idea runs through Director Mode
+// (opening frame -> approval -> H3). No new generation path is introduced.
+async function runTodayCreate(req, res, ctx, action, rawMessage) {
+    const { conversationId, provider, model, think } = ctx;
+    const sessionId = req.jarvisSession || playgroundToday.DEFAULT_SESSION;
+    const idea = playgroundToday.findIdea(sessionId, action.ideaId);
+    if (!idea) {
+        sseWrite(res, { error: "Today's Playground \u2014 That idea is no longer available. Refresh today's ideas." });
+        res.end();
+        return;
+    }
+    // `selected` is a transient in-flight marker only. Every path below MUST
+    // resolve it to a terminal state (completed / new) so a card can never be
+    // stuck showing "Creating…".
+    playgroundToday.markIdea(sessionId, idea.id, { status: 'selected' });
+    activityLog.record({
+        type: 'generation',
+        title: "Today's Playground",
+        detail: idea.title,
+        conversationId
+    });
+    // A video / multi-step idea is the existing Director Mode production: it
+    // shows the opening frame, waits for approval, then animates it with H3.
+    // The idea moves to `started` ("In production") now; the Director outcome
+    // hook resolves it to completed / new when the production finishes.
+    if (playgroundToday.isVideoIdea(idea)) {
+        const character = idea.characterId ? characterPresets.get(idea.characterId) : null;
+        try {
+            await handleDirectorStart(req, res, {
+                conversationId,
+                message: idea.direction || idea.brief || idea.title,
+                provider, model, think,
+                referenceImage: null,
+                characters: character ? [{ id: character.id, name: character.name }] : []
+            });
+        } catch (err) {
+            console.error('[playground-today] director start failed:', err && err.message);
+        }
+        const production = director.getProduction(conversationId);
+        const failed = production && [director.STATUS.FAILED_IMAGE, director.STATUS.FAILED_VIDEO, director.STATUS.CANCELLED]
+            .includes(production.status);
+        if (production && !failed) {
+            // The production owns the approval flow; the outcome hook marks the
+            // idea completed (or back to new) when it finishes.
+            playgroundToday.markIdea(sessionId, idea.id, { status: 'started', productionId: production.id });
+        } else {
+            playgroundToday.markIdea(sessionId, idea.id, {
+                status: 'new',
+                lastError: 'The production could not be started. You can try again.'
+            });
+        }
+        return;
+    }
+    // An image idea reuses the Creative Playground concept pipeline verbatim:
+    // the idea's direction is creative brief text, never the final prompt. A new
+    // non-hidden generated image means success; anything else (failure, cancel,
+    // early identity error) returns the idea to `new` so Create is available.
+    const beforeIds = new Set(generatedHistory.list().map((entry) => entry.id));
+    try {
+        const session = playground.start(Object.assign({ conversationId },
+            playgroundToday.buildIdeaStartInput(idea)));
+        playgroundToday.markIdea(sessionId, idea.id, { playgroundId: session.id });
+        await runPlaygroundFaceStage(req, res, ctx, session);
+        await runPlaygroundGenerate(req, res, ctx, session, rawMessage);
+    } catch (err) {
+        console.error('[playground-today] image idea failed:', err && err.message);
+    }
+    const produced = generatedHistory.list().find((entry) =>
+        !beforeIds.has(entry.id) && entry.hidden !== true && !entry.video) || null;
+    if (produced) {
+        playgroundToday.markIdea(sessionId, idea.id, {
+            status: 'completed',
+            assetUrl: produced.file,
+            generationId: produced.id
+        });
+    } else {
+        playgroundToday.markIdea(sessionId, idea.id, {
+            status: 'new',
+            lastError: 'The image was not created. You can try again.'
+        });
+    }
+}
+
 async function handlePlaygroundAction(req, res, ctx, action, rawMessage) {
     const { conversationId, provider, model, think } = ctx;
     let session = playground.getSession(conversationId);
     try {
+        // --- Today's Playground daily idea set actions -----------------------
+        if (action.type === playground.ACTIONS.TODAY_CREATE) {
+            await runTodayCreate(req, res, ctx, action, rawMessage);
+            return;
+        }
+        if (action.type === playground.ACTIONS.TODAY_REFRESH) {
+            const sid = req.jarvisSession || playgroundToday.DEFAULT_SESSION;
+            sseWrite(res, { generating: 'Finding fresh ideas for today\u2026' });
+            try {
+                vramManager.rememberChatModel(provider, model);
+                await vramManager.freeVRAMBeforeChat();
+                await playgroundToday.refreshDailySet({ sessionId: sid, provider, model, think });
+                const text = 'Fresh ideas for today are ready in the Creative Playground.';
+                sseWrite(res, { chunk: text });
+                sseWrite(res, { done: true, fullReply: text });
+            } catch (err) {
+                sseWrite(res, { error: "Today's Playground \u2014 " + err.message });
+            }
+            res.end();
+            return;
+        }
+        if (action.type === playground.ACTIONS.TODAY_DISMISS) {
+            const sid = req.jarvisSession || playgroundToday.DEFAULT_SESSION;
+            const idea = playgroundToday.markIdea(sid, action.ideaId, { status: 'dismissed' });
+            const text = idea
+                ? 'Dismissed. Refresh any time for different ideas.'
+                : "That idea is no longer available.";
+            sseWrite(res, { chunk: text });
+            sseWrite(res, { done: true, fullReply: text });
+            res.end();
+            return;
+        }
+
         if (action.type === playground.ACTIONS.SURPRISE) {
             session = playground.start({
                 conversationId,
@@ -5996,6 +6169,7 @@ async function runDirectorImageStage(req, res, ctx, production, options) {
         console.error('[director] image stage failed:', err.message);
         const friendly = friendlyImageError(err);
         director.markImageFailed(production, friendly);
+        playgroundToday.syncProductionOutcome(production.id, 'failed', { message: friendly });
         sseWrite(res, { director: director.buildCard(production, director.renderFailureContent(production, 'image', friendly)) });
         res.end();
     }
@@ -6106,6 +6280,7 @@ async function runDirectorVideoStage(req, res, ctx, production) {
         const friendly = friendlyVideoError(err);
         director.markVideoFailed(production, friendly);
         ugcStudio.syncDirectorOutcome(production.conversationId, production.id, 'failed', { message: friendly });
+        playgroundToday.syncProductionOutcome(production.id, 'failed', { message: friendly });
         sseWrite(res, { director: director.buildCard(production, director.renderFailureContent(production, 'video', friendly)) });
         res.end();
     }
@@ -6444,6 +6619,7 @@ async function handleDirectorAction(req, res, ctx, production, action) {
         }
         director.cancel(production);
         ugcStudio.syncDirectorOutcome(production.conversationId, production.id, 'cancelled', { message: 'Production cancelled.' });
+        playgroundToday.syncProductionOutcome(production.id, 'cancelled', { message: 'Production cancelled.' });
         taskState.clearTask(conversationId);
         const text = 'Director \u2014 Production cancelled.';
         sseWrite(res, { chunk: text });
@@ -6881,6 +7057,7 @@ async function handleImageGenerationStream(req, res, opts) {
             if (production) {
                 if (err.code === 'generation_cancelled') {
                     director.cancel(production);
+                    playgroundToday.syncProductionOutcome(production.id, 'cancelled', { message: 'Production cancelled.' });
                     sseWrite(res, {
                         director: director.buildCard(
                             production,
@@ -6891,6 +7068,7 @@ async function handleImageGenerationStream(req, res, opts) {
                     taskState.setTask(conversationId, { status: 'failed' });
                     const friendly = friendlyImageError(err);
                     director.markImageFailed(production, friendly);
+                    playgroundToday.syncProductionOutcome(production.id, 'failed', { message: friendly });
                     sseWrite(res, {
                         director: director.buildCard(
                             production,
@@ -7208,6 +7386,7 @@ async function handleVideoGenerationStream(req, res, opts) {
                 // If this production came from a UGC handoff, mark the linked
                 // project complete so it stops being an active workflow.
                 ugcStudio.syncDirectorOutcome(conversationId, production.id, 'completed', { url: finalResult.url });
+                playgroundToday.syncProductionOutcome(production.id, 'completed', { url: finalResult.url });
                 const existingDirectorParams = taskState.getTask(conversationId).parameters || {};
                 taskState.setTask(conversationId, {
                     type: 'video',
@@ -7321,6 +7500,7 @@ async function handleVideoGenerationStream(req, res, opts) {
                 if (err.code === 'generation_cancelled') {
                     director.cancel(production);
                     ugcStudio.syncDirectorOutcome(conversationId, production.id, 'cancelled', { message: 'Production cancelled.' });
+                    playgroundToday.syncProductionOutcome(production.id, 'cancelled', { message: 'Production cancelled.' });
                     sseWrite(res, {
                         director: director.buildCard(
                             production,
@@ -7332,6 +7512,7 @@ async function handleVideoGenerationStream(req, res, opts) {
                     const friendly = friendlyVideoError(err);
                     director.markVideoFailed(production, friendly);
                     ugcStudio.syncDirectorOutcome(conversationId, production.id, 'failed', { message: friendly });
+                    playgroundToday.syncProductionOutcome(production.id, 'failed', { message: friendly });
                     sseWrite(res, {
                         director: director.buildCard(
                             production,
@@ -7366,7 +7547,7 @@ async function handleVideoGenerationStream(req, res, opts) {
 // always the source; runs only when the user asks for it. Engine comes from
 // the shared upscale settings (RTX fast path by default for video).
 async function handleVideoUpscaleStream(req, res, opts) {
-    const { provider, model, conversationId, message } = opts;
+    const { provider, model, conversationId, message, sourceFilename } = opts;
 
     let queueId = null;
     const onClose = () => {
@@ -7391,7 +7572,7 @@ async function handleVideoUpscaleStream(req, res, opts) {
     };
 
     try {
-        const source = resolveVideoUpscaleSource(conversationId);
+        const source = resolveVideoUpscaleSource(conversationId, sourceFilename);
         if (!source) {
             taskState.setTask(conversationId, { status: 'failed' });
             res.write(`data: ${JSON.stringify({ error: "I couldn't find a generated video in this conversation to upscale. Generate a video first, then ask me to upscale it." })}\n\n`);
@@ -7557,6 +7738,27 @@ function generatedFileExists(rawFilename) {
     }
 }
 
+// The set of generated filenames a conversation's assistant messages link to.
+// Used to validate an explicit upscale source from the per-asset action card so
+// it can only name media this conversation actually rendered.
+function generatedFilenamesInConversation(conversationId) {
+    const names = new Set();
+    if (!conversationId) return names;
+    const urlRe = /\/generated\/([^\s)\]}"']+)/g;
+    (conversationService.getMessages(conversationId) || []).forEach((m) => {
+        if (!m || m.role !== 'assistant') return;
+        const content = String(m.content || '');
+        let match;
+        urlRe.lastIndex = 0;
+        while ((match = urlRe.exec(content))) {
+            let name = match[1];
+            try { name = decodeURIComponent(name); } catch (err) { /* keep raw */ }
+            names.add(path.basename(name));
+        }
+    });
+    return names;
+}
+
 // Find the generated image to upscale for a conversation: the last
 // /generated/<file> link in the assistant messages (so consecutive upscales
 // chain), falling back to the active task's latest generated asset. An explicit
@@ -7706,7 +7908,7 @@ function resolveVideoUpscaleSource(conversationId, explicitFilename) {
 // an "image" event with the before/after payload, or an "error" event. The
 // conversation's previously generated image is always the source.
 async function handleImageUpscaleStream(req, res, opts) {
-    const { provider, model, conversationId, message } = opts;
+    const { provider, model, conversationId, message, sourceFilename } = opts;
 
     let queueId = null;
     const onClose = () => {
@@ -7731,7 +7933,7 @@ async function handleImageUpscaleStream(req, res, opts) {
     };
 
     try {
-        const source = resolveUpscaleSource(conversationId);
+        const source = resolveUpscaleSource(conversationId, sourceFilename);
         if (!source) {
             taskState.setTask(conversationId, { status: 'failed' });
             res.write(`data: ${JSON.stringify({ error: "I couldn't find a generated image in this conversation to upscale. Generate an image first, then ask me to upscale it." })}\n\n`);
