@@ -58,6 +58,7 @@ const LONG_VIDEO_MARKER_RE = /\n*\[\[longvideo:\{[^\n]*?\}\]\]/g;
 const PLAYGROUND_MARKER_RE = /\n*\[\[playground:\{[^\n]*?\}\]\]/g;
 const UGC_MARKER_RE = /\n*\[\[ugc:\{[^\n]*?\}\]\]/g;
 const CREATOR_FRAME_MARKER_RE = /\n*\[\[creator-frame:\{[^\n]*?\}\]\]/g;
+const REPLACEMENT_MARKER_RE = /\n*\[\[replacement:\{[^\n]*?\}\]\]/g;
 const PROMPT_SUGGESTION_MARKER_RE = /\n*\[\[prompt-suggestion\]\]/g;
 const PHOTO_ACTIONS_MARKER_RE = /\n*\[\[photo-actions\]\]/g;
 
@@ -68,6 +69,7 @@ function stripDirectorMarkers(content) {
         .replace(PLAYGROUND_MARKER_RE, '')
         .replace(UGC_MARKER_RE, '')
         .replace(CREATOR_FRAME_MARKER_RE, '')
+        .replace(REPLACEMENT_MARKER_RE, '')
         .replace(PROMPT_SUGGESTION_MARKER_RE, '')
         .replace(PHOTO_ACTIONS_MARKER_RE, '')
         .trim();

@@ -25,6 +25,7 @@ const AssetActions = (() => {
         upscale: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"></path><path d="M9 21H3v-6"></path><path d="M21 3l-7 7"></path><path d="M3 21l7-7"></path></svg>',
         modify: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"></path><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z"></path></svg>',
         video: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"></polygon><rect x="1" y="5" width="15" height="14" rx="2"></rect></svg>',
+        replace: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h12"></path><path d="M13 4l3 3-3 3"></path><path d="M20 17H8"></path><path d="M11 14l-3 3 3 3"></path></svg>',
         character: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>'
     };
 
@@ -103,6 +104,19 @@ const AssetActions = (() => {
             send(kind === 'video' ? 'Upscale this video' : 'Upscale this image', {
                 upscaleSource: filename
             });
+        }
+    };
+
+    // Start a character-replacement edit from a video: stage the clip as the
+    // source reference and seed the composer with the instruction. The user
+    // then adds the replacement image(s) with the @ picker and sends.
+    const REPLACE = {
+        id: 'replace',
+        title: 'Replace People',
+        run(filename) {
+            if (typeof Chat !== 'undefined' && Chat && typeof Chat.stageReplacement === 'function') {
+                Chat.stageReplacement({ filename, url: refUrl(filename) });
+            }
         }
     };
 
@@ -194,6 +208,8 @@ const AssetActions = (() => {
             items.push({ anchor: img.closest('p') || img, filename, kind: 'image' });
         });
         contentEl.querySelectorAll('video').forEach((video) => {
+            // The replacement confirmation card shows its own source preview.
+            if (video.closest('.replacement-card')) return;
             const src = video.getAttribute('src') || video.currentSrc || '';
             if (!isGeneratedSrc(src)) return;
             const filename = baseName(src);
@@ -215,7 +231,7 @@ const AssetActions = (() => {
         const companion = Boolean(options && options.companion);
         collect(contentEl).forEach((item) => {
             const actions = item.kind === 'video'
-                ? [UPSCALE]
+                ? [REPLACE, UPSCALE]
                 : (companion ? [UPSCALE, MODIFY, CHARACTER] : [UPSCALE, MODIFY, VIDEO, CHARACTER]);
             const row = document.createElement('div');
             row.className = 'chat-suggestion-row asset-action-row';

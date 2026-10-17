@@ -21,6 +21,9 @@ const Chat = (() => {
     let chatMentionPopup;
     let pendingAttachments = [];
     let pendingReferences = [];
+    // Replacement source videos chosen from the @ picker this turn (`@videoN`).
+    // Each is sent as a structured filename; the token is display only.
+    let pendingVideoReferences = [];
     // Characters chosen from the @ picker this turn. Each is sent as a
     // structured id; the "@Name" token in the text is display only.
     let pendingCharacters = [];
@@ -46,11 +49,21 @@ const Chat = (() => {
 
     const ATTACH_MAX = 3;
     const ATTACH_MAX_BYTES = 10 * 1024 * 1024;
+    const ATTACH_VIDEO_MAX_BYTES = 64 * 1024 * 1024;
     const ATTACH_MIME = {
         'image/png': true,
         'image/jpeg': true,
-        'image/webp': true
+        'image/webp': true,
+        'video/mp4': true,
+        'video/webm': true,
+        'video/quicktime': true
     };
+    function isVideoMime(mime) {
+        return /^video\//i.test(String(mime || ''));
+    }
+    function attachMaxBytes(mime) {
+        return isVideoMime(mime) ? ATTACH_VIDEO_MAX_BYTES : ATTACH_MAX_BYTES;
+    }
 
     function init() {
         chatMessagesEl = document.getElementById('chatMessages');
@@ -328,7 +341,7 @@ const Chat = (() => {
         for (const file of files) {
             if (pendingAttachments.length >= ATTACH_MAX) break;
             if (!ATTACH_MIME[file.type]) continue;
-            if (file.size > ATTACH_MAX_BYTES || !file.size) continue;
+            if (file.size > attachMaxBytes(file.type) || !file.size) continue;
             readFileAsAttachment(file);
         }
     }
@@ -366,7 +379,7 @@ const Chat = (() => {
     function renderAttachments() {
         if (!chatAttachmentsEl) return;
         chatAttachmentsEl.innerHTML = '';
-        if (!pendingAttachments.length && !pendingReferences.length && !pendingCharacters.length) {
+        if (!pendingAttachments.length && !pendingReferences.length && !pendingVideoReferences.length && !pendingCharacters.length) {
             chatAttachmentsEl.style.display = 'none';
             return;
         }
@@ -422,23 +435,72 @@ const Chat = (() => {
             chatAttachmentsEl.appendChild(item);
         });
 
+        // Video references follow image references: each is a replacement source
+        // clip, rendered with a play glyph instead of a thumbnail image.
+        pendingVideoReferences.forEach((reference, index) => {
+            const item = document.createElement('div');
+            item.className = 'chat-attachment chat-attachment--reference';
+            const thumb = document.createElement('span');
+            thumb.className = 'chat-attachment-thumb chat-attachment-thumb--video';
+            thumb.textContent = '▶';
+            const badge = document.createElement('span');
+            badge.className = 'chat-attachment-badge';
+            badge.textContent = '@video' + (index + 1);
+            badge.title = 'Source video ' + (index + 1) + ' for replacement';
+            const btn = document.createElement('button');
+            btn.className = 'chat-attachment-remove';
+            btn.type = 'button';
+            btn.textContent = '×';
+            btn.title = 'Remove video reference';
+            btn.addEventListener('click', () => removeVideoReference(index + 1));
+            item.appendChild(thumb);
+            item.appendChild(badge);
+            item.appendChild(btn);
+            chatAttachmentsEl.appendChild(item);
+        });
+
         pendingAttachments.forEach((a) => {
             const item = document.createElement('div');
             item.className = 'chat-attachment';
-            const img = document.createElement('img');
-            img.className = 'chat-attachment-thumb';
-            img.src = a.dataUrl;
-            img.alt = a.name;
+            if (isVideoMime(a.mime)) {
+                const thumb = document.createElement('span');
+                thumb.className = 'chat-attachment-thumb chat-attachment-thumb--video';
+                thumb.textContent = '▶';
+                item.appendChild(thumb);
+                const badge = document.createElement('span');
+                badge.className = 'chat-attachment-badge';
+                badge.textContent = 'video';
+                badge.title = 'Attached source video for replacement';
+                item.appendChild(badge);
+            } else {
+                const img = document.createElement('img');
+                img.className = 'chat-attachment-thumb';
+                img.src = a.dataUrl;
+                img.alt = a.name;
+                item.appendChild(img);
+            }
             const btn = document.createElement('button');
             btn.className = 'chat-attachment-remove';
             btn.type = 'button';
             btn.textContent = '×';
             btn.title = 'Remove';
             btn.addEventListener('click', () => removeAttachment(a.id));
-            item.appendChild(img);
             item.appendChild(btn);
             chatAttachmentsEl.appendChild(item);
         });
+
+        // A staged source video with no replacement image yet: nudge the user
+        // toward the next step of the replacement flow.
+        const hasSourceVideo = pendingVideoReferences.length +
+            pendingAttachments.filter((a) => isVideoMime(a.mime)).length;
+        if (hasSourceVideo && !pendingReferences.length) {
+            const hint = document.createElement('div');
+            hint.className = 'chat-attachment-hint';
+            hint.textContent = pendingVideoReferences.length
+                ? 'Add replacement image(s) with @'
+                : 'Attached as the source video — add replacement image(s) with @';
+            chatAttachmentsEl.appendChild(hint);
+        }
     }
 
     async function uploadAttachments(attachments) {
@@ -516,23 +578,73 @@ const Chat = (() => {
         }
     }
 
-    // Scan the rendered conversation for generated image links (newest first).
-    function conversationImages() {
+    // Scan the rendered conversation for generated/uploaded image + video links
+    // (newest first) as a fallback when the asset-registry endpoint is
+    // unavailable.
+    function domConversationAssets() {
         if (!chatMessagesEl) return [];
         const seen = new Set();
         const list = [];
+        const add = (filename, origin, type) => {
+            if (!filename || seen.has(filename)) return;
+            seen.add(filename);
+            list.push({
+                filename,
+                origin,
+                type,
+                url: (origin === 'upload' ? '/images/' : '/generated/') + encodeURIComponent(filename),
+                displayName: filename,
+                prompt: ''
+            });
+        };
         chatMessagesEl.querySelectorAll('img.md-image').forEach((img) => {
             const src = String(img.getAttribute('src') || '');
-            if (src.indexOf('/generated/') === -1) return;
+            const isGenerated = src.indexOf('/generated/') !== -1;
+            const isUpload = src.indexOf('/images/') !== -1;
+            if (!isGenerated && !isUpload) return;
             const decoded = decodeURIComponent(src.split('?')[0]);
             const idx = decoded.lastIndexOf('/');
             const filename = idx === -1 ? decoded : decoded.slice(idx + 1);
             if (!/\.(?:png|jpe?g|webp)$/i.test(filename)) return;
-            if (seen.has(filename)) return;
-            seen.add(filename);
-            list.push({ filename, url: '/generated/' + encodeURIComponent(filename) });
+            add(filename, isGenerated ? 'generated' : 'upload', 'image');
+        });
+        chatMessagesEl.querySelectorAll('video.md-video').forEach((video) => {
+            const src = String(video.getAttribute('src') || '');
+            const isGenerated = src.indexOf('/generated/') !== -1;
+            const isUpload = src.indexOf('/images/') !== -1;
+            if (!isGenerated && !isUpload) return;
+            const decoded = decodeURIComponent(src.split('?')[0]);
+            const idx = decoded.lastIndexOf('/');
+            const filename = idx === -1 ? decoded : decoded.slice(idx + 1);
+            if (!/\.(?:mp4|webm|mov|m4v|avi|mkv)$/i.test(filename)) return;
+            add(filename, isGenerated ? 'generated' : 'upload', 'video');
         });
         return list.reverse();
+    }
+
+    // The conversation's media registry (generated + uploaded images/videos),
+    // newest first. Prefers the server-side registry so assets are referenced by
+    // stable filename (never the label or upload position).
+    async function conversationAssets() {
+        const currentId = typeof Conversations !== 'undefined' && Conversations.currentId
+            ? Conversations.currentId() : null;
+        if (currentId) {
+            try {
+                const res = await fetch('/api/conversations/' + encodeURIComponent(currentId) + '/assets');
+                if (res.ok) {
+                    const data = await res.json();
+                    if (Array.isArray(data.assets) && data.assets.length) {
+                        return data.assets.slice().reverse();
+                    }
+                }
+            } catch (e) { /* fall back to the DOM scan */ }
+        }
+        return domConversationAssets();
+    }
+
+    function videoThumbUrl(item) {
+        if (item.origin === 'generated') return '/generated/thumb/' + encodeURIComponent(item.filename);
+        return '';
     }
 
     async function generatedMeta() {
@@ -594,7 +706,7 @@ const Chat = (() => {
     async function openMentionPopup(query) {
         const token = ++mentionToken;
         const q = String(query || '').toLowerCase();
-        const [characters, meta] = await Promise.all([characterOptions(), generatedMeta()]);
+        const [characters, meta, assets] = await Promise.all([characterOptions(), generatedMeta(), conversationAssets()]);
         if (token !== mentionToken) return;
 
         const characterItems = characters
@@ -607,17 +719,23 @@ const Chat = (() => {
                 identityStatus: c.identityStatus || 'none'
             }));
 
-        const images = conversationImages();
-        const enriched = images.map((img) => {
-            const found = meta.find((m) => String(m.file || '').split('?')[0].endsWith('/' + img.filename));
-            return Object.assign({}, img, { prompt: found ? (found.prompt || '') : '' });
+        const enriched = assets.map((a) => {
+            let prompt = a.prompt || '';
+            if (!prompt && a.type === 'image') {
+                const found = meta.find((m) => String(m.file || '').split('?')[0].endsWith('/' + a.filename));
+                if (found) prompt = found.prompt || '';
+            }
+            return Object.assign({}, a, { prompt });
         });
-        const imageItems = (q
-            ? enriched.filter((img) => (img.filename + ' ' + img.prompt).toLowerCase().indexOf(q) !== -1)
-            : enriched
-        ).map((img) => ({ kind: 'image', filename: img.filename, url: img.url, prompt: img.prompt }));
+        const matches = (a) => !q || (a.filename + ' ' + a.type + ' ' + (a.prompt || '')).toLowerCase().indexOf(q) !== -1;
+        const imageItems = enriched
+            .filter((a) => a.type === 'image' && matches(a))
+            .map((a) => ({ kind: 'image', filename: a.filename, url: a.url, prompt: a.prompt, origin: a.origin }));
+        const videoItems = enriched
+            .filter((a) => a.type === 'video' && matches(a))
+            .map((a) => ({ kind: 'video', filename: a.filename, url: a.url, prompt: a.prompt, origin: a.origin }));
 
-        mentionItems = characterItems.concat(imageItems);
+        mentionItems = characterItems.concat(imageItems, videoItems);
         // "Create New Character" is always offered unless the query clearly
         // filters it out.
         if (!q || 'create new character'.indexOf(q) !== -1 || 'new character'.indexOf(q) !== -1) {
@@ -637,7 +755,8 @@ const Chat = (() => {
         mentionItems.forEach((item, i) => {
             if (item.kind !== lastKind) {
                 const label = item.kind === 'character' ? 'Characters'
-                    : (item.kind === 'image' ? 'Images' : '');
+                    : (item.kind === 'image' ? 'Images · references'
+                        : (item.kind === 'video' ? 'Videos · source' : ''));
                 if (label) {
                     const header = document.createElement('div');
                     header.className = 'chat-mention-header';
@@ -663,7 +782,27 @@ const Chat = (() => {
                 row.appendChild(plus);
                 row.appendChild(name);
             } else {
-                if (item.url) {
+                if (item.kind === 'video') {
+                    const thumbUrl = videoThumbUrl(item);
+                    if (thumbUrl) {
+                        const thumb = document.createElement('img');
+                        thumb.className = 'chat-mention-thumb';
+                        thumb.src = thumbUrl;
+                        thumb.alt = item.filename;
+                        thumb.addEventListener('error', () => {
+                            const ph = document.createElement('span');
+                            ph.className = 'chat-mention-thumb chat-mention-thumb--placeholder';
+                            ph.textContent = '▶';
+                            thumb.replaceWith(ph);
+                        }, { once: true });
+                        row.appendChild(thumb);
+                    } else {
+                        const ph = document.createElement('span');
+                        ph.className = 'chat-mention-thumb chat-mention-thumb--placeholder chat-mention-thumb--video';
+                        ph.textContent = '▶';
+                        row.appendChild(ph);
+                    }
+                } else if (item.url) {
                     const thumb = document.createElement('img');
                     thumb.className = 'chat-mention-thumb' + (item.kind === 'character' ? ' chat-mention-thumb--round' : '');
                     thumb.src = item.url;
@@ -697,7 +836,9 @@ const Chat = (() => {
                 } else {
                     const prompt = document.createElement('div');
                     prompt.className = 'chat-mention-prompt';
-                    prompt.textContent = item.prompt || 'Generated image';
+                    prompt.textContent = item.prompt || (item.kind === 'video'
+                        ? 'Source video · add replacement image(s) with @'
+                        : (item.origin === 'upload' ? 'Uploaded image' : 'Generated image'));
                     meta.appendChild(prompt);
                 }
                 row.appendChild(meta);
@@ -743,6 +884,14 @@ const Chat = (() => {
                 chatMentionPopup.appendChild(row);
             }
         });
+        // When the conversation has video(s), explain the replacement flow
+        // inline so the feature is discoverable from the picker itself.
+        if (mentionItems.some((entry) => entry.kind === 'video')) {
+            const tip = document.createElement('div');
+            tip.className = 'chat-mention-tip';
+            tip.textContent = 'To edit a video: select the video, then the replacement image(s), and say "replace the people".';
+            chatMentionPopup.appendChild(tip);
+        }
         chatMentionPopup.hidden = false;
         updateMentionActive();
         if (mentionItems.length) {
@@ -786,7 +935,9 @@ const Chat = (() => {
         const after = chatInput.value.slice(caret);
         const token = item.kind === 'character'
             ? '@' + item.name
-            : '@image' + (pendingReferences.length + 1);
+            : (item.kind === 'video'
+                ? '@video' + (pendingVideoReferences.length + 1)
+                : '@image' + (pendingReferences.length + 1));
         // Follow the inserted mention with a space so the user can keep typing,
         // unless the text already starts with whitespace.
         const spacer = after && /^\s/.test(after) ? '' : ' ';
@@ -795,6 +946,7 @@ const Chat = (() => {
         if (typeof chatInput.setSelectionRange === 'function') chatInput.setSelectionRange(pos, pos);
         autoGrowInput();
         if (item.kind === 'character') addCharacter(item);
+        else if (item.kind === 'video') addVideoReference(item);
         else addReference(item);
         closeMentionPopup();
         chatInput.focus();
@@ -803,6 +955,95 @@ const Chat = (() => {
     function addReference(item) {
         pendingReferences.push(item);
         renderAttachments();
+    }
+
+    function addVideoReference(item) {
+        pendingVideoReferences.push(item);
+        renderAttachments();
+    }
+
+    // --- Guided media-reference staging -------------------------------------
+    //
+    // Used by the per-asset "Replace People" action and by "Use as Replacement"
+    // so a video edit can be built up in the composer without the user manually
+    // typing @ tokens: the source video reference is inserted with a starting
+    // instruction, then replacement images are added with the picker.
+
+    function referenceUrlOf(item) {
+        const filename = item && item.filename;
+        if (!filename) return '';
+        if (item.url) return item.url;
+        const origin = item.origin === 'upload' ? 'images' : 'generated';
+        return '/' + origin + '/' + encodeURIComponent(filename);
+    }
+
+    function ensureVideoReference(item) {
+        const filename = item && item.filename;
+        if (!filename) return -1;
+        let idx = pendingVideoReferences.findIndex((v) => v.filename === filename);
+        if (idx === -1) {
+            const url = referenceUrlOf(item);
+            pendingVideoReferences.push({
+                kind: 'video',
+                filename,
+                url,
+                origin: item.origin || (url.indexOf('/images/') === 0 ? 'upload' : 'generated')
+            });
+            idx = pendingVideoReferences.length - 1;
+        }
+        return idx;
+    }
+
+    function ensureImageReference(item) {
+        const filename = item && item.filename;
+        if (!filename) return -1;
+        let idx = pendingReferences.findIndex((r) => r.filename === filename);
+        if (idx === -1) {
+            const url = referenceUrlOf(item);
+            pendingReferences.push({
+                kind: 'image',
+                filename,
+                url,
+                origin: item.origin || (url.indexOf('/images/') === 0 ? 'upload' : 'generated'),
+                prompt: item.prompt || ''
+            });
+            idx = pendingReferences.length - 1;
+        }
+        return idx;
+    }
+
+    // Insert a token at the end of the composer, seeding a starting phrase on
+    // an empty input so the user always sees the intended shape of the request.
+    function insertTokenAtEnd(token, seedPhrase) {
+        const existing = String(chatInput.value || '');
+        const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const already = new RegExp('(^|\\s)' + escaped + '(?![\\w])').test(' ' + existing);
+        if (!already) {
+            if (!existing.trim()) {
+                chatInput.value = (seedPhrase || '') + token + (seedPhrase ? ' with ' : ' ');
+            } else {
+                chatInput.value = existing.replace(/\s+$/, '') + ' ' + token + ' ';
+            }
+        }
+        autoGrowInput();
+        renderAttachments();
+        chatInput.focus();
+        const pos = chatInput.value.length;
+        if (typeof chatInput.setSelectionRange === 'function') chatInput.setSelectionRange(pos, pos);
+    }
+
+    // Stage a source video for a character-replacement edit.
+    function stageReplacement(item) {
+        const idx = ensureVideoReference(item);
+        if (idx === -1) return;
+        insertTokenAtEnd('@video' + (idx + 1), 'Replace the people in ');
+    }
+
+    // Stage an image as a replacement identity for an in-progress edit.
+    function stageReplacementImage(item) {
+        const idx = ensureImageReference(item);
+        if (idx === -1) return;
+        insertTokenAtEnd('@image' + (idx + 1), '');
     }
 
     function addCharacter(item) {
@@ -843,8 +1084,20 @@ const Chat = (() => {
         renderAttachments();
     }
 
+    function removeVideoReference(n) {
+        if (n < 1 || n > pendingVideoReferences.length) return;
+        pendingVideoReferences.splice(n - 1, 1);
+        // Drop the token and renumber the ones that followed it.
+        chatInput.value = chatInput.value
+            .replace(new RegExp('\\s*@video' + n + '\\b', 'gi'), '')
+            .replace(/@video\s*(\d+)\b/gi, (match, d) => (Number(d) > n ? '@video' + (Number(d) - 1) : match));
+        autoGrowInput();
+        renderAttachments();
+    }
+
     function clearReferences() {
         pendingReferences = [];
+        pendingVideoReferences = [];
         pendingCharacters = [];
         renderAttachments();
     }
@@ -1049,11 +1302,16 @@ const Chat = (() => {
         const creatorFrameParsed = (window.CreatorStudioUI && typeof window.CreatorStudioUI.extract === 'function')
             ? window.CreatorStudioUI.extract(ugcParsed.text)
             : { text: ugcParsed.text, cards: [] };
+        // A video-replacement confirmation persists as a [[replacement:{...}]]
+        // marker and renders as a one-click mapping card.
+        const replacementParsed = (window.ReplacementUI && typeof window.ReplacementUI.extract === 'function')
+            ? window.ReplacementUI.extract(creatorFrameParsed.text)
+            : { text: creatorFrameParsed.text, cards: [] };
         // Companion photos persist a [[photo-actions]] marker; strip it, then
         // attach follow-up actions (another photo / back camera / video) below.
         const photoParsed = (window.PhotoActions && typeof window.PhotoActions.extract === 'function')
-            ? window.PhotoActions.extract(creatorFrameParsed.text)
-            : { text: creatorFrameParsed.text, active: false };
+            ? window.PhotoActions.extract(replacementParsed.text)
+            : { text: replacementParsed.text, active: false };
         contentEl.innerHTML = Markdown.parse(photoParsed.text);
         if (streaming) return;
         collapseUpscalePairs(contentEl);
@@ -1078,6 +1336,9 @@ const Chat = (() => {
         }
         if (window.CreatorStudioUI && typeof window.CreatorStudioUI.render === 'function') {
             creatorFrameParsed.cards.forEach((card) => window.CreatorStudioUI.render(contentEl, card));
+        }
+        if (window.ReplacementUI && typeof window.ReplacementUI.render === 'function') {
+            replacementParsed.cards.forEach((card) => window.ReplacementUI.render(contentEl, card));
         }
         if (photoParsed.active && window.PhotoActions && typeof window.PhotoActions.attach === 'function') {
             window.PhotoActions.attach(contentEl);
@@ -1238,6 +1499,11 @@ const Chat = (() => {
             const esc = document.createElement('div');
             esc.textContent = content;
             contentEl.innerHTML = Markdown.parse(esc.innerHTML);
+            // An uploaded video embeds as a real <video>; give it the same
+            // custom player the assistant messages use.
+            if (window.VideoPlayer && typeof window.VideoPlayer.scan === 'function') {
+                window.VideoPlayer.scan(contentEl);
+            }
         }
 
         el.appendChild(roleLabel);
@@ -1305,16 +1571,17 @@ const Chat = (() => {
         renderQueuedTurn();
     }
 
-    function queueNextTurn(text, attachments, references, characters) {
+    function queueNextTurn(text, attachments, references, videos, characters) {
         if (queuedTurn) {
             if (chatQueueLabelEl) chatQueueLabelEl.textContent = 'A follow-up is already queued. Clear it before adding another.';
             return;
         }
-        if (!text && !attachments.length && !references.length && !characters.length) return;
+        if (!text && !attachments.length && !references.length && !videos.length && !characters.length) return;
         queuedTurn = {
             text,
             attachments,
             references,
+            videos,
             characters,
             conversationId: Conversations.currentId()
         };
@@ -1345,14 +1612,17 @@ const Chat = (() => {
         const references = override && Array.isArray(override.references)
             ? override.references.slice()
             : (override ? [] : pendingReferences.slice());
+        const videos = override && Array.isArray(override.videos)
+            ? override.videos.slice()
+            : (override ? [] : pendingVideoReferences.slice());
         const characters = override && Array.isArray(override.characters)
             ? override.characters.slice()
             : (override ? [] : pendingCharacters.slice());
-        if (!text && !attachments.length && !references.length && !characters.length) return;
+        if (!text && !attachments.length && !references.length && !videos.length && !characters.length) return;
 
         if (activeStreamAbort) {
             if (override) return;
-            queueNextTurn(text, attachments, references, characters);
+            queueNextTurn(text, attachments, references, videos, characters);
             return;
         }
 
@@ -1367,16 +1637,25 @@ const Chat = (() => {
             chatMessagesEl.innerHTML = '';
         }
 
-        const visionImages = attachments.map((a) => a.base64);
+        // Only image attachments are vision sources; an uploaded video is a
+        // media reference (the source clip for character replacement), never a
+        // base64 chat image.
+        const visionImages = attachments.filter((a) => !isVideoMime(a.mime)).map((a) => a.base64);
         const parts = [];
         // Inline the @imageN tokens as numbered markdown references so the
         // prompt keeps each reference's position for the editor.
         const outgoingText = references.length ? materializeReferenceText(text, references) : text;
         if (outgoingText) parts.push(outgoingText);
+        let uploadedVideoFilenames = [];
         if (attachments.length) {
             setSendingState(true);
             try {
                 const uploaded = await uploadAttachments(attachments);
+                uploaded.forEach((u, i) => {
+                    if (u && u.filename && isVideoMime(attachments[i] && attachments[i].mime)) {
+                        uploadedVideoFilenames.push(u.filename);
+                    }
+                });
                 parts.push(uploaded.map((u) => '![upload](' + u.url + ')').join('\n'));
             } catch (e) {
                 setSendingState(false);
@@ -1431,6 +1710,7 @@ const Chat = (() => {
                     message: userText || text,
                     images: visionImages,
                     references: references.map((r) => r.filename),
+                    videos: videos.map((v) => v.filename).concat(uploadedVideoFilenames),
                     upscaleSource: override && override.upscaleSource ? override.upscaleSource : undefined,
                     characters: characters.map((c) => c.id),
                     directorAction: override && override.directorAction ? override.directorAction : undefined,
@@ -1438,6 +1718,7 @@ const Chat = (() => {
                     playgroundAction: override && override.playgroundAction ? override.playgroundAction : undefined,
                     ugcAction: override && override.ugcAction ? override.ugcAction : undefined,
                     creatorStudioAction: override && override.creatorStudioAction ? override.creatorStudioAction : undefined,
+                    replacementAction: override && override.replacementAction ? override.replacementAction : undefined,
                     forceDirector: (typeof ChatDirector !== 'undefined' && ChatDirector && ChatDirector.isOn()) ? true : undefined
                 }),
                 signal: activeStreamAbort.signal
@@ -1589,6 +1870,14 @@ const Chat = (() => {
                             generatedMetaCache = null;
                             if (window.Gallery) window.Gallery.refresh();
                             if (window.AssetActions) window.AssetActions.refresh();
+                        }
+                        if (data.replacement) {
+                            cancelStreamRender();
+                            fullReply = data.replacement.content;
+                            if (generatingEl) generatingEl.remove();
+                            setProgressTitle('');
+                            setAiContent(contentEl, data.replacement.content);
+                            scrollActiveStream(aiMessageEl);
                         }
                         if (data.director) {
                             cancelStreamRender();
@@ -1744,6 +2033,9 @@ const Chat = (() => {
                     if (window.CreatorStudioUI && typeof window.CreatorStudioUI.strip === 'function') {
                         spoken = window.CreatorStudioUI.strip(spoken);
                     }
+                    if (window.ReplacementUI && typeof window.ReplacementUI.strip === 'function') {
+                        spoken = window.ReplacementUI.strip(spoken);
+                    }
                     if (window.ChatSuggestions && typeof window.ChatSuggestions.strip === 'function') {
                         spoken = window.ChatSuggestions.strip(spoken);
                     }
@@ -1860,6 +2152,8 @@ const Chat = (() => {
         addMessageDom,
         renderMessages,
         sendMessage,
+        stageReplacement,
+        stageReplacementImage,
         cancelActiveStream
     };
 })();

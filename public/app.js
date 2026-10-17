@@ -1432,6 +1432,13 @@ function initImageGenSettings() {
         attachDefaultReset(cfgInput);
     }
 
+    // Attention backend (both image pipelines). Shared by Krea 2 and Qwen; the
+    // server resolves `auto` against ComfyUI's available patches.
+    const attentionSelect = document.getElementById('imageAttentionBackend');
+    if (attentionSelect) {
+        attentionSelect.addEventListener('change', () => persistSelect('attentionBackend', attentionSelect));
+    }
+
     const loadSettings = async () => {
         setStatus('');
         loraStatus(loraState, '');
@@ -1493,6 +1500,11 @@ function initImageGenSettings() {
                 editEngineSelect.value = settings.editEngine || defaults.editEngine || 'qwen';
             }
             refreshEditEngineReadiness();
+
+            // Restore the attention backend (auto by default).
+            if (attentionSelect) {
+                attentionSelect.value = settings.attentionBackend || defaults.attentionBackend || 'auto';
+            }
 
             if (!data.comfyAvailable) {
                 setStatus('ComfyUI unreachable — showing defaults only', true);
@@ -3917,6 +3929,7 @@ async function saveNewsLocalArea() {
 
 const COMFYUI_REFRESH_MS = 1000;
 let comfyuiProgress = null; // { value, max } from ComfyUI's /ws relayed via SSE
+let comfyuiStage = null; // current phase label (loading/sampling/decoding/...)
 let comfyuiEvents = null;
 let comfyuiStarting = false;
 let comfyuiAvailable = null; // last reachability, so we can detect offline -> online
@@ -3996,6 +4009,7 @@ async function cancelComfyUIJob() {
             throw new Error(data.error || 'Cancel failed');
         }
         comfyuiProgress = null;
+        comfyuiStage = null;
         await fetchComfyUIStatus();
     } catch (err) {
         const detailEl = document.getElementById('comfyuiDetail');
@@ -4035,11 +4049,29 @@ function connectComfyUIEvents() {
                 }
             } catch {}
         });
+        comfyuiEvents.addEventListener('stage', (e) => {
+            try {
+                const d = JSON.parse(e.data);
+                if (!d || !d.stage) return;
+                comfyuiStage = d.stage;
+                // The sampler's percentage is stale once another node runs
+                // (decode/encode emit no progress), so drop it to an
+                // indeterminate bar and show the real phase instead.
+                comfyuiProgress = null;
+                const statusEl = document.getElementById('comfyuiStatus');
+                if (statusEl && statusEl.classList.contains('comfyui-status--generating')) {
+                    statusEl.textContent = 'Generating \u00B7 ' + comfyuiStage;
+                }
+                updateComfyUIProgress();
+            } catch {}
+        });
         comfyuiEvents.addEventListener('idle', () => {
             comfyuiProgress = null;
+            comfyuiStage = null;
         });
         comfyuiEvents.onerror = () => {
             comfyuiProgress = null;
+            comfyuiStage = null;
             comfyuiEvents.close();
             comfyuiEvents = null;
             setTimeout(connectComfyUIEvents, 5000);
@@ -4064,6 +4096,7 @@ function updateComfyUIDisplay(data) {
     comfyuiAvailable = available;
 
     if (!data || !data.available) {
+        comfyuiStage = null;
         statusEl.textContent = 'Offline';
         statusEl.className = 'comfyui-status comfyui-status--offline';
         valueEl.style.display = 'none';
@@ -4093,13 +4126,14 @@ function updateComfyUIDisplay(data) {
     const gpu = (data.system_stats && data.system_stats.devices && data.system_stats.devices[0]) || null;
 
     if (running.length > 0) {
-        statusEl.textContent = 'Generating';
+        statusEl.textContent = comfyuiStage ? 'Generating \u00B7 ' + comfyuiStage : 'Generating';
         statusEl.className = 'comfyui-status comfyui-status--generating';
         valueEl.style.display = '';
         progressWrap.style.display = 'block';
         updateComfyUIProgress();
     } else {
         comfyuiProgress = null;
+        comfyuiStage = null;
         statusEl.textContent = pending.length > 0 ? 'Queued' : 'Online';
         statusEl.className = pending.length > 0 ? 'comfyui-status comfyui-status--queued' : 'comfyui-status comfyui-status--online';
         valueEl.style.display = 'none';
@@ -4111,6 +4145,7 @@ function updateComfyUIDisplay(data) {
     }
 
     let detail = '';
+    if (running.length > 0 && comfyuiStage) detail += comfyuiStage + ' \u00B7 ';
     if (pending.length > 0) detail += pending.length + ' queued \u00B7 ';
     if (gpu) {
         const gpuName = gpu.name || 'GPU';

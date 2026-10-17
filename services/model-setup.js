@@ -108,6 +108,11 @@ const KNOWN_FILES = {
         hfPath: 'diffusion_models/minimax_h3_fl2va_pruned_fp8_scaled.safetensors',
         approxMB: 24000
     },
+    'minimax_h3_ref2va_pruned_int8_convrot.safetensors': {
+        repo: 'Comfy-Org/MiniMax-H3',
+        hfPath: 'diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors',
+        approxMB: 21000
+    },
     'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors': {
         repo: 'Comfy-Org/MiniMax-H3',
         hfPath: 'text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors',
@@ -199,6 +204,7 @@ const MODEL_CATALOG = [
     { id: 'qwen_image_clip', group: 'image', label: 'Qwen Image 2.1 text encoder (Qwen3-VL 8B int8)', required: true, dest: 'text_encoders', file: { settings: 'image', key: 'qwenClip' }, minBytes: 5 * 1024 ** 3, note: 'The default image model. Needed for Qwen Image 2.1 generation and for the default Qwen Image Edit engine.' },
     { id: 'qwen_image_vae', group: 'image', label: 'Qwen Image 2.1 VAE', required: true, dest: 'vae', file: { settings: 'image', key: 'qwenVae' }, minBytes: 100 * 1024 ** 2, note: 'The default image model. Needed for Qwen Image 2.1 generation and for the default Qwen Image Edit engine.' },
     { id: 'h3_unet', group: 'video', label: 'H3 UNET (FL2VA, text- and image-to-video)', required: true, dest: 'diffusion_models', file: { settings: 'video', key: 'h3Unet' }, minBytes: 5 * 1024 ** 3 },
+    { id: 'h3_ref_unet', group: 'video', label: 'H3 UNET (Ref2VA, reference-to-video / character replacement)', required: false, dest: 'diffusion_models', file: 'minimax_h3_ref2va_pruned_int8_convrot.safetensors', minBytes: 5 * 1024 ** 3, note: 'Needed only for @video reference-based character replacement. Same Comfy-Org/MiniMax-H3 repo as the FL2VA model. The reference-to-video node itself ships with ComfyUI.' },
     { id: 'h3_clip', group: 'video', label: 'H3 CLIP (Qwen3-VL 32B NVFP4)', required: true, dest: 'text_encoders', file: { settings: 'video', key: 'h3Clip' }, minBytes: 5 * 1024 ** 3 },
     { id: 'h3_video_vae', group: 'video', label: 'H3 video VAE', required: true, dest: 'vae', file: { settings: 'video', key: 'h3VideoVae' }, minBytes: 100 * 1024 ** 2 },
     { id: 'h3_audio_vae', group: 'video', label: 'H3 audio VAE', required: true, dest: 'vae', file: { settings: 'video', key: 'h3AudioVae' }, minBytes: 10 * 1024 ** 2 },
@@ -258,6 +264,12 @@ const NODE_CATALOG = [
         nodes: ['MiniMaxH3ImageToVideo'],
         repo: null, dir: null,
         note: 'Ships with current ComfyUI. If missing, update ComfyUI (or install the H3 nodes via ComfyUI Manager search "MiniMax H3").'
+    },
+    {
+        id: 'h3_reference', label: 'MiniMax H3 Reference-to-Video (built into ComfyUI)', required: false,
+        nodes: ['MiniMaxH3ReferenceToVideo'],
+        repo: null, dir: null,
+        note: 'Ships with current ComfyUI (>= 0.30). Powers @video character replacement (replacing people in an existing clip with @image references). Needs the Ref2VA model above and VideoHelperSuite.'
     },
     {
         id: 'h3_motion_context', label: 'MiniMax H3 Motion Context (LongTake engine)', required: false,

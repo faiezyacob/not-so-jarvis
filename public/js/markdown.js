@@ -25,16 +25,23 @@ const Markdown = (() => {
     }
 
     function parseInline(text) {
-        let result = text;
+        // Escape raw angle brackets first so model-emitted tokens render as
+        // literal text instead of becoming HTML elements. H3 prompts carry
+        // tokens like <Video 1>, <Picture 1>, <S1> and <d>[Language] …</d>;
+        // an unescaped "<Video 1>" was parsed as a real <video> tag and broke
+        // the media element that followed it. Everything below builds its own
+        // tags after this point, so only the original text is escaped.
+        let result = escapeHtml(text);
 
-        // Code blocks (``` ... ```) - handle first to prevent inner parsing
+        // Code blocks (``` ... ```) - handle first to prevent inner parsing.
+        // The captured code is already escaped by the step above.
         result = result.replace(/```([\s\S]*?)```/g, (match, code) => {
-            return '<pre class="md-code-block"><code>' + escapeHtml(code.trim()) + '</code></pre>';
+            return '<pre class="md-code-block"><code>' + code.trim() + '</code></pre>';
         });
 
         // Inline code (` ... `)
         result = result.replace(/`([^`]+)`/g, (match, code) => {
-            return '<code class="md-inline-code">' + escapeHtml(code) + '</code>';
+            return '<code class="md-inline-code">' + code + '</code>';
         });
 
         // Shield the URLs inside image/link markdown so the inline emphasis
@@ -66,9 +73,15 @@ const Markdown = (() => {
         // Restore the real URLs now that emphasis is done.
         result = result.replace(/\x00URL(\d+)\x00/g, (match, index) => urlTokens[Number(index)] ?? '');
 
-        // Images ![alt](url) - handle before links so they don't match as links
+        // Images ![alt](url) - handle before links so they don't match as links.
+        // A video URL is rendered as a real <video> so an uploaded clip embeds
+        // as a playable clip instead of a broken <img>.
         result = result.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, url) => {
-            return '<img class="md-image" src="' + sanitizeUrl(url) + '" alt="' + escapeHtml(alt) + '">';
+            const safe = sanitizeUrl(url);
+            if (/\.(?:mp4|webm|mov|m4v|avi|mkv)(?:\?.*)?$/i.test(String(url))) {
+                return '<video class="md-video" preload="metadata" playsinline src="' + safe + '"></video>';
+            }
+            return '<img class="md-image" src="' + safe + '" alt="' + alt + '">';
         });
 
         // Links [text](url)
@@ -79,7 +92,7 @@ const Markdown = (() => {
         // Auto-detect URLs (http/https)
         result = result.replace(/(?<!["\'])(https?:\/\/[^\s<]+)/g, (url) => {
             const safe = sanitizeUrl(url);
-            return '<a href="' + safe + '" target="_blank" rel="noopener noreferrer" class="md-link">' + escapeHtml(safe) + '</a>';
+            return '<a href="' + safe + '" target="_blank" rel="noopener noreferrer" class="md-link">' + safe + '</a>';
         });
 
         return result;
@@ -183,7 +196,11 @@ const Markdown = (() => {
             }
 
             // Regular paragraph line
-            if (/^<video\b/i.test(line.trim())) {
+            // A real media tag emitted by the backend always carries a src.
+            // A prompt line like "<Video 1> is the source video…" must NOT
+            // match: treating it as a tag injected an unclosed <video>
+            // element that swallowed the actual clip rendered below it.
+            if (/^<video\b[^>]*\bsrc\s*=/i.test(line.trim())) {
                 let tag = line;
                 // Strip inline event handlers (onerror, onload, ...) so a
                 // model-supplied tag can never execute script.

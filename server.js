@@ -109,14 +109,23 @@ const characterContext = require('./services/character-context');
 const companionService = require('./services/companion');
 const companionExtraction = require('./services/companion/extraction');
 const characterLife = require('./services/character-life');
+const conversationAssets = require('./services/conversation-assets');
+const videoReplacement = require('./services/video-replacement');
 const GENERATED_DIR = path.join(__dirname, 'data', 'generated');
 const IMAGES_DIR = path.join(__dirname, 'data', 'images');
 const UPLOAD_MIME_TO_EXT = {
     'image/png': '.png',
     'image/jpeg': '.jpg',
-    'image/webp': '.webp'
+    'image/webp': '.webp',
+    'video/mp4': '.mp4',
+    'video/webm': '.webm',
+    'video/quicktime': '.mov'
 };
 const UPLOAD_MAX_BYTES = 10 * 1024 * 1024;
+// Uploaded videos are the source footage for character replacement, so they get
+// their own (larger) size cap while images keep the 10 MB limit.
+const UPLOAD_VIDEO_MAX_BYTES = 64 * 1024 * 1024;
+const VIDEO_REFERENCE_MAX = 3;
 const CHAT_IMAGES_MAX = 3;
 // The @ picker can reference more than one generated image per turn (e.g.
 // "make @image1 hold @image2 in @image3"). image_1 is the edit source and the
@@ -237,9 +246,48 @@ function sseWrite(res, obj) {
 function forwardComfyProgress(res) {
     const onProgress = (update) => {
         if (!update) return;
-        if (update.idle) {
+        if (update.stage) {
+            sseWrite(res, { generating: update.stage });
+        } else if (update.idle) {
             sseWrite(res, { progress: { idle: true } });
         } else if (typeof update.value === 'number' && typeof update.max === 'number' && update.max > 0) {
+            sseWrite(res, { progress: { value: update.value, max: update.max } });
+        }
+    };
+    comfyui.subscribeProgress(onProgress);
+    return () => comfyui.unsubscribeProgress(onProgress);
+}
+
+// Like forwardComfyProgress, but for the long video pipelines where the
+// sampler is only part of the wall-clock time: once the final sampling step is
+// reached, ComfyUI decodes/encodes/saves with no further step events, which
+// otherwise leaves the UI pinned at "100%" while the GPU is still working.
+// Reaching the last step switches to a plain "rendering" label (no percentage)
+// so the status stays honest until the job finishes.
+function forwardComfyProgressToCompletion(res, completionLabel) {
+    let completed = false;
+    const onProgress = (update) => {
+        if (!update) return;
+        if (update.stage) {
+            // A new node started: report its phase (loading/encoding/sampling/
+            // decoding/encoding-video) so the status stays honest past the
+            // sampler's 100%.
+            sseWrite(res, { generating: update.stage });
+            return;
+        }
+        if (update.idle) {
+            if (!completed) sseWrite(res, { generating: completionLabel });
+            sseWrite(res, { progress: { idle: true } });
+            return;
+        }
+        if (typeof update.value === 'number' && typeof update.max === 'number' && update.max > 0) {
+            if (update.value >= update.max) {
+                if (!completed) {
+                    completed = true;
+                    sseWrite(res, { generating: completionLabel });
+                }
+                return;
+            }
             sseWrite(res, { progress: { value: update.value, max: update.max } });
         }
     };
@@ -1943,7 +1991,9 @@ async function handleAPI(req, res, urlPath) {
             try { res.write('event: ' + event + '\ndata: ' + JSON.stringify(data) + '\n\n'); } catch {}
         };
         const onProgress = (update) => {
-            if (update && update.idle) {
+            if (update && update.stage) {
+                send('stage', { stage: update.stage });
+            } else if (update && update.idle) {
                 send('idle', {});
             } else {
                 send('progress', { value: update.value, max: update.max });
@@ -2075,6 +2125,17 @@ async function handleAPI(req, res, urlPath) {
         return true;
     }
 
+    // GET /api/conversations/:id/assets — the conversation's media registry
+    // (generated + uploaded images/videos) used by the @ picker and to resolve
+    // references. Scoped to the owning session.
+    const assetsMatch = urlPath.match(/^\/api\/conversations\/([^/]+)\/assets$/);
+    if (assetsMatch && req.method === 'GET') {
+        const id = decodeURIComponent(assetsMatch[1]);
+        if (!requireConversationAccess(req, res, id)) return true;
+        json(res, 200, { assets: conversationAssets.listConversationAssets(id) });
+        return true;
+    }
+
     // POST /api/conversations/:id/summarize
     const sumMatch = urlPath.match(/^\/api\/conversations\/([^/]+)\/summarize$/);
     if (sumMatch && req.method === 'POST') {
@@ -2145,20 +2206,25 @@ function badRequest(message) {
 function saveUpload(body) {
     const mime = String((body && body.mime) || '').toLowerCase();
     const ext = UPLOAD_MIME_TO_EXT[mime];
-    if (!ext) throw badRequest('Unsupported image type. Use PNG, JPEG, or WebP.');
+    if (!ext) throw badRequest('Unsupported media type. Use PNG, JPEG, WebP, MP4, WebM or MOV.');
+    const isVideo = mime.startsWith('video/');
     let data = String((body && body.data) || '');
     const dataPrefix = data.match(/^data:[^;]+;base64,/);
     if (dataPrefix) data = data.slice(dataPrefix[0].length);
     data = data.trim();
-    if (!data || !/^[A-Za-z0-9+/=\s]+$/.test(data)) throw badRequest('Invalid base64 image data.');
+    if (!data || !/^[A-Za-z0-9+/=\s]+$/.test(data)) throw badRequest('Invalid base64 media data.');
     let buffer;
     try {
         buffer = Buffer.from(data, 'base64');
     } catch {
-        throw badRequest('Invalid base64 image data.');
+        throw badRequest('Invalid base64 media data.');
     }
-    if (!buffer.length) throw badRequest('Empty image upload.');
-    if (buffer.length > UPLOAD_MAX_BYTES) throw badRequest('Image is too large. Max 10 MB.');
+    if (!buffer.length) throw badRequest('Empty upload.');
+    const maxBytes = isVideo ? UPLOAD_VIDEO_MAX_BYTES : UPLOAD_MAX_BYTES;
+    if (buffer.length > maxBytes) {
+        throw badRequest((isVideo ? 'Video' : 'Image') + ' is too large. Max ' +
+            Math.round(maxBytes / (1024 * 1024)) + ' MB.');
+    }
     if (!fs.existsSync(IMAGES_DIR)) fs.mkdirSync(IMAGES_DIR, { recursive: true });
     const filename = crypto.randomUUID() + ext;
     const fullPath = path.join(IMAGES_DIR, filename);
@@ -2172,11 +2238,29 @@ function saveUpload(body) {
     };
 }
 
+// True when a decoded base64 payload is actually a supported still image
+// (PNG/JPEG/WebP). Used to keep an uploaded video that was accidentally routed
+// through the vision channel out of the image-only helpers.
+function looksLikeImageBase64(base64) {
+    let head;
+    try {
+        head = Buffer.from(String(base64 || '').slice(0, 32), 'base64');
+    } catch (_) {
+        return false;
+    }
+    if (head.length < 8) return false;
+    const isPng = head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4e && head[3] === 0x47;
+    const isJpeg = head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff;
+    const isWebp = head.toString('ascii', 0, 4) === 'RIFF' && head.toString('ascii', 8, 12) === 'WEBP';
+    return isPng || isJpeg || isWebp;
+}
+
 function sanitizeChatImages(images) {
     if (images === undefined || images === null) return [];
     if (!Array.isArray(images)) throw badRequest('images must be an array.');
     if (images.length > CHAT_IMAGES_MAX) throw badRequest('Too many images. Max 3 per message.');
-    return images.map((item) => {
+    const out = [];
+    for (const item of images) {
         let data = String(item || '');
         const prefix = data.match(/^data:[^;]+;base64,/);
         if (prefix) data = data.slice(prefix[0].length);
@@ -2184,8 +2268,13 @@ function sanitizeChatImages(images) {
         if (!data || !/^[A-Za-z0-9+/=\s]+$/.test(data)) throw badRequest('Invalid base64 image data.');
         const size = Buffer.byteLength(data, 'base64');
         if (size > UPLOAD_MAX_BYTES) throw badRequest('Image is too large. Max 10 MB.');
-        return data.replace(/\s+/g, '');
-    });
+        const cleaned = data.replace(/\s+/g, '');
+        // A video must never reach the vision/first-frame channel: uploaded
+        // videos travel as media references (`body.videos`) instead.
+        if (!looksLikeImageBase64(cleaned)) continue;
+        out.push(cleaned);
+    }
+    return out;
 }
 
 function persistChatVideoImages(images) {
@@ -2222,14 +2311,39 @@ function persistChatVideoImages(images) {
     return out;
 }
 
-// Validate an @-picker reference: an image filename inside data/generated.
-// Returns the bare safe filename, or null when it is missing/not an image.
-function sanitizeReferenceImage(value) {
+// Resolve a validated media filename to its absolute path, checking the
+// generated dir first then the uploads dir. Returns null when the file is
+// missing from both, so a stale reference is dropped rather than trusted.
+function resolveMediaAbsPath(safeName) {
+    if (!safeName) return null;
+    const generated = path.join(GENERATED_DIR, safeName);
+    if (generated.startsWith(GENERATED_DIR) && fs.existsSync(generated)) return generated;
+    const uploaded = path.join(IMAGES_DIR, safeName);
+    if (uploaded.startsWith(IMAGES_DIR) && fs.existsSync(uploaded)) return uploaded;
+    return null;
+}
+
+const IMAGE_REF_EXT_RE = /\.(?:png|jpe?g|webp)$/i;
+const VIDEO_REF_EXT_RE = /\.(?:mp4|webm|mov|m4v|avi|mkv)$/i;
+
+// Validate a single reference filename against the allowed extension and disk.
+function sanitizeMediaName(value, extRe) {
     const safeName = path.basename(String(value || '').split('?')[0]);
-    if (!safeName || !/\.(?:png|jpe?g|webp)$/i.test(safeName)) return null;
-    const fullPath = path.join(GENERATED_DIR, safeName);
-    if (!fullPath.startsWith(GENERATED_DIR) || !fs.existsSync(fullPath)) return null;
-    return safeName;
+    if (!safeName || !extRe.test(safeName)) return null;
+    return resolveMediaAbsPath(safeName) ? safeName : null;
+}
+
+// Validate an @-picker image reference: an image filename inside data/generated
+// (a generated image) or data/images (an uploaded image). Returns the bare safe
+// filename, or null when it is missing/not an image.
+function sanitizeReferenceImage(value) {
+    return sanitizeMediaName(value, IMAGE_REF_EXT_RE);
+}
+
+// Validate an @-picker video reference: a video filename inside data/generated
+// (a generated clip) or data/images (an uploaded clip).
+function sanitizeVideoReference(value) {
+    return sanitizeMediaName(value, VIDEO_REF_EXT_RE);
 }
 
 // Validate an explicit upscale source from the per-asset action card: an image
@@ -2259,13 +2373,29 @@ function sanitizeReferenceImages(value) {
     return out;
 }
 
+// Validate an ordered list of @-picker video references (order preserved, no
+// de-dupe so position N stays aligned with "video N" wording).
+function sanitizeVideoReferences(value) {
+    const list = Array.isArray(value) ? value : (value ? [value] : []);
+    const out = [];
+    for (const item of list) {
+        const safeName = sanitizeVideoReference(item);
+        if (!safeName) continue;
+        out.push(safeName);
+        if (out.length >= VIDEO_REFERENCE_MAX) break;
+    }
+    return out;
+}
+
 // Resolve a reference to the edit-source shape (absPath/kind/rawFilename).
 function resolveReferenceSource(rawFilename) {
     const safeName = sanitizeReferenceImage(rawFilename);
     if (!safeName) return null;
+    const absPath = resolveMediaAbsPath(safeName);
+    if (!absPath) return null;
     return {
-        absPath: path.join(GENERATED_DIR, safeName),
-        kind: 'generated',
+        absPath,
+        kind: absPath.startsWith(IMAGES_DIR) ? 'upload' : 'generated',
         rawFilename: safeName
     };
 }
@@ -2773,6 +2903,9 @@ async function handleChatStream(req, res) {
             if (referenceImages.length > REFERENCE_IMAGES_MAX) referenceImages.length = REFERENCE_IMAGES_MAX;
         }
         const referenceImage = referenceImages[0] || null;
+        // Optional video references selected from the @ picker (`@video1`). A
+        // video is the source footage for a character-replacement request.
+        const videoReferences = sanitizeVideoReferences(body.videos);
         // Explicit upscale source from the per-asset action card. Falls back to
         // a referenced image so "upscale this image" with an @-reference still
         // targets that image. Only a file the conversation actually rendered is
@@ -2812,8 +2945,8 @@ async function handleChatStream(req, res) {
         // A card action (UGC / Director / Long Video / Playground) is a
         // self-contained turn and may carry no message text of its own.
         const hasCardAction = Boolean(body && (body.ugcAction || body.creatorStudioAction || body.directorAction ||
-            body.longVideoAction || body.playgroundAction));
-        if ((!message || typeof message !== 'string' || !message.trim()) && chatImages.length === 0 && !referenceImage && !hasCardAction) {
+            body.longVideoAction || body.playgroundAction || body.replacementAction));
+        if ((!message || typeof message !== 'string' || !message.trim()) && chatImages.length === 0 && !referenceImage && !videoReferences.length && !hasCardAction) {
             json(res, 400, { error: 'message is required' });
             return;
         }
@@ -3060,6 +3193,80 @@ async function handleChatStream(req, res) {
                 }, routingMessage);
                 return;
             }
+        }
+
+        // Video character replacement. A natural-language request that names a
+        // source video (@video1) plus replacement image(s) (@image1) is handled
+        // here — before the router — so it can never fall through to ordinary
+        // text-to-video or a plain image edit. Every reference is validated
+        // against the conversation's asset registry (never the label/order),
+        // and missing or ambiguous pieces ask a concise follow-up instead of
+        // guessing. Unrelated turns fall through untouched.
+        //
+        // Card actions (confirm / reverse / cancel) arrive as
+        // body.replacementAction — also handled here, before the router.
+        const replacementAction = normalizeReplacementAction(body.replacementAction);
+        if (replacementAction) {
+            if (replacementAction.type === 'cancel') {
+                sseWrite(res, { replacement: { content: 'Replacement cancelled.' } });
+                res.end();
+                return;
+            }
+            const confirmedPlan = replacementPlanFromAction(conversationId, replacementAction);
+            if (!confirmedPlan) {
+                const text = 'That replacement is no longer available — the source video or a reference image is missing. Please select the video and images again.';
+                sseWrite(res, { chunk: text });
+                sseWrite(res, { done: true, fullReply: text });
+                res.end();
+                return;
+            }
+            await handleReplacementStream(req, res, {
+                conversationId,
+                message: replacementAction.type === 'reverse' ? 'replace (reversed order)' : 'replace',
+                plan: confirmedPlan,
+                provider,
+                model,
+                think
+            });
+            return;
+        }
+
+        const replacementIntent = videoReplacement.detectReferenceReplacement(message, {
+            hasVideoReference: videoReferences.length > 0,
+            hasImageReference: referenceImages.length > 0
+        });
+        if (replacementIntent.detected) {
+            const replacementPlan = resolveReplacementPlan(conversationId, {
+                message,
+                videoFilenames: videoReferences,
+                imageFilenames: referenceImages
+            });
+            if (!replacementPlan.ok) {
+                if (replacementPlan.code === 'replacement_mapping_ambiguous' && replacementPlan.plan) {
+                    // Multiple identities with no stated order: show a card that
+                    // makes the assumed mapping explicit so the user can confirm
+                    // (or reverse) in one click instead of retyping.
+                    const serialized = videoReplacement.serializeReplacementPlan(replacementPlan.plan);
+                    const content = buildReplacementConfirmContent(replacementPlan.plan) +
+                        '\n\n[[replacement:' + JSON.stringify(serialized) + ']]';
+                    sseWrite(res, { replacement: { content } });
+                    res.end();
+                    return;
+                }
+                sseWrite(res, { chunk: replacementPlan.error });
+                sseWrite(res, { done: true, fullReply: replacementPlan.error });
+                res.end();
+                return;
+            }
+            await handleReplacementStream(req, res, {
+                conversationId,
+                message,
+                plan: replacementPlan.plan,
+                provider,
+                model,
+                think
+            });
+            return;
         }
 
         // One side resident, always. Routing consults the Ollama chat model and
@@ -7244,12 +7451,14 @@ async function handleImageGenerationStream(req, res, opts) {
 // "make image 1 hold image 2 at image 3". Unnumbered upload/generated markdown
 // is dropped like before.
 const REFERENCE_TOKEN_RE = /@image\s*(\d+)\b/gi;
+const VIDEO_REFERENCE_TOKEN_RE = /@video\s*\d+\b/gi;
 const NUMBERED_REFERENCE_RE = /!\[[^\]]*?reference\s*(\d+)[^\]]*?\]\(\/(?:generated|images)\/[^)]+\)/gi;
 
 function materializeEditInstruction(text) {
     const out = String(text || '')
         .replace(NUMBERED_REFERENCE_RE, (match, n) => ' image ' + n + ' ')
         .replace(REFERENCE_TOKEN_RE, (match, n) => ' image ' + n + ' ')
+        .replace(VIDEO_REFERENCE_TOKEN_RE, ' ')
         .replace(/!\[[^\]]*\]\(\/images\/[^)]+\)/g, ' ')
         .replace(/!\[[^\]]*\]\(\/generated\/[^)]+\)/g, ' ');
     return out.replace(/\s{2,}/g, ' ').trim();
@@ -7435,6 +7644,193 @@ function friendlyImageError(err) {
     }
 }
 
+// Validate a replacement card action ({ type: 'confirm'|'reverse'|'cancel', plan }).
+function normalizeReplacementAction(value) {
+    if (!value || typeof value !== 'object') return null;
+    const type = String(value.type || '').toLowerCase();
+    if (type !== 'confirm' && type !== 'reverse' && type !== 'cancel') return null;
+    return { type, plan: value.plan && typeof value.plan === 'object' ? value.plan : null };
+}
+
+// Rebuild a replacement plan from a card action's serialized plan. Every
+// filename is re-resolved against the conversation registry (never trusted from
+// the client), so a tampered/stale card cannot reach other media or missing
+// files. `reverse` flips the identity order.
+function replacementPlanFromAction(conversationId, action) {
+    const raw = action.plan || {};
+    const sourceVideo = raw.sourceVideo && raw.sourceVideo.filename
+        ? conversationAssets.resolveConversationAsset(conversationId, raw.sourceVideo.filename, { type: 'video' })
+        : null;
+    let replacements = (Array.isArray(raw.replacements) ? raw.replacements : [])
+        .map((entry) => (entry && entry.filename
+            ? conversationAssets.resolveConversationAsset(conversationId, entry.filename, { type: 'image' })
+            : null))
+        .filter(Boolean);
+    if (!sourceVideo || !replacements.length) return null;
+    if (action.type === 'reverse') replacements = replacements.slice().reverse();
+    const result = videoReplacement.buildReplacementPlan({
+        message: raw.additionalInstructions || '',
+        sourceVideo,
+        replacements,
+        requestedDuration: raw.requestedDuration || null,
+        assumeOrder: true
+    });
+    return result.ok ? result.plan : null;
+}
+
+function buildReplacementConfirmContent(plan) {
+    const n = plan.replacements.length;
+    return 'I found the source video and ' + n + ' replacement image' + (n === 1 ? '' : 's') +
+        '. Confirm the mapping — image 1 replaces the first person, image 2 the second, and so on.';
+}
+
+// Resolve a character-replacement request against the conversation's asset
+// registry. Explicit @video / @image references are validated first; the
+// source video falls back to the conversation's most recent clip so "the
+// video" wording works without a token. Returns the structured plan or a
+// concise error to show the user.
+function resolveReplacementPlan(conversationId, options) {
+    const imageAssets = [];
+    const seen = new Set();
+    const pushImage = (asset) => {
+        if (!asset || seen.has(asset.filename)) return;
+        seen.add(asset.filename);
+        imageAssets.push(asset);
+    };
+    for (const name of options.imageFilenames || []) {
+        pushImage(conversationAssets.resolveConversationAsset(conversationId, name, { type: 'image' }));
+    }
+    // Attached images (and any image link embedded in the message) count as
+    // replacement references too, so "the two images provided" works without
+    // @image tokens. Explicit @image picks stay first (they carry the order).
+    for (const link of conversationAssets.extractMediaLinks(options.message)) {
+        if (conversationAssets.classifyMedia(link.filename) !== 'image') continue;
+        pushImage(conversationAssets.resolveConversationAsset(conversationId, link.filename, { type: 'image' }));
+    }
+    let sourceVideo = null;
+    for (const name of options.videoFilenames || []) {
+        const asset = conversationAssets.resolveConversationAsset(conversationId, name, { type: 'video' });
+        if (asset) { sourceVideo = asset; break; }
+    }
+    if (!sourceVideo) {
+        const videos = conversationAssets.listConversationAssets(conversationId).filter((a) => a.type === 'video');
+        if (videos.length) sourceVideo = videos[videos.length - 1];
+    }
+    const requestedDuration = typeof videoGenerator.parseRequestedVideoDuration === 'function'
+        ? videoGenerator.parseRequestedVideoDuration(options.message)
+        : null;
+    return videoReplacement.buildReplacementPlan({
+        message: options.message,
+        sourceVideo,
+        replacements: imageAssets,
+        requestedDuration
+    });
+}
+
+// Concise confirmation of the resolved operation, shown before the render.
+function buildReplacementConfirmation(plan) {
+    const names = plan.replacements.map((_, i) => '@image' + (i + 1));
+    const subject = plan.replacements.length > 1 ? 'people' : 'person';
+    let text = 'Replacing the ' + subject + ' in @video1 with ' + names.join(' and ') +
+        ". I'll preserve the original scene and motion as closely as the model allows.";
+    if (plan.replacements.length > 1) {
+        text += ' Using the order you provided (image 1 → first person, image 2 → second).';
+    }
+    return text;
+}
+
+// Handle a character-replacement request over SSE. Mirrors
+// handleVideoGenerationStream (queued/progress/cancel + the shared generation
+// queue) but drives the dedicated reference-to-video workflow.
+async function handleReplacementStream(req, res, opts) {
+    const { conversationId, message, plan } = opts;
+
+    let queueId = null;
+    const onClose = () => {
+        if (!queueId) return;
+        if (imageGenerator.cancelQueued(queueId)) return;
+        if (imageGenerator.isActive(queueId)) {
+            imageGenerator.cancelActive(queueId);
+            comfyui.interrupt().catch(() => {});
+        }
+    };
+    req.on('close', onClose);
+    const stopProgress = forwardComfyProgressToCompletion(res, 'Rendering the replacement video…');
+    const onQueued = (position, id) => {
+        queueId = id;
+        sseWrite(res, { queued: { position, queueId: id } });
+    };
+    const onStart = () => sseWrite(res, { generating: 'Replacing people in the video...' });
+
+    try {
+        const confirmation = buildReplacementConfirmation(plan);
+        sseWrite(res, { generating: 'Replacing people in the video...' });
+
+        await vramManager.freeVRAMBeforeImage();
+        const promise = videoReplacement.generateReplacementVideo(plan, {
+            conversationId,
+            onQueued,
+            onStart,
+            label: 'video replacement',
+            kind: 'video_generation',
+            onProgress: (stage) => {
+                if (stage === 'reference-begin') {
+                    sseWrite(res, { generating: 'Replacing people in the video...' });
+                }
+            }
+        });
+        queueId = promise.queueId || null;
+        const result = await promise;
+
+        const existingParams = taskState.getTask(conversationId).parameters || {};
+        taskState.setTask(conversationId, {
+            type: 'video',
+            operation: 'generate',
+            prompt: result.prompt,
+            generatedAsset: result.url,
+            videoMode: 'reference',
+            sourceImage: plan.sourceVideo.filename,
+            parameters: Object.assign({}, existingParams, {
+                width: result.width,
+                height: result.height,
+                duration: result.duration,
+                video: (result.meta && result.meta.video) || null,
+                references: result.references
+            }),
+            status: 'completed',
+            lastAction: message || 'replace'
+        });
+
+        const content =
+            confirmation + '\n\n' +
+            '**Prompt:** ' + result.prompt + '\n\n' +
+            '<video class="md-video" preload="metadata" playsinline src="' + result.url + '"></video>';
+
+        sseWrite(res, {
+            video: {
+                url: result.url,
+                content,
+                meta: result.meta || null,
+                replacement: {
+                    sourceVideo: plan.sourceVideo.filename,
+                    references: result.references
+                }
+            }
+        });
+        res.end();
+    } catch (err) {
+        console.error('[video-replacement] generation failed:', err.message, '\n', err.stack);
+        if (err.code !== 'generation_cancelled') {
+            taskState.setTask(conversationId, { status: 'failed' });
+        }
+        sseWrite(res, { error: friendlyVideoError(err) });
+        res.end();
+    } finally {
+        req.removeListener('close', onClose);
+        stopProgress();
+    }
+}
+
 async function handleVideoGenerationStream(req, res, opts) {
     const {
         provider, model, conversationId, message, videoPrompt,
@@ -7455,7 +7851,7 @@ async function handleVideoGenerationStream(req, res, opts) {
         }
     };
     req.on('close', onClose);
-    const stopProgress = forwardComfyProgress(res);
+    const stopProgress = forwardComfyProgressToCompletion(res, 'Rendering video…');
     const generationLabel = opts.creatorStudio
         ? 'Creator Studio · Rendering talking video…'
         : 'Generating video...';

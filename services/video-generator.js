@@ -5535,6 +5535,7 @@ module.exports = {
     attentionBackendAvailable,
     resolveH3AttentionBackend,
     applyAttentionPatch,
+    appendLoraChain,
     registerGenerationLock,
     detectVideoIntent,
     detectVideoUpscaleIntent,

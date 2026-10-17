@@ -45,7 +45,8 @@ const INTENTS = Object.freeze({
     MODIFY_PREVIOUS_GENERATION: 'modify_previous_generation',
     IMAGE_EDIT: 'image_edit',
     IMAGE_UPSCALE: 'image_upscale',
-    VIDEO_UPSCALE: 'video_upscale'
+    VIDEO_UPSCALE: 'video_upscale',
+    VIDEO_CHARACTER_REPLACEMENT: 'video_character_replacement'
 });
 
 const MODES = Object.freeze({
@@ -161,6 +162,12 @@ function collectSignals(message, opts = {}) {
     const productionRequest = VIDEO_PRODUCTION_NOUN_RE.test(text) &&
         !NON_VIDEO_PRODUCTION_RE.test(text) && generationVerb;
 
+    // Character/media replacement: a replacement verb aimed at an existing
+    // video ("replace the people in @video1 with @image1"). Evidence only —
+    // the server resolves the actual references against the asset registry.
+    const replacementRequest = /\b(?:replace|swap|substitute|switch\s+out)\b/i.test(text) &&
+        (/\bvideo\b/i.test(text) || /\b@video\s*\d+\b/i.test(text) || /\bclip\b/i.test(text) || /\bfootage\b/i.test(text));
+
     let editIntent = false;
     try { editIntent = Boolean(imageGenerator.detectEditIntent(text, activeIsImage)); } catch (err) { editIntent = false; }
 
@@ -195,11 +202,13 @@ function collectSignals(message, opts = {}) {
         videoUpscale,
         productionRequest,
         editIntent,
+        replacementRequest,
         subject,
         any: Boolean(
             imageStrength || videoStrength || hasImageWord || hasVideoWord ||
             hasPromptWord || generationVerb || referencesPrevious ||
-            imageUpscale || videoUpscale || editIntent || productionRequest
+            imageUpscale || videoUpscale || editIntent || productionRequest ||
+            replacementRequest
         )
     };
 }
@@ -348,6 +357,10 @@ function normalizeIntent(value) {
     if (v === INTENTS.IMAGE_EDIT) return INTENTS.IMAGE_EDIT;
     if (v === INTENTS.IMAGE_UPSCALE) return INTENTS.IMAGE_UPSCALE;
     if (v === INTENTS.VIDEO_UPSCALE) return INTENTS.VIDEO_UPSCALE;
+    if (v === INTENTS.VIDEO_CHARACTER_REPLACEMENT || v === 'video_replacement' ||
+        v === 'character_replacement' || v === 'replace_people' || v === 'replace_character') {
+        return INTENTS.VIDEO_CHARACTER_REPLACEMENT;
+    }
     return null;
 }
 

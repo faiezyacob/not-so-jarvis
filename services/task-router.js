@@ -368,6 +368,15 @@ function decisionFromResolvedIntent(resolved, { message, activeTask, conversatio
         return null;
     }
 
+    // Character/media replacement is resolved and executed by the dedicated
+    // reference-to-video gate in server.js (which validates the real asset
+    // references) before the router runs. If the resolver reaches here with it,
+    // fall through so the deterministic gates decide rather than mis-routing it
+    // to plain text-to-video or an image edit.
+    if (intent === 'video_character_replacement') {
+        return null;
+    }
+
     if (intent === 'image_upscale') {
         return { intent: 'new_task', task: 'image_upscale', action: 'upscale', shouldExecuteTool: true, updatedPrompt: '' };
     }

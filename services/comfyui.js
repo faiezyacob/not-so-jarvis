@@ -168,6 +168,56 @@ let progressWs = null;
 let progressWsTimer = null;
 let progressSubscribers = [];
 
+// The node id -> class_type map of the most recently queued graph. ComfyUI's
+// websocket reports which node is currently executing, but not what it does;
+// we translate it into a human phase label so the UI can show the real state
+// (sampling reaches 100% long before the video is decoded and encoded). Only
+// one generation runs at a time, so a single slot is enough.
+let currentNodeTypes = {};
+
+// Ordered most-specific-first: the first matching rule wins.
+const STAGE_LABEL_RULES = [
+    [/ReferenceToVideo/i, 'Encoding reference video…'],
+    [/ImageToVideo/i, 'Encoding first frame…'],
+    [/AddGuide/i, 'Encoding guide frames…'],
+    [/VAEDecodeAudio/i, 'Decoding audio…'],
+    [/VAEDecode/i, 'Decoding video…'],
+    [/VAEEncode/i, 'Encoding frames…'],
+    [/LatentUpscal|LTXV|LatentSeparate|LatentConcat/i, 'Upscaling latent…'],
+    [/FaceRefine|FaceTrack|FaceStitch|NativeAudioLock|InjectVideoLatent|PerFrameDenoise/i, 'Refining faces…'],
+    [/RIFE|FrameInterp/i, 'Interpolating frames…'],
+    [/SamplerCustom|MiniMaxH3TurboSampler|KSamplerAdvanced|^KSampler$/i, 'Sampling…'],
+    [/VideoCombine|SaveVideo|CreateVideo|SaveAnimated/i, 'Encoding video file…'],
+    [/LoadVideo|LoadImage|LoadAudio|LoadVideoPath/i, 'Loading input…'],
+    [/Upscale|SeedVR2|Ultimate/i, 'Upscaling…'],
+    [/UNETLoader|CLIPLoader|VAELoader|CheckpointLoader|LoraLoader|AttentionBackend|SageAttention|FirstBlockCache|BasicScheduler|BasicGuider|RandomNoise|EmptyMiniMaxH3|EmptyLatent|ModelSampling/i, 'Loading model…']
+];
+
+function stageLabelForClass(classType) {
+    const name = String(classType || '');
+    if (!name) return '';
+    for (const [re, label] of STAGE_LABEL_RULES) {
+        if (re.test(name)) return label;
+    }
+    return '';
+}
+
+function stageLabelForNode(nodeId) {
+    const node = currentNodeTypes[nodeId];
+    if (!node || !node.class_type) return '';
+    return stageLabelForClass(node.class_type);
+}
+
+function rememberGraphNodes(graph) {
+    const map = {};
+    if (graph && typeof graph === 'object') {
+        for (const [id, node] of Object.entries(graph)) {
+            if (node && node.class_type) map[id] = { class_type: node.class_type };
+        }
+    }
+    currentNodeTypes = map;
+}
+
 function subscribeProgress(cb) {
     if (typeof cb !== 'function') return;
     progressSubscribers.push(cb);
@@ -201,7 +251,16 @@ function ensureProgressWs() {
             progressSubscribers.slice().forEach((fn) => { try { fn(update); } catch {} });
         } else if (msg.type === 'executing' && d.node === null) {
             // Generation finished — clear to 100% then idle.
+            currentNodeTypes = {};
             progressSubscribers.slice().forEach((fn) => { try { fn({ value: 1, max: 1, idle: true }); } catch {} });
+        } else if (msg.type === 'executing' && typeof d.node === 'string') {
+            // A node started running. Report its phase so the UI can show what
+            // is actually happening (sampling is only part of the wall clock).
+            const label = stageLabelForNode(d.node);
+            if (label) {
+                const update = { stage: label, node: d.node };
+                progressSubscribers.slice().forEach((fn) => { try { fn(update); } catch {} });
+            }
         }
     };
     ws.onclose = () => { progressWs = null; scheduleProgressWsRetry(); };
@@ -283,6 +342,7 @@ function forgetResidentModels() {
 // Submit a workflow graph (API format) and return the prompt id.
 async function queuePrompt(graph) {
     const body = { prompt: graph, client_id: CLIENT_ID };
+    rememberGraphNodes(graph);
     let res;
     try {
         res = await comfyFetch('/prompt', {
@@ -858,6 +918,7 @@ module.exports = {
     getSystemStats,
     subscribeProgress,
     unsubscribeProgress,
+    stageLabelForClass,
     freeModels,
     softFreeMemory,
     hasResidentModels,

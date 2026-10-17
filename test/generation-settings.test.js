@@ -148,9 +148,11 @@ test('buildQwenImage21T2IGraph: uses the qwen encoder node, clip type and sample
     assert.deepEqual(graph.sampler.inputs.negative, ['conditioning', 1]);
     assert.deepEqual(graph.sampler.inputs.latent_image, ['canvas', 0]);
     assert.equal(graph.sampler.inputs.sampler_name, 'euler');
-    assert.equal(graph.sampler.inputs.scheduler, 'simple');
+    // The official Qwen Image 2.1 template samples with bong_tangent, ~24
+    // steps and cfg 3, so the builder follows those defaults.
+    assert.equal(graph.sampler.inputs.scheduler, imageGenerator.QWEN_T2I_SCHEDULER);
     assert.equal(graph.sampler.inputs.cfg, imageGenerator.getDefaults().qwenCfg);
-    assert.equal(graph.sampler.inputs.steps, 25);
+    assert.equal(graph.sampler.inputs.steps, 24);
     assert.equal(graph.sampler.inputs.seed, 7);
     assert.equal(graph.save.inputs.filename_prefix, 'not-so-jarvis/gen');
 });
@@ -188,7 +190,8 @@ test('buildQwenImage21EditGraph: always uses the qwen slots (edit is Qwen-only)'
     assert.deepEqual(graph.sampler.inputs.negative, ['conditioning', 1]);
     assert.deepEqual(graph.sampler.inputs.latent_image, ['conditioning', 2]);
     assert.equal(graph.sampler.inputs.steps, 25);
-    assert.equal(graph.sampler.inputs.cfg, imageGenerator.getDefaults().qwenCfg);
+    // Editing keeps its own unguided calibration (cfg 1), not the t2i cfg.
+    assert.equal(graph.sampler.inputs.cfg, 1);
     assert.equal(graph.sampler.inputs.seed, 3);
     assert.equal(graph.sampler.inputs.sampler_name, 'euler');
     assert.equal(graph.sampler.inputs.scheduler, 'simple');
@@ -243,8 +246,9 @@ test('defaults expose per-model sampling (Krea 2 steps/cfg, Qwen qwenSteps/qwenC
     const defaults = imageGenerator.getDefaults();
     assert.equal(defaults.steps, 8);
     assert.equal(defaults.cfg, 1);
-    assert.equal(defaults.qwenSteps, 25);
-    assert.equal(defaults.qwenCfg, 1);
+    // Qwen Image 2.1 follows the official template: ~24 steps, cfg 3.
+    assert.equal(defaults.qwenSteps, 24);
+    assert.equal(defaults.qwenCfg, 3);
 });
 
 test('sanitizeSettings: qwen sampling values are validated', () => {
@@ -442,4 +446,94 @@ test('buildKrea2IdentityEditGraph: a missing Identity Edit LoRA throws a clear e
         () => imageGenerator.buildKrea2IdentityEditGraph('x', 'a.png', { settings }),
         (err) => err.code === 'krea2_identity_edit_lora_missing'
     );
+});
+
+// --- Image attention backend ---------------------------------------------------
+
+const CK_INFO = { ModelAttentionBackend: { input: { required: { attention: [['comfy kitchen attention', 'pytorch']] } } } };
+const SAGE_INFO = { PathchSageAttentionKJ: {} };
+
+test('normalizeImageAttentionBackend: aliases map to auto/kitchen/sage', () => {
+    assert.equal(imageGenerator.normalizeImageAttentionBackend('auto'), 'auto');
+    assert.equal(imageGenerator.normalizeImageAttentionBackend('standard'), 'auto');
+    assert.equal(imageGenerator.normalizeImageAttentionBackend('pytorch'), 'auto');
+    assert.equal(imageGenerator.normalizeImageAttentionBackend('kitchen'), 'comfykitchen');
+    assert.equal(imageGenerator.normalizeImageAttentionBackend('Comfy-Kitchen'), 'comfykitchen');
+    assert.equal(imageGenerator.normalizeImageAttentionBackend('sageattention'), 'sageattention');
+    assert.equal(imageGenerator.normalizeImageAttentionBackend('bogus'), 'auto');
+    assert.equal(imageGenerator.normalizeImageAttentionBackend(''), 'auto');
+});
+
+test('imageAttentionBackendAvailable: kitchen needs the combo, sage needs the node', () => {
+    assert.equal(imageGenerator.imageAttentionBackendAvailable(CK_INFO, 'comfykitchen'), true);
+    assert.equal(imageGenerator.imageAttentionBackendAvailable({}, 'comfykitchen'), false);
+    assert.equal(imageGenerator.imageAttentionBackendAvailable(SAGE_INFO, 'sageattention'), true);
+    assert.equal(imageGenerator.imageAttentionBackendAvailable({}, 'sageattention'), false);
+});
+
+test('resolveImageAttentionBackend: auto prefers Comfy Kitchen, then SageAttention, else dense', () => {
+    assert.equal(imageGenerator.resolveImageAttentionBackend({}, 'auto'), 'standard');
+    assert.equal(imageGenerator.resolveImageAttentionBackend(SAGE_INFO, 'auto'), 'sageattention');
+    assert.equal(imageGenerator.resolveImageAttentionBackend(Object.assign({}, CK_INFO, SAGE_INFO), 'auto'), 'comfykitchen');
+    // An explicit choice passes through untouched so a missing node surfaces.
+    assert.equal(imageGenerator.resolveImageAttentionBackend({}, 'sageattention'), 'sageattention');
+});
+
+test('applyImageAttentionPatch: inserts the matching node and returns its id', () => {
+    const graph = {};
+    assert.equal(imageGenerator.applyImageAttentionPatch(graph, 'unet', 'comfykitchen'), 'ck_attention');
+    assert.equal(graph.ck_attention.class_type, 'ModelAttentionBackend');
+    assert.deepEqual(graph.ck_attention.inputs.model, ['unet', 0]);
+
+    const sage = {};
+    assert.equal(imageGenerator.applyImageAttentionPatch(sage, 'model_patch', 'sageattention'), 'sage_attention');
+    assert.equal(sage.sage_attention.class_type, 'PathchSageAttentionKJ');
+    assert.deepEqual(sage.sage_attention.inputs.model, ['model_patch', 0]);
+
+    const none = {};
+    assert.equal(imageGenerator.applyImageAttentionPatch(none, 'unet', 'standard'), null);
+    assert.deepEqual(none, {});
+});
+
+test('buildQwenImage21T2IGraph: an explicit attention backend patches the sampler model', () => {
+    const settings = Object.assign({}, imageGenerator.getDefaults(), {
+        model: 'qwen_image_2_1',
+        attentionBackend: 'sageattention'
+    });
+    const graph = imageGenerator.buildQwenImage21T2IGraph('a red fox', { seed: 7, settings, width: 1024, height: 1024 });
+    assert.equal(graph.sage_attention.class_type, 'PathchSageAttentionKJ');
+    assert.deepEqual(graph.sampler.inputs.model, ['sage_attention', 0]);
+});
+
+test('buildKrea2T2IGraph + buildKrea2IdentityEditGraph honour the attention backend', () => {
+    const t2i = imageGenerator.buildKrea2T2IGraph('x', {
+        seed: 1,
+        settings: Object.assign({}, imageGenerator.getDefaults(), { attentionBackend: 'comfykitchen' })
+    });
+    assert.equal(t2i.ck_attention.class_type, 'ModelAttentionBackend');
+    assert.deepEqual(t2i.sampler.inputs.model, ['ck_attention', 0]);
+
+    const edit = imageGenerator.buildKrea2IdentityEditGraph('x', 'a.png', {
+        seed: 1,
+        settings: Object.assign({}, imageGenerator.getDefaults(), { attentionBackend: 'sageattention' })
+    });
+    assert.deepEqual(edit.sage_attention.inputs.model, ['model_patch', 0]);
+    assert.deepEqual(edit.sampler.inputs.model, ['sage_attention', 0]);
+});
+
+test('resolveQwenScheduler: bong_tangent when supported, simple as the fallback', () => {
+    assert.equal(imageGenerator.resolveQwenScheduler({}, 'bong_tangent'), 'bong_tangent');
+    assert.equal(
+        imageGenerator.resolveQwenScheduler({ KSampler: { input: { required: { scheduler: [['simple', 'normal']] } } } }),
+        'simple'
+    );
+    assert.equal(
+        imageGenerator.resolveQwenScheduler({ KSampler: { input: { required: { scheduler: [['bong_tangent', 'simple']] } } } }),
+        'bong_tangent'
+    );
+});
+
+test('sanitizeSettings: attentionBackend is normalized', () => {
+    assert.deepEqual(imageGenerator.sanitizeSettings({ attentionBackend: 'SageAttention' }), { attentionBackend: 'sageattention' });
+    assert.deepEqual(imageGenerator.sanitizeSettings({ attentionBackend: 'bogus' }), { attentionBackend: 'auto' });
 });

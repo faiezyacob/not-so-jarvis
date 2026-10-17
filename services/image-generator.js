@@ -975,16 +975,28 @@ function resolveDimensions(settings) {
 // UNET(net)/CLIP(text encoder)/VAE slots:
 //   - krea2:          the Krea 2 Turbo graph (euler / beta).
 //   - qwen_image_2_1: the Qwen Image 2.1 graph (Qwen3-VL 8B text encoder,
-//                     euler / simple, cfg 1, its own TextEncodeQwenImage21 node).
+//                     euler / bong_tangent, cfg 3, its own TextEncodeQwenImage21 node).
 // The Krea2 slot keys (unet/clip/vae) keep their historical meaning; Qwen's
 // filenames live under qwen* keys so switching back and forth remembers both.
 
 const IMAGE_MODELS = ['krea2', 'qwen_image_2_1'];
 const DEFAULT_IMAGE_MODEL = 'qwen_image_2_1';
 const QWEN_IMAGE_CLIP_TYPE = 'qwen_image';
-// Qwen Image 2.1's official pipeline samples at euler/simple, cfg 1, ~25 steps.
-const DEFAULT_QWEN_STEPS = 25;
-const DEFAULT_QWEN_CFG = 1;
+// Qwen Image 2.1's official template samples with the bong_tangent scheduler,
+// ~24 steps and cfg 3 (raised above 1 so the negative prompt contributes). The
+// official docs note cfg 1 is the untouched path and higher CFG should be paired
+// with a negative prompt; the template ships one. The scheduler is validated
+// against ComfyUI's /object_info at generation time and falls back to `simple`
+// when the installed build predates `bong_tangent`.
+const QWEN_T2I_SCHEDULER = 'bong_tangent';
+const QWEN_T2I_SCHEDULER_FALLBACK = 'simple';
+const DEFAULT_QWEN_STEPS = 24;
+const DEFAULT_QWEN_CFG = 3;
+// Editing keeps the Qwen editor's own calibration (cfg 1, ~25 steps) rather
+// than the t2i template's guided settings — images to edit already carry their
+// content, so unguided sampling preserves them best.
+const DEFAULT_QWEN_EDIT_STEPS = 25;
+const DEFAULT_QWEN_EDIT_CFG = 1;
 
 function normalizeImageModel(value) {
     const v = String(value || '').trim().toLowerCase().replace(/[\s.-]+/g, '_');
@@ -1017,6 +1029,43 @@ const DEFAULT_IDENTITY_EDIT_CFG = 1;
 const DEFAULT_IDENTITY_EDIT_REF_BOOST = 4;
 const DEFAULT_IDENTITY_EDIT_GROUNDING_PX = 768;
 const MAX_IDENTITY_EDIT_PIXELS = 2000000;
+
+// --- Attention backend (image pipelines) ---------------------------------------
+//
+// Both text-to-image and image-edit run a diffusion model through ComfyUI, so
+// the same accelerated-attention patches the video pipeline uses apply here:
+//   auto          — JARVIS picks the best backend ComfyUI actually offers
+//   comfykitchen  — ComfyUI's built-in ModelAttentionBackend (comfy-kitchen)
+//   sageattention — KJNodes PathchSageAttentionKJ (the official Qwen template)
+// Anything unrecognized is treated as `auto`, which resolves against ComfyUI's
+// /object_info (Comfy Kitchen first, then SageAttention) and leaves dense
+// PyTorch attention untouched when neither patch is installed.
+const IMAGE_ATTENTION_ALIASES = {
+    auto: 'auto',
+    standard: 'auto',
+    none: 'auto',
+    normal: 'auto',
+    pytorch: 'auto',
+    kitchen: 'comfykitchen',
+    comfykitchen: 'comfykitchen',
+    ck: 'comfykitchen',
+    sage: 'sageattention',
+    sageattention: 'sageattention'
+};
+// The concrete backends `auto` prefers, in order. Comfy Kitchen ships with
+// ComfyUI (v0.32+) with no extra install, so it wins; SageAttention is the
+// fallback; dense PyTorch attention is the dependency-free last resort.
+const IMAGE_AUTO_ATTENTION_PRIORITY = Object.freeze(['comfykitchen', 'sageattention']);
+// The combo value ModelAttentionBackend expects for ComfyUI's built-in kitchen
+// backend; its presence in /object_info also proves the kernels are importable.
+const IMAGE_CK_ATTENTION_VALUE = 'comfy kitchen attention';
+
+function normalizeImageAttentionBackend(value) {
+    const requested = String(value == null ? '' : value).trim().toLowerCase().replace(/-/g, '');
+    return Object.prototype.hasOwnProperty.call(IMAGE_ATTENTION_ALIASES, requested)
+        ? IMAGE_ATTENTION_ALIASES[requested]
+        : 'auto';
+}
 
 function normalizeEditEngine(value) {
     const v = String(value || '').trim().toLowerCase().replace(/[\s.-]+/g, '_');
@@ -1058,6 +1107,11 @@ const DEFAULT_SETTINGS = {
     // Krea 2 reads `steps`/`cfg`, Qwen reads `qwenSteps`/`qwenCfg`.
     qwenSteps: DEFAULT_QWEN_STEPS,
     qwenCfg: DEFAULT_QWEN_CFG,
+    // Both image pipelines can run under an accelerated attention backend. `auto`
+    // resolves against ComfyUI's /object_info (Comfy Kitchen → SageAttention →
+    // dense PyTorch) so a build without the patches silently stays on dense
+    // attention. An explicit choice (or `standard`) is honoured as-is.
+    attentionBackend: normalizeImageAttentionBackend(process.env.JARVIS_IMAGE_ATTENTION) || 'auto',
     // User-facing resolution controls. The UI exposes an aspect-ratio
     // dropdown plus a size dropdown (S/M/L) — or 'CUSTOM', which reveals
     // explicit width/height inputs. Width/height below are otherwise derived
@@ -1109,7 +1163,7 @@ const DEFAULT_SETTINGS = {
 
 // Fields the user may override through the settings panel / API. Kept
 // separate from DEFAULT_SETTINGS so we only persist explicit overrides.
-const CONFIGURABLE_KEYS = ['model', 'unet', 'clip', 'clipType', 'vae', 'qwenUnet', 'qwenClip', 'qwenVae', 'editEngine', 'krea2IdentityEditLora', 'krea2EditSteps', 'krea2EditCfg', 'aspectRatio', 'imageSize', 'width', 'height', 'steps', 'cfg', 'qwenSteps', 'qwenCfg', 'seedMode', 'seed', 'variations', 'loras', 'loraTriggerWords',
+const CONFIGURABLE_KEYS = ['model', 'unet', 'clip', 'clipType', 'vae', 'qwenUnet', 'qwenClip', 'qwenVae', 'editEngine', 'krea2IdentityEditLora', 'krea2EditSteps', 'krea2EditCfg', 'aspectRatio', 'imageSize', 'width', 'height', 'steps', 'cfg', 'qwenSteps', 'qwenCfg', 'attentionBackend', 'seedMode', 'seed', 'variations', 'loras', 'loraTriggerWords',
     'upscaleEngine', 'upscaleMode', 'upscaleResolution', 'upscaleMultiplier', 'upscaleProfile', 'upscaleNoise', 'upscalePreScale',
     'seedvr2Dit', 'seedvr2Vae', 'seedvr2Attention'];
 
@@ -1259,6 +1313,8 @@ function sanitizeSettings(patch) {
         } else if (key === 'cfg' || key === 'qwenCfg') {
             const n = Number(value);
             if (Number.isFinite(n) && n >= 0) out[key] = n;
+        } else if (key === 'attentionBackend') {
+            out[key] = normalizeImageAttentionBackend(value);
         } else if (key === 'seedMode') {
             const v = String(value || '').toLowerCase();
             if (v === 'random' || v === 'fixed') out[key] = v;
@@ -1367,6 +1423,72 @@ function buildLoraChain(graph, loras) {
     return { model: modelLink, clip: clipLink };
 }
 
+// Read the choices list for a required input from ComfyUI's /object_info.
+function objectInfoChoices(info, classType, field) {
+    const node = info && info[classType];
+    const list = node && node.input && node.input.required && node.input.required[field];
+    return Array.isArray(list) && Array.isArray(list[0]) ? list[0] : null;
+}
+
+// True when ComfyUI can run the given concrete attention backend. Dense PyTorch
+// attention needs no node, so any backend that is not an accelerated patch is
+// always available.
+function imageAttentionBackendAvailable(info, backend) {
+    if (backend === 'comfykitchen') {
+        const choices = objectInfoChoices(info, 'ModelAttentionBackend', 'attention');
+        return Array.isArray(choices) && choices.includes(IMAGE_CK_ATTENTION_VALUE);
+    }
+    if (backend === 'sageattention') return Boolean(info && info.PathchSageAttentionKJ);
+    return true;
+}
+
+// Turn the configured backend into a concrete one. `auto` walks the priority
+// list and picks the fastest accelerated backend ComfyUI actually offers,
+// falling back to dense PyTorch attention (`standard`). An explicit choice is
+// returned untouched so a missing node still surfaces the existing "missing
+// node" validation error instead of being silently ignored.
+function resolveImageAttentionBackend(info, requested) {
+    const backend = normalizeImageAttentionBackend(requested);
+    if (backend !== 'auto') return backend;
+    for (const candidate of IMAGE_AUTO_ATTENTION_PRIORITY) {
+        if (imageAttentionBackendAvailable(info, candidate)) return candidate;
+    }
+    return 'standard';
+}
+
+// Insert the selected attention patch after the model chain and return the node
+// id the sampler should read from. `standard` (and an unresolved `auto`) leaves
+// the chain untouched — the sampler then reads the base model link directly.
+function applyImageAttentionPatch(graph, baseModelNode, backend) {
+    if (backend === 'comfykitchen') {
+        graph.ck_attention = {
+            class_type: 'ModelAttentionBackend',
+            inputs: { model: [baseModelNode, 0], attention: IMAGE_CK_ATTENTION_VALUE }
+        };
+        return 'ck_attention';
+    }
+    if (backend === 'sageattention') {
+        graph.sage_attention = {
+            class_type: 'PathchSageAttentionKJ',
+            inputs: { model: [baseModelNode, 0], sage_attention: 'auto', allow_compile: false }
+        };
+        return 'sage_attention';
+    }
+    return null;
+}
+
+// Pick the scheduler ComfyUI can actually run. The Qwen Image 2.1 template uses
+// `bong_tangent`; a build that predates it falls back to `simple` (its own old
+// default) so generation never fails on an older ComfyUI.
+function resolveQwenScheduler(info, requested) {
+    const wanted = String(requested || QWEN_T2I_SCHEDULER).trim();
+    const choices = objectInfoChoices(info, 'KSampler', 'scheduler');
+    if (Array.isArray(choices) && choices.length && !choices.includes(wanted)) {
+        return choices.includes(QWEN_T2I_SCHEDULER_FALLBACK) ? QWEN_T2I_SCHEDULER_FALLBACK : choices[0];
+    }
+    return wanted;
+}
+
 function buildKrea2T2IGraph(prompt, options = {}) {
     const settings = Object.assign({}, DEFAULT_SETTINGS, options.settings || {});
     const seed = Number.isInteger(options.seed) && options.seed >= 0 ? options.seed : 0;
@@ -1387,6 +1509,10 @@ function buildKrea2T2IGraph(prompt, options = {}) {
     // ['clip', 0] links, leaving a plain text-to-image graph.
     const stack = buildLoraChain(graph, settings.loras);
 
+    // Optional accelerated attention patch, applied on top of the (LoRA) model.
+    const attentionNode = applyImageAttentionPatch(graph, stack.model[0], settings.attentionBackend);
+    const samplerModel = attentionNode ? [attentionNode, 0] : stack.model;
+
     graph.positive = { class_type: 'CLIPTextEncode', inputs: { clip: stack.clip, text: String(prompt || '') } };
     graph.negative = negativeText
         ? { class_type: 'CLIPTextEncode', inputs: { clip: stack.clip, text: negativeText } }
@@ -1400,7 +1526,7 @@ function buildKrea2T2IGraph(prompt, options = {}) {
     graph.sampler = {
         class_type: 'KSampler',
         inputs: {
-            model: stack.model,
+            model: samplerModel,
             positive: ['positive', 0],
             negative: ['negative', 0],
             latent_image: ['canvas', 0],
@@ -1428,13 +1554,15 @@ function buildKrea2T2IGraph(prompt, options = {}) {
 //   VAELoader (qwen_image_2.1_vae_bf16)
 //   TextEncodeQwenImage21 (prompt + negative_prompt → positive / negative)
 //   EmptyLatentImage
-//   KSampler (euler / simple, cfg 1, 25 steps)
+//   KSampler (euler / bong_tangent, cfg 3, 24 steps)
 //   VAEDecode → SaveImage (not-so-jarvis/gen)
 //
 // Qwen Image 2.1 uses ComfyUI's dedicated TextEncodeQwenImage21 node (a Qwen3-VL
 // text encoder with its own prompt/negative template) instead of CLIPTextEncode,
-// so the Krea2 builder above cannot be reused. The negative_prompt stays empty by
-// default because the official path runs at cfg 1, where the negative is unused.
+// so the Krea2 builder above cannot be reused. It samples with the official
+// template's scheduler (bong_tangent), steps (~24) and cfg (3); the negative
+// prompt is only supplied when the caller passes one, since the template raises
+// cfg specifically to make a negative prompt contribute.
 function buildQwenImage21T2IGraph(prompt, options = {}) {
     const settings = Object.assign({}, DEFAULT_SETTINGS, options.settings || {});
     const base = resolveBaseModels(settings);
@@ -1445,6 +1573,7 @@ function buildQwenImage21T2IGraph(prompt, options = {}) {
     const cfg = Number.isFinite(Number(options.cfg))
         ? Math.max(0, Number(options.cfg))
         : (Number.isFinite(Number(settings.qwenCfg)) ? Math.max(0, Number(settings.qwenCfg)) : DEFAULT_QWEN_CFG);
+    const scheduler = String(options.scheduler || settings.qwenScheduler || QWEN_T2I_SCHEDULER).trim();
     const negativeText = String(options.negativePrompt || '').trim();
     // Reference-image budget for the Qwen3-VL encoder. No reference image is
     // wired here (pure text-to-image), so 1024 matches the official template.
@@ -1459,6 +1588,10 @@ function buildQwenImage21T2IGraph(prompt, options = {}) {
     // Apply any attached LoRAs on top of the base model + clip (LoraLoader
     // consumes and returns both, so the stack feeds the encoder and sampler).
     const stack = buildLoraChain(graph, settings.loras);
+
+    // Optional accelerated attention patch, applied on top of the (LoRA) model.
+    const attentionNode = applyImageAttentionPatch(graph, stack.model[0], settings.attentionBackend);
+    const samplerModel = attentionNode ? [attentionNode, 0] : stack.model;
 
     graph.conditioning = {
         class_type: 'TextEncodeQwenImage21',
@@ -1478,7 +1611,7 @@ function buildQwenImage21T2IGraph(prompt, options = {}) {
     graph.sampler = {
         class_type: 'KSampler',
         inputs: {
-            model: stack.model,
+            model: samplerModel,
             positive: ['conditioning', 0],
             negative: ['conditioning', 1],
             latent_image: ['canvas', 0],
@@ -1486,7 +1619,7 @@ function buildQwenImage21T2IGraph(prompt, options = {}) {
             steps,
             cfg,
             sampler_name: 'euler',
-            scheduler: 'simple',
+            scheduler,
             denoise: 1
         }
     };
@@ -2138,12 +2271,26 @@ async function generateImage(prompt, options = {}) {
         // the graph it always was. The resolved base models are merged into the
         // builder settings so the active UNET/CLIP/VAE actually run.
         const activeModel = normalizeImageModel(settings.model) || DEFAULT_IMAGE_MODEL;
+
+        // Resolve the accelerated attention backend and (for Qwen) the sampler
+        // scheduler against what this ComfyUI build actually offers. Doing it
+        // before the graph build keeps the builders synchronous and lets `auto`
+        // fall back cleanly instead of queueing an unsupported node/scheduler.
+        const info = await comfyui.getObjectInfo();
+        const requestedAttention = settings.attentionBackend;
+        settings.attentionBackend = resolveImageAttentionBackend(info, requestedAttention);
+        if (normalizeImageAttentionBackend(requestedAttention) === 'auto') {
+            console.log('[image-generator] auto attention ->', settings.attentionBackend);
+        }
+        if (activeModel === 'qwen_image_2_1') {
+            settings.qwenScheduler = resolveQwenScheduler(info, settings.qwenScheduler);
+        }
+
         const modelSettings = Object.assign({}, settings, resolveBaseModels(settings));
         const graph = activeModel === 'qwen_image_2_1'
             ? buildQwenImage21T2IGraph(finalPrompt, Object.assign({}, options, { seed, width, height, settings: modelSettings }))
             : buildKrea2T2IGraph(finalPrompt, Object.assign({}, options, { seed, width, height, settings }));
 
-        const info = await comfyui.getObjectInfo();
         await validateGraphAgainstComfy(info, graph, activeModel === 'qwen_image_2_1' ? QWEN_IMAGE_CLIP_TYPE : 'krea2');
 
         const pid = await comfyui.queuePrompt(graph);
@@ -2371,8 +2518,8 @@ function buildQwenImage21EditGraph(instruction, loadName, options = {}) {
         throw error;
     }
     const seed = Number.isInteger(options.seed) && options.seed >= 0 ? options.seed : 0;
-    const steps = clampToInt(options.steps, 1, 100, DEFAULT_QWEN_STEPS);
-    const cfg = Number.isFinite(Number(options.cfg)) ? Math.max(0, Number(options.cfg)) : DEFAULT_QWEN_CFG;
+    const steps = clampToInt(options.steps, 1, 100, DEFAULT_QWEN_EDIT_STEPS);
+    const cfg = Number.isFinite(Number(options.cfg)) ? Math.max(0, Number(options.cfg)) : DEFAULT_QWEN_EDIT_CFG;
     const negativeText = String(options.negativePrompt || '').trim();
     const resolution = clampToInt(options.resolution, 0, 4096, 0);
 
@@ -2392,6 +2539,10 @@ function buildQwenImage21EditGraph(instruction, loadName, options = {}) {
 
     // Apply any attached LoRAs on top of the base model + clip.
     const stack = buildLoraChain(graph, settings.loras);
+
+    // Optional accelerated attention patch, applied on top of the (LoRA) model.
+    const attentionNode = applyImageAttentionPatch(graph, stack.model[0], settings.attentionBackend);
+    const samplerModel = attentionNode ? [attentionNode, 0] : stack.model;
 
     graph.conditioning = {
         class_type: 'TextEncodeQwenImage21',
@@ -2420,7 +2571,7 @@ function buildQwenImage21EditGraph(instruction, loadName, options = {}) {
     graph.sampler = {
         class_type: 'KSampler',
         inputs: {
-            model: stack.model,
+            model: samplerModel,
             positive: ['conditioning', 0],
             negative: ['conditioning', 1],
             latent_image: latentInput,
@@ -2583,10 +2734,13 @@ function buildKrea2IdentityEditGraph(instruction, loadName, options = {}) {
         inputs: { width: dimensions.width, height: dimensions.height, batch_size: 1 }
     };
 
+    // Optional accelerated attention patch, applied on top of the patched model.
+    const attentionNode = applyImageAttentionPatch(graph, 'model_patch', settings.attentionBackend);
+
     graph.sampler = {
         class_type: 'KSampler',
         inputs: {
-            model: ['model_patch', 0],
+            model: attentionNode ? [attentionNode, 0] : ['model_patch', 0],
             positive: ['positive', 0],
             negative: ['negative', 0],
             latent_image: ['canvas', 0],
@@ -2710,6 +2864,15 @@ async function editImage(sourceAbsPath, instruction, options = {}) {
         let basename;
         let usedModel;
         try {
+            // Resolve the accelerated attention backend against this ComfyUI
+            // build before building the graph, so `auto` can fall back cleanly.
+            const info = await comfyui.getObjectInfo();
+            const requestedAttention = settings.attentionBackend;
+            settings.attentionBackend = resolveImageAttentionBackend(info, requestedAttention);
+            if (normalizeImageAttentionBackend(requestedAttention) === 'auto') {
+                console.log('[image-generator] auto attention ->', settings.attentionBackend);
+            }
+
             const graph = editEngine === 'krea2'
                 ? buildKrea2IdentityEditGraph(finalInstruction, loadName, {
                     settings,
@@ -2736,7 +2899,6 @@ async function editImage(sourceAbsPath, instruction, options = {}) {
                 ? String(settings.clipType || KREA2_CLIP_TYPE)
                 : QWEN_IMAGE_CLIP_TYPE;
             usedModel = editEngine === 'krea2' ? 'Krea 2 Edit' : 'Qwen Image 2.1 Edit';
-            const info = await comfyui.getObjectInfo();
             await validateGraphAgainstComfy(info, graph, clipType);
 
             const pid = await comfyui.queuePrompt(graph);
@@ -2841,6 +3003,12 @@ module.exports = {
     buildLoraChain,
     normalizeImageModel,
     resolveBaseModels,
+    normalizeImageAttentionBackend,
+    imageAttentionBackendAvailable,
+    resolveImageAttentionBackend,
+    applyImageAttentionPatch,
+    resolveQwenScheduler,
+    QWEN_T2I_SCHEDULER,
     IMAGE_MODELS,
     QWEN_IMAGE_CLIP_TYPE,
     EDIT_ENGINES,
