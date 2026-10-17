@@ -8217,6 +8217,8 @@ function friendlyVideoError(err) {
         case 'h3_turbo_lora_missing':
         case 'h3_turbo_nodes_missing':
             return err.message;
+        case 'h3_char_swap_lora_missing':
+            return err.message;
         case 'h3_fbcache_node_missing':
         case 'h3_fbcache_invalid':
         case 'h3_fbcache_duplicate':

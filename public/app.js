@@ -1708,7 +1708,8 @@ const VIDEO_TEXT_FIELDS = [
     { key: 'h3Clip', id: 'videoClip' },
     { key: 'h3VideoVae', id: 'videoVae' },
     { key: 'h3AudioVae', id: 'videoAudioVae' },
-    { key: 'h3TurboLora', id: 'videoTurboLora' }
+    { key: 'h3TurboLora', id: 'videoTurboLora' },
+    { key: 'h3CharSwapLora', id: 'videoCharSwapLora' }
 ];
 
 // H3 base sampling controls (number inputs, persisted like the text fields).
@@ -1722,7 +1723,8 @@ const VIDEO_HINTS = {
     videoClip: 'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors',
     videoVae: 'minimax_h3_video_vae_int8_convrot.safetensors',
     videoAudioVae: 'minimax_h3_audio_vae_fp32.safetensors',
-    videoTurboLora: 'minimax_h3_turbo_v4_step600_ema.safetensors'
+    videoTurboLora: 'minimax_h3_turbo_v4_step600_ema.safetensors',
+    videoCharSwapLora: 'h3_character_swap_v1.5.safetensors'
 };
 
 const VIDEO_FACEREFINE_SELECT_FIELDS = [
@@ -2486,6 +2488,48 @@ function initVideoSettings() {
         });
     }
 
+    // --- MiniMax H3 Character Swap LoRA: toggle reveals filename + strength ---
+    const charSwapToggle = document.getElementById('videoCharSwapEnabled');
+    const charSwapOptions = document.getElementById('videoCharSwapOptions');
+    const charSwapStrength = document.getElementById('videoCharSwapStrength');
+    const syncCharSwapVisibility = () => {
+        if (charSwapOptions) charSwapOptions.hidden = !(charSwapToggle && charSwapToggle.checked);
+    };
+    if (charSwapToggle) {
+        charSwapToggle.addEventListener('change', async () => {
+            const enabled = charSwapToggle.checked;
+            syncCharSwapVisibility();
+            setStatus(enabled ? 'Enabling H3 character swap...' : 'Saving...');
+            try {
+                const res = await fetch('/api/settings/video', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ h3CharSwapEnabled: enabled })
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    setStatus('Save failed: ' + (data.error || 'Unknown error'), true);
+                    charSwapToggle.checked = !enabled;
+                    syncCharSwapVisibility();
+                    return;
+                }
+                setStatus(enabled ? 'H3 character swap on.' : 'H3 character swap off.');
+            } catch {
+                setStatus('Save failed: connection error', true);
+                charSwapToggle.checked = !enabled;
+                syncCharSwapVisibility();
+            }
+            setTimeout(() => setStatus(''), 3000);
+        });
+    }
+    if (charSwapStrength) {
+        charSwapStrength.addEventListener('change', () => {
+            const n = Number(charSwapStrength.value);
+            if (!Number.isFinite(n)) return;
+            persistText('h3CharSwapStrength', charSwapStrength);
+        });
+    }
+
     // --- MiniMax H3 First Block Cache: toggle, preset, custom fields ---
     const fbcToggle = document.getElementById('videoFbcEnabled');
     const fbcMode = document.getElementById('videoFbcMode');
@@ -2750,6 +2794,20 @@ function initVideoSettings() {
                     String(stored).toLowerCase() === 'true' || String(stored) === '1' ||
                     (stored === undefined && defaults.h3TurboEnabled === true);
                 syncTurboVisibility();
+            }
+
+            if (charSwapToggle) {
+                const stored = settings.h3CharSwapEnabled;
+                charSwapToggle.checked = stored === true || stored === 1 ||
+                    String(stored).toLowerCase() === 'true' || String(stored) === '1' ||
+                    (stored === undefined && defaults.h3CharSwapEnabled === true);
+                syncCharSwapVisibility();
+            }
+            if (charSwapStrength) {
+                const stored = settings.h3CharSwapStrength;
+                const def = (defaults.h3CharSwapStrength !== undefined && defaults.h3CharSwapStrength !== null)
+                    ? defaults.h3CharSwapStrength : 1;
+                charSwapStrength.value = (stored !== undefined && stored !== null && stored !== '') ? stored : def;
             }
 
             // First Block Cache: toggle, preset and custom fields.

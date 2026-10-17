@@ -143,6 +143,16 @@ const KNOWN_FILES = {
         hfPath: 'loras/minimax_h3_n_turbo_4step_v0.1_comfy_resized_avg_rank_21_bf16.safetensors',
         approxMB: 400
     },
+    'h3_character_swap_v1.5.safetensors': {
+        repo: 'akatz-ai/MiniMax-H3-Character-Swap-LoRA',
+        hfPath: 'h3_character_swap_v1.5.safetensors',
+        approxMB: 148
+    },
+    'h3_character_swap_pro4500_1000.safetensors': {
+        repo: 'akatz-ai/MiniMax-H3-Character-Swap-LoRA',
+        hfPath: 'h3_character_swap_pro4500_1000.safetensors',
+        approxMB: 148
+    },
     'seedvr2_ema_7b_fp8_e4m3fn_mixed_block35_fp16.safetensors': {
         repo: 'mekrod/seedvr2_ema_7b_fp8_e4m3fn_mixed_block35_fp16',
         hfPath: 'seedvr2_ema_7b_fp8_e4m3fn_mixed_block35_fp16.safetensors',
@@ -209,6 +219,7 @@ const MODEL_CATALOG = [
     { id: 'h3_video_vae', group: 'video', label: 'H3 video VAE', required: true, dest: 'vae', file: { settings: 'video', key: 'h3VideoVae' }, minBytes: 100 * 1024 ** 2 },
     { id: 'h3_audio_vae', group: 'video', label: 'H3 audio VAE', required: true, dest: 'vae', file: { settings: 'video', key: 'h3AudioVae' }, minBytes: 10 * 1024 ** 2 },
     { id: 'h3_turbo_lora', group: 'video', label: 'MiniMax H3 Turbo LoRA (v4 step600 EMA)', required: false, dest: 'loras', file: { settings: 'video', key: 'h3TurboLora' }, minBytes: 100 * 1024 ** 2, note: 'Needed only when MiniMax H3 Turbo is enabled in Settings > Video (the default). Used for text-to-video and image-to-video.' },
+    { id: 'h3_character_swap_lora', group: 'video', label: 'H3 Character Swap LoRA (V1.5)', required: false, dest: 'loras', file: { settings: 'video', key: 'h3CharSwapLora' }, minBytes: 100 * 1024 ** 2, note: 'Recommended adapter for @video character replacement (replacing a person in an existing clip with an @image reference). Enabled by default in Settings > Video > H3 CHARACTER SWAP. Pair it with the Ref2VA model above.' },
     { id: 'h3_latent_upscaler', group: 'video', label: 'MiniMax H3 Latent Upscaler 3D (fp16)', required: false, dest: 'latent_upscale_models', file: { settings: 'video', key: 'h3LatentUpscaleModel' }, minBytes: 100 * 1024 ** 2, note: 'Needed only when H3 Latent Upscale is enabled in Settings > Video. A ~691 MB learned 24-channel H3 latent upscaler (fp16/bf16; fp32 is ~1.4 GB). Optional: Auto mode falls back to direct generation when it is missing.' },
     { id: 'seedvr2_dit', group: 'upscale', label: 'SeedVR2 DiT 7B (balanced)', required: true, dest: 'seedvr2', also: ['SEEDVR2'], seen: 'seedvr2dit', file: { settings: 'image', key: 'seedvr2Dit' }, minBytes: 2 * 1024 ** 3 },
     { id: 'seedvr2_dit_sharp', group: 'upscale', label: 'SeedVR2 DiT 7B (sharp profile)', required: false, dest: 'seedvr2', also: ['SEEDVR2'], seen: 'seedvr2dit', file: 'seedvr2_ema_7b_sharp_fp8_e4m3fn_mixed_block35_fp16.safetensors', minBytes: 2 * 1024 ** 3, note: 'Same profile the sharp upscale uses. The SeedVR2 nodes auto-download it on first use; no token needed.' },

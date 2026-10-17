@@ -138,6 +138,43 @@ function normalizeH3Turbo(settings) {
     };
 }
 
+// --- MiniMax H3 Character Swap LoRA (akatz-ai/MiniMax-H3-Character-Swap-LoRA) ---
+//
+// The reference-to-video (Ref2VA) character-swap adapter. It is a model-only
+// LoRA applied at strength 1.0 on the @video reference replacement graph,
+// immediately after the diffusion-model loader, so the Ref2VA base learns to
+// replace the person in the source performance with the identity from a
+// <Picture N> reference. It is the recommended checkpoint for new character
+// swaps (V1.5). It is enabled by default — the reference pipeline exists to
+// perform character swaps — with an explicit toggle so the adapter can be
+// disabled when only the stock Ref2VA behaviour is wanted.
+
+const H3_CHAR_SWAP_DEFAULT_LORA = 'h3_character_swap_v1.5.safetensors';
+const H3_CHAR_SWAP_STRENGTH = 1.0;
+const H3_CHAR_SWAP_MODEL_REPO = 'akatz-ai/MiniMax-H3-Character-Swap-LoRA';
+const H3_CHAR_SWAP_MODEL_PAGE = 'https://huggingface.co/' + H3_CHAR_SWAP_MODEL_REPO;
+
+function normalizeH3CharacterSwapStrength(value, fallback) {
+    return clampToRange(value, 0, 2, fallback !== undefined ? fallback : H3_CHAR_SWAP_STRENGTH);
+}
+
+// Read the character-swap toggle/filename/strength from a settings object.
+// Enabled defaults to true so the adapter is used unless explicitly turned off.
+function normalizeH3CharacterSwap(settings) {
+    const source = settings || {};
+    const raw = source.h3CharSwapEnabled;
+    const enabled = raw === undefined || raw === null
+        ? true
+        : raw === true || raw === 1 || String(raw).toLowerCase() === 'true' || String(raw) === '1';
+    const loraName = String(source.h3CharSwapLora || H3_DEFAULTS.h3CharSwapLora || H3_CHAR_SWAP_DEFAULT_LORA).trim() ||
+        H3_CHAR_SWAP_DEFAULT_LORA;
+    return {
+        enabled,
+        loraName,
+        strength: normalizeH3CharacterSwapStrength(source.h3CharSwapStrength, H3_CHAR_SWAP_STRENGTH)
+    };
+}
+
 // --- MiniMax H3 First Block Cache (duckyshell/ComfyUI-MiniMaxH3-FirstBlockCache) ---
 //
 // Optional MODEL patch: the first transformer block runs every denoising step
@@ -527,6 +564,14 @@ const H3_DEFAULTS = {
     h3TurboLora: process.env.H3_TURBO_LORA || H3_TURBO_DEFAULT_LORA,
     // Sigma shift on the Turbo path: rebalances video/audio schedules.
     h3TurboSigmaShift: String(process.env.H3_TURBO_SIGMA_SHIFT || 'true').toLowerCase() !== 'false',
+    // MiniMax H3 character-swap LoRA (@video reference replacement). ON by
+    // default: it is the recommended adapter for swapping the person in a
+    // source clip. Set H3_CHAR_SWAP_ENABLED=false (or toggle it off in
+    // Settings > Video) to run the replacement graph on the stock Ref2VA base.
+    h3CharSwapEnabled: String(process.env.H3_CHAR_SWAP_ENABLED || 'true').toLowerCase() !== 'false' &&
+        process.env.H3_CHAR_SWAP_ENABLED !== '0',
+    h3CharSwapLora: process.env.H3_CHAR_SWAP_LORA || H3_CHAR_SWAP_DEFAULT_LORA,
+    h3CharSwapStrength: normalizeH3CharacterSwapStrength(process.env.H3_CHAR_SWAP_STRENGTH, H3_CHAR_SWAP_STRENGTH),
     // SageAttention is the verified default backend. `auto` still falls back
     // gracefully when the node is missing; set H3_ATTENTION_BACKEND to override.
     attentionBackend: H3_ATTENTION_BACKENDS.includes(process.env.H3_ATTENTION_BACKEND)
@@ -596,6 +641,7 @@ const H3_CONFIGURABLE_KEYS = [
     'h3Duration', 'h3Size', 'videoAspectRatio', 'h3Steps', 'h3Cfg', 'attentionBackend', 'firstBlockCache',
     'loras', 'loraTriggerWords',
     'h3TurboEnabled', 'h3TurboSteps', 'h3TurboLora', 'h3TurboSigmaShift',
+    'h3CharSwapEnabled', 'h3CharSwapLora', 'h3CharSwapStrength',
     'faceRefineEnabled', 'faceRefineDetector', 'faceRefineCropFactor',
     'faceRefineDenoise', 'faceRefineSteps', 'faceRefineCanvasMode',
     'faceRefineSelect', 'faceRefineFeather',
@@ -2416,6 +2462,12 @@ function effectiveVideoSettings() {
                 value = String(value || '').trim() || H3_DEFAULTS.h3TurboLora;
             } else if (key === 'h3TurboSigmaShift') {
                 value = value !== false && String(value).toLowerCase() !== 'false' && String(value) !== '0';
+            } else if (key === 'h3CharSwapEnabled') {
+                value = value === true || value === 1 || String(value).toLowerCase() === 'true' || String(value) === '1';
+            } else if (key === 'h3CharSwapLora') {
+                value = String(value || '').trim() || H3_DEFAULTS.h3CharSwapLora;
+            } else if (key === 'h3CharSwapStrength') {
+                value = normalizeH3CharacterSwapStrength(value, H3_DEFAULTS.h3CharSwapStrength);
             } else if (key === 'firstBlockCache') {
                 value = normalizeFirstBlockCache(value);
             } else if (key === 'faceRefineEnabled') {
@@ -2584,6 +2636,12 @@ function saveVideoSettings(patch) {
             out[key] = String(value || '').trim() || null;
         } else if (key === 'h3TurboSigmaShift') {
             out[key] = value === true || value === 1 || String(value).toLowerCase() === 'true' || String(value) === '1';
+        } else if (key === 'h3CharSwapEnabled') {
+            out[key] = value === true || value === 1 || String(value).toLowerCase() === 'true' || String(value) === '1';
+        } else if (key === 'h3CharSwapLora') {
+            out[key] = String(value || '').trim() || null;
+        } else if (key === 'h3CharSwapStrength') {
+            out[key] = normalizeH3CharacterSwapStrength(value, H3_DEFAULTS.h3CharSwapStrength);
         } else if (key === 'firstBlockCache') {
             const problems = validateFirstBlockCache(value);
             if (problems.length) {
@@ -2732,6 +2790,73 @@ function assertH3TurboReady(info, settings) {
     error.code = 'h3_turbo_lora_missing';
     error.loraName = state.loraName;
     throw error;
+}
+
+// Available lora filenames from ComfyUI for the model-only loader. Falls back
+// to the stock LoraLoader list when the dedicated node is absent.
+function h3CharSwapLoraChoices(info) {
+    return objectInfoChoices(info, 'LoraLoaderModelOnly', 'lora_name') ||
+        objectInfoChoices(info, 'LoraLoader', 'lora_name') ||
+        [];
+}
+
+// Resolve the character-swap setting against what ComfyUI actually has. `ready`
+// is true when the adapter is off or when the configured LoRA is present. An
+// empty lora list (ComfyUI unreachable / no loras folder) is treated as
+// "cannot verify" so the graph-build validation reports the real problem.
+function resolveH3CharacterSwapAvailability(info, settings) {
+    const swap = normalizeH3CharacterSwap(settings);
+    if (!swap.enabled) {
+        return { enabled: false, ready: true, loraName: swap.loraName, loraMissing: false, loraChoices: [] };
+    }
+    const available = info || {};
+    const loraChoices = h3CharSwapLoraChoices(available);
+    const loraMissing = loraChoices.length > 0 &&
+        !loraChoices.some((choice) => h3LoraNameMatches(choice, swap.loraName));
+    return {
+        enabled: true,
+        ready: !loraMissing,
+        loraName: swap.loraName,
+        strength: swap.strength,
+        loraMissing,
+        loraChoices
+    };
+}
+
+// Fail with an actionable error instead of silently dropping back to the stock
+// Ref2VA base: a silent fallback would make the user's character-swap setting
+// misleading (the base alone loses the reference identity far more often).
+function assertH3CharacterSwapReady(info, settings) {
+    const state = resolveH3CharacterSwapAvailability(info, settings);
+    if (!state.enabled || state.ready) return state;
+    const error = new Error(
+        'The MiniMax H3 character-swap LoRA is enabled, but it was not found.\n\n' +
+        'Expected:\n' + state.loraName + '\n\n' +
+        'Download it with the Setup guide (H3 Character Swap LoRA) or place it in your ComfyUI models/loras ' +
+        'directory, then try again. You can also disable character swap in Settings > Video to use the stock Ref2VA base.\n\n' +
+        'Model: ' + H3_CHAR_SWAP_MODEL_PAGE
+    );
+    error.code = 'h3_char_swap_lora_missing';
+    error.loraName = state.loraName;
+    throw error;
+}
+
+// Insert the character-swap LoRA immediately after the diffusion-model loader
+// (and the optional cache/LoRA nodes the caller stacked ahead of it). Returns
+// the node the rest of the chain should read from. Leaves the graph untouched
+// when the adapter is disabled so the stock Ref2VA workflow is unchanged.
+function appendH3CharacterSwapLora(graph, baseModelNode, settings) {
+    const swap = normalizeH3CharacterSwap(settings);
+    if (!swap.enabled) return baseModelNode;
+    graph.h3_char_swap_lora = {
+        class_type: 'LoraLoaderModelOnly',
+        inputs: {
+            model: [baseModelNode, 0],
+            lora_name: swap.loraName,
+            strength_model: swap.strength
+        }
+    };
+    return 'h3_char_swap_lora';
 }
 
 // Append active LoRA adapters as a model-only chain (H3 LoRAs never touch
@@ -5505,6 +5630,16 @@ module.exports = {
     appendH3TurboLora,
     resolveH3TurboAvailability,
     assertH3TurboReady,
+    H3_CHAR_SWAP_DEFAULT_LORA,
+    H3_CHAR_SWAP_STRENGTH,
+    H3_CHAR_SWAP_MODEL_REPO,
+    H3_CHAR_SWAP_MODEL_PAGE,
+    normalizeH3CharacterSwap,
+    normalizeH3CharacterSwapStrength,
+    h3CharSwapLoraChoices,
+    resolveH3CharacterSwapAvailability,
+    assertH3CharacterSwapReady,
+    appendH3CharacterSwapLora,
     H3_FBCACHE_NODE,
     H3_FBCACHE_INSTALL_URL,
     H3_FBCACHE_INSTALL_MESSAGE,

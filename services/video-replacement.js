@@ -363,9 +363,14 @@ function buildReplacementGraph(opts = {}) {
         inputs: { sampler_name: 'res_multistep' }
     };
 
-    // Model optimization stack: First Block Cache -> user LoRAs -> attention.
+    // Model optimization stack: First Block Cache -> character-swap LoRA ->
+    // user LoRAs -> attention. The character-swap adapter (akatz-ai
+    // MiniMax-H3-Character-Swap-LoRA) sits right after the loader so the
+    // Ref2VA base is conditioned to replace the source person with the
+    // <Picture N> identity; user LoRAs layer on top of it.
     const cachedModelNode = videoGenerator.appendFirstBlockCache(graph, 'model', settings, firstBlockCacheInputs);
-    const userModelNode = videoGenerator.appendLoraChain(graph, cachedModelNode, settings.loras);
+    const swapModelNode = videoGenerator.appendH3CharacterSwapLora(graph, cachedModelNode, settings);
+    const userModelNode = videoGenerator.appendLoraChain(graph, swapModelNode, settings.loras);
     const attention = videoGenerator.normalizeH3AttentionBackend(settings.attentionBackend);
     const patchedModelNode = videoGenerator.applyAttentionPatch(graph, userModelNode, attention);
     const schedulerModelNode = attention === 'sla' ? patchedModelNode : userModelNode;
@@ -544,6 +549,12 @@ async function generateReplacementVideo(plan, options = {}) {
             attentionBackend: videoGenerator.resolveH3AttentionBackend(info, settings.attentionBackend)
         });
 
+        // The character-swap LoRA is the recommended adapter for @video
+        // replacement; fail clearly when it is enabled but not installed
+        // instead of silently falling back to the stock Ref2VA base.
+        videoGenerator.assertH3CharacterSwapReady(info, resolvedSettings);
+        const charSwap = videoGenerator.normalizeH3CharacterSwap(resolvedSettings);
+
         const prompt = buildReplacementPrompt(plan);
         const finalPrompt = String(prompt || '').trim();
 
@@ -621,6 +632,9 @@ async function generateReplacementVideo(plan, options = {}) {
                     source: plan.sourceVideo.filename,
                     references: plan.replacements.map((r) => r.filename),
                     preserveAudio: refVideoHasAudio,
+                    characterSwap: charSwap.enabled
+                        ? { lora: charSwap.loraName, strength: charSwap.strength }
+                        : null,
                     resolution: { width: W, height: H },
                     acceleration,
                     videoPipeline: 'minimax-h3-reference'

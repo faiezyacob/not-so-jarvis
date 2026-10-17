@@ -207,11 +207,40 @@ test('buildReplacementGraph: no Turbo nodes are inserted for the reference path'
     assert.ok(!classes.includes('MiniMaxH3TurboSampler'));
 });
 
+test('buildReplacementGraph: applies the character-swap LoRA by default', () => {
+    const graph = videoReplacement.buildReplacementGraph({
+        prompt: 'p', settings: {}, refImageNames: ['a.png'], refVideoName: 's.mp4'
+    });
+    assert.equal(graph.h3_char_swap_lora.class_type, 'LoraLoaderModelOnly');
+    assert.equal(graph.h3_char_swap_lora.inputs.lora_name, 'h3_character_swap_v1.5.safetensors');
+    assert.equal(graph.h3_char_swap_lora.inputs.strength_model, 1);
+    // The adapter reads straight from the diffusion-model loader.
+    assert.deepEqual(graph.h3_char_swap_lora.inputs.model, ['model', 0]);
+});
+
+test('buildReplacementGraph: honors a custom character-swap filename + strength', () => {
+    const graph = videoReplacement.buildReplacementGraph({
+        prompt: 'p',
+        settings: { h3CharSwapLora: 'custom/swap.safetensors', h3CharSwapStrength: 0.8 },
+        refImageNames: ['a.png'], refVideoName: 's.mp4'
+    });
+    assert.equal(graph.h3_char_swap_lora.inputs.lora_name, 'custom/swap.safetensors');
+    assert.equal(graph.h3_char_swap_lora.inputs.strength_model, 0.8);
+});
+
+test('buildReplacementGraph: omits the character-swap LoRA when disabled', () => {
+    const graph = videoReplacement.buildReplacementGraph({
+        prompt: 'p', settings: { h3CharSwapEnabled: false }, refImageNames: ['a.png'], refVideoName: 's.mp4'
+    });
+    assert.equal(graph.h3_char_swap_lora, undefined);
+});
+
 test('validateReplacementGraph: accepts a complete node set', async () => {
     const info = {
         MiniMaxH3ReferenceToVideo: {}, VHS_LoadVideo: {}, UNETLoader: {}, CLIPLoader: {}, VAELoader: {},
         RandomNoise: {}, KSamplerSelect: {}, BasicScheduler: {}, BasicGuider: {}, SamplerCustomAdvanced: {},
-        VAEDecode: {}, VAEDecodeAudio: {}, CreateVideo: {}, SaveVideo: {}, LoadImage: {}
+        VAEDecode: {}, VAEDecodeAudio: {}, CreateVideo: {}, SaveVideo: {}, LoadImage: {},
+        LoraLoaderModelOnly: {}
     };
     const graph = videoReplacement.buildReplacementGraph({ prompt: 'p', settings: {}, refImageNames: ['a.png'], refVideoName: 's.mp4' });
     await assert.doesNotReject(videoReplacement.validateReplacementGraph(info, graph));
@@ -231,6 +260,35 @@ test('resolveRefUnet: finds the installed Ref2VA model, override wins', () => {
     const info = { UNETLoader: { input: { required: { unet_name: [['minimax_h3_fl2va_pruned_int8_convrot.safetensors', 'minimax_h3_ref2va_pruned_int8_convrot.safetensors']] } } } };
     assert.equal(videoReplacement.resolveRefUnet(info, {}), 'minimax_h3_ref2va_pruned_int8_convrot.safetensors');
     assert.equal(videoReplacement.resolveRefUnet(info, { h3RefUnet: 'custom_ref2va.safetensors' }), 'custom_ref2va.safetensors');
+});
+
+test('resolveH3CharacterSwapAvailability: ready when the adapter is installed', () => {
+    const videoGenerator = require('../services/video-generator');
+    const info = { LoraLoaderModelOnly: { input: { required: { lora_name: [['h3_character_swap_v1.5.safetensors']] } } } };
+    const state = videoGenerator.resolveH3CharacterSwapAvailability(info, {});
+    assert.equal(state.enabled, true);
+    assert.equal(state.ready, true);
+    assert.equal(state.loraMissing, false);
+});
+
+test('resolveH3CharacterSwapAvailability: reports a missing adapter', () => {
+    const videoGenerator = require('../services/video-generator');
+    const info = { LoraLoaderModelOnly: { input: { required: { lora_name: [['some_other.safetensors']] } } } };
+    const state = videoGenerator.resolveH3CharacterSwapAvailability(info, {});
+    assert.equal(state.ready, false);
+    assert.equal(state.loraMissing, true);
+    assert.throws(
+        () => videoGenerator.assertH3CharacterSwapReady(info, {}),
+        (err) => err.code === 'h3_char_swap_lora_missing'
+    );
+});
+
+test('resolveH3CharacterSwapAvailability: disabled is always ready', () => {
+    const videoGenerator = require('../services/video-generator');
+    const info = { LoraLoaderModelOnly: { input: { required: { lora_name: [['some_other.safetensors']] } } } };
+    const state = videoGenerator.resolveH3CharacterSwapAvailability(info, { h3CharSwapEnabled: false });
+    assert.equal(state.enabled, false);
+    assert.equal(state.ready, true);
 });
 
 test('probeDurationBuffer: reads an MP4 mvhd duration', () => {

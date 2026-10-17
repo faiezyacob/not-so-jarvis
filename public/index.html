@@ -697,6 +697,30 @@
                         </div>
                             </div>
                         </div>
+                        <div class="settings-card" data-search="video minimax h3 character swap lora reference replace ref2va identity @video @image">
+                            <div class="settings-card-title">H3 CHARACTER SWAP</div>
+                            <div class="settings-card-sub">Model-only LoRA used by @video character replacement: replace a person in an existing clip with the identity from an @image reference. Recommended checkpoint (V1.5) at strength 1.0.</div>
+                        <div class="settings-field">
+                            <label class="settings-toggle">
+                                <span class="settings-toggle-label">Use the H3 Character Swap LoRA</span>
+                                <input type="checkbox" id="videoCharSwapEnabled">
+                            </label>
+                            <span class="settings-hint">On by default. Applied to the reference-to-video replacement graph. Turn it off to run on the stock Ref2VA base. Install the LoRA from Settings &gt; Setup if it is missing.</span>
+                        </div>
+                            <div id="videoCharSwapOptions" hidden>
+                        <div class="settings-field">
+                            <label class="settings-field-label" for="videoCharSwapLora">Character Swap LoRA</label>
+                            <input type="text" class="settings-input" id="videoCharSwapLora"
+                                placeholder="h3_character_swap_v1.5.safetensors" autocomplete="off">
+                            <span class="settings-hint">Place the LoRA in ComfyUI models/loras. Default: h3_character_swap_v1.5.safetensors</span>
+                        </div>
+                        <div class="settings-field">
+                            <label class="settings-field-label" for="videoCharSwapStrength">Strength</label>
+                            <input type="number" class="settings-input" id="videoCharSwapStrength" min="0" max="2" step="0.05" value="1">
+                            <span class="settings-hint">1.0 is the recommended strength for the V1.5 adapter.</span>
+                        </div>
+                            </div>
+                        </div>
                         <div class="settings-card" data-search="video first block cache fbcache minimax h3 acceleration speed transformer cache">
                             <div class="settings-card-title">FIRST BLOCK CACHE</div>
                             <div class="settings-card-sub">Optional MiniMax H3 MODEL patch that reduces redundant transformer computation. Higher cache aggressiveness can change the denoising trajectory.</div>
