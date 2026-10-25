@@ -158,6 +158,35 @@ function normalizeH3CharacterSwapStrength(value, fallback) {
     return clampToRange(value, 0, 2, fallback !== undefined ? fallback : H3_CHAR_SWAP_STRENGTH);
 }
 
+// --- MiniMax H3 reference replacement control ---------------------------------
+//
+// Reference image sizing for the replacement node. `auto` uses the reference
+// pipeline's high-fidelity 2048px short edge when clothing/appearance is
+// transferred (garment detail survives) and the cheaper generation-area `match`
+// otherwise. An explicit `match`/`max` overrides it.
+
+const H3_REPLACEMENT_REF_IMAGE_SIZES = Object.freeze(['auto', 'match', 'max']);
+
+function normalizeReplacementRefImageSize(value, fallback) {
+    const candidate = String(value || '').trim().toLowerCase();
+    if (H3_REPLACEMENT_REF_IMAGE_SIZES.includes(candidate)) return candidate;
+    return fallback || 'auto';
+}
+
+// Opt-in background preservation. The reference node regenerates the whole
+// frame, so the replacement's background can drift. When this mode is on, the
+// target subject is segmented with SAM3 (core ComfyUI nodes: SAM3_Detect ->
+// SAM3_VideoTrack -> SAM3_TrackToMask), grown, and the generated subject is
+// composited back onto the ORIGINAL source frames — so everything outside the
+// masked person keeps the original pixels. Off by default (it loads an extra
+// SAM3 checkpoint and tracks every frame).
+const H3_REPLACEMENT_MASK_DEFAULT_MODEL = 'sam3.1_multiplex_fp16.safetensors';
+const H3_REPLACEMENT_MASK_DEFAULT_GROW = 64;
+
+function normalizeReplacementMaskGrow(value, fallback) {
+    return Math.round(clampToRange(value, 0, 256, fallback !== undefined ? fallback : H3_REPLACEMENT_MASK_DEFAULT_GROW));
+}
+
 // Read the character-swap toggle/filename/strength from a settings object.
 // Enabled defaults to true so the adapter is used unless explicitly turned off.
 function normalizeH3CharacterSwap(settings) {
@@ -572,6 +601,17 @@ const H3_DEFAULTS = {
         process.env.H3_CHAR_SWAP_ENABLED !== '0',
     h3CharSwapLora: process.env.H3_CHAR_SWAP_LORA || H3_CHAR_SWAP_DEFAULT_LORA,
     h3CharSwapStrength: normalizeH3CharacterSwapStrength(process.env.H3_CHAR_SWAP_STRENGTH, H3_CHAR_SWAP_STRENGTH),
+    // Reference image sizing for the replacement node: `auto` uses the high-
+    // fidelity 2048px short edge when clothing/appearance is transferred and the
+    // generation-area `match` otherwise.
+    replacementRefImageSize: normalizeReplacementRefImageSize(process.env.H3_REPLACEMENT_REF_IMAGE_SIZE, 'auto'),
+    // Opt-in SAM3 subject mask + composite (background preservation). Off by
+    // default; see H3_REPLACEMENT_MASK_* above.
+    replacementMaskToSubject: String(process.env.H3_REPLACEMENT_MASK || '').toLowerCase() === 'true' ||
+        process.env.H3_REPLACEMENT_MASK === '1',
+    replacementMaskModel: process.env.H3_REPLACEMENT_MASK_MODEL || H3_REPLACEMENT_MASK_DEFAULT_MODEL,
+    replacementMaskGrow: normalizeReplacementMaskGrow(process.env.H3_REPLACEMENT_MASK_GROW, H3_REPLACEMENT_MASK_DEFAULT_GROW),
+    replacementMaskPrompt: process.env.H3_REPLACEMENT_MASK_PROMPT || '',
     // SageAttention is the verified default backend. `auto` still falls back
     // gracefully when the node is missing; set H3_ATTENTION_BACKEND to override.
     attentionBackend: H3_ATTENTION_BACKENDS.includes(process.env.H3_ATTENTION_BACKEND)
@@ -642,6 +682,8 @@ const H3_CONFIGURABLE_KEYS = [
     'loras', 'loraTriggerWords',
     'h3TurboEnabled', 'h3TurboSteps', 'h3TurboLora', 'h3TurboSigmaShift',
     'h3CharSwapEnabled', 'h3CharSwapLora', 'h3CharSwapStrength',
+    'replacementRefImageSize', 'replacementMaskToSubject', 'replacementMaskModel',
+    'replacementMaskGrow', 'replacementMaskPrompt',
     'faceRefineEnabled', 'faceRefineDetector', 'faceRefineCropFactor',
     'faceRefineDenoise', 'faceRefineSteps', 'faceRefineCanvasMode',
     'faceRefineSelect', 'faceRefineFeather',
@@ -1938,8 +1980,8 @@ const VIDEO_UPSCALE_SIGNAL_RE = new RegExp(
     '|\\bhi\\s*res\\b' +
     '|\\bincrease\\w*\\s+(?:the\\s+)?res\\w*' +
     '|\\bimprove\\w*\\s+(?:the\\s+)?(?:res\\w*|video\\w*|clip\\w*|film\\w*|movie\\w*|footage\\w*)' +
-    '|\\bmake\\s+(?:it|this|that)\\s+(?:bigger|larger|sharper|crisper|clearer|higher\\s*res)' +
-    '|\\b4k\\b' +
+    '|\\bmake\\s+(?:it|this|that)\\s+(?:bigger|larger|sharper|crisper|clearer|higher\\s*res|4k)' +
+    '|\\b(?:to|into|up\\s*to)\\s+4k\\b' +
     ')', 'i');
 const VIDEO_UPSCALE_REF_RE = /\b(?:video\w*|film\w*|clip\w*|movie\w*|footage\w*|animation\w*|reel\w*|mp4\b|webm\b|mov\b|this\b|that\b|it\b|them\b|one\b|the last\b|previous\b|generated\b)\b/i;
 
@@ -2468,6 +2510,16 @@ function effectiveVideoSettings() {
                 value = String(value || '').trim() || H3_DEFAULTS.h3CharSwapLora;
             } else if (key === 'h3CharSwapStrength') {
                 value = normalizeH3CharacterSwapStrength(value, H3_DEFAULTS.h3CharSwapStrength);
+            } else if (key === 'replacementRefImageSize') {
+                value = normalizeReplacementRefImageSize(value, H3_DEFAULTS.replacementRefImageSize);
+            } else if (key === 'replacementMaskToSubject') {
+                value = value === true || value === 1 || String(value).toLowerCase() === 'true' || String(value) === '1';
+            } else if (key === 'replacementMaskGrow') {
+                value = normalizeReplacementMaskGrow(value, H3_DEFAULTS.replacementMaskGrow);
+            } else if (key === 'replacementMaskModel') {
+                value = String(value || '').trim() || H3_DEFAULTS.replacementMaskModel;
+            } else if (key === 'replacementMaskPrompt') {
+                value = String(value || '').trim();
             } else if (key === 'firstBlockCache') {
                 value = normalizeFirstBlockCache(value);
             } else if (key === 'faceRefineEnabled') {
@@ -5640,6 +5692,11 @@ module.exports = {
     resolveH3CharacterSwapAvailability,
     assertH3CharacterSwapReady,
     appendH3CharacterSwapLora,
+    H3_REPLACEMENT_REF_IMAGE_SIZES,
+    normalizeReplacementRefImageSize,
+    H3_REPLACEMENT_MASK_DEFAULT_MODEL,
+    H3_REPLACEMENT_MASK_DEFAULT_GROW,
+    normalizeReplacementMaskGrow,
     H3_FBCACHE_NODE,
     H3_FBCACHE_INSTALL_URL,
     H3_FBCACHE_INSTALL_MESSAGE,

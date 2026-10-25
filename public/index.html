@@ -782,6 +782,27 @@
                             <pre class="settings-log" id="videoFbcInstallLog" hidden></pre>
                         </div>
                         </div>
+                        <div class="settings-card" data-search="video character replacement mask sam3 segment subject background preserve composite">
+                            <div class="settings-card-title">CHARACTER REPLACEMENT · BACKGROUND</div>
+                            <div class="settings-card-sub">For @video character replacement. Segments the target person with SAM3, tracks them across the clip, and composites the replacement back onto the original frames so the background and other people keep their original pixels. Optional; needs the SAM3 checkpoint in ComfyUI/models/checkpoints.</div>
+                            <div class="settings-field">
+                                <label class="settings-toggle">
+                                    <span class="settings-toggle-label">Preserve background (SAM3 subject mask)</span>
+                                    <input type="checkbox" id="videoReplacementMask">
+                                </label>
+                                <span class="settings-hint">Off = the whole frame is regenerated and the background can drift. On = only the tracked person changes (tracks every frame; slower).</span>
+                            </div>
+                            <div class="settings-field-row">
+                                <div class="settings-field">
+                                    <label class="settings-field-label" for="videoReplacementMaskPrompt">Mask subject</label>
+                                    <input type="text" class="settings-input" id="videoReplacementMaskPrompt" placeholder="auto (person / man / woman)">
+                                </div>
+                                <div class="settings-field">
+                                    <label class="settings-field-label" for="videoReplacementMaskGrow">Mask grow (px)</label>
+                                    <input type="number" class="settings-input" id="videoReplacementMaskGrow" min="0" max="256" step="8" data-default="64">
+                                </div>
+                            </div>
+                        </div>
                         <div class="settings-card" data-search="video face refine facerefine detailer small distant faces enhance denoise install">
                             <div class="settings-card-title">FACE REFINEMENT</div>
                             <div class="settings-card-sub">Optional second H3 pass after each video: tracks faces per frame, re-generates them at low denoise, stitches them back. Fixes small/distant faces.</div>

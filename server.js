@@ -130,8 +130,10 @@ const CHAT_IMAGES_MAX = 3;
 // The @ picker can reference more than one generated image per turn (e.g.
 // "make @image1 hold @image2 in @image3"). image_1 is the edit source and the
 // rest become Qwen edit references; cap the total so a prompt can't wire an
-// unbounded chain of LoadImage nodes.
-const REFERENCE_IMAGES_MAX = 4;
+// unbounded chain of LoadImage nodes. The cap matches the verified MiniMax H3
+// reference node's image AutoGrow limit (9) so a multi-character replacement
+// can map one image per target (videoReplacement.MAX_REFERENCE_IMAGES).
+const REFERENCE_IMAGES_MAX = 9;
 
 // --- Device sessions ---
 // Each browser gets a long-lived session cookie so its conversations, gallery
@@ -3242,10 +3244,11 @@ async function handleChatStream(req, res) {
                 imageFilenames: referenceImages
             });
             if (!replacementPlan.ok) {
-                if (replacementPlan.code === 'replacement_mapping_ambiguous' && replacementPlan.plan) {
-                    // Multiple identities with no stated order: show a card that
-                    // makes the assumed mapping explicit so the user can confirm
-                    // (or reverse) in one click instead of retyping.
+                if (replacementPlan.ambiguous && replacementPlan.plan) {
+                    // Multiple identities with no stated order, or a count that
+                    // does not match the supplied images: show a card that makes
+                    // the assumed mapping explicit so the user can confirm (or
+                    // reverse) in one click instead of retyping.
                     const serialized = videoReplacement.serializeReplacementPlan(replacementPlan.plan);
                     const content = buildReplacementConfirmContent(replacementPlan.plan) +
                         '\n\n[[replacement:' + JSON.stringify(serialized) + ']]';
@@ -7667,21 +7670,33 @@ function replacementPlanFromAction(conversationId, action) {
             : null))
         .filter(Boolean);
     if (!sourceVideo || !replacements.length) return null;
-    if (action.type === 'reverse') replacements = replacements.slice().reverse();
-    const result = videoReplacement.buildReplacementPlan({
-        message: raw.additionalInstructions || '',
-        sourceVideo,
-        replacements,
-        requestedDuration: raw.requestedDuration || null,
-        assumeOrder: true
-    });
-    return result.ok ? result.plan : null;
+    if (action.type === 'reverse') {
+        replacements = replacements.slice().reverse();
+        // Keep the target labels but renumber them so the card and prompt agree
+        // with the flipped image order.
+        if (Array.isArray(raw.targets)) {
+            raw.targets = raw.targets.map((t, i) => Object.assign({}, t, { referenceIndex: i + 1 }));
+        }
+    }
+    return videoReplacement.rehydrateReplacementPlan(raw, sourceVideo, replacements);
 }
 
 function buildReplacementConfirmContent(plan) {
     const n = plan.replacements.length;
-    return 'I found the source video and ' + n + ' replacement image' + (n === 1 ? '' : 's') +
-        '. Confirm the mapping — image 1 replaces the first person, image 2 the second, and so on.';
+    const targets = Array.isArray(plan.targets) ? plan.targets : [];
+    let text = 'I found the source video and ' + n + ' replacement image' + (n === 1 ? '' : 's') + '. ';
+    if (targets.length) {
+        text += 'Proposed mapping: ' + targets.map((t, i) =>
+            (t.description || ('person ' + (i + 1))) + ' → image ' + (t.referenceIndex || (i + 1))).join(', ') + '. ';
+    } else {
+        text += 'Image 1 replaces the first person, image 2 the second, and so on. ';
+    }
+    if (plan.countAdjusted && Array.isArray(plan.ignoredReferences) && plan.ignoredReferences.length) {
+        text += 'Only the first ' + n + ' image' + (n === 1 ? '' : 's') +
+            ' will be used; ' + plan.ignoredReferences.length + ' extra image' +
+            (plan.ignoredReferences.length === 1 ? '' : 's') + ' will be ignored unless you add more target people.';
+    }
+    return text;
 }
 
 // Resolve a character-replacement request against the conversation's asset
@@ -7731,11 +7746,19 @@ function resolveReplacementPlan(conversationId, options) {
 function buildReplacementConfirmation(plan) {
     const names = plan.replacements.map((_, i) => '@image' + (i + 1));
     const subject = plan.replacements.length > 1 ? 'people' : 'person';
+    const targets = Array.isArray(plan.targets) ? plan.targets : [];
     let text = 'Replacing the ' + subject + ' in @video1 with ' + names.join(' and ') +
         ". I'll preserve the original scene and motion as closely as the model allows.";
     if (plan.replacements.length > 1) {
-        text += ' Using the order you provided (image 1 → first person, image 2 → second).';
+        const mapping = targets.length
+            ? targets.map((t, i) => (t.description || ('person ' + (i + 1))) + ' → @image' + (t.referenceIndex || (i + 1))).join(', ')
+            : names.map((n, i) => n + ' → person ' + (i + 1)).join(', ');
+        text += ' Mapping: ' + mapping + '.';
     }
+    if (plan.replaceMode === 'identity_and_outfit') text += ' Clothing and accessories come from the reference images.';
+    else if (plan.replaceMode === 'full_appearance') text += ' The full appearance (identity, hair, clothing and body) comes from the reference images.';
+    else text += ' Only identity and hair are transferred; the original clothing is preserved.';
+    text += ' The sampler is anchored to the source clip so the scene and background come from the source footage; the original soundtrack is reused unchanged when present.';
     return text;
 }
 
@@ -8207,6 +8230,9 @@ function friendlyVideoError(err) {
         case 'comfyui_unavailable':
             return 'ComfyUI is not running. Start ComfyUI, then try again.';
         case 'comfyui_missing_nodes':
+            return err.message;
+        case 'video_replacement_node_missing':
+        case 'h3_reference_unet_missing':
             return err.message;
         case 'rtx_video_upscale_setup_required':
             return err.message;

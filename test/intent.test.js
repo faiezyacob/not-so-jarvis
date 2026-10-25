@@ -206,6 +206,19 @@ test('detectVideoUpscaleIntent: prompt words near "upscale" do not fire', () => 
     assert.equal(videoGenerator.detectVideoUpscaleIntent('create a video clip with scaling towers'), null);
 });
 
+test('detectVideoUpscaleIntent: a "4K" quality tag in an image prompt is not an upscale', () => {
+    assert.equal(videoGenerator.detectVideoUpscaleIntent(
+        'generate image: ultra-realistic bedroom selfie of a woman. One leg is lifted toward the camera. Vertical 9:16 composition, 4K.'
+    ), null);
+    assert.equal(videoGenerator.detectVideoUpscaleIntent('generate an image, 4k quality'), null);
+    assert.equal(videoGenerator.detectVideoUpscaleIntent('create a 4k video of a cat'), null);
+});
+
+test('detectVideoUpscaleIntent: a directed 4K request still fires', () => {
+    assert.deepEqual(videoGenerator.detectVideoUpscaleIntent('make this 4k'), { intent: 'video_upscale' });
+    assert.deepEqual(videoGenerator.detectVideoUpscaleIntent('convert this clip to 4k'), { intent: 'video_upscale' });
+});
+
 // --- stripVideoRequestMeta / isRawRequestEcho --------------------------------
 
 test('stripVideoRequestMeta: removes video scaffolding and meta filler', () => {

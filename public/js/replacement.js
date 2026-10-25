@@ -79,6 +79,7 @@ const ReplacementUI = (() => {
             fig.appendChild(cap);
             media.appendChild(fig);
         }
+        const targets = Array.isArray(card.targets) ? card.targets : [];
         (card.replacements || []).forEach((ref, i) => {
             const fig = document.createElement('figure');
             fig.className = 'replacement-figure';
@@ -87,7 +88,11 @@ const ReplacementUI = (() => {
             img.src = ref.url;
             img.alt = 'Replacement image ' + (i + 1);
             const cap = document.createElement('figcaption');
-            cap.textContent = '→ Person ' + (i + 1);
+            const target = targets[i];
+            const label = target && target.description
+                ? target.description
+                : 'Person ' + (target && target.referenceIndex ? target.referenceIndex : (i + 1));
+            cap.textContent = '→ ' + label;
             fig.appendChild(img);
             fig.appendChild(cap);
             media.appendChild(fig);
@@ -96,8 +101,21 @@ const ReplacementUI = (() => {
 
         const note = document.createElement('div');
         note.className = 'replacement-note';
-        note.textContent = 'Image 1 replaces the first person, image 2 the second, and so on.';
+        if (targets.length) {
+            note.textContent = targets.map((t, i) =>
+                (t.description || ('Person ' + (i + 1))) + ' → image ' + (t.referenceIndex || (i + 1))).join('  ·  ');
+        } else {
+            note.textContent = 'Image 1 replaces the first person, image 2 the second, and so on.';
+        }
         wrap.appendChild(note);
+
+        if (card.countAdjusted && Array.isArray(card.ignoredReferences) && card.ignoredReferences.length) {
+            const extra = document.createElement('div');
+            extra.className = 'replacement-note replacement-note--warning';
+            extra.textContent = 'Only the first ' + (card.replacements || []).length + ' image(s) will be used; ' +
+                card.ignoredReferences.length + ' extra image(s) will be ignored.';
+            wrap.appendChild(extra);
+        }
 
         const actions = document.createElement('div');
         actions.className = 'chat-suggestion-row replacement-actions';

@@ -1709,13 +1709,15 @@ const VIDEO_TEXT_FIELDS = [
     { key: 'h3VideoVae', id: 'videoVae' },
     { key: 'h3AudioVae', id: 'videoAudioVae' },
     { key: 'h3TurboLora', id: 'videoTurboLora' },
-    { key: 'h3CharSwapLora', id: 'videoCharSwapLora' }
+    { key: 'h3CharSwapLora', id: 'videoCharSwapLora' },
+    { key: 'replacementMaskPrompt', id: 'videoReplacementMaskPrompt' }
 ];
 
 // H3 base sampling controls (number inputs, persisted like the text fields).
 const VIDEO_NUMBER_FIELDS = [
     { key: 'h3Steps', id: 'videoSteps' },
-    { key: 'h3Cfg', id: 'videoCfg' }
+    { key: 'h3Cfg', id: 'videoCfg' },
+    { key: 'replacementMaskGrow', id: 'videoReplacementMaskGrow' }
 ];
 
 const VIDEO_HINTS = {
@@ -2320,6 +2322,33 @@ function initVideoSettings() {
         });
     }
 
+    // --- Replacement subject mask (SAM3 background preservation) ---
+    const replacementMaskToggle = document.getElementById('videoReplacementMask');
+    if (replacementMaskToggle) {
+        replacementMaskToggle.addEventListener('change', async () => {
+            const enabled = replacementMaskToggle.checked;
+            setStatus('Saving...');
+            try {
+                const res = await fetch('/api/settings/video', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ replacementMaskToSubject: enabled })
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    setStatus('Save failed: ' + (data.error || 'Unknown error'), true);
+                    replacementMaskToggle.checked = !enabled;
+                    return;
+                }
+                setStatus(enabled ? 'Background preservation on — SAM3 mask + composite.' : 'Background preservation off.');
+            } catch {
+                setStatus('Save failed: connection error', true);
+                replacementMaskToggle.checked = !enabled;
+            }
+            setTimeout(() => setStatus(''), 3000);
+        });
+    }
+
     VIDEO_FACEREFINE_SELECT_FIELDS.forEach(({ key, id }) => {
         const select = document.getElementById(id);
         if (!select) return;
@@ -2735,6 +2764,14 @@ function initVideoSettings() {
                 faceRefineToggle.checked = stored === true || stored === 1 ||
                     String(stored).toLowerCase() === 'true' || String(stored) === '1' ||
                     (stored === undefined && defaults.faceRefineEnabled === true);
+            }
+
+            const replacementMaskToggle = document.getElementById('videoReplacementMask');
+            if (replacementMaskToggle) {
+                const stored = settings.replacementMaskToSubject;
+                replacementMaskToggle.checked = stored === true || stored === 1 ||
+                    String(stored).toLowerCase() === 'true' || String(stored) === '1' ||
+                    (stored === undefined && defaults.replacementMaskToSubject === true);
             }
 
             const autoUpscaleToggle = document.getElementById('videoAutoUpscaleEnabled');
