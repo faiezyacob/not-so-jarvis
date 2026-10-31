@@ -68,10 +68,60 @@ const KNOWN_FILES = {
         hfPath: 'split_files/vae/wan_2.1_vae.safetensors',
         approxMB: 254
     },
-    'wan_animate_2_int8_convrot.safetensors': {
-        repo: 'Comfy-Org/Wan-Animate-2',
-        hfPath: 'diffusion_models/wan_animate_2_int8_convrot.safetensors',
-        approxMB: 14500
+    'SCAIL-2-Q2_K.gguf': {
+        repo: 'realrebelai/SCAIL-2_GGUF',
+        hfPath: 'SCAIL-2-Q2_K.gguf',
+        approxMB: 5610
+    },
+    'SCAIL-2-Q3_K_M.gguf': {
+        repo: 'realrebelai/SCAIL-2_GGUF',
+        hfPath: 'SCAIL-2-Q3_K_M.gguf',
+        approxMB: 7550
+    },
+    'SCAIL-2-Q4_K_M.gguf': {
+        repo: 'realrebelai/SCAIL-2_GGUF',
+        hfPath: 'SCAIL-2-Q4_K_M.gguf',
+        approxMB: 10360
+    },
+    'SCAIL-2-Q5_K_M.gguf': {
+        repo: 'realrebelai/SCAIL-2_GGUF',
+        hfPath: 'SCAIL-2-Q5_K_M.gguf',
+        approxMB: 11420
+    },
+    'SCAIL-2-Q6_K.gguf': {
+        repo: 'realrebelai/SCAIL-2_GGUF',
+        hfPath: 'SCAIL-2-Q6_K.gguf',
+        approxMB: 12810
+    },
+    'SCAIL-2-Q8_0.gguf': {
+        repo: 'realrebelai/SCAIL-2_GGUF',
+        hfPath: 'SCAIL-2-Q8_0.gguf',
+        approxMB: 16450
+    },
+    'wan2.1_14B_SCAIL_2_fp16.safetensors': {
+        repo: 'Comfy-Org/SCAIL-2',
+        hfPath: 'diffusion_models/wan2.1_14B_SCAIL_2_fp16.safetensors',
+        approxMB: 30540
+    },
+    'sam3.1_multiplex_fp16.safetensors': {
+        repo: 'Comfy-Org/sam3.1',
+        hfPath: 'checkpoints/sam3.1_multiplex_fp16.safetensors',
+        approxMB: 1670
+    },
+    'Wan21_I2V_14B_lightx2v_cfg_step_distill_lora_rank64.safetensors': {
+        repo: 'lightx2v/Wan2.1-I2V-14B-480P-StepDistill-CfgDistill-Lightx2v',
+        hfPath: 'loras/Wan21_I2V_14B_lightx2v_cfg_step_distill_lora_rank64.safetensors',
+        approxMB: 706
+    },
+    'wan2.1_SCAIL_2_DPO_lora_bf16.safetensors': {
+        repo: 'Comfy-Org/SCAIL-2',
+        hfPath: 'loras/wan2.1_SCAIL_2_DPO_lora_bf16.safetensors',
+        approxMB: 1100
+    },
+    'wan2.1_SCAIL_2_relight_lora_bf16.safetensors': {
+        repo: 'Comfy-Org/SCAIL-2',
+        hfPath: 'loras/wan2.1_SCAIL_2_relight_lora_bf16.safetensors',
+        approxMB: 1100
     },
     'Wan2_2-Animate-14B_fp8_scaled_e4m3fn_KJ_v2.safetensors': {
         repo: 'Kijai/WanVideo_comfy_fp8_scaled',
@@ -102,16 +152,6 @@ const KNOWN_FILES = {
         repo: 'Comfy-Org/BiRefNet',
         hfPath: 'background_removal/birefnet.safetensors',
         approxMB: 424
-    },
-    'lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors': {
-        repo: 'Kijai/WanVideo_comfy',
-        hfPath: 'Lightx2v/lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors',
-        approxMB: 690
-    },
-    'WanAnimate_relight_lora_fp16.safetensors': {
-        repo: 'Kijai/WanVideo_comfy',
-        hfPath: 'LoRAs/Wan22_relight/WanAnimate_relight_lora_fp16.safetensors',
-        approxMB: 1340
     },
     'krea2_identity_edit_v1_2.safetensors': {
         repo: 'conradlocke/krea2-identity-edit',
@@ -272,14 +312,21 @@ const MODEL_CATALOG = [
     { id: 'h3_character_swap_lora', group: 'video', label: 'H3 Character Swap LoRA (V1.5)', required: false, dest: 'loras', file: { settings: 'video', key: 'h3CharSwapLora' }, minBytes: 100 * 1024 ** 2, note: 'Recommended adapter for @video character replacement (replacing a person in an existing clip with an @image reference). Enabled by default in Settings > Video > H3 CHARACTER SWAP. Pair it with the Ref2VA model above.' },
     { id: 'h3_fun_controlnet', group: 'video', label: 'H3 Fun ControlNet-Union (inpainting)', required: false, dest: 'model_patches', file: { settings: 'video', key: 'h3FunControlNet' }, minBytes: 1500 * 1024 ** 2, note: 'Required by Character Swap. The inpaint branch keeps the source video behind the tracked mask so H3 redraws the replacement in the same position and scale instead of moving or enlarging it.' },
     { id: 'h3_latent_upscaler', group: 'video', label: 'MiniMax H3 Latent Upscaler 3D (fp16)', required: false, dest: 'latent_upscale_models', file: { settings: 'video', key: 'h3LatentUpscaleModel' }, minBytes: 100 * 1024 ** 2, note: 'Needed only when H3 Latent Upscale is enabled in Settings > Video. A ~691 MB learned 24-channel H3 latent upscaler (fp16/bf16; fp32 is ~1.4 GB). Optional: Auto mode falls back to direct generation when it is missing.' },
-    { id: 'wan_animate_unet', group: 'video', label: 'Wan Animate 2 (int8, default Character Swap engine)', required: false, dest: 'diffusion_models', file: 'wan_animate_2_int8_convrot.safetensors', minBytes: 7 * 1024 ** 3, note: 'The default Character Swap generation engine. Character animation through the native WanAnimate2ToVideo node: one character image follows a performance video, with a user scene prompt.' },
-    { id: 'wan_animate_unet_v1', group: 'video', label: 'Wan 2.2 Animate 14B (FP8 v1, legacy)', required: false, dest: 'diffusion_models', file: 'Wan2_2-Animate-14B_fp8_e4m3fn_scaled_KJ.safetensors', minBytes: 14 * 1024 ** 3, note: 'Legacy checkpoint for the earlier WanAnimateToVideo pipeline. Not used by the default Wan Animate 2 engine.' },
-    { id: 'wan_animate_text_encoder', group: 'video', label: 'Wan UMT5 XXL text encoder (FP8)', required: false, dest: 'text_encoders', file: 'umt5_xxl_fp8_e4m3fn_scaled.safetensors', minBytes: 3 * 1024 ** 3, note: 'Required by Wan Animate 2. The CLIPLoader must use type "wan".' },
-    { id: 'wan_animate_vae', group: 'video', label: 'Wan 2.1 VAE', required: false, dest: 'vae', file: 'wan_2.1_vae.safetensors', minBytes: 100 * 1024 ** 2, note: 'Required by Wan Animate 2. Also used by Krea 2.' },
-    { id: 'wan_animate_clip_vision', group: 'video', label: 'Wan CLIP Vision H', required: false, dest: 'clip_vision', file: 'clip_vision_h.safetensors', minBytes: 300 * 1024 ** 2, note: 'Required by Wan Animate 2 for reference-image conditioning.' },
-    { id: 'wan_animate_lightx2v', group: 'video', label: 'LightX2V 4-step acceleration LoRA (Wan I2V 14B 480p)', required: false, dest: 'loras', file: 'lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors', minBytes: 300 * 1024 ** 2, note: 'Required for the official 6-step Wan Animate 2 sampling configuration.' },
-    { id: 'wan_animate_relight', group: 'video', label: 'WanAnimate relight LoRA (legacy)', required: false, dest: 'loras', file: 'WanAnimate_relight_lora_fp16.safetensors', minBytes: 500 * 1024 ** 2, note: 'Legacy relight adapter for the earlier Wan 2.2 Animate pipeline. The default Wan Animate 2 engine does not use it.' },
-    { id: 'character_swap_matte', group: 'video', label: 'BiRefNet background removal (legacy Wan masks)', required: false, dest: 'background_removal', file: 'birefnet.safetensors', minBytes: 300 * 1024 ** 2, note: 'Legacy matte for the earlier Wan 2.2 Animate mask pipeline. The default Wan Animate 2 engine does not use masks.' },
+    { id: 'scail2_unet', group: 'video', label: 'SCAIL-2 14B — Q4_K_M ~10 GB (recommended, default)', required: false, dest: 'unet', file: 'SCAIL-2-Q4_K_M.gguf', minBytes: 8 * 1024 ** 3, note: 'Recommended daily driver: best balance of quality and 16 GB VRAM headroom. GGUF loads through UnetLoaderGGUF from models/unet. Select it in Character Swap > SCAIL-2 model.' },
+    { id: 'scail2_unet_q2', group: 'video', label: 'SCAIL-2 14B — Q2_K ~6 GB', required: false, dest: 'unet', file: 'SCAIL-2-Q2_K.gguf', minBytes: 4 * 1024 ** 3, note: 'Smallest quant. Runs on minimal VRAM but expect visible quality loss. GGUF (UnetLoaderGGUF, models/unet).' },
+    { id: 'scail2_unet_q3', group: 'video', label: 'SCAIL-2 14B — Q3_K_M ~8.1 GB', required: false, dest: 'unet', file: 'SCAIL-2-Q3_K_M.gguf', minBytes: 6 * 1024 ** 3, note: 'Budget tier. Better coherence than Q2 while staying under ~8 GB. GGUF (UnetLoaderGGUF, models/unet).' },
+    { id: 'scail2_unet_q5', group: 'video', label: 'SCAIL-2 14B — Q5_K_M ~12 GB', required: false, dest: 'unet', file: 'SCAIL-2-Q5_K_M.gguf', minBytes: 10 * 1024 ** 3, note: 'Sweet spot above Q4 when you can spare a little more VRAM. GGUF (UnetLoaderGGUF, models/unet).' },
+    { id: 'scail2_unet_q6', group: 'video', label: 'SCAIL-2 14B — Q6_K ~14 GB', required: false, dest: 'unet', file: 'SCAIL-2-Q6_K.gguf', minBytes: 11 * 1024 ** 3, note: 'Higher fidelity. Tight on a 16 GB card once SAM 3.1 and activations are resident. GGUF (UnetLoaderGGUF, models/unet).' },
+    { id: 'scail2_unet_q8', group: 'video', label: 'SCAIL-2 14B — Q8_0 ~17 GB', required: false, dest: 'unet', file: 'SCAIL-2-Q8_0.gguf', minBytes: 14 * 1024 ** 3, note: 'Closest GGUF to FP16. Exceeds 16 GB of VRAM; expect heavy offload and slow renders. GGUF (UnetLoaderGGUF, models/unet).' },
+    { id: 'scail2_unet_fp16', group: 'video', label: 'SCAIL-2 14B — FP16 full precision ~30.5 GB', required: false, dest: 'diffusion_models', file: 'wan2.1_14B_SCAIL_2_fp16.safetensors', minBytes: 26 * 1024 ** 3, note: 'Full-precision SCAIL-2 from Comfy-Org. Place it in models/diffusion_models; it loads through the normal UNETLoader, NOT UnetLoaderGGUF. Needs far more than 16 GB and heavy offload.' },
+    { id: 'scail2_sam', group: 'video', label: 'SAM 3.1 multiplex checkpoint (SCAIL-2 target tracking)', required: false, dest: 'checkpoints', file: 'sam3.1_multiplex_fp16.safetensors', minBytes: 1000 * 1024 ** 2, note: 'SAM 3.1 tracks the selected person and builds the colored driving/reference masks SCAIL-2 replacement mode needs. Loaded with CheckpointLoaderSimple.' },
+    { id: 'scail2_lightx2v', group: 'video', label: 'LightX2V step/cfg distill LoRA (SCAIL-2)', required: false, dest: 'loras', file: 'Wan21_I2V_14B_lightx2v_cfg_step_distill_lora_rank64.safetensors', minBytes: 400 * 1024 ** 2, note: 'Enables the 6-step cfg 1 SCAIL-2 sampling configuration. Without it SCAIL-2 runs more steps.' },
+    { id: 'scail2_dpo_lora', group: 'video', label: 'SCAIL-2 DPO LoRA (optional detail adapter)', required: false, dest: 'loras', file: 'wan2.1_SCAIL_2_DPO_lora_bf16.safetensors', minBytes: 500 * 1024 ** 2, note: 'Optional official DPO LoRA that improves detail and lip/eye motion. It is not an audio-driven lip-sync model. Off by default; enable with SCAIL2_DPO=true.' },
+    { id: 'scail2_relight_lora', group: 'video', label: 'SCAIL-2 relighting LoRA (replacement mode)', required: false, dest: 'loras', file: 'wan2.1_SCAIL_2_relight_lora_bf16.safetensors', minBytes: 500 * 1024 ** 2, note: 'Official relighting adapter for replacement mode. On by default so the reference character blends into the target scene lighting; disable with SCAIL2_RELIGHT=false.' },
+    { id: 'wan_animate_text_encoder', group: 'video', label: 'Wan UMT5 XXL text encoder (FP8)', required: false, dest: 'text_encoders', file: 'umt5_xxl_fp8_e4m3fn_scaled.safetensors', minBytes: 3 * 1024 ** 3, note: 'Required by SCAIL-2. The CLIPLoader must use type "wan".' },
+    { id: 'wan_animate_vae', group: 'video', label: 'Wan 2.1 VAE', required: false, dest: 'vae', file: 'wan_2.1_vae.safetensors', minBytes: 100 * 1024 ** 2, note: 'Required by SCAIL-2. Also used by Krea 2.' },
+    { id: 'wan_animate_clip_vision', group: 'video', label: 'Wan CLIP Vision H', required: false, dest: 'clip_vision', file: 'clip_vision_h.safetensors', minBytes: 300 * 1024 ** 2, note: 'Required by SCAIL-2 for reference-image conditioning.' },
+
     { id: 'seedvr2_dit', group: 'upscale', label: 'SeedVR2 DiT 7B (balanced)', required: true, dest: 'seedvr2', also: ['SEEDVR2'], seen: 'seedvr2dit', file: { settings: 'image', key: 'seedvr2Dit' }, minBytes: 2 * 1024 ** 3 },
     { id: 'seedvr2_dit_sharp', group: 'upscale', label: 'SeedVR2 DiT 7B (sharp profile)', required: false, dest: 'seedvr2', also: ['SEEDVR2'], seen: 'seedvr2dit', file: 'seedvr2_ema_7b_sharp_fp8_e4m3fn_mixed_block35_fp16.safetensors', minBytes: 2 * 1024 ** 3, note: 'Same profile the sharp upscale uses. The SeedVR2 nodes auto-download it on first use; no token needed.' },
     { id: 'seedvr2_vae', group: 'upscale', label: 'SeedVR2 VAE', required: true, dest: 'seedvr2', also: ['SEEDVR2', 'vae'], seen: 'seedvr2vae', file: { settings: 'image', key: 'seedvr2Vae' }, minBytes: 10 * 1024 ** 2 },
@@ -370,24 +417,30 @@ const NODE_CATALOG = [
         note: 'Learned 24-channel H3 latent upscaler for the low-res -> latent upscale -> high-res refinement pipeline (Settings > Video > H3 LATENT UPSCALE). Install this pack, download the checkpoint into ComfyUI/models/latent_upscale_models/, then restart ComfyUI. Ordinary video does not need it.'
     },
     {
-        id: 'wan_native', label: 'Wan Animate 2 (built into ComfyUI)', required: false,
-        nodes: ['WanAnimate2ToVideo', 'ResizeImageMaskNode'],
+        id: 'scail2_native', label: 'SCAIL-2 (built into ComfyUI)', required: false,
+        nodes: ['WanSCAILToVideo', 'SCAIL2ColoredMask', 'SAM3_Detect', 'SAM3_VideoTrack'],
         repo: null, dir: null,
-        note: 'Ships with current ComfyUI (0.43+). Needed for the default Character Swap engine. WanAnimate2ToVideo animates one character image with a performance video.'
+        note: 'Ships with current ComfyUI (0.43+). Needed for the default SCAIL-2 Character Swap engine: WanSCAILToVideo replacement mode plus the SAM 3.1 colored-mask preprocessing.'
+    },
+    {
+        id: 'scail2_infinity', label: 'SCAIL-2 Infinity (auto window)', required: false,
+        nodes: ['WanSCAILInfinity'],
+        repo: 'https://github.com/collbroGTR/comfyui-scail2-infinity', dir: 'comfyui-scail2-infinity', recursive: false,
+        note: 'Custom auto-window node for clips longer than 81 frames. Loops WanSCAILToVideo with the trained 5-frame anchor and stitches one continuous video. SCAIL-2 requires it for clips over one window.'
     },
     {
         id: 'controlnet_aux', label: 'DWPose preprocessor (comfyui_controlnet_aux)', required: false,
         nodes: ['DWPreprocessor', 'PixelPerfectResolution'],
         repo: 'https://github.com/Fannovel16/comfyui_controlnet_aux',
         dir: 'comfyui_controlnet_aux', recursive: false, requirements: true, preserveTorch: true,
-        note: 'Legacy: used by the earlier Wan 2.2 Animate pose/face pipeline. The default Wan Animate 2 engine reads the performance video directly and does not need it.'
+        note: 'DWPose detects people so the SCAIL-2 replacement target can be selected.'
     },
     {
         id: 'kjnodes', label: 'KJNodes (Wan mask helpers)', required: false,
-        nodes: ['BlockifyMask', 'DrawMaskOnImage'],
+        nodes: ['BlockifyMask', 'DrawMaskOnImage', 'WanChunkFeedForward'],
         repo: 'https://github.com/kijai/ComfyUI-KJNodes',
         dir: 'comfyui-kjnodes', recursive: false,
-        note: 'Used for the Wan character-mask and masked-background preparation.'
+        note: 'Used for the Wan character-mask preparation and SCAIL-2 chunked feed-forward VRAM reduction.'
     }
 ];
 
@@ -1067,7 +1120,7 @@ async function getStatus() {
         token: { configured: false, source: null, user: null, masked: null },
         models: [],
         nodes: [],
-        ready: { image: false, qwenImage: false, video: false, upscale: false, edit: false, characterSwapWan: false },
+        ready: { image: false, qwenImage: false, video: false, upscale: false, edit: false, characterSwapScail: false },
         job: jobState()
     };
 
@@ -1158,9 +1211,11 @@ async function getStatus() {
     // the comfyui-krea2edit node pack.
     status.ready.krea2Edit = has('krea2_unet') && has('krea2_clip') && has('krea2_vae')
         && has('krea2_identity_edit_lora') && nodeReady('krea2_edit');
-    status.ready.characterSwapWan = has('wan_animate_unet') && has('wan_animate_text_encoder') &&
-        has('wan_animate_vae') && has('wan_animate_clip_vision') && has('wan_animate_lightx2v') &&
-        nodeReady('wan_native');
+    const scailModelInstalled = ['scail2_unet', 'scail2_unet_q2', 'scail2_unet_q3',
+        'scail2_unet_q5', 'scail2_unet_q6', 'scail2_unet_q8', 'scail2_unet_fp16'].some((id) => has(id));
+    status.ready.characterSwapScail = scailModelInstalled && has('scail2_sam') &&
+        has('wan_animate_text_encoder') && has('wan_animate_vae') && has('wan_animate_clip_vision') &&
+        nodeReady('scail2_native') && nodeReady('scail2_infinity');
     return status;
 }
 

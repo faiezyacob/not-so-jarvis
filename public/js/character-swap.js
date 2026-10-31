@@ -11,7 +11,8 @@ const CharacterSwapUI = (() => {
     let project = null;
     let engines = [];
     let engineStatus = {};
-    let engine = 'wan_animate';
+    let engine = 'scail2';
+    let scailModels = [];
     let selectedPersonId = null;
     let frame = 0;
     let tool = 'select';
@@ -28,8 +29,38 @@ const CharacterSwapUI = (() => {
     let mediaPickerKind = 'video';
     let detectionSelection = new Set();
     let detectionProjectId = null;
+    let bindingSelection = false;
 
     const $ = (id) => document.getElementById(id);
+
+    const ENGINE_FEATURES = {
+        scail2: {
+            peopleSection: true,
+            detection: true,
+            maskSection: false,
+            maskTuning: false,
+            anchors: false,
+            multiPerson: false,
+            describe: false,
+            referenceRoles: false,
+            referenceViews: false
+        },
+        h3: {
+            peopleSection: true,
+            detection: false,
+            maskSection: true,
+            maskTuning: true,
+            anchors: true,
+            multiPerson: true,
+            describe: true,
+            referenceRoles: true,
+            referenceViews: true
+        }
+    };
+
+    function featuresFor(id) {
+        return ENGINE_FEATURES[id] || ENGINE_FEATURES.h3;
+    }
 
     function api(url, options = {}) {
         return fetch(url, Object.assign({ headers: { 'Content-Type': 'application/json' } }, options))
@@ -53,12 +84,15 @@ const CharacterSwapUI = (() => {
 
     function engineLabel(id) {
         const info = engineInfo(id || engine);
-        return info ? info.label : (id === 'h3' ? 'MiniMax H3' : 'Wan Animate 2');
+        if (info) return info.label;
+        if (id === 'h3') return 'MiniMax H3';
+        return 'SCAIL-2';
     }
 
-    function readWanSettings() {
+    function readScailSettings() {
         const duration = $('csWanDuration') ? $('csWanDuration').value : 'match';
         return {
+            unet: $('csScailModel') ? $('csScailModel').value : '',
             resolution: $('csWanResolution') ? $('csWanResolution').value : '480p',
             steps: Number($('csWanSteps').value),
             positive: $('csWanPrompt') ? $('csWanPrompt').value : '',
@@ -76,7 +110,7 @@ const CharacterSwapUI = (() => {
 
     function collectEngineSettings() {
         const base = project && project.engineSettings ? JSON.parse(JSON.stringify(project.engineSettings)) : {};
-        base.wanAnimate = Object.assign({}, base.wanAnimate || {}, readWanSettings());
+        base.scail2 = Object.assign({}, base.scail2 || {}, readScailSettings());
         base.h3 = Object.assign({}, base.h3 || {}, readH3Settings());
         return base;
     }
@@ -85,29 +119,42 @@ const CharacterSwapUI = (() => {
         document.querySelectorAll('[data-cs-engine]').forEach((button) => {
             button.classList.toggle('active', button.getAttribute('data-cs-engine') === engine);
         });
-        const isWan = engine === 'wan_animate';
-        if ($('csWanSettings')) $('csWanSettings').hidden = !isWan;
-        if ($('csH3Settings')) $('csH3Settings').hidden = isWan;
-        if ($('csDetection')) $('csDetection').hidden = true;
-        if ($('csPeopleSection')) $('csPeopleSection').hidden = isWan;
-        if ($('csMaskSection')) $('csMaskSection').hidden = isWan;
-        if ($('csAddPerson')) $('csAddPerson').hidden = isWan;
-        if ($('csAnchors')) $('csAnchors').hidden = isWan;
+        const active = project ? project.engine : engine;
+        const features = featuresFor(active);
+        const isScail = active === 'scail2';
+        const isH3 = active === 'h3';
+        if ($('csWanSettings')) $('csWanSettings').hidden = !isScail;
+        if ($('csH3Settings')) $('csH3Settings').hidden = !isH3;
+        if ($('csDetection')) $('csDetection').hidden = !features.detection;
+        if ($('csSelectionApply')) $('csSelectionApply').hidden = features.detection;
+        if ($('csPeopleSection')) $('csPeopleSection').hidden = !features.peopleSection;
+        if ($('csMaskSection')) $('csMaskSection').hidden = !features.maskSection;
+        if ($('csAddPerson')) $('csAddPerson').hidden = !features.multiPerson;
+        if ($('csAnchors')) $('csAnchors').hidden = !features.anchors;
+        if ($('csDescribe')) $('csDescribe').hidden = !features.describe;
+        if ($('csDescription')) $('csDescription').hidden = !features.describe;
+        if ($('csViewRow')) $('csViewRow').hidden = !features.referenceViews;
+        if ($('csMaskFeatherField')) $('csMaskFeatherField').hidden = !features.maskTuning;
+        if ($('csMaskTemporalField')) $('csMaskTemporalField').hidden = !features.maskTuning;
+        if ($('csMaskFeather')) $('csMaskFeather').disabled = !features.maskTuning;
+        if ($('csMaskTemporal')) $('csMaskTemporal').disabled = !features.maskTuning;
+        if ($('csMaskHint')) {
+            $('csMaskHint').textContent = 'Select: click the person (Shift-click excludes background). The tint is SAM’s current mask — if it covers the scene, add exclude points. Track follows it through the clip. Brush/Eraser fix the tracked mask on the current frame. Keep Grow small (8–16); large growth paints a generated halo around the subject.';
+        }
         if ($('csTrack')) $('csTrack').textContent = 'Track';
         if ($('csRetrack')) $('csRetrack').textContent = 'Recalculate';
-        const info = engineStatus[engine] || null;
-        const label = engineLabel(engine);
+        const info = engineStatus[active] || null;
+        const label = engineLabel(active);
         if ($('csEngineNote')) {
-            $('csEngineNote').textContent = isWan
-                ? 'Wan Animate 2 animates one character image with the performance video. Describe the shot (which person to replace) in the prompt; the original audio is kept.'
+            $('csEngineNote').textContent = isScail
+                ? 'SCAIL-2 replaces the selected person using its official replacement mode: SAM 3.1 tracks the target, colored reference/driving masks condition the model, and the original audio is kept.'
                 : 'MiniMax H3 uses the existing Ref2VA workflow and Character LoRA v1.5. One clip renders up to 15 seconds.';
         }
-        if ($('csAddRefs')) $('csAddRefs').textContent = isWan ? 'Upload image' : 'Upload images';
-        if ($('csRefFiles')) $('csRefFiles').multiple = !isWan;
-        if ($('csDescribe')) $('csDescribe').hidden = isWan;
+        if ($('csAddRefs')) $('csAddRefs').textContent = features.referenceViews ? 'Upload images' : 'Upload image';
+        if ($('csRefFiles')) $('csRefFiles').multiple = features.referenceViews;
         if ($('csCharacterHint')) {
-            $('csCharacterHint').textContent = isWan
-                ? 'Wan Animate 2 uses the first reference image as the character. A clear portrait or full-body photo works best.'
+            $('csCharacterHint').textContent = isScail
+                ? 'SCAIL-2 uses one clear character image as the replacement identity. A portrait or full-body photo on a plain background works best.'
                 : 'Add a full-body front view plus a face close-up. One portrait alone often replaces only the head.';
         }
         const warning = $('csEngineWarning');
@@ -120,25 +167,115 @@ const CharacterSwapUI = (() => {
             } else if (problems.length) {
                 warning.hidden = false;
                 warning.textContent = label + ' is not fully ready: ' + problems.join(' · ') +
-                    (isWan ? ' You can still switch to MiniMax H3 manually.' : '');
+                    (isScail ? ' You can still switch to MiniMax H3 manually.' : '');
             } else {
                 warning.hidden = true;
                 warning.textContent = '';
             }
         }
         if ($('csTrimHint')) {
-            $('csTrimHint').textContent = isWan
-                ? 'Wan Animate 2 matches the original clip length, capped at 15 seconds. Longer imports are trimmed to the selected range.'
-                : 'MiniMax H3 replacement renders up to 15 seconds. Trim the clip and re-track before rendering with H3.';
+            $('csTrimHint').textContent = isH3
+                ? 'MiniMax H3 replacement renders up to 15 seconds. Trim the clip and re-track before rendering with H3.'
+                : label + ' matches the original clip length, capped at 15 seconds. Longer imports are trimmed to the selected range.';
         }
         if ($('csTrimEnd')) $('csTrimEnd').max = '15';
         if ($('csRender')) $('csRender').textContent = 'Render';
+        updateSectionLabels(features);
+        applyToolClass();
         applySettingsToForm();
+        if (project) updateMaskInputs();
+    }
+
+    function updateSectionLabels(features) {
+        let index = 1;
+        if ($('csSourceTitle')) $('csSourceTitle').textContent = index + ' · SOURCE';
+        index += 1;
+        if (features.peopleSection && $('csPeopleTitle')) {
+            $('csPeopleTitle').textContent = index + ' · PEOPLE';
+            index += 1;
+        }
+        if (features.maskSection && $('csMaskTitle')) {
+            $('csMaskTitle').textContent = index + ' · TRACK & MASK';
+            index += 1;
+        }
+        if ($('csCharacterTitle')) $('csCharacterTitle').textContent = index + ' · CHARACTER';
+        index += 1;
+        if ($('csGenerateTitle')) $('csGenerateTitle').textContent = index + ' · GENERATE';
+    }
+
+
+    function modelVariantFor(file) {
+        const name = String(file || '').trim().toLowerCase();
+        return (scailModels || []).find((variant) => String(variant.file).toLowerCase() === name) || null;
+    }
+
+    function updateScailModelHint() {
+        const hint = $('csScailModelHint');
+        if (!hint) return;
+        const select = $('csScailModel');
+        if (!select) return;
+        const variant = modelVariantFor(select.value);
+        if (variant) {
+            const installed = variant.installed === false
+                ? ' Not detected in ComfyUI yet — download it in Settings > Setup.'
+                : '';
+            hint.textContent = variant.description + ' ' +
+                (variant.loader === 'gguf'
+                    ? 'Loads through the GGUF UNET loader from models/unet.'
+                    : 'Full safetensors: place it in models/diffusion_models; it uses the normal UNETLoader, not the GGUF loader.') +
+                installed;
+        } else if (select.value) {
+            hint.textContent = 'Custom SCAIL-2 checkpoint: ' + select.value +
+                '. The loader is chosen from the extension (.gguf = GGUF loader, otherwise UNETLoader).';
+        } else {
+            hint.textContent = '';
+        }
+    }
+
+    function applyScailModelSelection(file) {
+        const select = $('csScailModel');
+        if (!select) return;
+        const wanted = String(file || '').trim();
+        if (!wanted) {
+            updateScailModelHint();
+            return;
+        }
+        if (!Array.from(select.options).some((option) => option.value === wanted)) {
+            const option = document.createElement('option');
+            option.value = wanted;
+            option.textContent = 'Custom — ' + wanted;
+            select.appendChild(option);
+        }
+        select.value = wanted;
+        updateScailModelHint();
+    }
+
+    function populateScailModels(models, defaultFile) {
+        const select = $('csScailModel');
+        if (!select) return;
+        if (Array.isArray(models) && models.length) {
+            scailModels = models;
+            const current = select.value;
+            select.replaceChildren();
+            scailModels.forEach((variant) => {
+                const option = document.createElement('option');
+                option.value = variant.file;
+                option.textContent = variant.label;
+                select.appendChild(option);
+            });
+            const preferred = (project && project.engineSettings && project.engineSettings.scail2 && project.engineSettings.scail2.unet) ||
+                current || defaultFile || (scailModels[0] && scailModels[0].file) || '';
+            applyScailModelSelection(preferred);
+        } else {
+            updateScailModelHint();
+        }
     }
 
     function applySettingsToForm() {
         const settings = (project && project.engineSettings) || {};
-        const wan = settings.wanAnimate || {};
+        const wan = settings.scail2 || {};
+        const defaultModel = (scailModels.find((variant) => variant.id === 'q4_k_m') || {}).file || 'SCAIL-2-Q4_K_M.gguf';
+        applyScailModelSelection(wan.unet || defaultModel);
         if ($('csWanResolution')) $('csWanResolution').value = wan.resolution === '720p' ? '720p' : '480p';
         if ($('csWanSteps')) $('csWanSteps').value = String(wan.steps || 6);
         if ($('csWanPrompt')) $('csWanPrompt').value = wan.positive || '';
@@ -156,7 +293,8 @@ const CharacterSwapUI = (() => {
             engines = Array.isArray(data.engines) ? data.engines : [];
             engineStatus = {};
             engines.forEach((item) => { engineStatus[item.id] = item; });
-            if (!engineStatus[engine]) engine = data.default || 'wan_animate';
+            if (!engineStatus[engine]) engine = data.default || 'scail2';
+            populateScailModels(data.scailModels, data.scailDefaultModel);
             applyEngineUI();
         } catch (err) {
             // Availability is advisory; the render endpoint re-validates.
@@ -181,7 +319,7 @@ const CharacterSwapUI = (() => {
             setProject(data);
             setStatus('Engine set to ' + engineLabel(engine) + '. Uploads, tracking, masks and references are unchanged.', 'ok');
         } catch (err) {
-            engine = project.engine || 'wan_animate';
+            engine = project.engine || 'scail2';
             applyEngineUI();
             setStatus(err.message, 'error');
         }
@@ -226,7 +364,7 @@ const CharacterSwapUI = (() => {
 
     function hasMask(person) {
         if (!project || !person) return false;
-        if (project.engine === 'wan_animate') return false;
+        if (project.engine === 'scail2') return false;
         return Boolean(person.masks);
     }
 
@@ -288,8 +426,24 @@ const CharacterSwapUI = (() => {
             meta.textContent = bits.join(' · ');
             card.appendChild(meta);
             card.addEventListener('click', () => {
-                if (detectionSelection.has(track.id)) detectionSelection.delete(track.id);
-                else detectionSelection.add(track.id);
+                if (engine === 'scail2') {
+                    if (bindingSelection) return;
+                    detectionSelection.clear();
+                    detectionSelection.add(track.id);
+                    renderDetections();
+                    const alreadyBound = (project.people || []).some((person) => person.selectionId === track.id);
+                    if (alreadyBound) {
+                        setStatus(track.label + ' is already the target. Add a character image, then press Render.', 'ok');
+                        return;
+                    }
+                    applySelection();
+                    return;
+                }
+                if (detectionSelection.has(track.id)) {
+                    detectionSelection.delete(track.id);
+                } else {
+                    detectionSelection.add(track.id);
+                }
                 renderDetections();
             });
             host.appendChild(card);
@@ -309,12 +463,13 @@ const CharacterSwapUI = (() => {
     }
 
     async function applySelection() {
-        if (!project) return;
+        if (!project || bindingSelection) return;
         const trackIds = Array.from(detectionSelection);
         if (!trackIds.length) {
             setStatus('Select at least one detected person.', 'error');
             return;
         }
+        bindingSelection = true;
         try {
             setStatus('Binding the selected people…');
             const data = await api('/api/character-swap/projects/' + encodeURIComponent(project.id) + '/selection/select', {
@@ -322,20 +477,14 @@ const CharacterSwapUI = (() => {
                 body: JSON.stringify({ trackIds })
             });
             setProject(data);
-            setStatus('Selected ' + trackIds.length + ' person' + (trackIds.length === 1 ? '' : 's') + '. Add a reference, then build the masks.', 'ok');
+            setStatus(engine === 'scail2'
+                ? 'Target selected. Add one character image, then press Render.'
+                : 'Selected ' + trackIds.length + ' person' + (trackIds.length === 1 ? '' : 's') + '. Add a reference, then build the masks.',
+                'ok');
         } catch (err) {
             setStatus(err.message, 'error');
-        }
-    }
-
-    async function buildMasks() {
-        if (!project) return;
-        try {
-            setStatus('Building the person masks…');
-            const data = await api('/api/character-swap/projects/' + encodeURIComponent(project.id) + '/segment', { method: 'POST', body: '{}' });
-            setProject(data);
-        } catch (err) {
-            setStatus(err.message, 'error');
+        } finally {
+            bindingSelection = false;
         }
     }
 
@@ -364,7 +513,7 @@ const CharacterSwapUI = (() => {
             selectedPersonId = null;
             return;
         }
-        engine = project.engine || 'wan_animate';
+        engine = project.engine || 'scail2';
         if (!project.people.some((person) => person.id === selectedPersonId)) {
             selectedPersonId = project.people[0] ? project.people[0].id : null;
         }
@@ -392,26 +541,29 @@ const CharacterSwapUI = (() => {
         const el = $('csNext');
         if (!el) return;
         const person = selectedPerson();
-        const isWan = engine === 'wan_animate' || Boolean(project && project.engine === 'wan_animate');
+        const projectEngine = project ? project.engine : engine;
+        const isScail = projectEngine === 'scail2';
         let text = '';
         let target = null;
         if (!project) {
             text = 'Step 1 — Import a video.';
-        } else if (project.status === 'tracking') {
+        } else if (project.status === 'tracking' || project.status === 'working') {
             text = 'Working — ' + (project.activity || 'processing the clip') + '…';
-        } else if (isWan) {
+        } else if (isScail) {
+            const tracks = (project.selection && project.selection.tracks) || [];
+            const targetPerson = (project.people || []).find((item) => item.selectionId);
             const referencePerson = (project.people || []).find((item) => (item.refs || []).length);
-            const promptValue = $('csWanPrompt')
-                ? String($('csWanPrompt').value || '').trim()
-                : String((project.engineSettings && project.engineSettings.wanAnimate && project.engineSettings.wanAnimate.positive) || '').trim();
-            if (!referencePerson) {
-                text = 'Step 2 — Upload one character image.';
+            if (!tracks.length) {
+                text = 'Step 2 — Detect the people in the clip.';
+                target = $('csDetect');
+            } else if (!targetPerson) {
+                text = 'Step 3 — Click the detected person you want to replace.';
+                target = $('csDetections');
+            } else if (!referencePerson) {
+                text = 'Step 4 — Upload one character reference image.';
                 target = $('csAddRefs');
-            } else if (!promptValue) {
-                text = 'Step 3 — Describe the shot, for example “replace the person on the left”.';
-                target = $('csWanPrompt');
             } else {
-                text = 'Ready — render with Wan Animate 2.';
+                text = 'Ready — render with SCAIL-2.';
                 target = $('csRender');
             }
         } else if (!person || !person.anchors.length) {
@@ -439,10 +591,9 @@ const CharacterSwapUI = (() => {
             if (button) button.classList.remove('is-next');
         });
         if (target) target.classList.add('is-next');
-        const ready = isWan
-            ? Boolean(project && (project.people || []).some((item) => (item.refs || []).length) &&
-                $('csWanPrompt') && String($('csWanPrompt').value || '').trim())
-            : Boolean(project && person && person.refs.length);
+        const scailReady = Boolean(project && person && person.selectionId && (person.refs || []).length &&
+            (project.selection && (project.selection.tracks || []).length));
+        const ready = isScail ? scailReady : Boolean(project && person && person.refs.length);
         $('csRender').disabled = !ready;
         $('csDescribe').disabled = !person || !person.refs.length;
         $('csGenerateView').disabled = !person || !person.refs.length;
@@ -490,10 +641,8 @@ const CharacterSwapUI = (() => {
         const meta = document.createElement('small');
         const bits = [];
         bits.push(person.status || 'new');
-        if (project && project.engine === 'wan_animate') {
-            bits.push(person.selectionId ? 'tracked (no SAM)' : 'unassigned');
-            const seg = project.segmentation && project.segmentation.people ? project.segmentation.people[person.id] : null;
-            if (seg) bits.push(seg.settings && seg.settings.grow !== undefined ? 'mask ready' : 'mask ready');
+        if (project && project.engine === 'scail2') {
+            bits.push(person.selectionId ? 'replacement target' : 'unassigned');
         } else {
             bits.push(person.anchors.length + ' anchor' + (person.anchors.length === 1 ? '' : 's'));
             if (person.masks) bits.push(person.masks.lostSpans && person.masks.lostSpans.length ? 'tracking gaps' : 'tracked');
@@ -538,9 +687,9 @@ const CharacterSwapUI = (() => {
             host.appendChild(row);
         });
         const person = selectedPerson();
-        if (project.engine === 'wan_animate') {
+        if (project.engine === 'scail2') {
             $('csTrack').disabled = true;
-            $('csRetrack').disabled = true;
+            $('csRetrack').disabled = false;
         } else {
             $('csTrack').disabled = !person || !person.anchors.length;
             $('csRetrack').disabled = !person || !person.anchors.length;
@@ -592,10 +741,13 @@ const CharacterSwapUI = (() => {
         host.replaceChildren();
         const person = selectedPerson();
         if (!person) return;
+        const features = featuresFor(project && project.engine);
         if (!person.refs.length) {
             const empty = document.createElement('div');
             empty.className = 'character-swap-hint';
-            empty.textContent = 'Add front, side, back or close-up views. A plain-background sheet is split automatically.';
+            empty.textContent = features.referenceRoles
+                ? 'Add front, side, back or close-up views. A plain-background sheet is split automatically.'
+                : 'Add one clear character image.';
             host.appendChild(empty);
             return;
         }
@@ -634,7 +786,7 @@ const CharacterSwapUI = (() => {
                     setProject(data);
                 } catch (err) { setStatus(err.message, 'error'); }
             });
-            controls.appendChild(select);
+            if (features.referenceRoles) controls.appendChild(select);
             controls.appendChild(remove);
             card.appendChild(img);
             card.appendChild(controls);
@@ -705,7 +857,9 @@ const CharacterSwapUI = (() => {
             head.className = 'character-swap-take-head';
             const badge = document.createElement('span');
             badge.className = 'character-swap-take-engine';
-            badge.textContent = take.engine === 'h3' ? 'MINIMAX H3' : 'WAN ANIMATE 2';
+            badge.textContent = take.engine === 'h3'
+                ? 'MINIMAX H3'
+                : (take.engine === 'scail2' ? 'SCAIL-2' : String(take.engine || 'CHARACTER SWAP').toUpperCase());
             head.appendChild(badge);
             if (take.url) {
                 const download = document.createElement('a');
@@ -992,16 +1146,23 @@ const CharacterSwapUI = (() => {
         $('csMaskVisible').checked = maskVisible;
     }
 
+    function applyToolClass() {
+        const wrap = $('csCanvasWrap');
+        if (!wrap) return;
+        const enabled = featuresFor(project ? project.engine : engine).maskSection;
+        wrap.classList.toggle('is-select', enabled && tool === 'select');
+        wrap.classList.toggle('is-brush', enabled && (tool === 'brush' || tool === 'erase'));
+        wrap.classList.toggle('is-point', enabled && (tool === 'include' || tool === 'exclude'));
+        const draw = $('csDrawCanvas');
+        if (draw) draw.style.cursor = enabled && tool === 'select' ? 'crosshair' : '';
+    }
+
     function setTool(next) {
         tool = next;
         document.querySelectorAll('[data-cs-tool]').forEach((button) => {
             button.classList.toggle('active', button.getAttribute('data-cs-tool') === next);
         });
-        const wrap = $('csCanvasWrap');
-        wrap.classList.toggle('is-select', next === 'select');
-        wrap.classList.toggle('is-brush', next === 'brush' || next === 'erase');
-        wrap.classList.toggle('is-point', next === 'include' || next === 'exclude');
-        $('csDrawCanvas').style.cursor = next === 'select' ? 'crosshair' : 'crosshair';
+        applyToolClass();
     }
 
     function loadFrame() {
@@ -1410,10 +1571,6 @@ const CharacterSwapUI = (() => {
     }
 
     async function track() {
-        if (engine === 'wan_animate' || (project && project.engine === 'wan_animate')) {
-            await buildMasks();
-            return;
-        }
         const person = selectedPerson();
         if (!person || !person.anchors.length) return;
         try {
@@ -1426,7 +1583,7 @@ const CharacterSwapUI = (() => {
     }
 
     async function retrack() {
-        if (engine === 'wan_animate' || (project && project.engine === 'wan_animate')) {
+        if (engine === 'scail2' || (project && project.engine === 'scail2')) {
             await detectPeople();
             return;
         }
@@ -1462,7 +1619,9 @@ const CharacterSwapUI = (() => {
         const button = $('csRender');
         button.disabled = true;
         try {
-            setStatus(engine === 'wan_animate' ? 'Preparing the Wan Animate 2 render…' : 'Building the refined mask…');
+            setStatus(engine === 'scail2'
+                ? 'Preparing the SCAIL-2 replacement…'
+                : 'Building the refined mask…');
             const settings = collectEngineSettings();
             const response = await fetch('/api/character-swap/projects/' + encodeURIComponent(project.id) + '/render', {
                 method: 'POST',
@@ -1567,7 +1726,9 @@ const CharacterSwapUI = (() => {
                 });
                 frame = 0;
                 setProject(data);
-                setStatus('Trim applied. Re-add anchors for the new range.', 'ok');
+                setStatus(featuresFor(project && project.engine).anchors
+                    ? 'Trim applied. Re-add anchors for the new range.'
+                    : 'Trim applied.', 'ok');
             } catch (err) { setStatus(err.message, 'error'); }
         });
         document.querySelectorAll('[data-cs-tool]').forEach((button) => {
@@ -1602,14 +1763,16 @@ const CharacterSwapUI = (() => {
         $('csAddRefs').addEventListener('click', () => $('csRefFiles').click());
         $('csPickRefs').addEventListener('click', () => {
             const person = selectedPerson();
-            const remaining = 9 - (person && person.refs ? person.refs.length : 0);
+            const features = featuresFor(project && project.engine);
+            const limit = features.referenceRoles ? 9 : 1;
+            const remaining = limit - (person && person.refs ? person.refs.length : 0);
             if (remaining <= 0) {
-                setStatus('This character already has the maximum of 9 reference images.', 'error');
+                setStatus('This character already has the maximum of ' + limit + ' reference image' + (limit === 1 ? '' : 's') + '.', 'error');
                 return;
             }
             openMediaPicker({
                 kind: 'image',
-                multiple: true,
+                multiple: features.referenceRoles,
                 max: remaining,
                 onPick: (entries) => addGeneratedReferences(entries)
             });
@@ -1632,17 +1795,23 @@ const CharacterSwapUI = (() => {
             if (!input) return;
             input.addEventListener('change', saveEngineSettings);
         });
+        if ($('csScailModel')) {
+            $('csScailModel').addEventListener('change', () => {
+                updateScailModelHint();
+                saveEngineSettings();
+            });
+        }
         if ($('csWanPrompt')) {
             $('csWanPrompt').addEventListener('change', saveEngineSettings);
             $('csWanPrompt').addEventListener('input', updateFlow);
         }
-
         const draw = $('csDrawCanvas');
         draw.addEventListener('pointerdown', async (event) => {
             if (!project || !selectedPerson()) return;
+            if (!featuresFor(project.engine).maskSection) return;
             const point = pointFromEvent(event);
             if (tool === 'select') {
-                if (project.engine === 'wan_animate') {
+                if (project.engine === 'scail2') {
                     await assignDetection(point);
                     return;
                 }

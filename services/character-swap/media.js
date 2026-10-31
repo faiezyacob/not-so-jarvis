@@ -172,7 +172,7 @@ async function reverse(input, output) {
     return output;
 }
 
-// Conform to an exact frame rate and canvas. Used by the Wan Animate 2
+// Conform to an exact frame rate and canvas. Used by SCAIL-2
 // preparation (24 fps, multiple-of-16 canvas, optional letterbox padding) and
 // the H3 mask pipeline so video_frame_offset stays aligned across windows.
 async function conformExact(input, output, options = {}) {
@@ -206,78 +206,6 @@ async function conformExact(input, output, options = {}) {
         '-pix_fmt', 'yuv420p', '-movflags', '+faststart', output
     );
     await run(args, { code: options.code || 'character_swap_conform_exact_failed' });
-    return probeVideo(output);
-}
-
-// Scope a DWPose face render to one tracked person: multiply the face-control
-// video by that person's (dilated) mask so facial landmarks belonging to other
-// people in the frame are dropped. The source frames are never touched — only
-// the face_video conditioning WanAnimateToVideo receives.
-async function scopeFaceVideo(faceVideo, maskVideo, output, options = {}) {
-    fs.mkdirSync(path.dirname(output), { recursive: true });
-    const rings = Math.max(0, Math.min(16, Math.round(Number(options.grow) || 4)));
-    const dilation = new Array(rings).fill('dilation').join(',');
-    const maskChain = 'format=rgb24' + (dilation ? ',' + dilation : '');
-    const filter = '[1:v]' + maskChain + '[m];[0:v]format=rgb24[f];[f][m]blend=all_mode=multiply:all_opacity=1[o]';
-    await run([
-        '-hide_banner', '-y', '-i', faceVideo, '-i', maskVideo,
-        '-filter_complex', filter, '-map', '[o]', '-an',
-        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '12',
-        '-pix_fmt', 'yuv420p', '-movflags', '+faststart', output
-    ], { code: options.code || 'character_swap_face_scope_failed' });
-    return output;
-}
-
-// Per-frame peak luma of the DWPose face render. A usable facial-control video
-// carries bright landmark pixels; a failed detection produces near-black
-// frames. Used to prove facial conditioning is real, not just a non-empty file.
-async function videoBrightnessStats(file) {
-    const { stderr } = await run([
-        '-hide_banner', '-nostats', '-i', file,
-        '-vf', 'signalstats,metadata=print', '-an', '-f', 'null', '-'
-    ], { allowFailure: true, code: 'character_swap_face_stats_failed' });
-    const values = [];
-    const re = /lavfi\.signalstats\.YMAX=([0-9.]+)/g;
-    let match;
-    while ((match = re.exec(String(stderr || '')))) values.push(Number(match[1]));
-    const frames = values.length;
-    const bright = values.filter((value) => value >= 120).length;
-    return { frames, bright, ratio: frames ? bright / frames : 0 };
-}
-
-// Hold the final frame for extra seconds so a short last window still gives
-// WanAnimateToVideo a full-length pose/face/mask/source batch.
-async function padVideo(input, output, seconds, options = {}) {
-    fs.mkdirSync(path.dirname(output), { recursive: true });
-    const hold = Math.max(0, Number(seconds) || 0);
-    const filter = 'tpad=stop_mode=clone:stop_duration=' + hold;
-    await run([
-        '-hide_banner', '-y', '-i', input,
-        '-vf', filter,
-        '-an',
-        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', String(options.crf || 16),
-        '-pix_fmt', 'yuv420p', '-movflags', '+faststart', output
-    ], { code: options.code || 'character_swap_pad_failed' });
-    return probeVideo(output);
-}
-
-async function concatVideos(files, output, options = {}) {
-    const list = Array.isArray(files) ? files.filter(Boolean) : [];
-    if (!list.length) throw new Error('There are no video windows to stitch.');
-    fs.mkdirSync(path.dirname(output), { recursive: true });
-    const listPath = output + '.concat.txt';
-    const body = list.map((file) => "file '" + String(file).replace(/'/g, "'\\''").replace(/\\/g, '/') + "'").join('\n');
-    fs.writeFileSync(listPath, body + '\n');
-    try {
-        await run([
-            '-hide_banner', '-y', '-f', 'concat', '-safe', '0', '-i', listPath,
-            '-an',
-            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', String(options.crf || 16),
-            '-pix_fmt', 'yuv420p', '-movflags', '+faststart', output
-        ], { code: options.code || 'character_swap_concat_failed' });
-    } finally {
-        try { fs.unlinkSync(listPath); } catch { /* next cleanup */ }
-    }
     return probeVideo(output);
 }
 
@@ -603,10 +531,7 @@ module.exports = {
     probeVideo,
     conform,
     conformExact,
-    padVideo,
-    scopeFaceVideo,
-    videoBrightnessStats,
-    concatVideos,
+
     muxAudio,
     extractFrame,
     extractFrames,

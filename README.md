@@ -2,7 +2,7 @@
 
 **JARVIS — a local AI assistant dashboard that runs entirely on your machine.**
 
-Chat, generate images, edit photos, produce videos with sound, design UGC ads, and invent characters — all driven from one conversational UI. Built with **plain Node.js** (zero npm dependencies) and **vanilla HTML/CSS/JS** (no bundler, no build step). No cloud, no accounts, no telemetry.
+Chat, generate images, edit photos, produce videos with sound, swap characters in existing clips, design UGC ads, invent characters, and chat with persistent AI companions — all driven from one conversational UI. Built with **plain Node.js** (zero npm dependencies) and **vanilla HTML/CSS/JS** (no bundler, no build step). No cloud, no accounts, no telemetry.
 
 ![Dashboard Overview](screenshots/dashboard-overview.png)
 
@@ -86,12 +86,28 @@ Everything runs from a single chat surface — there are no separate tools or da
 
 [https://github.com/user-attachments/assets/e74c3178-ad92-42bf-a1ca-4f68efde6897](https://github.com/user-attachments/assets/520a7762-214c-44af-8b7d-824428e811a7)
 
+### Character Swap
+
+- **Two replacement engines** — SCAIL-2 (default; official replacement mode with SAM 3.1 colored masks) and MiniMax H3 + Character Swap LoRA v1.5
+- **Continuation rendering** — SCAIL-2 runs 81-frame windows with its trained 5-frame anchor (WanSCAILInfinity) at 24 fps with the original audio muxed back, capped at 15 seconds
+
 ### UGC Studio
 
 - **Chat-first UGC workflow** — ask for a TikTok-style ad and the studio walks the whole production: brief, product, creator, creative direction, script, scenes, reference frames, then the final video
 - **Facts-only scripts** — never invents product claims, ingredients, certifications, or testimonials; uses only what you or the Product Library supply
 - **Product Library** — reusable product records with reference images
 - **Director handoff** — the approved scene plan and the approved opening frame continue into the existing Director pipeline, which animates that single frame with H3
+
+![UGC Studio](screenshots/ugc-studio.png)
+
+### Creator Studio
+
+- **Character-led talking videos** — pick a saved Character, a content format (talking to camera, storytelling, Q&A, confession, get-ready-with-me, outfit talk, advice, comedy and more), a topic and a scene; JARVIS writes the spoken lines and performance beats, then renders one continuous video with synchronized speech
+- **Preview before rendering** — the opening frame is generated first and shown for approval with **Create Video**, **Modify Frame** (a Qwen Image 2.1 edit) and **Regenerate Frame**
+- **Identity, outfit and camera are separate layers** — the Character's approved portrait and structured identity anchor the frame, while scene, Outfit Pack, camera style, posture and performance direction are chosen independently and stay consistent
+- **Per-conversation sessions** — every take is kept, with layer-level regeneration for the script, voice, facial and body performance, camera and outfit
+
+![Creator Studio](screenshots/creator-studio.png)
 
 ### Creative Playground
 
@@ -100,6 +116,17 @@ Everything runs from a single chat surface — there are no separate tools or da
 - **Themes, techniques & outfits** — lifestyle/candid, experimental photography and more, composing outfits, environments and activities
 - **Outfit Packs** — 10 wardrobe personalities (plus custom) that compose a concrete, coherent outfit while never changing who the person is
 - **Locks & iteration** — pin an identity, outfit or scene, then re-roll or modify only what you want to change
+
+![Creative Playground](screenshots/creative-playground.png)
+
+### Companion
+
+- **Persistent companions** — give any saved Character a personality (traits, communication style, humour, habits, interests, background, goals and relationship) and chat with them in a normal conversation with a casual texting voice
+- **Long-term memory** — facts you share are extracted automatically and recalled by relevance, recency and importance; memory is keyed per character, so two companions never share it
+- **Living characters** — each companion keeps a fictional life state (activity, location, outfit, mood), evolves it between chats, and can send context-aware selfies or photos on request, or offer them
+- **Full control** — Settings > Companion governs memory, extraction, life progression, initiative, photo sharing and quiet hours, with per-character overrides; clearing memories and deleting chat history are separate actions
+
+![Companion](screenshots/companions.png)
 
 ### Dashboard & tooling
 
@@ -123,7 +150,7 @@ Everything runs from a single chat surface — there are no separate tools or da
 - **Node.js** — no `npm install` needed (zero dependencies)
 - **NVIDIA GPU with 16 GB VRAM is required** to run the full image, video, and upscale stack (Krea2, MiniMax H3, SeedVR2). VRAM is freed and reloaded between chat and generation as needed via `vram-manager`.
 - **[Ollama](https://ollama.com)** running at `localhost:11434` for chat
-- **Optional, for image/video/upscale:** [ComfyUI](https://github.com/comfyanonymous/ComfyUI) with the Krea2 / MiniMax H3 models and custom nodes. The in-app **Settings > Setup** guide can install these for you. Character Swap's default Wan Animate 2 engine additionally needs the Wan Animate 2 int8 model, UMT5 XXL text encoder, Wan 2.1 VAE, CLIP Vision H and the LightX2V acceleration LoRA — all listed in Settings > Setup.
+- **Optional, for image/video/upscale:** [ComfyUI](https://github.com/comfyanonymous/ComfyUI) with the Krea2 / MiniMax H3 models and custom nodes. The in-app **Settings > Setup** guide can install these for you. Character Swap's default SCAIL-2 engine additionally needs the SCAIL-2 14B checkpoint (GGUF or Comfy-Org safetensors), the SAM 3.1 multiplex checkpoint, UMT5 XXL text encoder, Wan 2.1 VAE, CLIP Vision H, the LightX2V acceleration LoRA and the optional relighting LoRA and uses the installed SAM 3.1 checkpoint, DWPose, KJNodes and VideoHelperSuite — all listed in Settings > Setup.
 
 > **Reference machine.** Developed and tested on **16 GB VRAM + 64 GB system RAM**. 64 GB of system RAM is recommended for video upscaling, which holds the full source and the upscaled output in memory (see [Upscaling](#upscaling)).
 
@@ -198,12 +225,12 @@ Text prompts (T2VA) or an attached/referenced image (I2VA) produce a MiniMax H3 
 
 ### Character Swap
 
-Open **Character Swap** from the top-right header button next to Creator Studio, or from a generated video's asset actions. Import a clip by uploading it or picking any generated video from the app. Wan Animate 2 needs one character image and a scene prompt; MiniMax H3 uses the tap-to-select SAM 3.1 tracking/mask flow with reference views:
+Open **Character Swap** from the top-right header button next to Creator Studio, or from a generated video's asset actions. Import a clip by uploading it or picking any generated video from the app. SCAIL-2 needs one selected person and one character image; MiniMax H3 uses the tap-to-select SAM 3.1 tracking/mask flow with reference views:
 
-- **Wan Animate 2 (default)** — native character animation through ComfyUI's `WanAnimate2ToVideo` node. Upload one character image plus a performance video and describe the shot in the scene prompt (for example "replace the person on the left"). Your direction is enhanced automatically into the model's subject + background format: the named person is replaced, the original scene is captioned once and kept as the background, and a preservation clause holds the lighting, colours, camera, framing, timing, audio and other people. It renders at 24 fps in 81-frame continuation windows (480p default, 720p optional), stitches the windows and muxes the original audio unchanged. Clips are matched to their source length, capped at 15 seconds. Because Wan Animate 2 regenerates the background from text, scene retention is best-effort rather than pixel-exact. Deleting a take from Character Swap removes its generated video from the gallery, and deleting that video in the gallery removes the take.
+- **SCAIL-2 (default)** — official replacement mode through ComfyUI's native `WanSCAILToVideo` / `SCAIL2ColoredMask` nodes. Detect the people in the clip and click the one to replace. JARVIS tracks that person with SAM 3.1 from the DWPose keypoints, renders the identity-coloured driving mask (white background = keep the source) and the black-background reference mask, and conditions the 14B SCAIL-2 model in replacement mode. Choose a SCAIL-2 checkpoint in the **SCAIL-2 model** selector: GGUF Q2_K (~6 GB), Q3_K_M (~8.1 GB), Q4_K_M (~10 GB, recommended), Q5_K_M (~12 GB), Q6_K (~14 GB) or Q8_0 (~17 GB), or the full-precision FP16 safetensors (~30.5 GB). GGUF files load through the GGUF UNET loader from `models/unet`; FP16 lives in `models/diffusion_models` and loads through the normal `UNETLoader` (`weight_dtype: default`), so no GGUF loader is used for it. The official relighting LoRA is on for blending; the DPO LoRA is optional and does not guarantee audio-driven lip-sync. Clips are conformed to 24 fps at 480p (default) or 720p, capped at 15 seconds; `WanSCAILInfinity` loops the trained 81-frame / 5-frame-anchor window and trims to the exact length, and the original audio is muxed back unchanged. The prompt is a positive description of the finished video (character appearance/clothing, motion, background, camera and lighting), built from your short direction plus the cached character and scene captions.
 - **MiniMax H3 + Character LoRA v1.5** — the existing Ref2VA reference-to-video path, capped at 15 s.
 
-Switching engines never clears the uploaded video, trim, tracking, masks, references or takes. Missing Wan models/nodes are reported explicitly; JARVIS never silently switches to H3. Both engines run through the same VRAM manager (one backend resident at a time) and record peak VRAM/RAM in the take metadata.
+Switching engines never clears the uploaded video, trim, tracking, masks, references or takes. Missing SCAIL-2 models/nodes are reported explicitly; JARVIS never silently switches to H3. All engines run through the same VRAM manager (one backend resident at a time) and record peak VRAM/RAM in the take metadata.
 
 ### Upscaling
 

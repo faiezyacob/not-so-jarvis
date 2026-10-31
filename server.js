@@ -2412,13 +2412,15 @@ async function handleAPI(req, res, urlPath) {
             json(res, 200, {
                 default: characterSwap.DEFAULT_ENGINE,
                 engines: characterSwap.listEngines(info),
-                segmentation: characterSwap.segmentationStatus(info)
+                scailModels: characterSwap.scailModelVariants(info),
+                scailDefaultModel: characterSwap.scailDefaultModel()
             });
         } catch (err) {
             json(res, 200, {
                 default: characterSwap.DEFAULT_ENGINE,
                 engines: characterSwap.listEngines(null),
-                segmentation: characterSwap.segmentationStatus(null)
+                scailModels: characterSwap.scailModelVariants(null),
+                scailDefaultModel: characterSwap.scailDefaultModel()
             });
         }
         return true;
@@ -2546,11 +2548,7 @@ async function handleAPI(req, res, urlPath) {
                 json(res, 200, presentCharacterSwap(updated));
                 return true;
             }
-            if (rest === '/segment' && req.method === 'POST') {
-                const updated = characterSwap.startSegment(projectId);
-                json(res, 202, presentCharacterSwap(updated));
-                return true;
-            }
+
             const selectionThumb = rest.match(/^\/selection\/([^/]+)\/thumb$/);
             if (selectionThumb && req.method === 'GET') {
                 const track = (project.selection && project.selection.tracks || [])
@@ -2577,7 +2575,7 @@ async function handleAPI(req, res, urlPath) {
                 const body = await readBody(req);
                 const engine = body.engine;
                 const updated = characterSwap.setEngine(projectId, engine, body.settings);
-                if (updated.engine === 'wan_animate') {
+                if (updated.engine === 'scail2') {
                     comfyui.getObjectInfo().then((info) => {
                         const dw = info && info.DWPreprocessor;
                         if (!dw) modelSetup.startNodeInstall(['controlnet_aux']);
@@ -8669,13 +8667,12 @@ function presentCharacterSwap(project) {
                 : base + '/frame?index=' + Number(anchor.frame),
             anchorMaskUrl: base + '/person/' + encodeURIComponent(person.id) + '/anchors/' + Number(anchor.frame) + '/mask'
         }));
-        const seg = copy.segmentation && copy.segmentation.people ? copy.segmentation.people[person.id] : null;
-        const hasMask = copy.engine === 'wan_animate' ? Boolean(seg) : Boolean(person.masks);
-        out.maskUrl = hasMask
-            ? base + '/person/' + encodeURIComponent(person.id) + '/mask/0'
-            : null;
+        out.maskUrl = copy.engine === 'scail2' || !person.masks
+            ? null
+            : base + '/person/' + encodeURIComponent(person.id) + '/mask/0';
         return out;
     });
+    delete copy.mix;
     copy.takes = (copy.takes || []).map((take) => Object.assign({}, take, {
         windows: (take.windows || []).map((window) => {
             const clean = Object.assign({}, window);
@@ -8713,10 +8710,9 @@ async function handleCharacterSwapRender(req, res, projectId, project) {
     const status = characterSwap.engineStatus(project, info).find((item) => item.id === engine);
     if (!status || !status.available) {
         const missing = status && status.missing ? status.missing : ['ComfyUI is not reachable.'];
+        const label = engine === 'scail2' ? 'SCAIL-2' : 'MiniMax H3 replacement';
         json(res, 400, {
-            error: engine === 'wan_animate'
-                ? 'Wan Animate 2 is not ready. Missing: ' + missing.join('; ')
-                : 'MiniMax H3 replacement is not ready. Missing: ' + missing.join('; '),
+            error: label + ' is not ready. Missing: ' + missing.join('; '),
             code: 'engine_unavailable',
             engine,
             missing
@@ -8727,14 +8723,14 @@ async function handleCharacterSwapRender(req, res, projectId, project) {
     if (!turn) return;
     if (engine === 'h3' && project.part && project.part.frames / 24 > 15.2) {
         json(res, 400, {
-            error: 'MiniMax H3 replacement supports up to 15 seconds. Trim the clip (and re-track) or switch to Wan Animate 2.',
+            error: 'MiniMax H3 replacement supports up to 15 seconds. Trim the clip (and re-track) or switch to SCAIL-2.',
             code: 'h3_duration_exceeded'
         });
         return;
     }
-    if (engine === 'wan_animate') {
-        const adapter = characterSwap.getEngine('wan_animate');
-        const settings = project.engineSettings && project.engineSettings.wanAnimate;
+    if (engine === 'scail2') {
+        const adapter = characterSwap.getEngine(engine);
+        const settings = project.engineSettings && project.engineSettings.scail2;
         let stats = await comfyui.getSystemStats().catch(() => null);
         let preflight = adapter.preflight(settings, stats);
         if (!preflight.ok) {
@@ -8744,8 +8740,8 @@ async function handleCharacterSwapRender(req, res, projectId, project) {
         }
         if (!preflight.ok && !body.allowLowVram) {
             json(res, 409, {
-                error: 'Wan Animate 2 needs about ' + preflight.requiredVramMB + ' MB of free VRAM; ComfyUI reports ' +
-                    preflight.freeVramMB + ' MB. Close other GPU apps, choose the Draft preset, or retry with allowLowVram.',
+                error: 'SCAIL-2 needs about ' + preflight.requiredVramMB + ' MB of free VRAM for the selected model; ComfyUI reports ' +
+                    preflight.freeVramMB + ' MB. Close other GPU apps, choose a smaller quant, or retry with allowLowVram.',
                 code: 'wan_insufficient_vram',
                 preflight
             });
@@ -8810,7 +8806,7 @@ async function handleCharacterSwapRender(req, res, projectId, project) {
     req.on('close', onClose);
     const stopProgress = forwardComfyProgressToCompletion(res, 'Rendering the character swap…');
     try {
-        if (engine === 'wan_animate') {
+        if (engine === 'scail2') {
             const current = characterSwap.get(projectId);
             const needsCharacter = (current.people || []).some((person) =>
                 (person.refs || []).length && !person.identitySummary
@@ -8833,11 +8829,11 @@ async function handleCharacterSwapRender(req, res, projectId, project) {
                     }).catch(() => {});
                 }
             }
-        } else if (await characterSwap.needsRetrack(projectId)) {
+        } else if (engine === 'h3' && await characterSwap.needsRetrack(projectId)) {
             sseWrite(res, { generating: 'Tracking the selected people…' });
             await characterSwap.runTrack(projectId);
         }
-        if (engine !== 'wan_animate') {
+        if (engine === 'h3') {
             const described = characterSwap.get(projectId);
             const needsDescription = described && (described.people || []).some((person) =>
                 (person.refs || []).length && !person.description
@@ -8855,8 +8851,8 @@ async function handleCharacterSwapRender(req, res, projectId, project) {
         }
         await vramManager.freeVRAMBeforeImage();
         sseWrite(res, {
-            generating: engine === 'wan_animate'
-                ? 'Rendering the Wan Animate 2 character swap…'
+            generating: engine === 'scail2'
+                ? 'Rendering the SCAIL-2 character replacement…'
                 : 'Rendering the MiniMax H3 character swap…'
         });
         const takes = [];

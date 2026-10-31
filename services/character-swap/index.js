@@ -18,9 +18,9 @@ const characterState = require('./state');
 const media = require('./media');
 const tracking = require('./tracking');
 const selection = require('./selection');
-const segmentation = require('./segmentation');
 const references = require('./references');
 const promptBuilder = require('./prompt');
+const scailPrompt = require('./engines/scail2-prompt');
 const sheets = require('./sheets');
 const engines = require('./engines');
 
@@ -76,9 +76,9 @@ function dropTakes(project) {
     project.bestTake = null;
 }
 
-function clearWanCache(project) {
+function clearEngineCache(project) {
     project.wan = { preprocess: null, cacheKey: null };
-    for (const folder of ['wan', 'wan-animate2']) {
+    for (const folder of ['scail2']) {
         try {
             fs.rmSync(path.join(projectDir(project.id), folder), { recursive: true, force: true });
         } catch {
@@ -96,7 +96,7 @@ function clearSelectionState(project) {
     for (const folder of ['selection', 'segmentation']) {
         try { fs.rmSync(path.join(projectDir(project.id), folder), { recursive: true, force: true }); } catch { /* next retry */ }
     }
-    clearWanCache(project);
+    clearEngineCache(project);
 }
 
 function clearSegmentationExports(project) {
@@ -116,14 +116,14 @@ function clearTracked(project) {
     }
     project.maskExport = null;
     project.maskExports = { union: null, people: {}, settings: null, createdAt: null };
-    clearWanCache(project);
+    clearEngineCache(project);
     dropTakes(project);
 }
 
 function clearMasksOnly(project) {
     project.maskExport = null;
     project.maskExports = { union: null, people: {}, settings: null, createdAt: null };
-    clearWanCache(project);
+    clearEngineCache(project);
     dropTakes(project);
 }
 
@@ -380,8 +380,8 @@ async function runTrack(projectId) {
 
 function startTrack(projectId) {
     const project = characterState.requireProject(projectId);
-    if (project.engine === 'wan_animate') {
-        const err = new Error('Wan Animate 2 does not use tracking or masks. Upload one character image and use the prompt instead.');
+    if (project.engine === 'scail2') {
+        const err = new Error('SCAIL-2 builds its own SAM 3.1 target mask. Detect people, select the target, then press Render.');
         err.status = 400;
         throw err;
     }
@@ -504,7 +504,7 @@ async function runSelection(projectId) {
             });
             current.segmentation = { method: null, people: {}, createdAt: null };
             try { fs.rmSync(path.join(projectDir(projectId), 'segmentation'), { recursive: true, force: true }); } catch { /* next retry */ }
-            clearWanCache(current);
+            clearEngineCache(current);
             dropTakes(current);
             current.status = 'ready';
             current.activity = null;
@@ -543,6 +543,11 @@ function selectTracks(projectId, trackIds) {
         err.status = 400;
         throw err;
     }
+    if (project.engine === 'scail2' && valid.length !== 1) {
+        const err = new Error('SCAIL-2 replaces one selected person at a time. Select exactly one detected person.');
+        err.status = 400;
+        throw err;
+    }
     return characterState.update(projectId, (current) => {
         const tracks = (current.selection && current.selection.tracks) || [];
         const byId = new Map(tracks.map((track) => [track.id, track]));
@@ -572,7 +577,7 @@ function selectTracks(projectId, trackIds) {
             person.status = 'selected';
         }
         (current.segmentation || {}).hash = null;
-        clearWanCache(current);
+        clearEngineCache(current);
         dropTakes(current);
     });
 }
@@ -636,125 +641,26 @@ async function applySelectionCorrection(projectId, correction) {
         for (const person of current.people || []) {
             try { fs.rmSync(path.join(projectDir(projectId), 'segmentation', person.id), { recursive: true, force: true }); } catch { /* next retry */ }
         }
-        clearWanCache(current);
+        clearEngineCache(current);
         dropTakes(current);
     });
     return characterState.get(projectId);
 }
 
-function startSegment(projectId) {
-    if (busy.get(projectId)) {
-        const err = new Error('This project is already working.');
-        err.status = 409;
-        throw err;
-    }
-    const project = characterState.requireProject(projectId);
-    if (!project.selection || !project.selection.tracks.length) {
-        const err = new Error('Detect and select people before building masks.');
-        err.status = 400;
-        throw err;
-    }
-    if (!(project.people || []).some((person) => person.selectionId)) {
-        const err = new Error('Select at least one detected person before building masks.');
-        err.status = 400;
-        throw err;
-    }
-    busy.set(projectId, 'queued');
-    characterState.update(projectId, (current) => {
-        current.status = 'tracking';
-        current.activity = 'Waiting to build masks';
-        current.error = null;
-    });
-    setImmediate(() => {
-        busy.delete(projectId);
-        runSegment(projectId).catch((err) => {
-            console.warn('[character-swap] segmentation failed:', err.message);
-        });
-    });
-    return characterState.get(projectId);
-}
-
-async function runSegment(projectId) {
-    if (busy.get(projectId)) {
-        const err = new Error('This project is already working.');
-        err.status = 409;
-        throw err;
-    }
-    busy.set(projectId, 'segment');
-    try {
-        const project = characterState.requireProject(projectId);
-        characterState.update(projectId, (current) => {
-            current.status = 'tracking';
-            current.activity = 'Building person masks';
-        });
-        const info = await comfyui.getObjectInfo().catch(() => null);
-        const result = await segmentation.generate(project, {
-            info,
-            onStage: (text) => characterState.update(projectId, (current) => { current.activity = text; })
-        });
-        characterState.update(projectId, (current) => {
-            current.segmentation = result;
-            (current.people || []).forEach((person) => {
-                if (result.people[person.id]) person.status = 'segmented';
-            });
-            clearWanCache(current);
-            dropTakes(current);
-            current.status = 'ready';
-            current.activity = null;
-            current.error = null;
-        });
-        await vramManager.freeComfyModels('character swap segmentation').catch(() => {});
-        return characterState.get(projectId);
-    } catch (err) {
-        await comfyui.softFreeMemory().catch(() => {});
-        const message = selectionError(err);
-        characterState.update(projectId, (current) => {
-            current.status = 'failed';
-            current.activity = null;
-            current.error = message;
-        });
-        err.message = message;
-        throw err;
-    } finally {
-        busy.delete(projectId);
-    }
-}
-
 function needsSelection(project) {
-    if (!project || project.engine !== 'wan_animate') return false;
+    if (!project || project.engine !== 'scail2') return false;
     return !project.selection || project.selection.version !== selection.VERSION || !(project.selection.tracks || []).length;
 }
 
-function needsSegmentation(project) {
-    if (!project || project.engine !== 'wan_animate') return false;
-    if (!project.selection || !(project.selection.tracks || []).length) return true;
-    const selected = (project.people || []).filter((person) => person.selectionId);
-    if (!selected.length) return true;
-    const seg = project.segmentation;
-    if (!seg || !seg.method) return true;
-    const hash = segmentation.hashFor(project, seg.method, true);
-    if (seg.hash !== hash) return true;
-    return selected.some((person) => {
-        const meta = seg.people && seg.people[person.id];
-        const file = meta ? abs(project.id, meta.video) : null;
-        return !meta || !file || !fs.existsSync(file);
-    });
+function needsSegmentation() {
+    // SCAIL-2 resolves its masks inside the generation graph (SAM 3.1 tracks +
+    // SCAIL2ColoredMask); there is no separate segmentation export.
+    return false;
 }
 
 function maskSourceFor(project, person) {
     if (!person) return null;
-    if (project.engine === 'wan_animate') {
-        const meta = project.segmentation && project.segmentation.people
-            ? project.segmentation.people[person.id]
-            : null;
-        if (!meta) return null;
-        return {
-            dir: meta.dir,
-            width: meta.width,
-            height: meta.height,
-            editedFrames: meta.editedFrames || []
-        };
-    }
+    if (project.engine === 'scail2') return null;
     return person.masks || null;
 }
 
@@ -780,8 +686,8 @@ async function editMask(projectId, personId, frame, strokes) {
     const person = personById(project, personId);
     const source = maskSourceFor(project, person);
     if (!source) {
-        throw new Error(project.engine === 'wan_animate'
-            ? 'Build the person mask before editing it.'
+        throw new Error(project.engine === 'scail2'
+            ? 'SCAIL-2 builds its target mask from SAM 3.1 during the render, so there is no mask frame to edit.'
             : 'Track the person before editing the mask.');
     }
     const file = maskFramePath(projectId, personId, frame);
@@ -791,21 +697,6 @@ async function editMask(projectId, personId, frame, strokes) {
     media.writeMask(file, next, mask.width, mask.height);
     return characterState.update(projectId, (current) => {
         const target = personById(current, personId);
-        if (current.engine === 'wan_animate') {
-            const meta = current.segmentation && current.segmentation.people
-                ? current.segmentation.people[target.id]
-                : null;
-            if (meta) {
-                const edited = new Set(meta.editedFrames || []);
-                edited.add(Number(frame));
-                meta.editedFrames = Array.from(edited).sort((a, b) => a - b);
-                meta.x = media.centroid(next, mask.width, mask.height);
-            }
-            clearSegmentationExports(current);
-            clearWanCache(current);
-            dropTakes(current);
-            return;
-        }
         const edited = new Set(target.masks.editedFrames || []);
         edited.add(Number(frame));
         target.masks.editedFrames = Array.from(edited).sort((a, b) => a - b);
@@ -822,7 +713,7 @@ function updateMaskSettings(projectId, settings) {
         current.maskSettings.opacity = clamp(settings.opacity, 0.1, 1, current.maskSettings.opacity);
         clearMasksOnly(current);
         clearSegmentationExports(current);
-        clearWanCache(current);
+        clearEngineCache(current);
         dropTakes(current);
     });
 }
@@ -955,8 +846,8 @@ async function describeProject(projectId, ctx) {
     });
 }
 
-// Wan Animate 2 generates its background from text, so the source scene is
-// captioned once and reused as the Background section of the swap prompt.
+// SCAIL-2 prompts describe the finished video, so the source scene is
+// captioned once and reused as the scene section of the swap prompt.
 // A stuck or unavailable vision model is fail-open: the deterministic
 // preservation wording in the prompt builder still keeps the render usable.
 function hasSceneDescription(project) {
@@ -1182,7 +1073,7 @@ function allocateReferences(people, max) {
 
 function buildH3Plan(projectId, project) {
     if (project.part.frames / media.FPS > MAX_SECONDS + 0.2) {
-        throw new Error('MiniMax H3 replacement supports up to ' + MAX_SECONDS + ' seconds. Trim the clip and re-track before generating with H3, or switch to Wan Animate 2.');
+        throw new Error('MiniMax H3 replacement supports up to ' + MAX_SECONDS + ' seconds. Trim the clip and re-track before generating with H3, or switch to SCAIL-2.');
     }
     if (!project.maskExport) throw new Error('Build the refined mask before generating.');
     if (project.people.some((person) => !person.masks)) {
@@ -1239,21 +1130,23 @@ function buildH3Plan(projectId, project) {
     };
 }
 
-function buildWanPlan(projectId, project) {
+function buildScailPlan(projectId, project) {
     if (!project.part) throw new Error('The clip is still being prepared.');
-    const referencePerson = (project.people || []).find((person) => (person.refs || []).length);
-    if (!referencePerson) {
-        throw new Error('Upload one character reference image before generating with Wan Animate 2.');
+    const targetPerson = (project.people || []).find((person) => person.selectionId);
+    if (!targetPerson) {
+        throw new Error('Detect the people in the clip and select the person to replace before rendering with SCAIL-2.');
     }
-    const reference = promptBuilder.selectIdentityReference(referencePerson) || referencePerson.refs[0];
+    const reference = promptBuilder.selectIdentityReference(targetPerson) || (targetPerson.refs || [])[0];
     if (!reference) {
-        throw new Error('Upload one character reference image before generating with Wan Animate 2.');
+        throw new Error('Upload one character reference image before rendering with SCAIL-2.');
     }
-    const settings = engines.wanAnimate.normalizeSettings(project.engineSettings && project.engineSettings.wanAnimate);
-    if (!String(settings.positive || '').trim()) {
-        throw new Error('Describe the shot (for example "replace the person on the left") before rendering with Wan Animate 2.');
+    const track = ((project.selection && project.selection.tracks) || [])
+        .find((item) => item.id === targetPerson.selectionId);
+    if (!track) {
+        throw new Error('The selected person is not in the current DWPose tracks. Detect people again and select the target.');
     }
-    const dims = engines.wanAnimate.dimensionsFor(project.part.width, project.part.height, settings);
+    const settings = engines.scail2.normalizeSettings(project.engineSettings && project.engineSettings.scail2);
+    const dims = engines.scail2.dimensionsFor(project.part.width, project.part.height, settings);
     settings.width = dims.width;
     settings.height = dims.height;
     const sourceSeconds = project.part.frames / media.FPS;
@@ -1264,8 +1157,27 @@ function buildWanPlan(projectId, project) {
     const durationSeconds = Math.max(1 / media.FPS, Math.min(capSeconds, requested));
     settings.durationSeconds = durationSeconds;
     const targetFrames = Math.max(1, Math.round(durationSeconds * media.FPS));
+    const anchorFrame = Math.max(0, Math.min(targetFrames - 1, Number(track.firstFrame) || 0));
+    const pointPrompts = require('./point-prompts');
+    const points = pointPrompts.buildPointPrompts(project, {
+        trackId: targetPerson.selectionId,
+        frame: anchorFrame,
+        width: settings.width,
+        height: settings.height,
+        sourceWidth: project.part.width,
+        sourceHeight: project.part.height
+    });
+    if (!points || !(points.positive || []).length) {
+        throw new Error('The selected person has no usable DWPose points. Detect people again, correct the tracking if needed, and select the target.');
+    }
+    const prompt = scailPrompt.buildScailPrompt({
+        userPrompt: settings.positive,
+        identitySummary: targetPerson.identitySummary,
+        description: targetPerson.description,
+        scene: project.sceneDescription || null
+    });
     return {
-        engine: 'wan_animate',
+        engine: 'scail2',
         projectId,
         projectDir: projectDir(projectId),
         sourceVideoPath: abs(projectId, project.part.file),
@@ -1273,18 +1185,21 @@ function buildWanPlan(projectId, project) {
         frames: targetFrames,
         duration: durationSeconds,
         durationSeconds,
-        prompt: settings.positive,
+        prompt,
         notes: settings.positive,
         rawPrompt: settings.positive,
         sceneDescription: project.sceneDescription || null,
         settings,
+        points,
         people: [{
-            id: referencePerson.id,
-            label: referencePerson.label,
+            id: targetPerson.id,
+            label: targetPerson.label,
             referencePath: abs(projectId, reference.file),
             referenceRole: promptBuilder.roleOf(reference),
-            description: referencePerson.description,
-            identitySummary: referencePerson.identitySummary
+            description: targetPerson.description,
+            identitySummary: targetPerson.identitySummary,
+            trackId: targetPerson.selectionId,
+            anchorFrame
         }],
         preset: settings.preset
     };
@@ -1294,7 +1209,7 @@ function buildRenderPlan(projectId, engine) {
     const project = characterState.requireProject(projectId);
     const id = engines.normalizeEngine(engine || project.engine);
     if (id === 'h3') return buildH3Plan(projectId, project);
-    return buildWanPlan(projectId, project);
+    return buildScailPlan(projectId, project);
 }
 
 function takeRecord(projectId, plan, engine, options, seed, startedAt, extra) {
@@ -1312,7 +1227,7 @@ function takeRecord(projectId, plan, engine, options, seed, startedAt, extra) {
         width: null,
         height: null,
         duration: null,
-        fps: engine === 'wan_animate' ? (plan.settings && plan.settings.fps) || 24 : null,
+        fps: (engine === 'scail2') ? (plan.settings && plan.settings.fps) || 24 : null,
         generationMs: Date.now() - startedAt,
         mask: plan.maskExport ? plan.maskExport.settings : (project.maskSettings || null),
         windows: [],
@@ -1352,7 +1267,7 @@ async function renderTake(projectId, options = {}) {
     const engine = engines.normalizeEngine(options.engine || project.engine);
     const plan = buildRenderPlan(projectId, engine);
     const adapter = engines.getEngine(engine);
-    const settings = engine === 'wan_animate' && plan.settings ? plan.settings : null;
+    const settings = (engine === 'scail2') && plan.settings ? plan.settings : null;
     const seed = settings && settings.seedMode === 'fixed' && settings.seed !== null
         ? settings.seed
         : (Number.isInteger(options.seed) ? options.seed : Math.floor(Math.random() * 2 ** 32));
@@ -1547,13 +1462,17 @@ function setEngine(projectId, engine, settings) {
 function engineStatus(project, info) {
     const settings = project && project.engineSettings ? project.engineSettings : {};
     return engines.listEngines(info, {
-        wan_animate: settings.wanAnimate || {},
+        scail2: settings.scail2 || {},
         h3: settings.h3 || {}
     });
 }
 
-function segmentationStatus(info) {
-    return segmentation.availability(info);
+function scailModelVariants(info) {
+    return engines.scail2.listVariants(info);
+}
+
+function scailDefaultModel() {
+    return engines.scail2.DEFAULT_MODEL_FILE;
 }
 
 function remove(projectId) {
@@ -1606,7 +1525,8 @@ module.exports = {
     get: characterState.get,
     setEngine,
     engineStatus,
-    segmentationStatus,
+    scailModelVariants,
+    scailDefaultModel,
     listEngines: engines.listEngines,
     getEngine: engines.getEngine,
     createProject,
@@ -1621,8 +1541,6 @@ module.exports = {
     runSelection,
     selectTracks,
     applySelectionCorrection,
-    startSegment,
-    runSegment,
     needsSelection,
     needsSegmentation,
     maskSourceFor,
@@ -1641,6 +1559,7 @@ module.exports = {
     generateSheet,
     exportMask,
     exportMasks,
+    buildScailPlan,
     buildRenderPlan,
     renderTake,
     markTakeUpscaled,

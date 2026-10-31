@@ -655,7 +655,7 @@
                         </div>
                         <div class="settings-card" data-search="video sampling steps cfg guidance h3 diffusion quality">
                             <div class="settings-card-title">SAMPLING</div>
-                            <div class="settings-card-sub">H3 diffusion steps and CFG guidance for standard (≤15s) video. Double-click a value to reset it to the default.</div>
+                            <div class="settings-card-sub">H3 diffusion steps and CFG guidance for standard (=15s) video. Double-click a value to reset it to the default.</div>
                             <div class="settings-field-row">
                                 <div class="settings-field">
                                     <label class="settings-field-label" for="videoSteps">Steps</label>
@@ -845,7 +845,7 @@
                         <div class="settings-field">
                             <label class="settings-field-label" for="videoFaceRefineCanvasMode">Canvas</label>
                             <select class="settings-select" id="videoFaceRefineCanvasMode">
-                                <option value="auto_capped_768">Auto ≤768</option>
+                                <option value="auto_capped_768">Auto =768</option>
                                 <option value="auto_no_downscale">Auto full</option>
                                 <option value="manual">Manual 768</option>
                             </select>
@@ -1707,7 +1707,7 @@
                 <div>
                     <div class="creator-studio-kicker">NOT-SO-JARVIS · VIDEO CHARACTER REPLACEMENT</div>
                     <h1 id="characterSwapTitle">CHARACTER SWAP</h1>
-                    <p>Wan Animate 2 needs one character image and a scene prompt. MiniMax H3 needs detected people, tracked masks and character references.</p>
+                    <p>SCAIL-2 replaces the selected person with official replacement-mode conditioning. MiniMax H3 needs tracked people and character references.</p>
                 </div>
                 <div class="character-swap-header-actions">
                     <button class="character-swap-btn character-swap-btn--ghost" id="csStartOver" type="button" title="Discard this workspace and start a new character swap">Start over</button>
@@ -1719,9 +1719,9 @@
                     <div class="character-swap-engine">
                         <div class="character-swap-engine-label">GENERATION ENGINE</div>
                         <div class="character-swap-engine-options" id="csEngineOptions">
-                            <button class="character-swap-engine-btn active" type="button" data-cs-engine="wan_animate">
-                                <strong>Wan Animate 2</strong>
-                                <span>Recommended · one image + prompt</span>
+                            <button class="character-swap-engine-btn active" type="button" data-cs-engine="scail2">
+                                <strong>SCAIL-2</strong>
+                                <span>Official replacement mode</span>
                             </button>
                             <button class="character-swap-engine-btn" type="button" data-cs-engine="h3">
                                 <strong>MiniMax H3</strong>
@@ -1731,7 +1731,7 @@
                         <div class="character-swap-engine-note" id="csEngineNote"></div>
                         <div class="character-swap-engine-warning" id="csEngineWarning" hidden></div>
                     </div>
-                    <div class="character-swap-section">1 · SOURCE</div>
+                    <div class="character-swap-section" id="csSourceTitle">1 · SOURCE</div>
                     <input type="file" id="csVideoFile" accept="video/mp4,video/webm,video/quicktime" hidden>
                     <div class="character-swap-row">
                         <button class="character-swap-btn character-swap-btn--primary" id="csChooseVideo" type="button">Upload video</button>
@@ -1747,13 +1747,13 @@
                     <div class="character-swap-hint" id="csTrimHint">MiniMax H3 replacement renders up to 15 seconds. Longer clips are trimmed to the selected range.</div>
 
                     <div id="csPeopleSection">
-                    <div class="character-swap-section">2 · PEOPLE</div>
+                    <div class="character-swap-section" id="csPeopleTitle">2 · PEOPLE</div>
                     <div class="character-swap-detection" id="csDetection" hidden>
                         <div class="character-swap-row">
                             <button class="character-swap-btn character-swap-btn--primary" id="csDetect" type="button">Detect people</button>
                             <button class="character-swap-btn" id="csSelectionApply" type="button" disabled>Use selected</button>
                         </div>
-                        <div class="character-swap-hint" id="csDetectionHint">MiniMax H3 uses SAM 3.1 on the frames you tap.</div>
+                        <div class="character-swap-hint" id="csDetectionHint">Detect every person, then click the one to replace. SCAIL-2 tracks that person with SAM 3.1 and never replaces the others.</div>
                         <div class="character-swap-detections" id="csDetections"></div>
                     </div>
                     <div class="character-swap-people" id="csPeople"></div>
@@ -1762,7 +1762,7 @@
                     </div>
 
                     <div id="csMaskSection">
-                    <div class="character-swap-section">3 · TRACK &amp; MASK</div>
+                    <div class="character-swap-section" id="csMaskTitle">3 · TRACK &amp; MASK</div>
                     <div class="character-swap-tools" id="csTools">
                         <button class="character-swap-tool active" data-cs-tool="select" type="button">Select</button>
                         <button class="character-swap-tool" data-cs-tool="brush" type="button">Brush</button>
@@ -1775,9 +1775,9 @@
                         <label>Mask opacity <input type="range" id="csMaskOpacity" min="10" max="100" value="55"></label>
                     </div>
                     <div class="character-swap-row character-swap-row--compact">
-                        <label>Grow <input type="number" id="csMaskGrow" min="-64" max="128" step="4" value="12"></label>
-                        <label>Feather <input type="number" id="csMaskFeather" min="0" max="16" step="1" value="2"></label>
-                        <label>Temporal <input type="number" id="csMaskTemporal" min="0" max="7" step="1" value="3"></label>
+                        <label id="csMaskGrowField">Grow <input type="number" id="csMaskGrow" min="-64" max="128" step="4" value="12"></label>
+                        <label id="csMaskFeatherField">Feather <input type="number" id="csMaskFeather" min="0" max="16" step="1" value="2"></label>
+                        <label id="csMaskTemporalField">Temporal <input type="number" id="csMaskTemporal" min="0" max="7" step="1" value="3"></label>
                     </div>
                     <div class="character-swap-row">
                         <label class="character-swap-check"><input type="checkbox" id="csMaskVisible" checked> Show mask</label>
@@ -1789,10 +1789,10 @@
                         <button class="character-swap-btn character-swap-btn--primary" id="csTrack" type="button">Track</button>
                         <button class="character-swap-btn" id="csRetrack" type="button">Recalculate</button>
                     </div>
-                    <div class="character-swap-hint">Select: click the person (Shift-click excludes background). The tint is SAM's current mask — if it covers the scene, add exclude points. Track follows it through the clip. Brush/Eraser fix the tracked mask on the current frame. Keep Grow small (8–16); large growth paints a generated halo around the subject.</div>
+                    <div class="character-swap-hint" id="csMaskHint">Select: click the person (Shift-click excludes background). The tint is SAM's current mask — if it covers the scene, add exclude points. Track follows it through the clip. Brush/Eraser fix the tracked mask on the current frame. Keep Grow small (8–16); large growth paints a generated halo around the subject.</div>
                     </div>
 
-                    <div class="character-swap-section">4 · CHARACTER</div>
+                    <div class="character-swap-section" id="csCharacterTitle">4 · CHARACTER</div>
                     <input type="file" id="csRefFiles" accept="image/png,image/jpeg,image/webp" multiple hidden>
                     <div class="character-swap-row">
                         <button class="character-swap-btn" id="csAddRefs" type="button">Upload images</button>
@@ -1800,7 +1800,7 @@
                         <button class="character-swap-btn" id="csDescribe" type="button">Describe</button>
                     </div>
                     <div class="character-swap-hint" id="csCharacterHint"></div>
-                    <div class="character-swap-row">
+                    <div class="character-swap-row" id="csViewRow">
                         <select id="csViewKind">
                             <option value="front">Front view</option>
                             <option value="side">Side view</option>
@@ -1814,7 +1814,7 @@
                     <div class="character-swap-refs" id="csRefs"></div>
                     <div class="character-swap-description" id="csDescription"></div>
 
-                    <div class="character-swap-section">5 · GENERATE</div>
+                    <div class="character-swap-section" id="csGenerateTitle">5 · GENERATE</div>
                     <div class="character-swap-row">
                         <label>Takes
                             <select id="csTakeCount">
@@ -1836,8 +1836,16 @@
                         <div class="character-swap-hint">H3 renders one clip up to 15 seconds through Ref2VA + Character LoRA v1.5. Rendered takes stay available when you switch engines.</div>
                     </div>
                     <div class="character-swap-engine-settings" id="csWanSettings">
-                        <label class="character-swap-prompt">Scene prompt
-                            <textarea id="csWanPrompt" rows="4" placeholder="Describe the shot, e.g. replace the person on the left with the character in the reference image, walking through a rainy street."></textarea>
+                        <div class="character-swap-row">
+                            <label>SCAIL-2 model
+                                <select id="csScailModel">
+                                    <option value="SCAIL-2-Q4_K_M.gguf">Q4_K_M — ~10 GB (recommended)</option>
+                                </select>
+                            </label>
+                        </div>
+                        <div class="character-swap-hint" id="csScailModelHint">Recommended daily driver: best balance of quality and 16 GB VRAM headroom.</div>
+                        <label class="character-swap-prompt">Replacement direction
+                            <textarea id="csWanPrompt" rows="4" placeholder="Describe the person to replace, e.g. replace the person on the left."></textarea>
                         </label>
                         <div class="character-swap-row">
                             <label>Duration
@@ -1856,9 +1864,9 @@
                             </label>
                         </div>
                         <div class="character-swap-row character-swap-row--compact">
-                            <label>Steps <input type="number" id="csWanSteps" min="1" max="30" value="6"></label>
+                            <label>Steps <input type="number" id="csWanSteps" min="1" max="100" value="6"></label>
                         </div>
-                        <div class="character-swap-hint">Your direction is rewritten into Wan Animate 2's subject + background format. Only the named person (for example “the person on the left”) is replaced; the original background, lighting, framing, timing, audio and other people are described as unchanged. Wan Animate 2 regenerates the background from text, so retention is best-effort rather than pixel-exact.</div>
+                        <div class="character-swap-hint">SCAIL-2 uses SAM 3.1 coloring to replace only the selected person. The original background, other people, camera motion and audio are preserved, and the produced video is described as a positive prompt rather than an instruction.</div>
                     </div>
                     <button class="character-swap-btn character-swap-btn--render" id="csRender" type="button">Render</button>
                     <div class="character-swap-status" id="csStatus" aria-live="polite"></div>

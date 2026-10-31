@@ -55,8 +55,8 @@ const LOOK_USER =
     'Return {"look":"in ..."} describing the main person\'s visible clothing in at most eight words, ' +
     'starting with "in", for example "in a red hoodie and blue jeans". No sentence.';
 
-// Wan Animate 2 generates the background from text, so the exact source scene
-// is captured once and reused as the Background section of the enhanced prompt.
+// SCAIL-2 prompts describe the finished video, so the exact source scene
+// is captured once and reused as the scene section of the enhanced prompt.
 // The caption ignores people and action on purpose: the preservation clause
 // names the target, and the performance video owns all motion.
 const SCENE_SYSTEM =

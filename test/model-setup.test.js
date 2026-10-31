@@ -39,12 +39,29 @@ test('Setup catalog offers the FL2VA and Ref2VA H3 UNETs and the reference node'
     assert.equal(modelSetup.MODEL_CATALOG.find((entry) => entry.id === 'h3_unet_i2va'), undefined);
 });
 
-test('Setup catalog offers the Wan Animate 2 stack and the DWPose pack', () => {
-    const unet = modelSetup.MODEL_CATALOG.find((entry) => entry.id === 'wan_animate_unet');
+test('Setup catalog offers the SCAIL-2 stack and the DWPose pack', () => {
+    const unet = modelSetup.MODEL_CATALOG.find((entry) => entry.id === 'scail2_unet');
     assert.ok(unet);
-    assert.match(unet.file, /wan_animate_2/);
-    assert.equal(unet.dest, 'diffusion_models');
+    assert.match(unet.file, /SCAIL-2/);
+    assert.equal(unet.dest, 'unet');
     assert.equal(unet.required, false);
+
+    const variants = ['scail2_unet_q2', 'scail2_unet_q3', 'scail2_unet_q5', 'scail2_unet_q6', 'scail2_unet_q8'];
+    for (const id of variants) {
+        const entry = modelSetup.MODEL_CATALOG.find((item) => item.id === id);
+        assert.ok(entry, id + ' is listed');
+        assert.match(entry.file, /\.gguf$/);
+        assert.equal(entry.dest, 'unet');
+    }
+    const full = modelSetup.MODEL_CATALOG.find((entry) => entry.id === 'scail2_unet_fp16');
+    assert.ok(full);
+    assert.equal(full.dest, 'diffusion_models');
+    assert.match(full.file, /\.safetensors$/);
+    assert.match(full.note, /UNETLoader/);
+
+    const sam = modelSetup.MODEL_CATALOG.find((entry) => entry.id === 'scail2_sam');
+    assert.match(sam.file, /sam3\.1/i);
+    assert.equal(sam.dest, 'checkpoints');
 
     const textEncoder = modelSetup.MODEL_CATALOG.find((entry) => entry.id === 'wan_animate_text_encoder');
     assert.match(textEncoder.file, /umt5/i);
@@ -53,8 +70,11 @@ test('Setup catalog offers the Wan Animate 2 stack and the DWPose pack', () => {
     const clipVision = modelSetup.MODEL_CATALOG.find((entry) => entry.id === 'wan_animate_clip_vision');
     assert.equal(clipVision.dest, 'clip_vision');
 
-    const lightx2v = modelSetup.MODEL_CATALOG.find((entry) => entry.id === 'wan_animate_lightx2v');
+    const lightx2v = modelSetup.MODEL_CATALOG.find((entry) => entry.id === 'scail2_lightx2v');
     assert.match(lightx2v.file, /lightx2v/i);
+
+    const relight = modelSetup.MODEL_CATALOG.find((entry) => entry.id === 'scail2_relight_lora');
+    assert.match(relight.file, /relight/i);
 
     const dwpose = modelSetup.NODE_CATALOG.find((entry) => entry.id === 'controlnet_aux');
     assert.ok(dwpose);
@@ -62,11 +82,12 @@ test('Setup catalog offers the Wan Animate 2 stack and the DWPose pack', () => {
     assert.equal(dwpose.preserveTorch, true);
     assert.match(dwpose.repo, /Fannovel16\/comfyui_controlnet_aux/);
 
-    const wanNode = modelSetup.NODE_CATALOG.find((entry) => entry.id === 'wan_native');
-    assert.deepEqual(wanNode.nodes, ['WanAnimate2ToVideo', 'ResizeImageMaskNode']);
-    assert.equal(modelSetup.NODE_CATALOG.find((entry) => entry.id === 'wan_animate_2'), undefined);
+    const nativeNode = modelSetup.NODE_CATALOG.find((entry) => entry.id === 'scail2_native');
+    assert.deepEqual(nativeNode.nodes, ['WanSCAILToVideo', 'SCAIL2ColoredMask', 'SAM3_Detect', 'SAM3_VideoTrack']);
+    const infinityNode = modelSetup.NODE_CATALOG.find((entry) => entry.id === 'scail2_infinity');
+    assert.deepEqual(infinityNode.nodes, ['WanSCAILInfinity']);
+    assert.equal(modelSetup.NODE_CATALOG.find((entry) => entry.id === 'wan_native'), undefined);
 });
-
 test('Setup catalog offers the H3 Turbo pack with its nodes and install URL', () => {
     const pack = modelSetup.NODE_CATALOG.find((entry) => entry.id === 'h3_turbo');
     assert.ok(pack);

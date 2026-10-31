@@ -22,8 +22,8 @@ const FPS = 24;
 const MAX_SIDE = 1280;
 const H3_MAX_SECONDS = 15;
 const WAN_MAX_SECONDS = Math.max(1, Number(process.env.WAN_ANIMATE_MAX_SECONDS) || 15);
-const DEFAULT_ENGINE = 'wan_animate';
-const ENGINES = ['wan_animate', 'h3'];
+const DEFAULT_ENGINE = 'scail2';
+const ENGINES = ['scail2', 'h3'];
 
 function clampNumber(value, min, max, fallback) {
     const n = Number(value);
@@ -33,20 +33,22 @@ function clampNumber(value, min, max, fallback) {
 
 function defaultEngineSettings() {
     return {
-        wanAnimate: {
+        scail2: {
             preset: 'standard',
+            unet: 'SCAIL-2-Q4_K_M.gguf',
             resolution: '480p',
             width: 0,
             height: 0,
             steps: 6,
             cfg: 1,
             shift: 5,
-            length: 81,
-            overlap: 1,
-            blockify: 0,
-            relight: false,
-            identityStrength: 1,
-            motionStrength: 1,
+            sampler: 'euler',
+            scheduler: 'simple',
+            poseStrength: 1,
+            poseStart: 0,
+            poseEnd: 1,
+            relight: true,
+            dpo: false,
             seedMode: 'random',
             seed: null,
             durationMode: 'match',
@@ -64,51 +66,52 @@ function defaultEngineSettings() {
 
 function normalizeEngineName(value) {
     const name = String(value || '').trim().toLowerCase();
-    if (name === 'wan' || name === 'wan_animate' || name === 'wan22' || name === 'wan-animate') return 'wan_animate';
+    // Removed Wan engines migrate to SCAIL-2.
+    if (name === 'wan_animate_mix' || name === 'wan-animate-mix' || name === 'wan_mix' || name === 'wanmix' ||
+        name === 'wan22_mix' || name === 'wan-mix' || name === 'mix') return 'scail2';
+    if (name === 'scail2' || name === 'scail-2' || name === 'scail_2' || name === 'scail' ||
+        name === 'wan' || name === 'wan_animate' || name === 'wan_animate2' || name === 'wan22' ||
+        name === 'wan-animate' || name === 'move') return 'scail2';
     if (name === 'h3' || name === 'minimax' || name === 'minimax_h3') return 'h3';
     return DEFAULT_ENGINE;
-}
-
-function normalizeWanLength(value, fallback = 81) {
-    const n = Math.round(clampNumber(value, 33, 161, fallback));
-    const snapped = Math.max(33, Math.min(161, Math.round((n - 1) / 4) * 4 + 1));
-    return snapped;
-}
-
-function normalizeWanOverlap(value, fallback = 1) {
-    const n = Math.round(clampNumber(value, 1, 13, fallback));
-    return [1, 5, 9, 13].includes(n) ? n : fallback;
 }
 
 function normalizeEngineSettings(source) {
     const base = defaultEngineSettings();
     const input = source && typeof source === 'object' ? source : {};
-    const wan = input.wanAnimate && typeof input.wanAnimate === 'object' ? input.wanAnimate : {};
+    // Older projects stored Wan Animate 2 settings under wanAnimate. They are
+    // carried over to SCAIL-2 because the old engine no longer exists.
+    const scail = (input.scail2 && typeof input.scail2 === 'object')
+        ? input.scail2
+        : (input.wanAnimate && typeof input.wanAnimate === 'object' ? input.wanAnimate : {});
     const h3 = input.h3 && typeof input.h3 === 'object' ? input.h3 : {};
-    base.wanAnimate.preset = ['draft', 'standard', 'quality'].includes(String(wan.preset)) ? String(wan.preset) : base.wanAnimate.preset;
-    base.wanAnimate.resolution = ['480p', '720p'].includes(String(wan.resolution)) ? String(wan.resolution) : base.wanAnimate.resolution;
-    base.wanAnimate.width = Math.max(0, Math.min(2048, Math.round(Number(wan.width) || 0)));
-    base.wanAnimate.height = Math.max(0, Math.min(2048, Math.round(Number(wan.height) || 0)));
-    base.wanAnimate.steps = Math.round(clampNumber(wan.steps, 1, 30, base.wanAnimate.steps));
-    base.wanAnimate.cfg = clampNumber(wan.cfg, 1, 10, base.wanAnimate.cfg);
-    base.wanAnimate.shift = clampNumber(wan.shift, 1, 20, base.wanAnimate.shift);
-    base.wanAnimate.length = normalizeWanLength(wan.length, base.wanAnimate.length);
-    base.wanAnimate.overlap = normalizeWanOverlap(wan.overlap, base.wanAnimate.overlap);
-    base.wanAnimate.blockify = Math.round(clampNumber(wan.blockify, 8, 128, base.wanAnimate.blockify));
-    base.wanAnimate.relight = wan.relight === true;
-    base.wanAnimate.identityStrength = clampNumber(wan.identityStrength, 0, 2, base.wanAnimate.identityStrength);
-    base.wanAnimate.motionStrength = clampNumber(wan.motionStrength, 0, 2, base.wanAnimate.motionStrength);
-    base.wanAnimate.seedMode = wan.seedMode === 'fixed' ? 'fixed' : 'random';
-    base.wanAnimate.seed = wan.seed === null || wan.seed === undefined || wan.seed === ''
+    base.scail2.preset = ['draft', 'standard', 'quality'].includes(String(scail.preset)) ? String(scail.preset) : base.scail2.preset;
+    base.scail2.unet = String(scail.unet || base.scail2.unet).trim().slice(0, 200) || base.scail2.unet;
+    base.scail2.resolution = ['480p', '720p'].includes(String(scail.resolution)) ? String(scail.resolution) : base.scail2.resolution;
+    base.scail2.width = Math.max(0, Math.min(2048, Math.round(Number(scail.width) || 0)));
+    base.scail2.height = Math.max(0, Math.min(2048, Math.round(Number(scail.height) || 0)));
+    base.scail2.steps = Math.round(clampNumber(scail.steps, 1, 100, base.scail2.steps));
+    base.scail2.cfg = clampNumber(scail.cfg, 0, 20, base.scail2.cfg);
+    base.scail2.shift = clampNumber(scail.shift, 1, 20, base.scail2.shift);
+    base.scail2.sampler = String(scail.sampler || base.scail2.sampler).slice(0, 40);
+    base.scail2.scheduler = String(scail.scheduler || base.scail2.scheduler).slice(0, 40);
+    base.scail2.poseStrength = clampNumber(scail.poseStrength, 0, 10, base.scail2.poseStrength);
+    base.scail2.poseStart = clampNumber(scail.poseStart, 0, 1, base.scail2.poseStart);
+    base.scail2.poseEnd = clampNumber(scail.poseEnd, 0, 1, base.scail2.poseEnd);
+    base.scail2.relight = scail.relight !== false;
+    base.scail2.dpo = scail.dpo === true;
+    base.scail2.seedMode = scail.seedMode === 'fixed' ? 'fixed' : 'random';
+    base.scail2.seed = scail.seed === null || scail.seed === undefined || scail.seed === ''
         ? null
-        : Math.max(0, Math.round(Number(wan.seed) || 0));
-    base.wanAnimate.durationMode = wan.durationMode === 'fixed' ? 'fixed' : 'match';
-    base.wanAnimate.durationSeconds = wan.durationSeconds === null || wan.durationSeconds === undefined || wan.durationSeconds === ''
+        : Math.max(0, Math.round(Number(scail.seed) || 0));
+    base.scail2.durationMode = scail.durationMode === 'fixed' ? 'fixed' : 'match';
+    base.scail2.durationSeconds = scail.durationSeconds === null || scail.durationSeconds === undefined || scail.durationSeconds === ''
         ? null
-        : Math.round(clampNumber(wan.durationSeconds, 1, WAN_MAX_SECONDS, WAN_MAX_SECONDS) * 10) / 10;
-    base.wanAnimate.positive = String(wan.positive || '').slice(0, 4000);
-    base.wanAnimate.negative = String(wan.negative || '').slice(0, 4000);
-    base.wanAnimate.maxSeconds = Math.round(clampNumber(wan.maxSeconds, H3_MAX_SECONDS, WAN_MAX_SECONDS, WAN_MAX_SECONDS));
+        : Math.round(clampNumber(scail.durationSeconds, 1, WAN_MAX_SECONDS, WAN_MAX_SECONDS) * 10) / 10;
+    base.scail2.positive = String(scail.positive || '').slice(0, 4000);
+    base.scail2.negative = String(scail.negative || '').slice(0, 4000);
+    base.scail2.maxSeconds = Math.round(clampNumber(scail.maxSeconds, H3_MAX_SECONDS, WAN_MAX_SECONDS, WAN_MAX_SECONDS));
+
     base.h3.quality = h3.quality === 'draft' ? 'draft' : 'full';
     base.h3.h3Size = ['S', 'M', 'L', 'XL'].includes(String(h3.h3Size).toUpperCase())
         ? String(h3.h3Size).toUpperCase()
@@ -134,6 +137,7 @@ function ensureProjectDir(id) {
     fs.mkdirSync(path.join(dir, 'refs'), { recursive: true });
     fs.mkdirSync(path.join(dir, 'takes'), { recursive: true });
     fs.mkdirSync(path.join(dir, 'wan'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'scail2'), { recursive: true });
     fs.mkdirSync(path.join(dir, 'selection'), { recursive: true });
     fs.mkdirSync(path.join(dir, 'segmentation'), { recursive: true });
     return dir;
@@ -280,6 +284,9 @@ function normalizeProject(project) {
     if (!project.segmentation.people || typeof project.segmentation.people !== 'object') {
         project.segmentation.people = {};
     }
+    // Removed Mix projects keep their saved JSON, but the dead mask state is
+    // dropped so it cannot leak into the UI.
+    delete project.mix;
 
     (project.people || []).forEach((person, index) => {
         person.tint = TINTS[index % TINTS.length];
@@ -438,8 +445,6 @@ module.exports = {
     defaultEngineSettings,
     normalizeEngineName,
     normalizeEngineSettings,
-    normalizeWanLength,
-    normalizeWanOverlap,
     newPerson,
     projectDir,
     ensureProjectDir,

@@ -178,8 +178,9 @@ let currentNodeTypes = {};
 // Ordered most-specific-first: the first matching rule wins.
 const STAGE_LABEL_RULES = [
     [/DWPreprocessor|PixelPerfectResolution/i, 'Extracting pose…'],
-    [/WanAnimateToVideo/i, 'Animating character…'],
-    [/BlockifyMask|DrawMaskOnImage|ImageToMask/i, 'Preparing mask…'],
+    [/SAM3_Detect|SAM3_VideoTrack|SCAIL2ColoredMask/i, 'Tracking the replacement target…'],
+    [/MaskToImage|ImageToMask/i, 'Preparing mask…'],
+    [/WanSCAIL|SCAIL2/i, 'Animating character…'],
     [/ReferenceToVideo/i, 'Encoding reference video…'],
     [/ImageToVideo/i, 'Encoding first frame…'],
     [/AddGuide/i, 'Encoding guide frames…'],

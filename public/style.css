@@ -9321,13 +9321,18 @@ a.modal-btn {
 .creator-studio-header p { margin-top: 2px; color: var(--text-secondary); font-size: 13px; }
 
 .creator-studio-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     width: 32px;
     height: 32px;
+    padding: 0;
     border: 1px solid var(--border-color);
     border-radius: 6px;
     background: var(--bg-card);
     color: var(--text-secondary);
-    font-size: 24px;
+    font-family: var(--font-sans);
+    font-size: 22px;
     line-height: 1;
     cursor: pointer;
 }
@@ -10578,6 +10583,7 @@ textarea.companion-input { resize: vertical; font-family: var(--font-sans); }
 .character-swap-stage { min-width: 0; min-height: 0; display: flex; flex-direction: column; padding: 18px; gap: 12px; overflow: auto; container-type: inline-size; }
 .character-swap-section { margin: 18px 0 8px; color: var(--accent-muted); font: 600 10px var(--font-mono); letter-spacing: 0.13em; text-transform: uppercase; }
 .character-swap-section:first-child { margin-top: 0; }
+.character-swap [hidden] { display: none !important; }
 .character-swap-btn {
     border: 1px solid var(--border-color);
     background: var(--bg-card);
