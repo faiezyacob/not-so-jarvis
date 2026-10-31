@@ -35,3 +35,34 @@ test('stageLabelForClass: unknown / empty nodes yield no label', () => {
     assert.equal(comfyui.stageLabelForClass(null), '');
     assert.equal(comfyui.stageLabelForClass('SomeUnknownNode'), '');
 });
+
+test('stageProgressPercent: sampler steps map into the total job progress', () => {
+    assert.equal(comfyui.stageProgressPercent('Loading model…', 0, 1), 0);
+    assert.equal(comfyui.stageProgressPercent('Sampling…', 0, 25), 25);
+    assert.equal(comfyui.stageProgressPercent('Sampling…', 25, 25), 85);
+    assert.equal(comfyui.stageProgressPercent('VAEDecode', 0, 1), null);
+    assert.equal(comfyui.stageProgressPercent('Decoding video…', 0, 1), 88);
+    assert.equal(comfyui.stageProgressPercent('Encoding video file…', 1, 1), 99);
+});
+
+test('stageProgressPercent: total progress never regresses across the video pipeline', () => {
+    const phases = [
+        ['Loading model…', 0],
+        ['Loading input…', 0],
+        ['Encoding first frame…', 0],
+        ['Sampling…', 0],
+        ['Sampling…', 25],
+        ['Decoding video…', 0],
+        ['Encoding video file…', 0],
+        ['Encoding video file…', 1]
+    ];
+    let previous = -1;
+    phases.forEach(([label, value]) => {
+        const max = label === 'Sampling…' ? 25 : 1;
+        const pct = comfyui.stageProgressPercent(label, value, max);
+        assert.ok(pct !== null, label + ' should have a progress band');
+        assert.ok(pct >= previous, label + ' should not move the bar backwards');
+        previous = pct;
+    });
+    assert.ok(previous <= 99);
+});

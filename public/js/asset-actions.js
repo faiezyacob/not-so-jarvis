@@ -120,6 +120,16 @@ const AssetActions = (() => {
         }
     };
 
+    const SWAP_VIDEO = {
+        id: 'swap',
+        title: 'Character Swap',
+        run(filename) {
+            if (window.CharacterSwapUI && typeof window.CharacterSwapUI.openWithVideo === 'function') {
+                window.CharacterSwapUI.openWithVideo(filename, refUrl(filename));
+            }
+        }
+    };
+
     const MODIFY = {
         id: 'modify',
         title: 'Modify',
@@ -231,7 +241,7 @@ const AssetActions = (() => {
         const companion = Boolean(options && options.companion);
         collect(contentEl).forEach((item) => {
             const actions = item.kind === 'video'
-                ? [REPLACE, UPSCALE]
+                ? [SWAP_VIDEO, REPLACE, UPSCALE]
                 : (companion ? [UPSCALE, MODIFY, CHARACTER] : [UPSCALE, MODIFY, VIDEO, CHARACTER]);
             const row = document.createElement('div');
             row.className = 'chat-suggestion-row asset-action-row';

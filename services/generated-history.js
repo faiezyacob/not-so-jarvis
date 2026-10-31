@@ -295,6 +295,7 @@ function remove(id, sessionId) {
             try { fs.unlinkSync(abs); } catch (err) { /* ignore — record already removed */ }
         }
     }
+    activityLog.removeByFile(raw || entry.file);
     return entry;
 }
 
@@ -323,6 +324,7 @@ function removeByFilename(filename, sessionId) {
         if (abs.startsWith(GENERATED_DIR) && fs.existsSync(abs)) {
             try { fs.unlinkSync(abs); } catch (err) { /* ignore — record dropped below */ }
         }
+        activityLog.removeByFile(entryRaw || entry.file);
         count += 1;
         return false;
     });

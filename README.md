@@ -123,7 +123,7 @@ Everything runs from a single chat surface — there are no separate tools or da
 - **Node.js** — no `npm install` needed (zero dependencies)
 - **NVIDIA GPU with 16 GB VRAM is required** to run the full image, video, and upscale stack (Krea2, MiniMax H3, SeedVR2). VRAM is freed and reloaded between chat and generation as needed via `vram-manager`.
 - **[Ollama](https://ollama.com)** running at `localhost:11434` for chat
-- **Optional, for image/video/upscale:** [ComfyUI](https://github.com/comfyanonymous/ComfyUI) with the Krea2 / MiniMax H3 models and custom nodes. The in-app **Settings > Setup** guide can install these for you.
+- **Optional, for image/video/upscale:** [ComfyUI](https://github.com/comfyanonymous/ComfyUI) with the Krea2 / MiniMax H3 models and custom nodes. The in-app **Settings > Setup** guide can install these for you. Character Swap's default Wan Animate 2 engine additionally needs the Wan Animate 2 int8 model, UMT5 XXL text encoder, Wan 2.1 VAE, CLIP Vision H and the LightX2V acceleration LoRA — all listed in Settings > Setup.
 
 > **Reference machine.** Developed and tested on **16 GB VRAM + 64 GB system RAM**. 64 GB of system RAM is recommended for video upscaling, which holds the full source and the upscaled output in memory (see [Upscaling](#upscaling)).
 
@@ -195,6 +195,15 @@ Attach a photo and describe a change (*"remove the car"*), or say *"edit this im
 ### Video generation
 
 Text prompts (T2VA) or an attached/referenced image (I2VA) produce a MiniMax H3 video with synchronized audio. Director Mode turns a production into discrete stages (brief → opening image approval → video), and the Long Video Director plans >15 s requests as a continuous beat chain. If FaceRefine is enabled, a second pass refines faces before the final file is written. On first enable, the ComfyUI-side nodes and face detector are auto-installed in the background.
+
+### Character Swap
+
+Open **Character Swap** from the top-right header button next to Creator Studio, or from a generated video's asset actions. Import a clip by uploading it or picking any generated video from the app. Wan Animate 2 needs one character image and a scene prompt; MiniMax H3 uses the tap-to-select SAM 3.1 tracking/mask flow with reference views:
+
+- **Wan Animate 2 (default)** — native character animation through ComfyUI's `WanAnimate2ToVideo` node. Upload one character image plus a performance video and describe the shot in the scene prompt (for example "replace the person on the left"). Your direction is enhanced automatically into the model's subject + background format: the named person is replaced, the original scene is captioned once and kept as the background, and a preservation clause holds the lighting, colours, camera, framing, timing, audio and other people. It renders at 24 fps in 81-frame continuation windows (480p default, 720p optional), stitches the windows and muxes the original audio unchanged. Clips are matched to their source length, capped at 15 seconds. Because Wan Animate 2 regenerates the background from text, scene retention is best-effort rather than pixel-exact. Deleting a take from Character Swap removes its generated video from the gallery, and deleting that video in the gallery removes the take.
+- **MiniMax H3 + Character LoRA v1.5** — the existing Ref2VA reference-to-video path, capped at 15 s.
+
+Switching engines never clears the uploaded video, trim, tracking, masks, references or takes. Missing Wan models/nodes are reported explicitly; JARVIS never silently switches to H3. Both engines run through the same VRAM manager (one backend resident at a time) and record peak VRAM/RAM in the take metadata.
 
 ### Upscaling
 

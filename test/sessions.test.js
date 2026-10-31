@@ -157,6 +157,28 @@ test('setHiddenByFilename pulls a promoted image out of the gallery', () => {
     assert.equal(generatedHistory.removeByFilename('promoted.png'), 1);
 });
 
+test('deleting generated media drops its activity entries', () => {
+    makeFile('activity_by_name.png');
+    generatedHistory.add({
+        file: '/generated/activity_by_name.png',
+        rawFilename: 'activity_by_name.png',
+        prompt: 'activity by name'
+    });
+    assert.equal(activityLog.list(50).some((e) => e.file === '/generated/activity_by_name.png'), true);
+    assert.equal(generatedHistory.removeByFilename('activity_by_name.png'), 1);
+    assert.equal(activityLog.list(50).some((e) => e.file === '/generated/activity_by_name.png'), false);
+
+    makeFile('activity_by_id.png');
+    const added = generatedHistory.add({
+        file: '/generated/activity_by_id.png',
+        rawFilename: 'activity_by_id.png',
+        prompt: 'activity by id'
+    });
+    assert.equal(activityLog.list(50).some((e) => e.file === '/generated/activity_by_id.png'), true);
+    assert.ok(generatedHistory.remove(added.id));
+    assert.equal(activityLog.list(50).some((e) => e.file === '/generated/activity_by_id.png'), false);
+});
+
 test('activity entries carry their conversation id', () => {
     activityLog.record({ type: 'image', title: 'Image generated', conversationId: sessionA.id, file: '/generated/a1.png' });
     activityLog.record({ type: 'system', title: 'Server started' });

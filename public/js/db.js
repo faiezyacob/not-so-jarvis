@@ -135,6 +135,12 @@ function putMessage(message) {
     });
 }
 
+function deleteMessage(id) {
+    return tx(STORES.messages, 'readwrite', (store) => {
+        return reqToPromise(store.delete(id));
+    });
+}
+
 function deleteMessagesByConversation(conversationId) {
     return tx(STORES.messages, 'readwrite', (store) => {
         const index = store.index('conversationId');
@@ -161,6 +167,7 @@ const DB = {
         byConversation: getMessagesByConversation,
         all: getAllMessages,
         put: putMessage,
+        remove: deleteMessage,
         removeByConversation: deleteMessagesByConversation
     }
 };

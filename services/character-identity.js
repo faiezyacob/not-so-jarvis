@@ -747,11 +747,11 @@ function buildIdentityConstraints(value) {
     const skin = metadata.skin || {};
     const descriptor = skinDescriptor(skin);
     const constraints = [
-        'Preserve the approved character\'s ' + qwenEditPrompt.IDENTITY_PRESERVATION_CLAUSE
+        'Preserve the approved character\'s facial identity and ' + qwenEditPrompt.IDENTITY_PRESERVATION_CLAUSE
     ];
     if (descriptor) {
-        constraints.push('Keep the character\'s natural skin tone and undertone (' + descriptor +
-            ') consistent across all exposed skin, from the face and neck through the body');
+        constraints.push('Keep the character\'s one consistent underlying natural skin tone and undertone (' + descriptor +
+            ') as one continuous physical material across all exposed skin, from the face and neck through the body');
     }
     if (metadata.distinctiveFeatures && metadata.distinctiveFeatures.length) {
         constraints.push('Keep the character\'s distinctive features: ' + metadata.distinctiveFeatures.join(', '));

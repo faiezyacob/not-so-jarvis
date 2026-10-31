@@ -170,13 +170,16 @@ let progressSubscribers = [];
 
 // The node id -> class_type map of the most recently queued graph. ComfyUI's
 // websocket reports which node is currently executing, but not what it does;
-// we translate it into a human phase label so the UI can show the real state
-// (sampling reaches 100% long before the video is decoded and encoded). Only
-// one generation runs at a time, so a single slot is enough.
+// we translate it into a phase so the step percentage can be mapped onto the
+// whole job (sampling reaches 100% long before the video is decoded and
+// encoded). Only one generation runs at a time, so a single slot is enough.
 let currentNodeTypes = {};
 
 // Ordered most-specific-first: the first matching rule wins.
 const STAGE_LABEL_RULES = [
+    [/DWPreprocessor|PixelPerfectResolution/i, 'Extracting pose…'],
+    [/WanAnimateToVideo/i, 'Animating character…'],
+    [/BlockifyMask|DrawMaskOnImage|ImageToMask/i, 'Preparing mask…'],
     [/ReferenceToVideo/i, 'Encoding reference video…'],
     [/ImageToVideo/i, 'Encoding first frame…'],
     [/AddGuide/i, 'Encoding guide frames…'],
@@ -206,6 +209,62 @@ function stageLabelForNode(nodeId) {
     const node = currentNodeTypes[nodeId];
     if (!node || !node.class_type) return '';
     return stageLabelForClass(node.class_type);
+}
+
+// Each execution phase claims a slice of the whole job (percent 0-100). The
+// sampler's step percentage is scaled inside its slice, so the UI shows ONE
+// total percentage instead of a per-node number that hits 100% while decode and
+// encode are still running. The value only reaches 100 when ComfyUI reports the
+// job finished.
+const STAGE_PROGRESS_BANDS = {
+    'Loading model…': [0, 8],
+    'Loading input…': [8, 14],
+    'Extracting pose…': [14, 20],
+    'Preparing mask…': [8, 14],
+    'Encoding first frame…': [14, 26],
+    'Encoding reference video…': [14, 30],
+    'Encoding guide frames…': [14, 30],
+    'Animating character…': [30, 60],
+    'Sampling…': [25, 85],
+    'Upscaling latent…': [85, 90],
+    'Refining faces…': [85, 95],
+    'Interpolating frames…': [95, 98],
+    'Decoding video…': [88, 95],
+    'Decoding audio…': [88, 95],
+    'Encoding video file…': [95, 99],
+    'Upscaling…': [88, 99]
+};
+
+// Overall percentage for a node's step progress. Returns null when the phase
+// has no band (unknown node) so the caller can keep the previous total.
+function stageProgressPercent(label, value, max) {
+    const band = STAGE_PROGRESS_BANDS[label];
+    if (!band) return null;
+    const ratio = (typeof value === 'number' && typeof max === 'number' && max > 0)
+        ? Math.max(0, Math.min(1, value / max))
+        : 0;
+    return band[0] + ratio * (band[1] - band[0]);
+}
+
+function clampTotalProgress(pct) {
+    if (!Number.isFinite(pct)) return 0;
+    return Math.max(0, Math.min(99, pct));
+}
+
+// Total progress is monotonic within a job (a later phase never sends the bar
+// backwards) and stops at 99% until the job actually finishes.
+let totalProgress = 0;
+let currentStageLabel = '';
+let jobRunning = false;
+
+function resetTotalProgress() {
+    totalProgress = 0;
+    currentStageLabel = '';
+    jobRunning = false;
+}
+
+function broadcastProgress(update) {
+    progressSubscribers.slice().forEach((fn) => { try { fn(update); } catch {} });
 }
 
 function rememberGraphNodes(graph) {
@@ -247,19 +306,31 @@ function ensureProgressWs() {
         if (!msg || typeof msg !== 'object' || !msg.data) return;
         const d = msg.data;
         if (msg.type === 'progress' && typeof d.value === 'number' && typeof d.max === 'number') {
-            const update = { value: d.value, max: d.max };
-            progressSubscribers.slice().forEach((fn) => { try { fn(update); } catch {} });
+            jobRunning = true;
+            const mapped = stageProgressPercent(currentStageLabel, d.value, d.max);
+            const next = mapped === null
+                ? (d.max > 0 ? (d.value / d.max) * 100 : totalProgress)
+                : mapped;
+            totalProgress = Math.max(totalProgress, clampTotalProgress(next));
+            broadcastProgress({ value: totalProgress, max: 100 });
         } else if (msg.type === 'executing' && d.node === null) {
-            // Generation finished — clear to 100% then idle.
+            // Generation finished — reach 100% only now, then go idle.
+            if (jobRunning) broadcastProgress({ value: 100, max: 100 });
+            resetTotalProgress();
             currentNodeTypes = {};
-            progressSubscribers.slice().forEach((fn) => { try { fn({ value: 1, max: 1, idle: true }); } catch {} });
+            broadcastProgress({ value: 1, max: 1, idle: true });
         } else if (msg.type === 'executing' && typeof d.node === 'string') {
-            // A node started running. Report its phase so the UI can show what
-            // is actually happening (sampling is only part of the wall clock).
+            // A node started running. Advance the total to the phase's slice so
+            // the bar keeps moving between sampler passes and decode/encode.
             const label = stageLabelForNode(d.node);
             if (label) {
-                const update = { stage: label, node: d.node };
-                progressSubscribers.slice().forEach((fn) => { try { fn(update); } catch {} });
+                jobRunning = true;
+                currentStageLabel = label;
+                const band = STAGE_PROGRESS_BANDS[label];
+                if (band && band[0] > totalProgress) {
+                    totalProgress = clampTotalProgress(band[0]);
+                    broadcastProgress({ value: totalProgress, max: 100 });
+                }
             }
         }
     };
@@ -343,6 +414,7 @@ function forgetResidentModels() {
 async function queuePrompt(graph) {
     const body = { prompt: graph, client_id: CLIENT_ID };
     rememberGraphNodes(graph);
+    resetTotalProgress();
     let res;
     try {
         res = await comfyFetch('/prompt', {
@@ -747,21 +819,27 @@ async function downloadSourceImage(imageName) {
     return Buffer.from(await res.arrayBuffer());
 }
 
-// Upload a source image into ComfyUI's input folder so a LoadImage node can
-// reference it (used by the upscale pipeline). Returns ComfyUI's
+// Upload a file into ComfyUI's input folder. Despite the endpoint name,
+// ComfyUI stores videos in the same input folder, so the Character Swap mask
+// and source clip travel through the same path. Returns ComfyUI's
 // { name, subfolder, type } entry.
-async function uploadImage(buffer, filename, options = {}) {
+async function uploadFile(buffer, filename, options = {}) {
     const form = new FormData();
-    form.append('image', new Blob([buffer], { type: 'image/png' }), filename);
+    const mime = options.mime || 'image/png';
+    form.append('image', new Blob([buffer], { type: mime }), filename);
     form.append('type', 'input');
     form.append('overwrite', 'true');
     if (options.subfolder) form.append('subfolder', options.subfolder);
     const res = await comfyFetch('/upload/image', {
         method: 'POST',
         body: form,
-        timeout: 60000
+        timeout: 120000
     });
     return res.json();
+}
+
+async function uploadImage(buffer, filename, options = {}) {
+    return uploadFile(buffer, filename, Object.assign({}, options, { mime: 'image/png' }));
 }
 
 // Best-effort removal of a file previously uploaded to ComfyUI's input folder.
@@ -919,6 +997,8 @@ module.exports = {
     subscribeProgress,
     unsubscribeProgress,
     stageLabelForClass,
+    stageProgressPercent,
+    STAGE_PROGRESS_BANDS,
     freeModels,
     softFreeMemory,
     hasResidentModels,
@@ -935,9 +1015,11 @@ module.exports = {
     deleteHistory,
     downloadSourceImage,
     uploadImage,
+    uploadFile,
     deleteInputFile,
     resolveComfyRoot,
     resolveModelRoot,
     resolveInputDir,
+    resolveOutputDir,
     sleep
 };

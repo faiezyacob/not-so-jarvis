@@ -1447,7 +1447,7 @@ const Chat = (() => {
             chatMessagesEl.appendChild(empty);
         } else {
             messages.forEach((m) => {
-                addMessageDom(m.role, m.content);
+                addMessageDom(m.role, m.content, m.id);
             });
         }
 
@@ -1475,17 +1475,25 @@ const Chat = (() => {
         if (window.CreatorStudioUI && typeof window.CreatorStudioUI.hydrate === 'function') {
             window.CreatorStudioUI.hydrate(chatMessagesEl, Conversations.currentId());
         }
+        if (window.AgentUI && typeof window.AgentUI.hydrate === 'function') {
+            window.AgentUI.hydrate(chatMessagesEl, Conversations.currentId());
+        }
 
         chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
     }
 
-    function addMessageDom(role, content) {
+    function addMessageDom(role, content, messageId) {
         const el = document.createElement('div');
         el.className = 'message message--' + (role === 'assistant' ? 'ai' : 'user');
+        if (messageId) el.dataset.messageId = messageId;
+
+        const head = document.createElement('div');
+        head.className = 'message-head';
 
         const roleLabel = document.createElement('div');
         roleLabel.className = 'message-role';
         roleLabel.textContent = role === 'assistant' ? assistantDisplayName : 'USER';
+        head.appendChild(roleLabel);
 
         const contentEl = document.createElement('div');
         contentEl.className = 'message-content';
@@ -1506,11 +1514,125 @@ const Chat = (() => {
             }
         }
 
-        el.appendChild(roleLabel);
+        el.appendChild(head);
         el.appendChild(contentEl);
         chatMessagesEl.appendChild(el);
+        if (role === 'assistant' && messageId) attachMessageDelete(head, messageId);
 
         chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+        return el;
+    }
+
+    // --- Delete one assistant response -------------------------------------
+    //
+    // The server removes the message and, for any generated media only that
+    // response referenced, the gallery entry + file. It returns the removed
+    // filenames so matching composer @ reference chips are dropped too.
+
+    function attachMessageDelete(head, messageId) {
+        if (!head || !messageId || head.querySelector('.message-delete')) return;
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'message-delete';
+        button.title = 'Delete response';
+        button.setAttribute('aria-label', 'Delete response');
+        button.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+            + '<polyline points="3 6 5 6 21 6"></polyline>'
+            + '<path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path>'
+            + '<path d="M10 11v6"></path><path d="M14 11v6"></path>'
+            + '<path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path></svg>';
+        button.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            deleteResponse(button, messageId);
+        });
+        head.appendChild(button);
+    }
+
+    async function deleteResponse(button, messageId) {
+        const conversationId = Conversations.currentId();
+        if (!conversationId || !messageId) return;
+        const el = button.closest('.message');
+        const hasGenerated = Boolean(el && el.querySelector(
+            'img.md-image[src*="/generated/"], video[src*="/generated/"]'
+        ));
+        const confirmed = typeof Dialog !== 'undefined' && Dialog.confirm
+            ? await Dialog.confirm({
+                title: 'Delete response',
+                message: hasGenerated
+                    ? 'Delete this response? Any image or video only this response generated is removed from the gallery.'
+                    : 'Delete this response?',
+                confirmText: 'Delete',
+                danger: true
+            })
+            : true;
+        if (!confirmed) return;
+        button.disabled = true;
+        let data;
+        try {
+            data = await Conversations.deleteMessage(conversationId, messageId);
+        } catch (err) {
+            button.disabled = false;
+            if (typeof Dialog !== 'undefined' && Dialog.alert) {
+                Dialog.alert({ title: 'Could not delete response', message: err.message || 'Please try again.' });
+            }
+            return;
+        }
+        if (el && el.parentNode) el.remove();
+        const removedMedia = Array.isArray(data && data.removedMedia) ? data.removedMedia : [];
+        if (removedMedia.length) {
+            removeReferencesForFiles(removedMedia);
+            stripMediaFromMessages(removedMedia);
+        }
+        generatedMetaCache = null;
+        if (window.Gallery) window.Gallery.refresh();
+        if (window.AssetActions) {
+            if (typeof window.AssetActions.invalidate === 'function') window.AssetActions.invalidate();
+            if (typeof window.AssetActions.refresh === 'function') window.AssetActions.refresh();
+        }
+    }
+
+    // Remove any rendered image/video (and its next-action row) that points at
+    // a file the server just deleted, so another message's reference never
+    // shows a broken asset. The server drops the same links from persistence.
+    function stripMediaFromMessages(filenames) {
+        const names = new Set((filenames || []).filter(Boolean));
+        if (!names.size) return;
+        chatMessagesEl.querySelectorAll('.message-content').forEach((contentEl) => {
+            contentEl.querySelectorAll('img.md-image, video').forEach((media) => {
+                const src = String(media.getAttribute('src') || media.currentSrc || '');
+                let name = src.split('?')[0];
+                name = name.slice(name.lastIndexOf('/') + 1);
+                try { name = decodeURIComponent(name); } catch (err) { /* keep raw */ }
+                if (!names.has(name)) return;
+                const holder = media.closest('.jv-player') || media;
+                const paragraph = holder.closest('p');
+                holder.remove();
+                if (paragraph && !paragraph.textContent.trim() && !paragraph.querySelector('img, video')) {
+                    paragraph.remove();
+                }
+            });
+            contentEl.querySelectorAll('.asset-action-row').forEach((row) => {
+                if (names.has(row.getAttribute('data-asset'))) row.remove();
+            });
+        });
+    }
+
+    // Drop composer @ image/video chips that point at a now-deleted file,
+    // renumbering the remaining tokens through the existing remove paths.
+    function removeReferencesForFiles(filenames) {
+        const names = new Set((filenames || []).filter(Boolean));
+        if (!names.size) return;
+        for (let i = pendingReferences.length - 1; i >= 0; i -= 1) {
+            if (pendingReferences[i] && names.has(pendingReferences[i].filename)) {
+                removeReference(i + 1);
+            }
+        }
+        for (let i = pendingVideoReferences.length - 1; i >= 0; i -= 1) {
+            if (pendingVideoReferences[i] && names.has(pendingVideoReferences[i].filename)) {
+                removeVideoReference(i + 1);
+            }
+        }
     }
 
     // --- Send flow ---
@@ -1737,14 +1859,18 @@ const Chat = (() => {
             const aiMessageEl = document.createElement('div');
             aiMessageEl.className = 'message message--ai';
 
+            const headEl = document.createElement('div');
+            headEl.className = 'message-head';
+
             const roleLabel = document.createElement('div');
             roleLabel.className = 'message-role';
             roleLabel.textContent = assistantDisplayName;
+            headEl.appendChild(roleLabel);
 
             const contentEl = document.createElement('div');
             contentEl.className = 'message-content';
 
-            aiMessageEl.appendChild(roleLabel);
+            aiMessageEl.appendChild(headEl);
             aiMessageEl.appendChild(contentEl);
 
             // Register the live element before attaching so a conversation
@@ -1997,6 +2123,20 @@ const Chat = (() => {
                             }
                             statsEl.textContent = data.stats.tokensPerSec + ' tok/s · ' + data.stats.totalTokens + ' tokens · ' + data.stats.durationMs + 'ms';
                         }
+                        if (data.agentTask) {
+                            // The turn became a durable server task. Remove the
+                            // empty chat bubble; the task renders its own card
+                            // and streams progress into this conversation.
+                            cancelStreamRender();
+                            if (generatingEl) { generatingEl.remove(); generatingEl = null; }
+                            setProgressTitle('');
+                            if (aiMessageEl && aiMessageEl.parentNode) aiMessageEl.remove();
+                            fullReply = '';
+                            if (window.AgentUI && typeof window.AgentUI.adopt === 'function' &&
+                                Conversations.currentId() === conversationId) {
+                                window.AgentUI.adopt(data.agentTask);
+                            }
+                        }
                         if (data.done) {
                             cancelStreamRender();
                             fullReply = data.fullReply;
@@ -2015,7 +2155,11 @@ const Chat = (() => {
 
             // Save the complete message
             if (fullReply && !hadError) {
-                await Conversations.saveAssistantMessage(conversationId, fullReply);
+                const savedMessage = await Conversations.saveAssistantMessage(conversationId, fullReply);
+                if (savedMessage && savedMessage.id) {
+                    aiMessageEl.dataset.messageId = savedMessage.id;
+                    attachMessageDelete(headEl, savedMessage.id);
+                }
                 renderConversationList();
                 if (typeof VoiceOutput !== 'undefined' && VoiceOutput && typeof VoiceOutput.speak === 'function') {
                     let spoken = (window.DirectorUI && typeof window.DirectorUI.strip === 'function')

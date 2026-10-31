@@ -195,6 +195,38 @@ function getMessages(id) {
     return sortMessages(store.messages.filter((m) => m.conversationId === id));
 }
 
+// One message by id, scoped to its conversation so a message can never be
+// read or removed through a different conversation.
+function getMessage(conversationId, messageId) {
+    return store.messages.find((m) => m.id === messageId && m.conversationId === conversationId) || null;
+}
+
+// Replace one message's stored content (used to drop references to media that
+// was just deleted so no dangling link survives in the transcript).
+function updateMessageContent(conversationId, messageId, content) {
+    const message = getMessage(conversationId, messageId);
+    if (!message) return null;
+    message.content = String(content || '');
+    const conv = getConversation(conversationId);
+    if (conv) conv.updatedAt = Date.now();
+    saveStore();
+    return message;
+}
+
+// Remove a single message (e.g. deleting an assistant reply). Returns the
+// removed record so the caller can clean up any media it referenced.
+function deleteMessage(conversationId, messageId) {
+    const index = store.messages.findIndex(
+        (m) => m.id === messageId && m.conversationId === conversationId
+    );
+    if (index === -1) return null;
+    const [removed] = store.messages.splice(index, 1);
+    const conv = getConversation(conversationId);
+    if (conv) conv.updatedAt = Date.now();
+    saveStore();
+    return removed;
+}
+
 // --- Context building ---
 
 function buildMessages(id) {
@@ -266,6 +298,9 @@ module.exports = {
     deleteConversation,
     addMessage,
     getMessages,
+    getMessage,
+    updateMessageContent,
+    deleteMessage,
     buildMessages,
     setSummary,
     getSummaryWindow

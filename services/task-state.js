@@ -11,7 +11,7 @@ const fs = require('fs');
 const path = require('path');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
-const DATA_FILE = path.join(DATA_DIR, 'task-state.json');
+const DATA_FILE = process.env.TASK_STATE_PATH || path.join(DATA_DIR, 'task-state.json');
 
 function loadStore() {
     try {

@@ -87,6 +87,28 @@ function list(limit) {
     return typeof limit === 'number' && limit > 0 ? all.slice(0, limit) : all;
 }
 
+function fileKey(value) {
+    if (!value) return '';
+    let name = String(value).split('?')[0];
+    name = name.slice(name.lastIndexOf('/') + 1);
+    try { name = decodeURIComponent(name); } catch (err) { /* keep raw */ }
+    return name;
+}
+
+// Drop every activity entry that points at a generated file. Called when the
+// media itself is deleted so the ACTIVITY widget never links to a missing
+// image/video. Returns the number of entries removed.
+function removeByFile(file) {
+    const key = fileKey(file);
+    if (!key) return 0;
+    ensureLoaded();
+    const before = entries.length;
+    entries = entries.filter((entry) => fileKey(entry.file) !== key);
+    const removed = before - entries.length;
+    if (removed) saveEntries();
+    return removed;
+}
+
 function clear() {
     ensureLoaded();
     entries = [];
@@ -98,5 +120,6 @@ module.exports = {
     MAX_ENTRIES,
     record,
     list,
+    removeByFile,
     clear
 };

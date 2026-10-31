@@ -52,6 +52,14 @@ const MASK_NODES = Object.freeze([
     'SAM3_Detect', 'SAM3_VideoTrack', 'SAM3_TrackToMask',
     'GrowMask', 'ImageCompositeMasked'
 ]);
+// A refined mask delivered by Character Swap is already tracked and grown, so
+// the graph only needs to load it, scale it onto the generation canvas and
+// composite. SAM3 is not rerun in that path.
+const REFINED_MASK_NODES = Object.freeze([
+    'LoadVideo', 'GetVideoComponents', 'ImageScale', 'ImageFromBatch',
+    'ImageToMask', 'ImageCompositeMasked',
+    'ModelPatchLoader', 'MiniMaxH3FunControlNetApply'
+]);
 const DEFAULT_SAM3_CHECKPOINT = videoGenerator.H3_REPLACEMENT_MASK_DEFAULT_MODEL || 'sam3.1_multiplex_fp16.safetensors';
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
@@ -817,7 +825,8 @@ function maskPromptForPlan(plan) {
 function replacementMaskPlan(plan, settings) {
     const s = settings || {};
     const raw = s.replacementMaskToSubject;
-    const enabled = raw === true || raw === 1 || String(raw).toLowerCase() === 'true' || String(raw) === '1';
+    const enabled = Boolean(plan && plan.maskVideoName) || raw === true || raw === 1 ||
+        String(raw).toLowerCase() === 'true' || String(raw) === '1';
     const count = plan && Array.isArray(plan.replacements) ? plan.replacements.length : 0;
     const prompt = String(s.replacementMaskPrompt || '').trim() || maskPromptForPlan(plan);
     return {
@@ -827,7 +836,13 @@ function replacementMaskPlan(plan, settings) {
         grow: videoGenerator.normalizeReplacementMaskGrow(s.replacementMaskGrow, videoGenerator.H3_REPLACEMENT_MASK_DEFAULT_GROW),
         // Single target: track every detected subject but mask only the first.
         // Multi-target ("everyone"): union every tracked subject.
-        objectIndices: count > 1 ? '' : '0'
+        objectIndices: count > 1 ? '' : '0',
+        videoName: plan && plan.maskVideoName ? String(plan.maskVideoName) : null,
+        refined: Boolean(plan && plan.maskVideoName),
+        controlNet: String(s.h3FunControlNet || '').trim(),
+        controlStrength: Number.isFinite(Number(s.h3FunControlStrength)) ? Number(s.h3FunControlStrength) : 0.35,
+        controlEnd: Number.isFinite(Number(s.h3FunControlEnd)) ? Number(s.h3FunControlEnd) : 1,
+        useSourceRef: s.h3FunControlUseSourceRef !== false
     };
 }
 
@@ -836,6 +851,33 @@ function replacementMaskPlan(plan, settings) {
 function assertReplacementMaskReady(info, mask) {
     if (!mask || !mask.enabled) return;
     const available = info || {};
+    if (mask.videoName) {
+        for (const node of REFINED_MASK_NODES) {
+            if (!Object.prototype.hasOwnProperty.call(available, node)) {
+                const error = new Error(
+                    'The refined Character Swap mask needs the ComfyUI node "' + node + '", which this build does not provide. ' +
+                    'Update ComfyUI and try again.'
+                );
+                error.code = 'replacement_mask_node_missing';
+                throw error;
+            }
+        }
+        if (mask.controlNet) {
+            const loader = available.ModelPatchLoader && available.ModelPatchLoader.input &&
+                available.ModelPatchLoader.input.required && available.ModelPatchLoader.input.required.name;
+            const choices = Array.isArray(loader) && Array.isArray(loader[0]) ? loader[0] : [];
+            const found = choices.some((name) => String(name).trim().toLowerCase() === mask.controlNet.toLowerCase());
+            if (!found) {
+                const error = new Error(
+                    'Character Swap needs the MiniMax H3 Fun ControlNet-Union model patch "' + mask.controlNet + '".\n\n' +
+                    'Place it in ComfyUI/models/model_patches, then try again. Without it H3 redraws the whole frame and the replacement drifts outside the mask.'
+                );
+                error.code = 'replacement_controlnet_missing';
+                throw error;
+            }
+        }
+        return;
+    }
     for (const node of MASK_NODES) {
         if (!Object.prototype.hasOwnProperty.call(available, node)) {
             const error = new Error(
@@ -972,7 +1014,10 @@ function buildReplacementGraph(opts = {}) {
         conditionInputs['ref_images.ref_image_' + index] = [nodeId, 0];
     });
     if (refVideoName) {
-        conditionInputs['ref_videos.ref_video_0'] = ['ref_video', 0];
+        const controlInpaint = maskEnabled && mask.videoName && mask.controlNet;
+        if (!controlInpaint || mask.useSourceRef !== false) {
+            conditionInputs['ref_videos.ref_video_0'] = ['ref_video', 0];
+        }
         if (refVideoHasAudio) {
             conditionInputs['ref_video_audios.ref_video_audio_0'] = ['ref_video', 2];
         }
@@ -1032,49 +1077,109 @@ function buildReplacementGraph(opts = {}) {
                 format: 'None'
             }
         };
-        graph.mask_first = {
-            class_type: 'ImageFromBatch',
-            inputs: { image: ['mask_source', 0], batch_index: 0, length: 1 }
-        };
-        graph.mask_ckpt = {
-            class_type: 'CheckpointLoaderSimple',
-            inputs: { ckpt_name: mask.model }
-        };
-        graph.mask_text = {
-            class_type: 'CLIPTextEncode',
-            inputs: { text: mask.prompt, clip: ['mask_ckpt', 1] }
-        };
-        graph.mask_detect = {
-            class_type: 'SAM3_Detect',
-            inputs: {
-                model: ['mask_ckpt', 0],
-                image: ['mask_first', 0],
-                conditioning: ['mask_text', 0],
-                threshold: 0.35,
-                refine_iterations: 2,
-                individual_masks: true
-            }
-        };
-        graph.mask_track = {
-            class_type: 'SAM3_VideoTrack',
-            inputs: {
-                images: ['mask_source', 0],
-                model: ['mask_ckpt', 0],
-                initial_mask: ['mask_detect', 0],
-                conditioning: ['mask_text', 0],
-                detection_threshold: 0.5,
-                max_objects: 0,
-                detect_interval: 1
-            }
-        };
-        graph.mask_tomask = {
-            class_type: 'SAM3_TrackToMask',
-            inputs: { track_data: ['mask_track', 0], object_indices: mask.objectIndices }
-        };
-        graph.mask_grow = {
-            class_type: 'GrowMask',
-            inputs: { mask: ['mask_tomask', 0], expand: mask.grow, tapered_corners: false }
-        };
+        let maskNode;
+        if (mask.videoName) {
+            graph.mask_file = {
+                class_type: 'LoadVideo',
+                inputs: { file: mask.videoName }
+            };
+            graph.mask_frames = {
+                class_type: 'GetVideoComponents',
+                inputs: { video: ['mask_file', 0] }
+            };
+            graph.mask_scaled = {
+                class_type: 'ImageScale',
+                inputs: {
+                    image: ['mask_frames', 0],
+                    upscale_method: 'nearest-exact',
+                    width: W,
+                    height: H,
+                    crop: 'center'
+                }
+            };
+            graph.mask_batch = {
+                class_type: 'ImageFromBatch',
+                inputs: { image: ['mask_scaled', 0], batch_index: 0, length: frames }
+            };
+            graph.mask_tomask = {
+                class_type: 'ImageToMask',
+                inputs: { image: ['mask_batch', 0], channel: 'red' }
+            };
+            maskNode = ['mask_tomask', 0];
+        } else {
+            graph.mask_first = {
+                class_type: 'ImageFromBatch',
+                inputs: { image: ['mask_source', 0], batch_index: 0, length: 1 }
+            };
+            graph.mask_ckpt = {
+                class_type: 'CheckpointLoaderSimple',
+                inputs: { ckpt_name: mask.model }
+            };
+            graph.mask_text = {
+                class_type: 'CLIPTextEncode',
+                inputs: { text: mask.prompt, clip: ['mask_ckpt', 1] }
+            };
+            graph.mask_detect = {
+                class_type: 'SAM3_Detect',
+                inputs: {
+                    model: ['mask_ckpt', 0],
+                    image: ['mask_first', 0],
+                    conditioning: ['mask_text', 0],
+                    threshold: 0.35,
+                    refine_iterations: 2,
+                    individual_masks: true
+                }
+            };
+            graph.mask_track = {
+                class_type: 'SAM3_VideoTrack',
+                inputs: {
+                    images: ['mask_source', 0],
+                    model: ['mask_ckpt', 0],
+                    initial_mask: ['mask_detect', 0],
+                    conditioning: ['mask_text', 0],
+                    detection_threshold: 0.5,
+                    max_objects: 0,
+                    detect_interval: 1
+                }
+            };
+            graph.mask_tomask = {
+                class_type: 'SAM3_TrackToMask',
+                inputs: { track_data: ['mask_track', 0], object_indices: mask.objectIndices }
+            };
+            maskNode = ['mask_tomask', 0];
+        }
+        if (mask.grow) {
+            graph.mask_grow = {
+                class_type: 'GrowMask',
+                inputs: { mask: maskNode, expand: mask.grow, tapered_corners: false }
+            };
+            maskNode = ['mask_grow', 0];
+        }
+        if (mask.videoName && mask.controlNet) {
+            // The Fun ControlNet-Union inpaint branch tells H3 which pixels are
+            // holes and supplies the original frames behind them. Without it H3
+            // regenerates the whole frame and can move/enlarge the character out
+            // of the tracked silhouette, which the final composite then clips.
+            graph.fun_control_patch = {
+                class_type: 'ModelPatchLoader',
+                inputs: { name: mask.controlNet }
+            };
+            graph.fun_control = {
+                class_type: 'MiniMaxH3FunControlNetApply',
+                inputs: {
+                    model: [patchedModelNode, 0],
+                    model_patch: ['fun_control_patch', 0],
+                    vae: ['video_vae', 0],
+                    strength: mask.controlStrength === undefined ? 0.35 : mask.controlStrength,
+                    start_percent: 0,
+                    end_percent: mask.controlEnd === undefined ? 1 : mask.controlEnd,
+                    mask: maskNode,
+                    source_video: ['mask_source', 0]
+                }
+            };
+            graph.scheduler.inputs.model = ['fun_control', 0];
+            graph.guider.inputs.model = ['fun_control', 0];
+        }
         graph.composite = {
             class_type: 'ImageCompositeMasked',
             inputs: {
@@ -1083,7 +1188,7 @@ function buildReplacementGraph(opts = {}) {
                 x: 0,
                 y: 0,
                 resize_source: false,
-                mask: ['mask_grow', 0]
+                mask: maskNode
             }
         };
         imagesNode = ['composite', 0];
@@ -1182,7 +1287,7 @@ async function generateReplacementVideo(plan, options = {}) {
         const dims = videoGenerator.h3Dimensions(
             probedDims && probedDims.width ? probedDims.width : 1280,
             probedDims && probedDims.height ? probedDims.height : 720,
-            settings.h3Size
+            options.h3Size || settings.h3Size
         );
         const W = dims.W;
         const H = dims.H;
@@ -1214,9 +1319,14 @@ async function generateReplacementVideo(plan, options = {}) {
         if (swapDecision.use) videoGenerator.assertH3CharacterSwapReady(info, resolvedSettings);
         const refImageSize = refImageSizeForPlan(plan, resolvedSettings);
         const maskPlan = replacementMaskPlan(plan, resolvedSettings);
+        if (options.maskVideoPath && fs.existsSync(options.maskVideoPath)) {
+            maskPlan.enabled = true;
+            maskPlan.refined = true;
+            maskPlan.videoName = '__pending__';
+        }
         assertReplacementMaskReady(info, maskPlan);
 
-        const prompt = buildReplacementPrompt(plan);
+        const prompt = options.promptOverride || buildReplacementPrompt(plan);
         const finalPrompt = String(prompt || '').trim();
 
         try {
@@ -1229,6 +1339,22 @@ async function generateReplacementVideo(plan, options = {}) {
                 const up = await uploadFile(ref.absPath, 'jarvis_replace_ref_' + i);
                 uploadedInputNames.push(up.name);
                 refImageNames.push(up.name);
+            }
+
+            if (options.maskVideoPath && fs.existsSync(options.maskVideoPath)) {
+                const maskBuffer = fs.readFileSync(options.maskVideoPath);
+                const maskUpload = await comfyui.uploadFile(
+                    maskBuffer,
+                    'jarvis_cs_mask_' + Date.now() + '.mp4',
+                    { mime: 'video/mp4' }
+                );
+                uploadedInputNames.push(maskUpload.name);
+                maskPlan.videoName = maskUpload.name;
+                maskPlan.refined = true;
+                // The Character Swap mask is already grown, feathered and
+                // temporally smoothed on disk, so the graph must not grow it a
+                // second time.
+                maskPlan.grow = 0;
             }
 
             const graph = buildReplacementGraph({
@@ -1258,7 +1384,7 @@ async function generateReplacementVideo(plan, options = {}) {
                 '(' + duration + 's, ' + frames + 'f, ' + plan.replacements.length + ' ref image(s), ' +
                 'audio=' + refVideoHasAudio + ', charSwap=' + swapDecision.use +
                 ', refImageSize=' + refImageSize +
-                ', mask=' + (maskPlan.enabled ? (maskPlan.prompt + '@' + maskPlan.grow) : 'off') + ')');
+                ', mask=' + (maskPlan.videoName ? 'refined' : (maskPlan.enabled ? (maskPlan.prompt + '@' + maskPlan.grow) : 'off')) + ')');
 
             const timeoutMs = options.timeoutMs || 30 * 60 * 1000;
             const history = await comfyui.waitForPrompt(pid, { timeoutMs, signal });
@@ -1310,9 +1436,16 @@ async function generateReplacementVideo(plan, options = {}) {
                     // the generated subject back onto the original frames, so
                     // everything outside the masked person is the source's own
                     // pixels; the unmasked path only requests preservation.
-                    background: maskPlan.enabled
-                        ? { strategy: 'sam3-subject-composite', maskPrompt: maskPlan.prompt, grow: maskPlan.grow, model: maskPlan.model, guaranteed: false }
-                        : { strategy: 'reference-conditioned', guaranteed: false },
+                    background: maskPlan.videoName
+                        ? {
+                            strategy: 'refined-subject-composite',
+                            source: 'character-swap',
+                            guaranteed: true,
+                            mask: maskPlan.videoName ? path.basename(options.maskVideoPath || '') : null
+                        }
+                        : (maskPlan.enabled
+                            ? { strategy: 'sam3-subject-composite', maskPrompt: maskPlan.prompt, grow: maskPlan.grow, model: maskPlan.model, guaranteed: false }
+                            : { strategy: 'reference-conditioned', guaranteed: false }),
                     characterSwap: swapDecision.use
                         ? { lora: swapDecision.loraName, strength: swapDecision.strength }
                         : null,

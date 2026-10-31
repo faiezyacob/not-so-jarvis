@@ -18,6 +18,7 @@
             <button class="studio-trigger" id="companionsBtn" type="button" title="Open Companions">COMPANIONS</button>
             <button class="studio-trigger" id="ugcStudioOpen" type="button" title="Open UGC Studio">UGC STUDIO</button>
             <button class="studio-trigger" id="creatorStudioOpen" type="button" title="Open Creator Studio">CREATOR STUDIO</button>
+            <button class="studio-trigger" id="chatCharacterSwap" type="button" title="Open Character Swap">CHARACTER SWAP</button>
             <button class="settings-btn" id="settingsBtn" aria-label="Settings">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <circle cx="12" cy="12" r="3"></circle>
@@ -1700,6 +1701,209 @@
         </div>
     </div>
 
+    <div class="character-swap-overlay" id="characterSwapOverlay" hidden>
+        <section class="character-swap" role="dialog" aria-modal="true" aria-labelledby="characterSwapTitle">
+            <header class="character-swap-header">
+                <div>
+                    <div class="creator-studio-kicker">NOT-SO-JARVIS · VIDEO CHARACTER REPLACEMENT</div>
+                    <h1 id="characterSwapTitle">CHARACTER SWAP</h1>
+                    <p>Wan Animate 2 needs one character image and a scene prompt. MiniMax H3 needs detected people, tracked masks and character references.</p>
+                </div>
+                <div class="character-swap-header-actions">
+                    <button class="character-swap-btn character-swap-btn--ghost" id="csStartOver" type="button" title="Discard this workspace and start a new character swap">Start over</button>
+                    <button class="creator-studio-close" id="characterSwapClose" type="button" aria-label="Close Character Swap" title="Close Character Swap">×</button>
+                </div>
+            </header>
+            <div class="character-swap-body">
+                <aside class="character-swap-sidebar">
+                    <div class="character-swap-engine">
+                        <div class="character-swap-engine-label">GENERATION ENGINE</div>
+                        <div class="character-swap-engine-options" id="csEngineOptions">
+                            <button class="character-swap-engine-btn active" type="button" data-cs-engine="wan_animate">
+                                <strong>Wan Animate 2</strong>
+                                <span>Recommended · one image + prompt</span>
+                            </button>
+                            <button class="character-swap-engine-btn" type="button" data-cs-engine="h3">
+                                <strong>MiniMax H3</strong>
+                                <span>Ref2VA · Character LoRA v1.5</span>
+                            </button>
+                        </div>
+                        <div class="character-swap-engine-note" id="csEngineNote"></div>
+                        <div class="character-swap-engine-warning" id="csEngineWarning" hidden></div>
+                    </div>
+                    <div class="character-swap-section">1 · SOURCE</div>
+                    <input type="file" id="csVideoFile" accept="video/mp4,video/webm,video/quicktime" hidden>
+                    <div class="character-swap-row">
+                        <button class="character-swap-btn character-swap-btn--primary" id="csChooseVideo" type="button">Upload video</button>
+                        <button class="character-swap-btn" id="csPickVideo" type="button">From generated</button>
+                    </div>
+                    <video class="character-swap-video" id="csVideo" controls playsinline preload="metadata"></video>
+                    <div class="character-swap-meta" id="csSourceMeta">No clip loaded.</div>
+                    <div class="character-swap-row">
+                        <label>Trim start <input type="number" id="csTrimStart" min="0" step="0.1" value="0"></label>
+                        <label>Trim end <input type="number" id="csTrimEnd" min="1" step="0.1" value="0"></label>
+                        <button class="character-swap-btn" id="csTrimApply" type="button">Apply</button>
+                    </div>
+                    <div class="character-swap-hint" id="csTrimHint">MiniMax H3 replacement renders up to 15 seconds. Longer clips are trimmed to the selected range.</div>
+
+                    <div id="csPeopleSection">
+                    <div class="character-swap-section">2 · PEOPLE</div>
+                    <div class="character-swap-detection" id="csDetection" hidden>
+                        <div class="character-swap-row">
+                            <button class="character-swap-btn character-swap-btn--primary" id="csDetect" type="button">Detect people</button>
+                            <button class="character-swap-btn" id="csSelectionApply" type="button" disabled>Use selected</button>
+                        </div>
+                        <div class="character-swap-hint" id="csDetectionHint">MiniMax H3 uses SAM 3.1 on the frames you tap.</div>
+                        <div class="character-swap-detections" id="csDetections"></div>
+                    </div>
+                    <div class="character-swap-people" id="csPeople"></div>
+                    <div class="character-swap-anchors" id="csAnchors"></div>
+                    <button class="character-swap-btn" id="csAddPerson" type="button">+ Add person</button>
+                    </div>
+
+                    <div id="csMaskSection">
+                    <div class="character-swap-section">3 · TRACK &amp; MASK</div>
+                    <div class="character-swap-tools" id="csTools">
+                        <button class="character-swap-tool active" data-cs-tool="select" type="button">Select</button>
+                        <button class="character-swap-tool" data-cs-tool="brush" type="button">Brush</button>
+                        <button class="character-swap-tool" data-cs-tool="erase" type="button">Eraser</button>
+                        <button class="character-swap-tool" data-cs-tool="include" type="button">Include point</button>
+                        <button class="character-swap-tool" data-cs-tool="exclude" type="button">Exclude point</button>
+                    </div>
+                    <div class="character-swap-row character-swap-row--compact">
+                        <label>Brush <input type="range" id="csBrushSize" min="2" max="80" value="16"></label>
+                        <label>Mask opacity <input type="range" id="csMaskOpacity" min="10" max="100" value="55"></label>
+                    </div>
+                    <div class="character-swap-row character-swap-row--compact">
+                        <label>Grow <input type="number" id="csMaskGrow" min="-64" max="128" step="4" value="12"></label>
+                        <label>Feather <input type="number" id="csMaskFeather" min="0" max="16" step="1" value="2"></label>
+                        <label>Temporal <input type="number" id="csMaskTemporal" min="0" max="7" step="1" value="3"></label>
+                    </div>
+                    <div class="character-swap-row">
+                        <label class="character-swap-check"><input type="checkbox" id="csMaskVisible" checked> Show mask</label>
+                        <button class="character-swap-btn" id="csMaskSync" type="button">Save mask settings</button>
+                    </div>
+                    <div class="character-swap-row">
+                        <button class="character-swap-btn" id="csPrevFrame" type="button">‹ Prev</button>
+                        <button class="character-swap-btn" id="csNextFrame" type="button">Next ›</button>
+                        <button class="character-swap-btn character-swap-btn--primary" id="csTrack" type="button">Track</button>
+                        <button class="character-swap-btn" id="csRetrack" type="button">Recalculate</button>
+                    </div>
+                    <div class="character-swap-hint">Select: click the person (Shift-click excludes background). The tint is SAM's current mask — if it covers the scene, add exclude points. Track follows it through the clip. Brush/Eraser fix the tracked mask on the current frame. Keep Grow small (8–16); large growth paints a generated halo around the subject.</div>
+                    </div>
+
+                    <div class="character-swap-section">4 · CHARACTER</div>
+                    <input type="file" id="csRefFiles" accept="image/png,image/jpeg,image/webp" multiple hidden>
+                    <div class="character-swap-row">
+                        <button class="character-swap-btn" id="csAddRefs" type="button">Upload images</button>
+                        <button class="character-swap-btn" id="csPickRefs" type="button">From generated</button>
+                        <button class="character-swap-btn" id="csDescribe" type="button">Describe</button>
+                    </div>
+                    <div class="character-swap-hint" id="csCharacterHint"></div>
+                    <div class="character-swap-row">
+                        <select id="csViewKind">
+                            <option value="front">Front view</option>
+                            <option value="side">Side view</option>
+                            <option value="back">Back view</option>
+                            <option value="close_up">Face close-up</option>
+                            <option value="full_body">Full body</option>
+                        </select>
+                        <button class="character-swap-btn" id="csGenerateView" type="button">Generate view</button>
+                        <button class="character-swap-btn" id="csGenerateSheet" type="button">Generate sheet</button>
+                    </div>
+                    <div class="character-swap-refs" id="csRefs"></div>
+                    <div class="character-swap-description" id="csDescription"></div>
+
+                    <div class="character-swap-section">5 · GENERATE</div>
+                    <div class="character-swap-row">
+                        <label>Takes
+                            <select id="csTakeCount">
+                                <option value="1">1</option>
+                                <option value="2">2</option>
+                                <option value="3">3</option>
+                            </select>
+                        </label>
+                    </div>
+                    <div class="character-swap-engine-settings" id="csH3Settings" hidden>
+                        <div class="character-swap-row">
+                            <label>Mode
+                                <select id="csQuality">
+                                    <option value="draft">Draft (fast)</option>
+                                    <option value="full" selected>Full</option>
+                                </select>
+                            </label>
+                        </div>
+                        <div class="character-swap-hint">H3 renders one clip up to 15 seconds through Ref2VA + Character LoRA v1.5. Rendered takes stay available when you switch engines.</div>
+                    </div>
+                    <div class="character-swap-engine-settings" id="csWanSettings">
+                        <label class="character-swap-prompt">Scene prompt
+                            <textarea id="csWanPrompt" rows="4" placeholder="Describe the shot, e.g. replace the person on the left with the character in the reference image, walking through a rainy street."></textarea>
+                        </label>
+                        <div class="character-swap-row">
+                            <label>Duration
+                                <select id="csWanDuration">
+                                    <option value="match" selected>Match source (up to 15s)</option>
+                                    <option value="5">5 seconds</option>
+                                    <option value="10">10 seconds</option>
+                                    <option value="15">15 seconds</option>
+                                </select>
+                            </label>
+                            <label>Output
+                                <select id="csWanResolution">
+                                    <option value="480p" selected>480p</option>
+                                    <option value="720p">720p</option>
+                                </select>
+                            </label>
+                        </div>
+                        <div class="character-swap-row character-swap-row--compact">
+                            <label>Steps <input type="number" id="csWanSteps" min="1" max="30" value="6"></label>
+                        </div>
+                        <div class="character-swap-hint">Your direction is rewritten into Wan Animate 2's subject + background format. Only the named person (for example “the person on the left”) is replaced; the original background, lighting, framing, timing, audio and other people are described as unchanged. Wan Animate 2 regenerates the background from text, so retention is best-effort rather than pixel-exact.</div>
+                    </div>
+                    <button class="character-swap-btn character-swap-btn--render" id="csRender" type="button">Render</button>
+                    <div class="character-swap-status" id="csStatus" aria-live="polite"></div>
+                </aside>
+
+                <main class="character-swap-stage">
+                    <div class="character-swap-stage-head">
+                        <span id="csStageTitle">No clip loaded</span>
+                        <span id="csFrameLabel">Frame 0</span>
+                    </div>
+                    <div class="character-swap-next" id="csNext">Import a video to begin.</div>
+                    <div class="character-swap-canvas-wrap" id="csCanvasWrap">
+                        <img id="csFrameImage" alt="Source frame" draggable="false">
+                        <canvas id="csMaskCanvas"></canvas>
+                        <canvas id="csDrawCanvas"></canvas>
+                    </div>
+                    <input class="character-swap-timeline" id="csTimeline" type="range" min="0" max="0" value="0" step="1">
+                    <div class="character-swap-empty" id="csStageEmpty">Import a clip to begin.</div>
+                    <div class="character-swap-takes-head" id="csTakesHead" hidden>
+                        <span>Renders</span>
+                        <span id="csTakesCount"></span>
+                    </div>
+                    <div class="character-swap-takes" id="csTakes"></div>
+                </main>
+            </div>
+        </section>
+        <div class="cs-media-picker" id="csMediaPicker" hidden>
+            <div class="cs-media-panel" role="dialog" aria-modal="true" aria-labelledby="csMediaTitle">
+                <header class="cs-media-header">
+                    <div>
+                        <div class="cs-media-kicker">NOT-SO-JARVIS · GENERATED MEDIA</div>
+                        <h2 id="csMediaTitle">Choose media</h2>
+                    </div>
+                    <button class="creator-studio-close" id="csMediaClose" type="button" aria-label="Close media picker" title="Close">×</button>
+                </header>
+                <div class="cs-media-grid" id="csMediaGrid"></div>
+                <div class="cs-media-status" id="csMediaStatus"></div>
+                <footer class="cs-media-actions">
+                    <button class="character-swap-btn" id="csMediaUpload" type="button">Upload instead</button>
+                    <button class="character-swap-btn character-swap-btn--primary" id="csMediaAdd" type="button" hidden>Add selected</button>
+                </footer>
+            </div>
+        </div>
+    </div>
+
     <div class="modal-overlay" id="identityOverlay">
         <div class="modal identity-modal" role="dialog" aria-modal="true" aria-labelledby="identityModalTitle">
             <div class="modal-header" id="identityModalHeader">
@@ -1756,7 +1960,9 @@
     <script src="js/chat-suggestions.js"></script>
     <script src="js/photo-actions.js"></script>
     <script src="js/replacement.js"></script>
+    <script src="js/character-swap.js"></script>
     <script src="js/asset-actions.js"></script>
+    <script src="js/agent.js"></script>
     <script src="js/chat.js"></script>
     <script src="js/voice-input.js"></script>
     <script src="js/voice-output.js"></script>

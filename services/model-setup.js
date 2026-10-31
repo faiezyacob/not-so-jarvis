@@ -68,6 +68,51 @@ const KNOWN_FILES = {
         hfPath: 'split_files/vae/wan_2.1_vae.safetensors',
         approxMB: 254
     },
+    'wan_animate_2_int8_convrot.safetensors': {
+        repo: 'Comfy-Org/Wan-Animate-2',
+        hfPath: 'diffusion_models/wan_animate_2_int8_convrot.safetensors',
+        approxMB: 14500
+    },
+    'Wan2_2-Animate-14B_fp8_scaled_e4m3fn_KJ_v2.safetensors': {
+        repo: 'Kijai/WanVideo_comfy_fp8_scaled',
+        hfPath: 'Wan22Animate/Wan2_2-Animate-14B_fp8_scaled_e4m3fn_KJ_v2.safetensors',
+        approxMB: 16517
+    },
+    'Wan2_2-Animate-14B_fp8_e4m3fn_scaled_KJ.safetensors': {
+        repo: 'Kijai/WanVideo_comfy_fp8_scaled',
+        hfPath: 'Wan22Animate/Wan2_2-Animate-14B_fp8_e4m3fn_scaled_KJ.safetensors',
+        approxMB: 17550
+    },
+    'wan2.2_animate_14B_bf16.safetensors': {
+        repo: 'Comfy-Org/Wan_2.2_ComfyUI_Repackaged',
+        hfPath: 'split_files/diffusion_models/wan2.2_animate_14B_bf16.safetensors',
+        approxMB: 28000
+    },
+    'umt5_xxl_fp8_e4m3fn_scaled.safetensors': {
+        repo: 'Comfy-Org/Wan_2.1_ComfyUI_repackaged',
+        hfPath: 'split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors',
+        approxMB: 6700
+    },
+    'clip_vision_h.safetensors': {
+        repo: 'Comfy-Org/Wan_2.1_ComfyUI_repackaged',
+        hfPath: 'split_files/clip_vision/clip_vision_h.safetensors',
+        approxMB: 1200
+    },
+    'birefnet.safetensors': {
+        repo: 'Comfy-Org/BiRefNet',
+        hfPath: 'background_removal/birefnet.safetensors',
+        approxMB: 424
+    },
+    'lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors': {
+        repo: 'Kijai/WanVideo_comfy',
+        hfPath: 'Lightx2v/lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors',
+        approxMB: 690
+    },
+    'WanAnimate_relight_lora_fp16.safetensors': {
+        repo: 'Kijai/WanVideo_comfy',
+        hfPath: 'LoRAs/Wan22_relight/WanAnimate_relight_lora_fp16.safetensors',
+        approxMB: 1340
+    },
     'krea2_identity_edit_v1_2.safetensors': {
         repo: 'conradlocke/krea2-identity-edit',
         hfPath: 'krea2_identity_edit_v1_2.safetensors',
@@ -153,6 +198,11 @@ const KNOWN_FILES = {
         hfPath: 'h3_character_swap_pro4500_1000.safetensors',
         approxMB: 148
     },
+    'minimax_h3_fun_controlnet_union_2.0_pruned_int8_convrot.safetensors': {
+        repo: 'Comfy-Org/MiniMax-H3',
+        hfPath: 'model_patches/minimax_h3_fun_controlnet_union_2.0_pruned_int8_convrot.safetensors',
+        approxMB: 4531
+    },
     'seedvr2_ema_7b_fp8_e4m3fn_mixed_block35_fp16.safetensors': {
         repo: 'mekrod/seedvr2_ema_7b_fp8_e4m3fn_mixed_block35_fp16',
         hfPath: 'seedvr2_ema_7b_fp8_e4m3fn_mixed_block35_fp16.safetensors',
@@ -220,7 +270,16 @@ const MODEL_CATALOG = [
     { id: 'h3_audio_vae', group: 'video', label: 'H3 audio VAE', required: true, dest: 'vae', file: { settings: 'video', key: 'h3AudioVae' }, minBytes: 10 * 1024 ** 2 },
     { id: 'h3_turbo_lora', group: 'video', label: 'MiniMax H3 Turbo LoRA (v4 step600 EMA)', required: false, dest: 'loras', file: { settings: 'video', key: 'h3TurboLora' }, minBytes: 100 * 1024 ** 2, note: 'Needed only when MiniMax H3 Turbo is enabled in Settings > Video (the default). Used for text-to-video and image-to-video.' },
     { id: 'h3_character_swap_lora', group: 'video', label: 'H3 Character Swap LoRA (V1.5)', required: false, dest: 'loras', file: { settings: 'video', key: 'h3CharSwapLora' }, minBytes: 100 * 1024 ** 2, note: 'Recommended adapter for @video character replacement (replacing a person in an existing clip with an @image reference). Enabled by default in Settings > Video > H3 CHARACTER SWAP. Pair it with the Ref2VA model above.' },
+    { id: 'h3_fun_controlnet', group: 'video', label: 'H3 Fun ControlNet-Union (inpainting)', required: false, dest: 'model_patches', file: { settings: 'video', key: 'h3FunControlNet' }, minBytes: 1500 * 1024 ** 2, note: 'Required by Character Swap. The inpaint branch keeps the source video behind the tracked mask so H3 redraws the replacement in the same position and scale instead of moving or enlarging it.' },
     { id: 'h3_latent_upscaler', group: 'video', label: 'MiniMax H3 Latent Upscaler 3D (fp16)', required: false, dest: 'latent_upscale_models', file: { settings: 'video', key: 'h3LatentUpscaleModel' }, minBytes: 100 * 1024 ** 2, note: 'Needed only when H3 Latent Upscale is enabled in Settings > Video. A ~691 MB learned 24-channel H3 latent upscaler (fp16/bf16; fp32 is ~1.4 GB). Optional: Auto mode falls back to direct generation when it is missing.' },
+    { id: 'wan_animate_unet', group: 'video', label: 'Wan Animate 2 (int8, default Character Swap engine)', required: false, dest: 'diffusion_models', file: 'wan_animate_2_int8_convrot.safetensors', minBytes: 7 * 1024 ** 3, note: 'The default Character Swap generation engine. Character animation through the native WanAnimate2ToVideo node: one character image follows a performance video, with a user scene prompt.' },
+    { id: 'wan_animate_unet_v1', group: 'video', label: 'Wan 2.2 Animate 14B (FP8 v1, legacy)', required: false, dest: 'diffusion_models', file: 'Wan2_2-Animate-14B_fp8_e4m3fn_scaled_KJ.safetensors', minBytes: 14 * 1024 ** 3, note: 'Legacy checkpoint for the earlier WanAnimateToVideo pipeline. Not used by the default Wan Animate 2 engine.' },
+    { id: 'wan_animate_text_encoder', group: 'video', label: 'Wan UMT5 XXL text encoder (FP8)', required: false, dest: 'text_encoders', file: 'umt5_xxl_fp8_e4m3fn_scaled.safetensors', minBytes: 3 * 1024 ** 3, note: 'Required by Wan Animate 2. The CLIPLoader must use type "wan".' },
+    { id: 'wan_animate_vae', group: 'video', label: 'Wan 2.1 VAE', required: false, dest: 'vae', file: 'wan_2.1_vae.safetensors', minBytes: 100 * 1024 ** 2, note: 'Required by Wan Animate 2. Also used by Krea 2.' },
+    { id: 'wan_animate_clip_vision', group: 'video', label: 'Wan CLIP Vision H', required: false, dest: 'clip_vision', file: 'clip_vision_h.safetensors', minBytes: 300 * 1024 ** 2, note: 'Required by Wan Animate 2 for reference-image conditioning.' },
+    { id: 'wan_animate_lightx2v', group: 'video', label: 'LightX2V 4-step acceleration LoRA (Wan I2V 14B 480p)', required: false, dest: 'loras', file: 'lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors', minBytes: 300 * 1024 ** 2, note: 'Required for the official 6-step Wan Animate 2 sampling configuration.' },
+    { id: 'wan_animate_relight', group: 'video', label: 'WanAnimate relight LoRA (legacy)', required: false, dest: 'loras', file: 'WanAnimate_relight_lora_fp16.safetensors', minBytes: 500 * 1024 ** 2, note: 'Legacy relight adapter for the earlier Wan 2.2 Animate pipeline. The default Wan Animate 2 engine does not use it.' },
+    { id: 'character_swap_matte', group: 'video', label: 'BiRefNet background removal (legacy Wan masks)', required: false, dest: 'background_removal', file: 'birefnet.safetensors', minBytes: 300 * 1024 ** 2, note: 'Legacy matte for the earlier Wan 2.2 Animate mask pipeline. The default Wan Animate 2 engine does not use masks.' },
     { id: 'seedvr2_dit', group: 'upscale', label: 'SeedVR2 DiT 7B (balanced)', required: true, dest: 'seedvr2', also: ['SEEDVR2'], seen: 'seedvr2dit', file: { settings: 'image', key: 'seedvr2Dit' }, minBytes: 2 * 1024 ** 3 },
     { id: 'seedvr2_dit_sharp', group: 'upscale', label: 'SeedVR2 DiT 7B (sharp profile)', required: false, dest: 'seedvr2', also: ['SEEDVR2'], seen: 'seedvr2dit', file: 'seedvr2_ema_7b_sharp_fp8_e4m3fn_mixed_block35_fp16.safetensors', minBytes: 2 * 1024 ** 3, note: 'Same profile the sharp upscale uses. The SeedVR2 nodes auto-download it on first use; no token needed.' },
     { id: 'seedvr2_vae', group: 'upscale', label: 'SeedVR2 VAE', required: true, dest: 'seedvr2', also: ['SEEDVR2', 'vae'], seen: 'seedvr2vae', file: { settings: 'image', key: 'seedvr2Vae' }, minBytes: 10 * 1024 ** 2 },
@@ -309,6 +368,26 @@ const NODE_CATALOG = [
         repo: 'https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler',
         dir: 'Comfyui_Minimax_h3_latent_Upscaler', recursive: false,
         note: 'Learned 24-channel H3 latent upscaler for the low-res -> latent upscale -> high-res refinement pipeline (Settings > Video > H3 LATENT UPSCALE). Install this pack, download the checkpoint into ComfyUI/models/latent_upscale_models/, then restart ComfyUI. Ordinary video does not need it.'
+    },
+    {
+        id: 'wan_native', label: 'Wan Animate 2 (built into ComfyUI)', required: false,
+        nodes: ['WanAnimate2ToVideo', 'ResizeImageMaskNode'],
+        repo: null, dir: null,
+        note: 'Ships with current ComfyUI (0.43+). Needed for the default Character Swap engine. WanAnimate2ToVideo animates one character image with a performance video.'
+    },
+    {
+        id: 'controlnet_aux', label: 'DWPose preprocessor (comfyui_controlnet_aux)', required: false,
+        nodes: ['DWPreprocessor', 'PixelPerfectResolution'],
+        repo: 'https://github.com/Fannovel16/comfyui_controlnet_aux',
+        dir: 'comfyui_controlnet_aux', recursive: false, requirements: true, preserveTorch: true,
+        note: 'Legacy: used by the earlier Wan 2.2 Animate pose/face pipeline. The default Wan Animate 2 engine reads the performance video directly and does not need it.'
+    },
+    {
+        id: 'kjnodes', label: 'KJNodes (Wan mask helpers)', required: false,
+        nodes: ['BlockifyMask', 'DrawMaskOnImage'],
+        repo: 'https://github.com/kijai/ComfyUI-KJNodes',
+        dir: 'comfyui-kjnodes', recursive: false,
+        note: 'Used for the Wan character-mask and masked-background preparation.'
     }
 ];
 
@@ -606,6 +685,32 @@ async function findComfyPython(comfyRoot) {
     return null;
 }
 
+// Some pack requirements (comfyui_controlnet_aux in particular) are unpinned
+// and would happily upgrade ComfyUI's CUDA torch build, numpy, OpenCV and
+// huggingface_hub. Pin the installed versions in a pip constraints file so a
+// node install can only ADD missing packages, never replace the working stack.
+function writePackConstraints(python, packDir) {
+    const names = ['torch', 'torchvision', 'torchaudio', 'numpy', 'opencv-python', 'opencv-contrib-python',
+        'huggingface-hub', 'tokenizers', 'transformers', 'safetensors', 'onnxruntime', 'onnxruntime-gpu',
+        'scipy', 'scikit-learn', 'scikit-image', 'Pillow'];
+    const code = [
+        'import importlib.metadata as m',
+        'names=' + JSON.stringify(names),
+        'out=[]',
+        'for n in names:',
+        '    try: out.append(n+"=="+m.version(n))',
+        '    except Exception: pass',
+        'print("\\n".join(out))'
+    ].join('\n');
+    const result = runCommand(python.exe, python.prefix.concat(['-c', code]), { timeoutMs: 120000 });
+    if (!result.ok) return null;
+    const lines = String(result.stdout || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    if (!lines.length) return null;
+    const file = path.join(packDir, '.jarvis-constraints.txt');
+    fs.writeFileSync(file, lines.join('\n') + '\n');
+    return file;
+}
+
 async function installPackRequirements(pack, comfyRoot, packDir) {
     if (!pack.requirements) return;
     const requirements = path.join(packDir, 'requirements.txt');
@@ -617,10 +722,19 @@ async function installPackRequirements(pack, comfyRoot, packDir) {
         throw new Error('Could not locate ComfyUI Python to install ' + pack.label + ' dependencies. Set COMFYUI_PYTHON, or run pip install -r "' + requirements + '" with ComfyUI Python.');
     }
     logLine('Installing ' + pack.label + ' Python requirements with ' + python.exe + ' ...');
-    const result = runCommand(python.exe, python.prefix.concat(['-m', 'pip', 'install', '-r', requirements]), {
+    const args = ['-m', 'pip', 'install', '-r', requirements];
+    let constraints = null;
+    if (pack.preserveTorch) {
+        constraints = writePackConstraints(python, packDir);
+        if (constraints) args.push('-c', constraints);
+    }
+    const result = runCommand(python.exe, python.prefix.concat(args), {
         timeoutMs: 20 * 60 * 1000,
         cwd: packDir
     });
+    if (constraints) {
+        try { fs.unlinkSync(constraints); } catch { /* next cleanup */ }
+    }
     if (!result.ok) {
         throw new Error('Could not install ' + pack.label + ' Python requirements. Run pip install -r "' + requirements + '" with ComfyUI Python. ' + (result.stderr || result.error || 'pip failed'));
     }
@@ -937,7 +1051,8 @@ function seenChoices(info) {
         diffusion_models: set(choiceList(info, 'UNETLoader', 'unet_name')),
         text_encoders: set(choiceList(info, 'CLIPLoader', 'clip_name')),
         vae: set(choiceList(info, 'VAELoader', 'vae_name')),
-        loras: set(choiceList(info, 'LoraLoader', 'lora_name')),
+        clip_vision: set(choiceList(info, 'CLIPVisionLoader', 'clip_name')),
+        loras: set(choiceList(info, 'LoraLoader', 'lora_name').concat(choiceList(info, 'LoraLoaderModelOnly', 'lora_name'))),
         seedvr2dit: set(choiceList(info, 'SeedVR2LoadDiTModel', 'model')),
         seedvr2vae: set(choiceList(info, 'SeedVR2LoadVAEModel', 'model')),
         upscale_models: set(choiceList(info, 'UpscaleModelLoader', 'model_name'))
@@ -952,7 +1067,7 @@ async function getStatus() {
         token: { configured: false, source: null, user: null, masked: null },
         models: [],
         nodes: [],
-        ready: { image: false, qwenImage: false, video: false, upscale: false, edit: false },
+        ready: { image: false, qwenImage: false, video: false, upscale: false, edit: false, characterSwapWan: false },
         job: jobState()
     };
 
@@ -1043,6 +1158,9 @@ async function getStatus() {
     // the comfyui-krea2edit node pack.
     status.ready.krea2Edit = has('krea2_unet') && has('krea2_clip') && has('krea2_vae')
         && has('krea2_identity_edit_lora') && nodeReady('krea2_edit');
+    status.ready.characterSwapWan = has('wan_animate_unet') && has('wan_animate_text_encoder') &&
+        has('wan_animate_vae') && has('wan_animate_clip_vision') && has('wan_animate_lightx2v') &&
+        nodeReady('wan_native');
     return status;
 }
 

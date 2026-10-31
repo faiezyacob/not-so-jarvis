@@ -92,6 +92,9 @@ const weather = require('./services/weather');
 const news = require('./services/news');
 const taskRouter = require('./services/task-router');
 const taskState = require('./services/task-state');
+const agentEngine = require('./services/agent/engine');
+const agentCapabilities = require('./services/agent/capabilities');
+const agentCapabilityRouter = require('./services/agent/capability-router');
 const generationQueue = require('./services/generation-queue');
 const turnQueue = require('./services/turn-queue');
 const director = require('./services/director/director');
@@ -111,6 +114,8 @@ const companionExtraction = require('./services/companion/extraction');
 const characterLife = require('./services/character-life');
 const conversationAssets = require('./services/conversation-assets');
 const videoReplacement = require('./services/video-replacement');
+const characterSwap = require('./services/character-swap');
+const messageMedia = require('./services/message-media');
 const GENERATED_DIR = path.join(__dirname, 'data', 'generated');
 const IMAGES_DIR = path.join(__dirname, 'data', 'images');
 const UPLOAD_MIME_TO_EXT = {
@@ -242,15 +247,15 @@ function sseWrite(res, obj) {
     }
 }
 
-// Relay ComfyUI step progress to a chat stream for the duration of a job. Only
-// one generation runs at a time, so progress observed while a handler awaits
-// its job belongs to that job. Returns an unsubscribe function.
+// Relay ComfyUI total progress to a chat stream for the duration of a job. The
+// percentage spans the whole job (loading/encoding/sampling/decoding/encoding
+// the file) and only reaches 100% once ComfyUI reports it finished. Only one
+// generation runs at a time, so progress observed while a handler awaits its
+// job belongs to that job. Returns an unsubscribe function.
 function forwardComfyProgress(res) {
     const onProgress = (update) => {
         if (!update) return;
-        if (update.stage) {
-            sseWrite(res, { generating: update.stage });
-        } else if (update.idle) {
+        if (update.idle) {
             sseWrite(res, { progress: { idle: true } });
         } else if (typeof update.value === 'number' && typeof update.max === 'number' && update.max > 0) {
             sseWrite(res, { progress: { value: update.value, max: update.max } });
@@ -260,36 +265,22 @@ function forwardComfyProgress(res) {
     return () => comfyui.unsubscribeProgress(onProgress);
 }
 
-// Like forwardComfyProgress, but for the long video pipelines where the
-// sampler is only part of the wall-clock time: once the final sampling step is
-// reached, ComfyUI decodes/encodes/saves with no further step events, which
-// otherwise leaves the UI pinned at "100%" while the GPU is still working.
-// Reaching the last step switches to a plain "rendering" label (no percentage)
-// so the status stays honest until the job finishes.
+// Like forwardComfyProgress, but keeps a plain "rendering" label until the job
+// finishes. The total progress already pauses at 99% through decode/encode, so
+// the label only replaces it at completion.
 function forwardComfyProgressToCompletion(res, completionLabel) {
     let completed = false;
     const onProgress = (update) => {
         if (!update) return;
-        if (update.stage) {
-            // A new node started: report its phase (loading/encoding/sampling/
-            // decoding/encoding-video) so the status stays honest past the
-            // sampler's 100%.
-            sseWrite(res, { generating: update.stage });
-            return;
-        }
         if (update.idle) {
-            if (!completed) sseWrite(res, { generating: completionLabel });
+            if (!completed) {
+                completed = true;
+                sseWrite(res, { generating: completionLabel });
+            }
             sseWrite(res, { progress: { idle: true } });
             return;
         }
         if (typeof update.value === 'number' && typeof update.max === 'number' && update.max > 0) {
-            if (update.value >= update.max) {
-                if (!completed) {
-                    completed = true;
-                    sseWrite(res, { generating: completionLabel });
-                }
-                return;
-            }
             sseWrite(res, { progress: { value: update.value, max: update.max } });
         }
     };
@@ -351,6 +342,54 @@ function readBody(req) {
             }
         });
         req.on('error', reject);
+    });
+}
+
+function decodePathId(value) {
+    try {
+        return decodeURIComponent(String(value || ''));
+    } catch {
+        return null;
+    }
+}
+
+// Bounded body reader for small control endpoints (Agent Mode). It stops
+// buffering once the cap is exceeded so a large request cannot exhaust memory.
+function readBodyLimited(req, maxBytes) {
+    return new Promise((resolve, reject) => {
+        const chunks = [];
+        const limit = Number.isFinite(maxBytes) ? maxBytes : 16384;
+        let total = 0;
+        let settled = false;
+        let overflow = false;
+        req.on('data', (chunk) => {
+            if (settled || overflow) return;
+            total += chunk.length;
+            if (total > limit) {
+                overflow = true;
+                chunks.length = 0;
+                return;
+            }
+            chunks.push(chunk);
+        });
+        req.on('end', () => {
+            if (settled) return;
+            settled = true;
+            if (overflow) {
+                reject(new Error('Request body is too large.'));
+                return;
+            }
+            try {
+                resolve(JSON.parse(Buffer.concat(chunks).toString() || '{}'));
+            } catch {
+                reject(new Error('Invalid JSON body'));
+            }
+        });
+        req.on('error', (err) => {
+            if (settled) return;
+            settled = true;
+            reject(err);
+        });
     });
 }
 
@@ -1807,6 +1846,8 @@ async function handleAPI(req, res, urlPath) {
             json(res, 404, { error: 'Image not found' });
             return true;
         }
+        const raw = removed.rawFilename || path.basename(decodeURIComponent(String(removed.file || '')));
+        if (raw) characterSwap.removeTakeByFilename(raw, removed.sessionId || null);
         json(res, 200, { ok: true });
         return true;
     }
@@ -1993,11 +2034,10 @@ async function handleAPI(req, res, urlPath) {
             try { res.write('event: ' + event + '\ndata: ' + JSON.stringify(data) + '\n\n'); } catch {}
         };
         const onProgress = (update) => {
-            if (update && update.stage) {
-                send('stage', { stage: update.stage });
-            } else if (update && update.idle) {
+            if (!update) return;
+            if (update.idle) {
                 send('idle', {});
-            } else {
+            } else if (typeof update.value === 'number' && typeof update.max === 'number' && update.max > 0) {
                 send('progress', { value: update.value, max: update.max });
             }
         };
@@ -2054,6 +2094,299 @@ async function handleAPI(req, res, urlPath) {
         return true;
     }
 
+    // --- Unified agent runtime (read-only tools + approval-gated cleanup) ---
+
+    // GET /api/agent/capabilities - what the assistant can actually do now.
+    if (urlPath === '/api/agent/capabilities' && req.method === 'GET') {
+        json(res, 200, {
+            enabled: agentRoutingEnabled(),
+            capabilities: agentCapabilities.summary(agentEngine.tools.names())
+        });
+        return true;
+    }
+
+    // GET /api/agent/status - session-scoped limits + allowlisted tools.
+    if (urlPath === '/api/agent/status' && req.method === 'GET') {
+        json(res, 200, {
+            enabled: agentRoutingEnabled(),
+            mode: 'unified',
+            active: agentEngine.activeCount(req.jarvisSession),
+            limits: agentEngine.limits,
+            tools: agentEngine.tools.describe(),
+            capabilities: agentCapabilities.summary(agentEngine.tools.names())
+        });
+        return true;
+    }
+
+    // GET /api/agent/tasks?conversationId=... - durable task history for this
+    // device (optionally one conversation). Events are omitted here; the
+    // per-task detail/SSE endpoints carry them.
+    if (urlPath === '/api/agent/tasks' && req.method === 'GET') {
+        try {
+            const query = new URL(req.url, 'http://localhost').searchParams;
+            const conversationId = String(query.get('conversationId') || '').trim() || null;
+            if (conversationId && !requireConversationAccess(req, res, conversationId)) return true;
+            const tasks = agentEngine.list(req.jarvisSession, conversationId).map((task) => {
+                const clone = Object.assign({}, task);
+                delete clone.events;
+                return clone;
+            });
+            json(res, 200, { tasks });
+        } catch (err) {
+            json(res, 500, { error: err.message });
+        }
+        return true;
+    }
+
+    // POST /api/agent/tasks - create + start a task. The task runs server-side
+    // and is independent of this request; progress is read from the SSE stream.
+    if (urlPath === '/api/agent/tasks' && req.method === 'POST') {
+        if (!agentRoutingEnabled()) {
+            json(res, 503, { error: 'Agent tasks are disabled (JARVIS_AGENT_DISABLED=1).' });
+            return true;
+        }
+        try {
+            const body = await readBodyLimited(req, 16384);
+            const conversationId = String(body.conversationId || '').trim();
+            if (!conversationId) {
+                json(res, 400, { error: 'conversationId is required' });
+                return true;
+            }
+            if (!requireConversationAccess(req, res, conversationId)) return true;
+            const result = agentEngine.start({
+                request: body.message !== undefined ? body.message : body.request,
+                conversationId,
+                sessionId: req.jarvisSession,
+                clientRequestId: body.clientRequestId
+            });
+            json(res, result.deduped ? 200 : 201, { task: result.task, deduped: result.deduped });
+        } catch (err) {
+            if (/too large|Invalid JSON/i.test(err.message)) {
+                json(res, 400, { error: err.message });
+            } else if (err.code === 'agent_busy') {
+                json(res, 429, { error: err.message });
+            } else if (err.code === 'invalid_request') {
+                json(res, 400, { error: err.message });
+            } else {
+                json(res, 500, { error: err.message });
+            }
+        }
+        return true;
+    }
+
+    // GET /api/agent/tasks/:id - one task with its full event history.
+    const agentTaskMatch = urlPath.match(/^\/api\/agent\/tasks\/([^/]+)$/);
+    if (agentTaskMatch && req.method === 'GET') {
+        const id = decodePathId(agentTaskMatch[1]);
+        if (!id || !agentEngine.ownsTask(id, req.jarvisSession)) {
+            json(res, 404, { error: 'Task not found' });
+            return true;
+        }
+        json(res, 200, { task: agentEngine.get(id) });
+        return true;
+    }
+
+    // GET /api/agent/tasks/:id/events - replayable SSE progress. The client
+    // sends ?after=<seq> (or the standard Last-Event-ID on reconnect); every
+    // event has an id so a reconnect never duplicates or skips progress.
+    const agentEventsMatch = urlPath.match(/^\/api\/agent\/tasks\/([^/]+)\/events$/);
+    if (agentEventsMatch && req.method === 'GET') {
+        const id = decodePathId(agentEventsMatch[1]);
+        if (!id || !agentEngine.ownsTask(id, req.jarvisSession)) {
+            json(res, 404, { error: 'Task not found' });
+            return true;
+        }
+        const task = agentEngine.get(id);
+        if (!task) {
+            json(res, 404, { error: 'Task not found' });
+            return true;
+        }
+        res.writeHead(200, {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'X-Accel-Buffering': 'no'
+        });
+        res.write('retry: 3000\n\n');
+        const query = new URL(req.url, 'http://localhost').searchParams;
+        let lastSeq = Number(req.headers['last-event-id'] || query.get('after') || 0) || 0;
+        let closed = false;
+        const write = (event, data, seq) => {
+            if (closed) return;
+            try {
+                let frame = '';
+                if (Number.isInteger(seq)) frame += 'id: ' + seq + '\n';
+                frame += 'event: ' + event + '\ndata: ' + JSON.stringify(data) + '\n\n';
+                res.write(frame);
+            } catch {
+                closed = true;
+            }
+        };
+        const finish = (finalTask) => {
+            if (closed) return;
+            write('end', { status: finalTask ? finalTask.status : 'completed' });
+            closed = true;
+            try { res.end(); } catch {}
+        };
+        write('snapshot', task);
+        // The snapshot already carries the full event history, so replay only
+        // what the snapshot does not contain. This avoids sending every event
+        // twice without weakening reconnect/after replay semantics.
+        const snapshotLastSeq = (Array.isArray(task.events) ? task.events : [])
+            .reduce((max, event) => (Number.isInteger(event.seq) && event.seq > max ? event.seq : max), 0);
+        if (snapshotLastSeq > lastSeq) lastSeq = snapshotLastSeq;
+        const replay = agentEngine.eventsAfter(id, lastSeq);
+        replay.forEach((event) => {
+            if (event.seq <= lastSeq) return;
+            lastSeq = event.seq;
+            write('agent', event, event.seq);
+        });
+        if (['completed', 'failed', 'cancelled'].indexOf(task.status) !== -1) {
+            finish(task);
+            return true;
+        }
+        const unsubscribe = agentEngine.subscribe(id, (event, snapshot) => {
+            if (closed || !event || event.seq <= lastSeq) return;
+            lastSeq = event.seq;
+            write('agent', event, event.seq);
+            if (snapshot && ['completed', 'failed', 'cancelled'].indexOf(snapshot.status) !== -1) {
+                unsubscribe();
+                clearInterval(ping);
+                finish(snapshot);
+            }
+        });
+        const ping = setInterval(() => {
+            if (closed) return;
+            try { res.write(': ping\n\n'); } catch { closed = true; }
+        }, 20000);
+        req.on('close', () => {
+            if (closed) return;
+            closed = true;
+            clearInterval(ping);
+            unsubscribe();
+        });
+        return true;
+    }
+
+    // POST /api/agent/tasks/:id/pause|resume - cooperative lifecycle control.
+    const agentLifecycleMatch = urlPath.match(/^\/api\/agent\/tasks\/([^/]+)\/(pause|resume)$/);
+    if (agentLifecycleMatch && req.method === 'POST') {
+        const id = decodePathId(agentLifecycleMatch[1]);
+        if (!id || !agentEngine.ownsTask(id, req.jarvisSession)) {
+            json(res, 404, { error: 'Task not found' });
+            return true;
+        }
+        try {
+            const task = agentLifecycleMatch[2] === 'pause'
+                ? agentEngine.pause(id, req.jarvisSession)
+                : agentEngine.resume(id, req.jarvisSession);
+            json(res, 200, { task });
+        } catch (err) {
+            const status = err.code === 'task_not_found' ? 404
+                : (err.code === 'task_not_pausable' || err.code === 'task_not_paused') ? 409 : 500;
+            json(res, status, { error: err.message, code: err.code || null });
+        }
+        return true;
+    }
+
+    // POST /api/agent/tasks/:id/guidance - add a follow-up instruction to the
+    // active task without starting an unrelated workflow.
+    const agentGuidanceMatch = urlPath.match(/^\/api\/agent\/tasks\/([^/]+)\/guidance$/);
+    if (agentGuidanceMatch && req.method === 'POST') {
+        const id = decodePathId(agentGuidanceMatch[1]);
+        if (!id || !agentEngine.ownsTask(id, req.jarvisSession)) {
+            json(res, 404, { error: 'Task not found' });
+            return true;
+        }
+        try {
+            const body = await readBodyLimited(req, 4096);
+            const task = agentEngine.addGuidance(id, body.message || body.text, req.jarvisSession);
+            json(res, 200, { task });
+        } catch (err) {
+            if (/too large|Invalid JSON/i.test(err.message)) {
+                json(res, 400, { error: err.message });
+            } else if (err.code === 'task_terminal' || err.code === 'invalid_guidance') {
+                json(res, 409, { error: err.message, code: err.code });
+            } else {
+                json(res, 500, { error: err.message });
+            }
+        }
+        return true;
+    }
+
+    // POST /api/agent/tasks/:id/retry - recover a finished task as a new,
+    // durable attempt that keeps the original goal and criteria.
+    const agentRetryMatch = urlPath.match(/^\/api\/agent\/tasks\/([^/]+)\/retry$/);
+    if (agentRetryMatch && req.method === 'POST') {
+        const id = decodePathId(agentRetryMatch[1]);
+        if (!id || !agentEngine.ownsTask(id, req.jarvisSession)) {
+            json(res, 404, { error: 'Task not found' });
+            return true;
+        }
+        try {
+            const body = await readBodyLimited(req, 4096);
+            const result = agentEngine.retry(id, req.jarvisSession, { note: body.message || body.note });
+            json(res, 201, { task: result.task, deduped: result.deduped });
+        } catch (err) {
+            if (/too large|Invalid JSON/i.test(err.message)) {
+                json(res, 400, { error: err.message });
+            } else if (err.code === 'task_not_terminal') {
+                json(res, 409, { error: err.message, code: err.code });
+            } else {
+                json(res, 500, { error: err.message });
+            }
+        }
+        return true;
+    }
+
+    // POST /api/agent/tasks/:id/cancel - idempotent; prevents later steps.
+    const agentCancelMatch = urlPath.match(/^\/api\/agent\/tasks\/([^/]+)\/cancel$/);
+    if (agentCancelMatch && req.method === 'POST') {
+        const id = decodePathId(agentCancelMatch[1]);
+        if (!id || !agentEngine.ownsTask(id, req.jarvisSession)) {
+            json(res, 404, { error: 'Task not found' });
+            return true;
+        }
+        const result = agentEngine.cancel(id, req.jarvisSession);
+        if (!result) {
+            json(res, 404, { error: 'Task not found' });
+            return true;
+        }
+        json(res, 200, { task: result.task, changed: result.changed });
+        return true;
+    }
+
+    // POST /api/agent/tasks/:id/approval - server-side approval boundary for
+    // future write tools. Repeated submissions are rejected against live state.
+    const agentApprovalMatch = urlPath.match(/^\/api\/agent\/tasks\/([^/]+)\/approval$/);
+    if (agentApprovalMatch && req.method === 'POST') {
+        const id = decodePathId(agentApprovalMatch[1]);
+        if (!id) {
+            json(res, 404, { error: 'Task not found' });
+            return true;
+        }
+        try {
+            const body = await readBodyLimited(req, 4096);
+            if (!agentEngine.ownsTask(id, req.jarvisSession)) {
+                json(res, 404, { error: 'Task not found' });
+                return true;
+            }
+            const task = agentEngine.decideApproval(id, body.decision, req.jarvisSession);
+            json(res, 200, { task });
+        } catch (err) {
+            if (/too large|Invalid JSON/i.test(err.message)) {
+                json(res, 400, { error: err.message });
+            } else if (err.code === 'task_not_found') {
+                json(res, 404, { error: err.message });
+            } else if (err.code === 'approval_not_pending' || err.code === 'invalid_approval_decision') {
+                json(res, 409, { error: err.message, code: err.code });
+            } else {
+                json(res, 500, { error: err.message });
+            }
+        }
+        return true;
+    }
+
     // POST /api/models/unload (legacy)
     if (urlPath === '/api/models/unload' && req.method === 'POST') {
         handleUnloadModel(req, res);
@@ -2066,6 +2399,323 @@ async function handleAPI(req, res, urlPath) {
         res.on('finish', () => {
             setTimeout(() => process.exit(RESTART_EXIT_CODE), 300);
         });
+        return true;
+    }
+
+    // --- Character Swap workspace -------------------------------------------
+    // A dedicated replacement project: import a clip, tap people, track and
+    // refine masks, manage reference views, then render through the existing
+    // MiniMax H3 reference-to-video pipeline with the refined mask attached.
+    if (urlPath === '/api/character-swap/engines' && req.method === 'GET') {
+        try {
+            const info = await comfyui.getObjectInfo().catch(() => null);
+            json(res, 200, {
+                default: characterSwap.DEFAULT_ENGINE,
+                engines: characterSwap.listEngines(info),
+                segmentation: characterSwap.segmentationStatus(info)
+            });
+        } catch (err) {
+            json(res, 200, {
+                default: characterSwap.DEFAULT_ENGINE,
+                engines: characterSwap.listEngines(null),
+                segmentation: characterSwap.segmentationStatus(null)
+            });
+        }
+        return true;
+    }
+    if (urlPath === '/api/character-swap/engines/ensure' && req.method === 'POST') {
+        try {
+            const info = await comfyui.getObjectInfo().catch(() => null);
+            const missingPose = !info || !info.DWPreprocessor || !info.PixelPerfectResolution;
+            let installed = false;
+            try {
+                const root = await comfyui.resolveComfyRoot();
+                installed = Boolean(root && fs.existsSync(path.join(root, 'custom_nodes', 'comfyui_controlnet_aux')));
+            } catch {
+                installed = false;
+            }
+            const started = missingPose && !installed ? modelSetup.startNodeInstall(['controlnet_aux']) : false;
+            json(res, 200, { started, missingPose, installed, restartRequired: missingPose && installed });
+        } catch (err) {
+            json(res, 200, { started: false, missingPose: true });
+        }
+        return true;
+    }
+    if (urlPath === '/api/character-swap/projects' && req.method === 'GET') {
+        json(res, 200, {
+            projects: characterSwap.list(req.jarvisSession).map(presentCharacterSwap)
+        });
+        return true;
+    }
+    if (urlPath === '/api/character-swap/projects' && req.method === 'POST') {
+        try {
+            const body = await readBody(req);
+            adoptLegacyState(req.jarvisSession);
+            const sourcePath = resolveCharacterSwapAssetPath(body, req.jarvisSession, 'video');
+            if (!sourcePath) {
+                throw badRequest('Select a generated video or upload a video first.');
+            }
+            const filename = path.basename(sourcePath);
+            if (body.conversationId && !conversationService.canAccessConversation(body.conversationId, req.jarvisSession)) {
+                throw badRequest('Conversation not found.');
+            }
+            const project = await characterSwap.createProject({
+                sourcePath,
+                filename,
+                sessionId: req.jarvisSession,
+                conversationId: body.conversationId || null,
+                provider: body.provider || '',
+                model: body.model || '',
+                title: body.title || filename
+            });
+            json(res, 201, presentCharacterSwap(project));
+        } catch (err) {
+            json(res, err.status || 400, { error: err.message });
+        }
+        return true;
+    }
+
+    const csMatch = urlPath.match(/^\/api\/character-swap\/projects\/([^/]+)(\/.*)?$/);
+    if (csMatch) {
+        const projectId = decodeURIComponent(csMatch[1]);
+        const rest = csMatch[2] || '';
+        const project = characterSwap.get(projectId);
+        if (!project || (project.sessionId && project.sessionId !== req.jarvisSession)) {
+            json(res, 404, { error: 'Character swap project not found.' });
+            return true;
+        }
+        try {
+            if (rest === '' && req.method === 'GET') {
+                json(res, 200, presentCharacterSwap(project));
+                return true;
+            }
+            if (rest === '' && req.method === 'DELETE') {
+                characterSwap.remove(projectId);
+                json(res, 200, { ok: true });
+                return true;
+            }
+            if (rest === '/video' && req.method === 'GET') {
+                const file = characterSwap.projectFilePath(projectId, project.part && project.part.file);
+                if (!file || !fs.existsSync(file)) { send404(res); return true; }
+                sendMediaFile(req, res, file);
+                return true;
+            }
+            if (rest === '/frame' && req.method === 'GET') {
+                const frame = Number(new URL(req.url, 'http://localhost').searchParams.get('index') || 0);
+                const file = await characterSwap.sourceFrame(projectId, frame);
+                res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-store' });
+                res.end(fs.readFileSync(file));
+                return true;
+            }
+            if (rest === '/trim' && req.method === 'PATCH') {
+                const body = await readBody(req);
+                const updated = await characterSwap.setTrim(projectId, body.start, body.end);
+                json(res, 200, presentCharacterSwap(updated));
+                return true;
+            }
+            if (rest === '/mask-settings' && req.method === 'PATCH') {
+                const body = await readBody(req);
+                const updated = characterSwap.updateMaskSettings(projectId, body);
+                json(res, 200, presentCharacterSwap(updated));
+                return true;
+            }
+            if (rest === '/mask/export' && req.method === 'POST') {
+                const mask = await characterSwap.exportMask(projectId);
+                json(res, 200, { project: presentCharacterSwap(characterSwap.get(projectId)), mask });
+                return true;
+            }
+            if (rest === '/track' && req.method === 'POST') {
+                const updated = characterSwap.startTrack(projectId);
+                json(res, 202, presentCharacterSwap(updated));
+                return true;
+            }
+            if (rest === '/selection/detect' && req.method === 'POST') {
+                const updated = characterSwap.startSelection(projectId);
+                json(res, 202, presentCharacterSwap(updated));
+                return true;
+            }
+            if (rest === '/selection/select' && req.method === 'POST') {
+                const body = await readBody(req);
+                const updated = characterSwap.selectTracks(projectId, body.trackIds || body.tracks);
+                json(res, 200, presentCharacterSwap(updated));
+                return true;
+            }
+            if (rest === '/selection/correction' && req.method === 'POST') {
+                const body = await readBody(req);
+                const updated = await characterSwap.applySelectionCorrection(projectId, body);
+                json(res, 200, presentCharacterSwap(updated));
+                return true;
+            }
+            if (rest === '/segment' && req.method === 'POST') {
+                const updated = characterSwap.startSegment(projectId);
+                json(res, 202, presentCharacterSwap(updated));
+                return true;
+            }
+            const selectionThumb = rest.match(/^\/selection\/([^/]+)\/thumb$/);
+            if (selectionThumb && req.method === 'GET') {
+                const track = (project.selection && project.selection.tracks || [])
+                    .find((item) => item.id === decodeURIComponent(selectionThumb[1]));
+                const file = track && track.thumb ? characterSwap.projectFilePath(projectId, track.thumb) : null;
+                if (!file || !fs.existsSync(file)) { send404(res); return true; }
+                res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-store' });
+                res.end(fs.readFileSync(file));
+                return true;
+            }
+            if (rest === '/describe' && req.method === 'POST') {
+                const body = await readBody(req);
+                const turn = await acquireTurn(res, { label: 'character swap describe', conversationId: project.conversationId });
+                if (!turn) return true;
+                await vramManager.freeVRAMBeforeChat();
+                const updated = await characterSwap.describeProject(projectId, {
+                    provider: body.provider || project.provider,
+                    model: body.model || project.model
+                });
+                json(res, 200, presentCharacterSwap(updated));
+                return true;
+            }
+            if (rest === '/engine' && req.method === 'PATCH') {
+                const body = await readBody(req);
+                const engine = body.engine;
+                const updated = characterSwap.setEngine(projectId, engine, body.settings);
+                if (updated.engine === 'wan_animate') {
+                    comfyui.getObjectInfo().then((info) => {
+                        const dw = info && info.DWPreprocessor;
+                        if (!dw) modelSetup.startNodeInstall(['controlnet_aux']);
+                    }).catch(() => {});
+                }
+                json(res, 200, presentCharacterSwap(updated));
+                return true;
+            }
+            if (rest === '/render' && req.method === 'POST') {
+                await handleCharacterSwapRender(req, res, projectId, project);
+                return true;
+            }
+            const takeDelete = rest.match(/^\/takes\/([^/]+)$/);
+            if (takeDelete && req.method === 'DELETE') {
+                const updated = characterSwap.removeTake(projectId, decodeURIComponent(takeDelete[1]));
+                json(res, 200, presentCharacterSwap(updated));
+                return true;
+            }
+
+            if (rest === '/people' && req.method === 'POST') {
+                const updated = characterSwap.addPerson(projectId);
+                json(res, 201, presentCharacterSwap(updated));
+                return true;
+            }
+            const personRemoveMatch = rest.match(/^\/person\/([^/]+)$/);
+            if (personRemoveMatch && req.method === 'DELETE') {
+                const updated = characterSwap.removePerson(projectId, decodeURIComponent(personRemoveMatch[1]));
+                json(res, 200, presentCharacterSwap(updated));
+                return true;
+            }
+
+            const personMatch = rest.match(/^\/person\/([^/]+)(\/.*)?$/);
+            if (personMatch) {
+                const personId = decodeURIComponent(personMatch[1]);
+                const personRest = personMatch[2] || '';
+                if (personRest === '/anchors' && req.method === 'POST') {
+                    const body = await readBody(req);
+                    const updated = await characterSwap.addAnchor(projectId, personId, body);
+                    json(res, 200, presentCharacterSwap(updated));
+                    return true;
+                }
+                if (personRest === '/anchors' && req.method === 'DELETE') {
+                    const updated = characterSwap.removeAnchor(projectId, personId);
+                    json(res, 200, presentCharacterSwap(updated));
+                    return true;
+                }
+                const anchorMaskMatch = personRest.match(/^\/anchors\/(\d+)\/mask$/);
+                if (anchorMaskMatch && req.method === 'GET') {
+                    const target = (project.people || []).find((item) => item.id === personId);
+                    const anchor = target && (target.anchors || []).find((item) => item.frame === Number(anchorMaskMatch[1]));
+                    const file = anchor && characterSwap.projectFilePath(projectId, anchor.maskFile);
+                    if (!file || !fs.existsSync(file)) { send404(res); return true; }
+                    res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-store' });
+                    res.end(fs.readFileSync(file));
+                    return true;
+                }
+                const anchorMatch = personRest.match(/^\/anchors\/(\d+)$/);
+                if (anchorMatch && req.method === 'DELETE') {
+                    const updated = characterSwap.removeAnchor(projectId, personId, Number(anchorMatch[1]));
+                    json(res, 200, presentCharacterSwap(updated));
+                    return true;
+                }
+                const maskMatch = personRest.match(/^\/mask\/(\d+)$/);
+                if (maskMatch && req.method === 'GET') {
+                    const file = characterSwap.maskFramePath(projectId, personId, Number(maskMatch[1]));
+                    if (!file || !fs.existsSync(file)) { send404(res); return true; }
+                    res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-store' });
+                    res.end(fs.readFileSync(file));
+                    return true;
+                }
+                if (maskMatch && req.method === 'POST') {
+                    const body = await readBody(req);
+                    const updated = await characterSwap.editMask(projectId, personId, Number(maskMatch[1]), body.strokes);
+                    json(res, 200, presentCharacterSwap(updated));
+                    return true;
+                }
+                const refMatch = personRest.match(/^\/ref\/([^/]+)$/);
+                if (refMatch && req.method === 'GET') {
+                    const ref = (project.people || []).find((p) => p.id === personId)
+                        && (project.people.find((p) => p.id === personId).refs || []).find((r) => r.id === decodeURIComponent(refMatch[1]));
+                    const file = ref && characterSwap.projectFilePath(projectId, ref.file);
+                    if (!file || !fs.existsSync(file)) { send404(res); return true; }
+                    sendMediaFile(req, res, file);
+                    return true;
+                }
+                if (personRest === '/refs' && req.method === 'POST') {
+                    const body = await readBody(req);
+                    adoptLegacyState(req.jarvisSession);
+                    const sourcePath = resolveCharacterSwapAssetPath(body, req.jarvisSession, 'image');
+                    if (!sourcePath) {
+                        throw badRequest('Select a generated image or upload a reference image first.');
+                    }
+                    const updated = await characterSwap.addReferenceImage(projectId, personId, sourcePath, body.role);
+                    json(res, 201, presentCharacterSwap(updated));
+                    return true;
+                }
+                const refDelete = personRest.match(/^\/ref\/([^/]+)$/);
+                if (refDelete && req.method === 'DELETE') {
+                    const updated = characterSwap.removeReference(projectId, personId, decodeURIComponent(refDelete[1]));
+                    json(res, 200, presentCharacterSwap(updated));
+                    return true;
+                }
+                if (refDelete && req.method === 'PATCH') {
+                    const body = await readBody(req);
+                    const updated = characterSwap.setReferenceRole(projectId, personId, decodeURIComponent(refDelete[1]), body.role);
+                    json(res, 200, presentCharacterSwap(updated));
+                    return true;
+                }
+                if (personRest === '/view' && req.method === 'POST') {
+                    const body = await readBody(req);
+                    const turn = await acquireTurn(res, { label: 'character swap reference view', conversationId: project.conversationId });
+                    if (!turn) return true;
+                    await vramManager.freeVRAMBeforeImage();
+                    const updated = await characterSwap.generateView(projectId, personId, body.view, {
+                        provider: body.provider || project.provider,
+                        model: body.model || project.model
+                    }, { conversationId: project.conversationId, extra: body.extra });
+                    json(res, 200, presentCharacterSwap(updated));
+                    return true;
+                }
+                if (personRest === '/sheet' && req.method === 'POST') {
+                    const body = await readBody(req);
+                    const turn = await acquireTurn(res, { label: 'character swap sheet', conversationId: project.conversationId });
+                    if (!turn) return true;
+                    await vramManager.freeVRAMBeforeImage();
+                    const updated = await characterSwap.generateSheet(projectId, personId, {
+                        provider: body.provider || project.provider,
+                        model: body.model || project.model
+                    }, { conversationId: project.conversationId, extra: body.extra });
+                    json(res, 200, presentCharacterSwap(updated));
+                    return true;
+                }
+            }
+        } catch (err) {
+            json(res, err.status || 400, { error: err.message });
+            return true;
+        }
+        json(res, 404, { error: 'Not found' });
         return true;
     }
 
@@ -2124,6 +2774,18 @@ async function handleAPI(req, res, urlPath) {
     // POST /api/conversations/:id/messages
     if (msgMatch && req.method === 'POST') {
         handleAddMessage(req, res, decodeURIComponent(msgMatch[1]));
+        return true;
+    }
+
+    // DELETE /api/conversations/:id/messages/:messageId — remove a single
+    // response and any generated media it owned (gallery + file).
+    const msgDeleteMatch = urlPath.match(/^\/api\/conversations\/([^/]+)\/messages\/([^/]+)$/);
+    if (msgDeleteMatch && req.method === 'DELETE') {
+        handleDeleteMessage(
+            req, res,
+            decodeURIComponent(msgDeleteMatch[1]),
+            decodeURIComponent(msgDeleteMatch[2])
+        );
         return true;
     }
 
@@ -2489,9 +3151,36 @@ function handleDeleteConversation(req, res, id) {
     removeUGCMedia(id);
     removeDirectorMedia(id);
     removeCreatorStudioMedia(id);
+    characterSwap.removeForConversation(id);
     taskState.clearTask(id);
     director.removeProduction(id);
+    agentEngine.removeForConversation(id, req.jarvisSession);
     json(res, 200, { ok: true });
+}
+
+// Delete one assistant response. Any generated media that response owned is
+// removed from the gallery (and disk) when no other message still references
+// it, so the chat and the gallery never disagree. Returns the removed
+// filenames to the client so it can drop matching @ reference chips.
+function handleDeleteMessage(req, res, conversationId, messageId) {
+    if (!requireConversationAccess(req, res, conversationId)) return;
+    const message = conversationService.getMessage(conversationId, messageId);
+    if (!message) {
+        json(res, 404, { error: 'Message not found' });
+        return;
+    }
+    if (message.role !== 'assistant') {
+        json(res, 400, { error: 'Only assistant responses can be deleted.' });
+        return;
+    }
+    const removed = conversationService.deleteMessage(conversationId, messageId);
+    if (!removed) {
+        json(res, 404, { error: 'Message not found' });
+        return;
+    }
+    const removedMedia = messageMedia.removeMessageMedia(conversationId, removed);
+    messageMedia.stripRemovedMediaReferences(conversationId, new Set(removedMedia));
+    json(res, 200, { ok: true, removedMedia });
 }
 
 // Director opening frames (and their upscales) are hidden from the gallery but
@@ -2540,15 +3229,10 @@ function removeCreatorStudioMedia(conversationId) {
 // deleted conversation's messages, keeping the gallery in sync with what the
 // chat actually references.
 function removeConversationImages(messages, conversationId) {
-    const wanted = new Set();
+    const wanted = messageMedia.collectGeneratedFilenames((messages || []).map((m) => (m && m.content) || ''));
     // Character identity media is protected: it belongs to the character
     // package, not the conversation, and must survive a conversation delete.
     const protectedNames = characterContext.characterMediaFilenames();
-    // Same character exclusions as resolveUpscaleSource /
-    // resolveVideoUpscaleSource — video embeds use quoted src attributes
-    // (<video ... src="/generated/<file>">), so quotes must terminate the
-    // match or the captured name keeps a trailing quote and never matches.
-    const urlRe = /\/generated\/([^\s)\]}"']+)/g;
     const collect = (value) => {
         if (!value) return;
         let name = String(value).split('?')[0];
@@ -2556,14 +3240,6 @@ function removeConversationImages(messages, conversationId) {
         try { name = decodeURIComponent(name); } catch (err) { /* keep raw */ }
         if (name) wanted.add(name);
     };
-    (messages || []).forEach((m) => {
-        const content = (m && m.content) || '';
-        let match;
-        urlRe.lastIndex = 0;
-        while ((match = urlRe.exec(content))) {
-            collect(match[1]);
-        }
-    });
     // Fall back to the conversation's bound task asset (e.g. a video upscale
     // reply only embeds the upscaled output, not its source).
     if (conversationId) {
@@ -2875,6 +3551,102 @@ async function handleChat(req, res) {
     }
 }
 
+/* ============================================
+   Unified chat -> agent bridge
+   The main chat owns every turn. When a turn is
+   genuinely tool-backed or multi-step, it becomes
+   a durable server task instead of a fake answer.
+   ============================================ */
+
+function agentRoutingEnabled() {
+    return String(process.env.JARVIS_AGENT_DISABLED || '') !== '1';
+}
+
+function agentTextReply(res, text) {
+    sseWrite(res, { chunk: text });
+    sseWrite(res, { done: true, fullReply: text });
+    res.end();
+}
+
+function agentTaskEvent(res, task) {
+    sseWrite(res, { agentTask: task });
+    sseWrite(res, { done: true, fullReply: '' });
+    res.end();
+}
+
+function agentTaskForChat(conversationId, sessionId, decision, message) {
+    return agentEngine.start({
+        request: message,
+        goal: decision.goal || message,
+        completionCriteria: decision.completionCriteria || [],
+        taskKind: decision.kind === 'tool' ? 'tool' : 'agent',
+        conversationId,
+        sessionId,
+        origin: 'chat'
+    });
+}
+
+function handleAgentFollowUp(req, res, conversationId, message, task, followUp) {
+    const action = followUp.action;
+    if (action === agentCapabilityRouter.FOLLOW_UP_ACTIONS.CANCEL) {
+        agentEngine.cancel(task.id, req.jarvisSession);
+        agentTextReply(res, 'Cancelled that task. No further steps will run.');
+        return true;
+    }
+    if (action === agentCapabilityRouter.FOLLOW_UP_ACTIONS.APPROVE ||
+        action === agentCapabilityRouter.FOLLOW_UP_ACTIONS.REJECT) {
+        const decision = action === agentCapabilityRouter.FOLLOW_UP_ACTIONS.APPROVE ? 'approve' : 'reject';
+        try {
+            agentEngine.decideApproval(task.id, decision, req.jarvisSession);
+            agentTextReply(res, decision === 'approve'
+                ? 'Approved. The action will run once after a server-side re-check.'
+                : 'Rejected. The pending action will not run.');
+        } catch (err) {
+            agentTextReply(res, err.message);
+        }
+        return true;
+    }
+    if (action === agentCapabilityRouter.FOLLOW_UP_ACTIONS.PAUSE) {
+        try {
+            agentEngine.pause(task.id, req.jarvisSession);
+            agentTextReply(res, 'Paused the task before its next step. Say "resume" to continue.');
+        } catch (err) {
+            agentTextReply(res, err.message);
+        }
+        return true;
+    }
+    if (action === agentCapabilityRouter.FOLLOW_UP_ACTIONS.RESUME) {
+        try {
+            agentEngine.resume(task.id, req.jarvisSession);
+            agentTextReply(res, 'Resumed the task. Progress continues in its activity card.');
+        } catch (err) {
+            agentTextReply(res, err.message);
+        }
+        return true;
+    }
+    if (action === agentCapabilityRouter.FOLLOW_UP_ACTIONS.CONTINUE) {
+        try {
+            agentEngine.addGuidance(task.id, message, req.jarvisSession);
+            agentTextReply(res, 'Added that to the running task. It stays in the same activity card.');
+        } catch (err) {
+            agentTextReply(res, err.message);
+        }
+        return true;
+    }
+    if (action === agentCapabilityRouter.FOLLOW_UP_ACTIONS.RETRY) {
+        try {
+            const result = agentEngine.retry(task.id, req.jarvisSession, {
+                note: followUp.guidance || message
+            });
+            agentTaskEvent(res, result.task);
+        } catch (err) {
+            agentTextReply(res, err.message);
+        }
+        return true;
+    }
+    return false;
+}
+
 async function handleChatStream(req, res) {
     try {
         const body = await readBody(req);
@@ -2956,6 +3728,30 @@ async function handleChatStream(req, res) {
         if (!conversationService.canAccessConversation(conversationId, req.jarvisSession)) {
             json(res, 404, { error: 'Conversation not found' });
             return;
+        }
+
+        // Task lifecycle controls (approve / reject / pause / resume / continue /
+        // cancel / retry) are answered BEFORE the turn slot is acquired. An agent
+        // task waiting for approval already owns the slot; acquiring it here
+        // would deadlock the very approval that lets the task continue. These
+        // are control messages, not GPU work, so they bypass the queue exactly
+        // like the existing cancel/free/status control endpoints.
+        if (agentRoutingEnabled() && !chatImages.length && !referenceImages.length &&
+            !videoReferences.length && !hasCardAction) {
+            const controlTask = agentEngine.latestActive(conversationId, req.jarvisSession) ||
+                agentEngine.latest(conversationId, req.jarvisSession);
+            if (controlTask) {
+                const control = agentCapabilityRouter.classifyFollowUp(routingMessage, controlTask);
+                if (control.action !== agentCapabilityRouter.FOLLOW_UP_ACTIONS.NONE) {
+                    res.writeHead(200, {
+                        'Content-Type': 'text/event-stream',
+                        'Cache-Control': 'no-cache',
+                        'Connection': 'keep-alive',
+                        'X-Accel-Buffering': 'no'
+                    });
+                    if (handleAgentFollowUp(req, res, conversationId, routingMessage, controlTask, control)) return;
+                }
+            }
         }
 
         // Reasoning flag for thinking-capable chat models (on by default).
@@ -3270,6 +4066,65 @@ async function handleChatStream(req, res) {
                 think
             });
             return;
+        }
+
+        // Unified chat: a task follow-up is resolved against the conversation's
+        // active/last agent task before the router can misread it as new chat.
+        // A running task never blocks unrelated conversation; only an explicit
+        // task reference/decision is captured here.
+        if (agentRoutingEnabled()) {
+            const activeAgentTask = agentEngine.latestActive(conversationId, req.jarvisSession);
+            if (activeAgentTask) {
+                const followUp = agentCapabilityRouter.classifyFollowUp(routingMessage, activeAgentTask);
+                if (followUp.action !== agentCapabilityRouter.FOLLOW_UP_ACTIONS.NONE) {
+                    if (handleAgentFollowUp(req, res, conversationId, routingMessage, activeAgentTask, followUp)) return;
+                }
+            }
+            // A recently finished task can still be retried/continued.
+            const lastAgentTask = agentEngine.latest(conversationId, req.jarvisSession);
+            if (!activeAgentTask && lastAgentTask) {
+                const followUp = agentCapabilityRouter.classifyFollowUp(routingMessage, lastAgentTask);
+                if (followUp.action === agentCapabilityRouter.FOLLOW_UP_ACTIONS.RETRY) {
+                    if (handleAgentFollowUp(req, res, conversationId, routingMessage, lastAgentTask, followUp)) return;
+                }
+            }
+        }
+
+        // Capability-aware routing. This runs only for plain text turns: an
+        // attachment/reference keeps its existing media pipeline, and the
+        // router itself defers image/video/prompt-writing requests. Ordinary
+        // questions, writing and creative work stay direct responses.
+        if (agentRoutingEnabled() && !chatImages.length && !referenceImages.length && !videoReferences.length) {
+            const capabilityDecision = agentCapabilityRouter.classify(routingMessage, {
+                capabilities: agentCapabilities.list(agentEngine.tools.names())
+            });
+            if (capabilityDecision.action === agentCapabilityRouter.ACTIONS.BLOCKED) {
+                agentTextReply(res, capabilityDecision.blockedReason ||
+                    'That capability is not available, so nothing was executed.');
+                return;
+            }
+            if (capabilityDecision.action === agentCapabilityRouter.ACTIONS.CLARIFY) {
+                agentTextReply(res, capabilityDecision.question ||
+                    'What exactly would you like me to do?');
+                return;
+            }
+            if (capabilityDecision.action === agentCapabilityRouter.ACTIONS.TOOL ||
+                capabilityDecision.action === agentCapabilityRouter.ACTIONS.AGENT) {
+                try {
+                    const started = agentTaskForChat(
+                        conversationId,
+                        req.jarvisSession,
+                        capabilityDecision,
+                        routingMessage
+                    );
+                    agentTaskEvent(res, started.task);
+                } catch (err) {
+                    agentTextReply(res, err.code === 'agent_busy'
+                        ? 'Another agent task is already running for this device. Wait for it to finish, or say "cancel that task".'
+                        : 'Could not start that task: ' + err.message);
+                }
+                return;
+            }
         }
 
         // One side resident, always. Routing consults the Ollama chat model and
@@ -7762,6 +8617,306 @@ function buildReplacementConfirmation(plan) {
     return text;
 }
 
+// --- Character Swap workspace helpers ---------------------------------------
+
+function generatedEntryFilename(entry) {
+    const decoded = decodeURIComponent(String((entry && entry.file) || ''));
+    return path.basename(decoded);
+}
+
+function isGeneratedVideoEntry(entry) {
+    if (entry && entry.video) return true;
+    return VIDEO_REF_EXT_RE.test(generatedEntryFilename(entry));
+}
+
+// Resolve a Character Swap source/reference from either an uploaded file
+// (data/images) or a generated file the current device session owns
+// (data/generated). Generated files are looked up through generatedHistory's
+// public, session-scoped view so one device can never pick another's media.
+function resolveCharacterSwapAssetPath(body, sessionId, kind) {
+    const safeName = path.basename(String((body && body.filename) || '').split('?')[0]);
+    if (!safeName) return null;
+    if (String((body && body.source) || '').toLowerCase() === 'generated') {
+        const entry = generatedHistory.listPublic(sessionId).find((item) => generatedEntryFilename(item) === safeName);
+        if (!entry) return null;
+        const video = isGeneratedVideoEntry(entry);
+        if (kind === 'video' && !video) return null;
+        if (kind === 'image' && video) return null;
+        const generated = path.join(GENERATED_DIR, safeName);
+        return generated.startsWith(GENERATED_DIR) && fs.existsSync(generated) ? generated : null;
+    }
+    const uploaded = path.join(IMAGES_DIR, safeName);
+    return uploaded.startsWith(IMAGES_DIR) && fs.existsSync(uploaded) ? uploaded : null;
+}
+
+function presentCharacterSwap(project) {
+    if (!project) return null;
+    const copy = JSON.parse(JSON.stringify(project));
+    const base = '/api/character-swap/projects/' + encodeURIComponent(copy.id);
+    copy.videoUrl = base + '/video';
+    copy.selection = copy.selection || { tracks: [] };
+    copy.selection.tracks = (copy.selection.tracks || []).map((track) => Object.assign({}, track, {
+        thumbUrl: track.thumb ? base + '/selection/' + encodeURIComponent(track.id) + '/thumb' : null
+    }));
+    copy.people = (copy.people || []).map((person) => {
+        const out = Object.assign({}, person);
+        out.refs = (person.refs || []).map((ref) => Object.assign({}, ref, {
+            url: base + '/person/' + encodeURIComponent(person.id) + '/ref/' + encodeURIComponent(ref.id)
+        }));
+        out.anchors = (person.anchors || []).map((anchor) => Object.assign({}, anchor, {
+            maskUrl: person.masks
+                ? base + '/person/' + encodeURIComponent(person.id) + '/mask/' + Number(anchor.frame)
+                : base + '/frame?index=' + Number(anchor.frame),
+            anchorMaskUrl: base + '/person/' + encodeURIComponent(person.id) + '/anchors/' + Number(anchor.frame) + '/mask'
+        }));
+        const seg = copy.segmentation && copy.segmentation.people ? copy.segmentation.people[person.id] : null;
+        const hasMask = copy.engine === 'wan_animate' ? Boolean(seg) : Boolean(person.masks);
+        out.maskUrl = hasMask
+            ? base + '/person/' + encodeURIComponent(person.id) + '/mask/0'
+            : null;
+        return out;
+    });
+    copy.takes = (copy.takes || []).map((take) => Object.assign({}, take, {
+        windows: (take.windows || []).map((window) => {
+            const clean = Object.assign({}, window);
+            delete clean.file;
+            return clean;
+        }),
+        passes: (take.passes || []).map((pass) => {
+            const clean = Object.assign({}, pass);
+            delete clean.video;
+            clean.windows = (pass.windows || []).map((window) => {
+                const item = Object.assign({}, window);
+                delete item.file;
+                return item;
+            });
+            return clean;
+        })
+    }));
+    return copy;
+}
+
+async function handleCharacterSwapRender(req, res, projectId, project) {
+    let body;
+    try {
+        body = await readBody(req);
+    } catch (err) {
+        json(res, 400, { error: err.message });
+        return;
+    }
+    const engine = characterSwap.getEngine(body.engine || project.engine).id;
+    if (body.settings || (body.engine && body.engine !== project.engine)) {
+        project = characterSwap.setEngine(projectId, engine, body.settings);
+    }
+    let info = null;
+    try { info = await comfyui.getObjectInfo(); } catch { info = null; }
+    const status = characterSwap.engineStatus(project, info).find((item) => item.id === engine);
+    if (!status || !status.available) {
+        const missing = status && status.missing ? status.missing : ['ComfyUI is not reachable.'];
+        json(res, 400, {
+            error: engine === 'wan_animate'
+                ? 'Wan Animate 2 is not ready. Missing: ' + missing.join('; ')
+                : 'MiniMax H3 replacement is not ready. Missing: ' + missing.join('; '),
+            code: 'engine_unavailable',
+            engine,
+            missing
+        });
+        return;
+    }
+    const turn = await acquireTurn(res, { label: 'character swap render', conversationId: project.conversationId });
+    if (!turn) return;
+    if (engine === 'h3' && project.part && project.part.frames / 24 > 15.2) {
+        json(res, 400, {
+            error: 'MiniMax H3 replacement supports up to 15 seconds. Trim the clip (and re-track) or switch to Wan Animate 2.',
+            code: 'h3_duration_exceeded'
+        });
+        return;
+    }
+    if (engine === 'wan_animate') {
+        const adapter = characterSwap.getEngine('wan_animate');
+        const settings = project.engineSettings && project.engineSettings.wanAnimate;
+        let stats = await comfyui.getSystemStats().catch(() => null);
+        let preflight = adapter.preflight(settings, stats);
+        if (!preflight.ok) {
+            await vramManager.freeVRAMBeforeImage().catch(() => {});
+            stats = await comfyui.getSystemStats().catch(() => null);
+            preflight = adapter.preflight(settings, stats);
+        }
+        if (!preflight.ok && !body.allowLowVram) {
+            json(res, 409, {
+                error: 'Wan Animate 2 needs about ' + preflight.requiredVramMB + ' MB of free VRAM; ComfyUI reports ' +
+                    preflight.freeVramMB + ' MB. Close other GPU apps, choose the Draft preset, or retry with allowLowVram.',
+                code: 'wan_insufficient_vram',
+                preflight
+            });
+            return;
+        }
+    }
+    const quality = body.quality === 'draft' ? 'draft' : 'full';
+    const h3Size = body.h3Size || (quality === 'draft' ? 'S' : 'L');
+    let resumeTake = body.resumeTakeId && Array.isArray(project.takes)
+        ? project.takes.find((take) => take.takeId === body.resumeTakeId)
+        : null;
+    if (resumeTake && body.redoWindow && Number.isInteger(Number(body.redoWindow.pass)) &&
+        Number.isInteger(Number(body.redoWindow.window))) {
+        const passIndex = Number(body.redoWindow.pass);
+        const windowIndex = Number(body.redoWindow.window);
+        const clone = JSON.parse(JSON.stringify(resumeTake));
+        const removeFile = (file) => {
+            if (!file) return;
+            try { fs.unlinkSync(file); } catch { /* already gone */ }
+        };
+        clone.passes = (clone.passes || []).map((pass) => {
+            if (pass.pass < passIndex) return pass;
+            if (pass.pass === passIndex) {
+                const keep = (pass.windows || []).filter((window) => window.index < windowIndex);
+                for (const window of pass.windows || []) {
+                    if (window.index >= windowIndex) removeFile(window.file);
+                }
+                removeFile(pass.video);
+                return Object.assign({}, pass, { windows: keep, video: null });
+            }
+            for (const window of pass.windows || []) removeFile(window.file);
+            removeFile(pass.video);
+            return Object.assign({}, pass, { windows: [], video: null });
+        });
+        clone.windows = (clone.windows || []).filter((window) =>
+            window.pass < passIndex || (window.pass === passIndex && window.index < windowIndex));
+        resumeTake = clone;
+    }
+    const count = resumeTake ? 1 : Math.max(1, Math.min(3, Number(body.takes) || 1));
+    const seeds = Array.isArray(body.seeds)
+        ? body.seeds.map((seed) => Number(seed)).filter((seed) => Number.isInteger(seed) && seed >= 0)
+        : [];
+    if (resumeTake && Number.isInteger(resumeTake.seed)) seeds.push(resumeTake.seed);
+    while (seeds.length < count) seeds.push(Math.floor(Math.random() * 2 ** 32));
+    const uniqueSeeds = Array.from(new Set(seeds)).slice(0, count);
+
+    res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive'
+    });
+    let cancelled = false;
+    let queueId = null;
+    const onClose = () => {
+        cancelled = true;
+        if (queueId && imageGenerator.cancelQueued(queueId)) return;
+        if (queueId && imageGenerator.isActive(queueId)) {
+            imageGenerator.cancelActive(queueId);
+            comfyui.interrupt().catch(() => {});
+        }
+    };
+    req.on('close', onClose);
+    const stopProgress = forwardComfyProgressToCompletion(res, 'Rendering the character swap…');
+    try {
+        if (engine === 'wan_animate') {
+            const current = characterSwap.get(projectId);
+            const needsCharacter = (current.people || []).some((person) =>
+                (person.refs || []).length && !person.identitySummary
+            );
+            const needsScene = !characterSwap.hasSceneDescription(current);
+            if (needsCharacter || needsScene) {
+                await vramManager.freeVRAMBeforeChat();
+                if (needsCharacter) {
+                    sseWrite(res, { generating: 'Reading the character reference…' });
+                    await characterSwap.describeProject(projectId, {
+                        provider: project.provider,
+                        model: project.model
+                    }).catch(() => {});
+                }
+                if (needsScene) {
+                    sseWrite(res, { generating: 'Capturing the original scene so only your subject changes…' });
+                    await characterSwap.describeSourceScene(projectId, {
+                        provider: project.provider,
+                        model: project.model
+                    }).catch(() => {});
+                }
+            }
+        } else if (await characterSwap.needsRetrack(projectId)) {
+            sseWrite(res, { generating: 'Tracking the selected people…' });
+            await characterSwap.runTrack(projectId);
+        }
+        if (engine !== 'wan_animate') {
+            const described = characterSwap.get(projectId);
+            const needsDescription = described && (described.people || []).some((person) =>
+                (person.refs || []).length && !person.description
+            );
+            if (needsDescription) {
+                sseWrite(res, { generating: 'Describing the character…' });
+                await vramManager.freeVRAMBeforeChat();
+                await characterSwap.describeProject(projectId, {
+                    provider: project.provider,
+                    model: project.model
+                });
+            }
+            sseWrite(res, { generating: 'Preparing the refined masks…' });
+            await characterSwap.exportMasks(projectId);
+        }
+        await vramManager.freeVRAMBeforeImage();
+        sseWrite(res, {
+            generating: engine === 'wan_animate'
+                ? 'Rendering the Wan Animate 2 character swap…'
+                : 'Rendering the MiniMax H3 character swap…'
+        });
+        const takes = [];
+        const autoUpscale = Boolean(videoGenerator.effectiveVideoSettings().autoUpscaleEnabled);
+        for (let index = 0; index < uniqueSeeds.length; index += 1) {
+            if (cancelled) break;
+            sseWrite(res, { generating: 'Rendering take ' + (index + 1) + ' of ' + uniqueSeeds.length + '…' });
+            let take = await characterSwap.renderTake(projectId, {
+                conversationId: project.conversationId,
+                engine,
+                quality,
+                h3Size,
+                seed: uniqueSeeds[index],
+                takeId: resumeTake ? resumeTake.takeId : undefined,
+                resume: resumeTake && index === 0 ? resumeTake : undefined,
+                onQueued: (position, id) => {
+                    queueId = id;
+                    sseWrite(res, { queued: { position, queueId: id } });
+                },
+                onStage: (text) => sseWrite(res, { generating: text })
+            });
+            // Auto-upscale (Settings > Video): renderTake has released the
+            // generation lock, so the upscale pass can safely acquire it.
+            if (autoUpscale && take && take.filename) {
+                sseWrite(res, { generating: 'Upscaling video…' });
+                const upscaled = await videoGenerator.autoUpscaleGenerated(
+                    Object.assign({}, take, { autoUpscale: true }),
+                    {
+                        conversationId: project.conversationId,
+                        label: 'character swap auto-upscale',
+                        kind: 'video_generation',
+                        onQueued: (position, id) => {
+                            queueId = id;
+                            sseWrite(res, { queued: { position, queueId: id } });
+                        },
+                        onStart: () => sseWrite(res, { generating: 'Upscaling video…' })
+                    }
+                );
+                take = characterSwap.markTakeUpscaled(projectId, take.seed, upscaled) || take;
+            }
+            takes.push(take);
+            sseWrite(res, { take });
+        }
+        sseWrite(res, {
+            done: true,
+            takes,
+            project: presentCharacterSwap(characterSwap.get(projectId))
+        });
+    } catch (err) {
+        console.error('[character-swap] render failed:', err.message, '\n', err.stack);
+        await comfyui.softFreeMemory().catch(() => {});
+        await vramManager.freeComfyModels('character swap failure').catch(() => {});
+        sseWrite(res, { error: friendlyVideoError(err) });
+    } finally {
+        req.removeListener('close', onClose);
+        stopProgress();
+        if (!res.writableEnded) res.end();
+    }
+}
+
 // Handle a character-replacement request over SSE. Mirrors
 // handleVideoGenerationStream (queued/progress/cancel + the shared generation
 // queue) but drives the dedicated reference-to-video workflow.
@@ -8720,6 +9875,8 @@ function lanIPv4Addresses() {
 systemMonitor.init();
 systemMonitor.start(2000);
 
+agentEngine.init();
+
 const server = http.createServer(async (req, res) => {
     const parsedUrl = new URL(req.url, `http://localhost:${PORT}`);
     const urlPath = parsedUrl.pathname;
@@ -8755,6 +9912,7 @@ server.listen(PORT, HOST, () => {
     vramManager.reconcileOnStartup().catch((err) => {
         console.warn('[vram-manager] Startup reconcile failed:', err.message);
     });
+    characterSwap.recover();
     startCharacterLifeScheduler();
 });
 

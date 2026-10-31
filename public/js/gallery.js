@@ -1447,6 +1447,7 @@
                 await deleteImage(img);
                 widgetImages = widgetImages.filter((w) => removedIds.indexOf(w.id) === -1);
                 renderWidget();
+                window.dispatchEvent(new CustomEvent('jarvis-generated-deleted', { detail: { ids: removedIds } }));
                 if (onDeleted) onDeleted(removedIds);
                 else if (cell && cell.parentNode) cell.remove();
             } catch (err) {

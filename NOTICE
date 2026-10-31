@@ -1,0 +1,11 @@
+not-so-jarvis
+Copyright (c) 2026 not-so-jarvis.
+
+Character Swap prompt composition and tracking workflow behaviour were adapted
+from Rigless (https://github.com/StephenShumway/rigless), Copyright Stephen
+Shumway, licensed under the Apache License, Version 2.0. The JavaScript
+implementation in services/character-swap is original code; no Rigless source
+files are vendored.
+
+MiniMax H3, H3 Relay, SAM 3.1 and their model weights are separate upstream
+works and remain under their own licenses.

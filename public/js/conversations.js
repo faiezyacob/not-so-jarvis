@@ -171,6 +171,16 @@ const Conversations = (() => {
         return message;
     }
 
+    // Delete one assistant response. The backend also removes any generated
+    // media that response alone referenced (gallery + file) and returns the
+    // filenames so the chat can drop matching composer reference chips.
+    async function deleteMessage(conversationId, messageId) {
+        const data = await api('DELETE', '/api/conversations/' + conversationId + '/messages/' + encodeURIComponent(messageId));
+        try { await DB.messages.remove(messageId); } catch (e) { console.warn('DB remove failed', e); }
+        notify();
+        return data;
+    }
+
     return {
         onChange,
         currentId,
@@ -183,6 +193,7 @@ const Conversations = (() => {
         setPrivate,
         remove,
         saveUserMessage,
-        saveAssistantMessage
+        saveAssistantMessage,
+        deleteMessage
     };
 })();

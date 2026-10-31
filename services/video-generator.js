@@ -601,6 +601,13 @@ const H3_DEFAULTS = {
         process.env.H3_CHAR_SWAP_ENABLED !== '0',
     h3CharSwapLora: process.env.H3_CHAR_SWAP_LORA || H3_CHAR_SWAP_DEFAULT_LORA,
     h3CharSwapStrength: normalizeH3CharacterSwapStrength(process.env.H3_CHAR_SWAP_STRENGTH, H3_CHAR_SWAP_STRENGTH),
+    // MiniMax H3 Fun ControlNet-Union model patch. Used by Character Swap's
+    // refined-mask path so H3 inpaints inside the tracked mask while the source
+    // video supplies the rest of the frame.
+    h3FunControlNet: process.env.H3_FUN_CONTROLNET || 'minimax_h3_fun_controlnet_union_2.0_pruned_int8_convrot.safetensors',
+    h3FunControlStrength: Number(process.env.H3_FUN_CONTROL_STRENGTH) || 0.35,
+    h3FunControlEnd: Number(process.env.H3_FUN_CONTROL_END) || 1,
+    h3FunControlUseSourceRef: String(process.env.H3_FUN_CONTROL_USE_SOURCE_REF || 'true').toLowerCase() !== 'false',
     // Reference image sizing for the replacement node: `auto` uses the high-
     // fidelity 2048px short edge when clothing/appearance is transferred and the
     // generation-area `match` otherwise.
@@ -682,6 +689,7 @@ const H3_CONFIGURABLE_KEYS = [
     'loras', 'loraTriggerWords',
     'h3TurboEnabled', 'h3TurboSteps', 'h3TurboLora', 'h3TurboSigmaShift',
     'h3CharSwapEnabled', 'h3CharSwapLora', 'h3CharSwapStrength',
+    'h3FunControlNet', 'h3FunControlStrength', 'h3FunControlEnd', 'h3FunControlUseSourceRef',
     'replacementRefImageSize', 'replacementMaskToSubject', 'replacementMaskModel',
     'replacementMaskGrow', 'replacementMaskPrompt',
     'faceRefineEnabled', 'faceRefineDetector', 'faceRefineCropFactor',
@@ -2510,6 +2518,14 @@ function effectiveVideoSettings() {
                 value = String(value || '').trim() || H3_DEFAULTS.h3CharSwapLora;
             } else if (key === 'h3CharSwapStrength') {
                 value = normalizeH3CharacterSwapStrength(value, H3_DEFAULTS.h3CharSwapStrength);
+            } else if (key === 'h3FunControlNet') {
+                value = String(value || '').trim() || H3_DEFAULTS.h3FunControlNet;
+            } else if (key === 'h3FunControlStrength') {
+                value = Math.max(0, Math.min(10, Number(value) || H3_DEFAULTS.h3FunControlStrength));
+            } else if (key === 'h3FunControlEnd') {
+                value = Math.max(0, Math.min(1, Number(value) || H3_DEFAULTS.h3FunControlEnd));
+            } else if (key === 'h3FunControlUseSourceRef') {
+                value = value === true || value === 1 || String(value).toLowerCase() === 'true' || String(value) === '1';
             } else if (key === 'replacementRefImageSize') {
                 value = normalizeReplacementRefImageSize(value, H3_DEFAULTS.replacementRefImageSize);
             } else if (key === 'replacementMaskToSubject') {
@@ -2694,6 +2710,14 @@ function saveVideoSettings(patch) {
             out[key] = String(value || '').trim() || null;
         } else if (key === 'h3CharSwapStrength') {
             out[key] = normalizeH3CharacterSwapStrength(value, H3_DEFAULTS.h3CharSwapStrength);
+        } else if (key === 'h3FunControlNet') {
+            out[key] = String(value || '').trim() || null;
+        } else if (key === 'h3FunControlStrength') {
+            out[key] = Math.max(0, Math.min(10, Number(value) || H3_DEFAULTS.h3FunControlStrength));
+        } else if (key === 'h3FunControlEnd') {
+            out[key] = Math.max(0, Math.min(1, Number(value) || H3_DEFAULTS.h3FunControlEnd));
+        } else if (key === 'h3FunControlUseSourceRef') {
+            out[key] = value === true || value === 1 || String(value).toLowerCase() === 'true' || String(value) === '1';
         } else if (key === 'firstBlockCache') {
             const problems = validateFirstBlockCache(value);
             if (problems.length) {
