@@ -1,11 +1,10 @@
 /* ============================================
    JARVIS — SCAIL-2 replacement prompt composer
-   SCAIL-2 prompts describe the finished video,
-   never an instruction. This module turns the
-   structured character identity + the cached
-   source-scene caption + the user's short
-   direction into a positive description of the
-   replaced scene, in the official format.
+   Identifies the selected source character by
+   appearance/outfit, states the replacement with
+   the uploaded reference image, then describes the
+   finished video so SCAIL-2 holds the same
+   performance and scene.
 
    SPDX-License-Identifier: MIT
    Copyright (c) 2026 not-so-jarvis.
@@ -102,8 +101,7 @@ function stripInstruction(value) {
 
 // The selected source subject's pose, action and props. SCAIL-2 keeps the
 // performance from the driving video, so naming what the subject does and what
-// they interact with anchors the replacement. It is written as description and
-// placed before the user's own direction.
+// they interact with anchors the replacement.
 function subjectClause(subject) {
     if (!subject || typeof subject !== 'object') return '';
     const summary = clean(subject.summary, 500).replace(/[.]+$/, '');
@@ -123,6 +121,44 @@ function subjectLine(subject) {
     return clause ? 'In the finished video, ' + clause : '';
 }
 
+// The source person's appearance and outfit, e.g. "a female wearing a blue
+// outfit". This is what the replacement sentence names, so a multi-person clip
+// maps the uploaded image to the right body.
+function sourcePhrase(subject) {
+    if (!subject || typeof subject !== 'object') return '';
+    const gender = clean(subject.gender, 40);
+    const age = clean(subject.age, 60);
+    const hair = clean(subject.hair, 120);
+    const outfit = clean(subject.outfit, 260);
+    let phrase = [age, gender].filter(Boolean).join(' ');
+    if (outfit) phrase = phrase ? phrase + ' wearing ' + outfit : 'a person wearing ' + outfit;
+    else if (hair) phrase = phrase ? phrase + ' with ' + hair : 'a person with ' + hair;
+    if (!phrase) {
+        const summary = clean(subject.summary, 240).replace(/[.]+$/, '');
+        // A long summary usually reads as a full sentence; it is a poor noun
+        // phrase for "replace <source> with ...", so leave it to the fallback.
+        return summary && summary.split(/\s+/).length <= 12 ? summary : '';
+    }
+    if (!/^(a|an|the|this|that|person|people)\b/i.test(phrase)) phrase = 'a ' + phrase;
+    return phrase;
+}
+
+function subjectActionLine(subject) {
+    if (!subject || typeof subject !== 'object') return '';
+    const action = clean(subject.action, 160).replace(/[.]+$/, '');
+    const position = clean(subject.position, 160).replace(/[.]+$/, '');
+    const objects = clean(subject.objects, 240).replace(/[.]+$/, '');
+    const bits = [action, position].filter(Boolean);
+    let line = bits.length ? 'The character is ' + bits.join(', ') : '';
+    if (objects) line += (line ? ', interacting with ' : 'The character interacts with ') + objects;
+    return line ? line + '.' : '';
+}
+
+function replaceSentence(source, imageNumber) {
+    const value = clean(source, 240).replace(/\s+in\s+the\s+video\.?$/i, '');
+    return 'Replace ' + (value || 'the person') + ' in the video with the character in reference image ' + (imageNumber || 1) + '.';
+}
+
 function personName(person, index) {
     const place = clean(person && person.place, 40);
     if (place) return 'the person ' + place;
@@ -133,9 +169,15 @@ function capitalise(value) {
     return value ? value.charAt(0).toUpperCase() + value.slice(1) : value;
 }
 
-// Multi-character replacement: one finished-video description covering every
-// selected person, so two characters share a single combined prompt. Each
-// person keeps their own identity, clothing and subject wording.
+function joinList(items) {
+    const list = items.filter(Boolean);
+    if (!list.length) return '';
+    if (list.length === 1) return list[0];
+    return list.slice(0, -1).join(', ') + ' and ' + list[list.length - 1];
+}
+
+// Multi-character replacement: one combined prompt covering every selected
+// person, each mapped to its own uploaded reference image.
 function buildGroupPrompt(input) {
     const people = input.people.filter(Boolean);
     const scene = input.scene && typeof input.scene === 'object' ? input.scene : null;
@@ -143,17 +185,21 @@ function buildGroupPrompt(input) {
     const viewpoint = scene ? clean(scene.viewpoint, 80).replace(/[.]+$/, '') : '';
     const otherPeople = scene ? clean(scene.otherPeople, 220).replace(/[.]+$/, '') : '';
     const extra = stripInstruction(input.userPrompt);
-    const parts = [
-        'A realistic video of the ' + people.length + ' selected people, whose appearance matches their reference characters.'
-    ];
+    const mappings = people.map((person, index) => {
+        const source = clean(person.sourceLabel, 240) ||
+            sourcePhrase(person.subjectDescription || person.subject) ||
+            person.name || 'the person in position ' + (index + 1);
+        return source + ' with reference image ' + (index + 1);
+    });
+    const parts = ['Replace ' + joinList(mappings) + ' in the video.'];
     people.forEach((person, index) => {
         const name = personName(person, index);
-        const clause = subjectClause(person.subjectDescription || person.subject);
-        if (clause) parts.push('In the finished video, ' + clause);
         const identity = identityBits(person.description, person.identitySummary);
-        if (identity.length) parts.push(capitalise(name) + ' is ' + identity.join(', ') + '.');
+        if (identity.length) parts.push(capitalise(name) + ' becomes ' + identity.join(', ') + '.');
         const clothing = clothingBits(person.description);
-        if (clothing.length) parts.push(capitalise(name) + ' is wearing ' + clothing.join('; ') + '.');
+        if (clothing.length) parts.push(capitalise(name) + ' wears ' + clothing.join('; ') + '.');
+        const action = subjectActionLine(person.subjectDescription || person.subject);
+        if (action) parts.push(action);
     });
     parts.push('Each of them keeps the original body motion, posture, gestures, facial expression, gaze and timing of the source performance.');
     if (sceneSummary) parts.push('The scene shows ' + sceneSummary + '.');
@@ -171,23 +217,23 @@ function buildScailPrompt(input = {}) {
     const description = input.description && typeof input.description === 'object' ? input.description : null;
     const scene = input.scene && typeof input.scene === 'object' ? input.scene : null;
     const subject = input.subject && typeof input.subject === 'object' ? input.subject : null;
-    const target = extractTarget(input.userPrompt) || 'the main person';
+    const source = clean(input.sourceLabel, 240) ||
+        sourcePhrase(subject) ||
+        extractTarget(input.userPrompt) ||
+        'the person';
     const identity = identityLine(description, input.identitySummary);
     const clothing = clothingLine(description);
+    const action = subjectActionLine(subject);
     const sceneSummary = scene ? clean(scene.summary, 500).replace(/[.]+$/, '') : '';
     const viewpoint = scene ? clean(scene.viewpoint, 80).replace(/[.]+$/, '') : '';
     const otherPeople = scene ? clean(scene.otherPeople, 220).replace(/[.]+$/, '') : '';
     const extra = stripInstruction(input.userPrompt);
 
-    const parts = [
-        'A realistic video of ' + target + ', whose appearance matches the reference character.'
-    ];
-    const subjectDescription = subjectLine(subject);
-    if (subjectDescription) parts.push(subjectDescription);
+    const parts = [replaceSentence(source, Math.max(1, Number(input.imageNumber) || 1))];
     if (identity) parts.push(identity);
     if (clothing) parts.push(clothing);
-    parts.push(target.charAt(0).toUpperCase() + target.slice(1) +
-        ' keeps the original body motion, posture, gestures, facial expression, gaze and timing of the source performance.');
+    if (action) parts.push(action);
+    parts.push('The character keeps the original body motion, posture, gestures, facial expression, gaze and timing of the source performance.');
     if (sceneSummary) parts.push('The scene shows ' + sceneSummary + '.');
     if (otherPeople) parts.push('The other people in the scene, ' + otherPeople + ', remain unchanged.');
     parts.push(viewpoint
@@ -206,5 +252,7 @@ module.exports = {
     stripInstruction,
     subjectLine,
     subjectClause,
+    sourcePhrase,
+    subjectActionLine,
     buildScailPrompt
 };

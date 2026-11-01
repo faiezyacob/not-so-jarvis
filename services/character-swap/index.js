@@ -920,19 +920,22 @@ async function describeSourceScene(projectId, ctx) {
     return saved;
 }
 
-// SCAIL-2 describes the finished video, so the selected subject's performance
-// (pose, action, position and the objects they touch) is read from the source
-// footage and fed into the prompt. It is fail-open: an unavailable vision
-// model leaves the deterministic preservation wording in charge.
+// The replacement prompt names the selected source person by appearance and
+// outfit (so a multi-person clip maps the uploaded image to the right body)
+// and keeps that person's action, position and props. It is fail-open: an
+// unavailable vision model leaves the deterministic preservation wording in
+// charge.
 function selectedTargets(project) {
     return (project && project.people || []).filter((person) => person.selectionId);
 }
 
 // A description stamped with a track only applies to that same track, so a
-// rapid re-selection can never reuse the previous subject's wording.
+// rapid re-selection can never reuse the previous subject's wording. Older
+// descriptions (before appearance/outfit were captured) are re-read.
 function resolvedSubject(person) {
     const subject = person && person.subjectDescription;
     if (!subject || typeof subject !== 'object') return null;
+    if (subject.version !== references.SUBJECT_VERSION) return null;
     if (subject.trackId && person.selectionId && subject.trackId !== person.selectionId) return null;
     return subject;
 }
@@ -942,7 +945,7 @@ function hasSubjectDescription(project) {
     if (!targets.length) return false;
     return targets.every((person) => {
         const subject = resolvedSubject(person);
-        return Boolean(subject && (subject.summary || subject.action));
+        return Boolean(subject && (subject.summary || subject.action || subject.outfit || subject.gender));
     });
 }
 
@@ -965,7 +968,7 @@ async function describeSelectedSubject(projectId, ctx) {
     if (!partPath || !fs.existsSync(partPath)) return project;
     for (const person of targets) {
         const subject = resolvedSubject(person);
-        if (subject && (subject.summary || subject.action)) continue;
+        if (subject && (subject.summary || subject.action || subject.outfit || subject.gender)) continue;
         const track = ((project.selection && project.selection.tracks) || [])
             .find((item) => item.id === person.selectionId);
         if (!track || !track.bbox) continue;
@@ -1282,7 +1285,8 @@ function buildScailPlan(projectId, project) {
         if (!points || !(points.positive || []).length) {
             throw new Error('A selected person has no usable DWPose points. Detect people again, correct the tracking if needed, and select the target.');
         }
-        return {
+        const subject = resolvedSubject(person);
+        const target = {
             id: person.id,
             label: person.label,
             place: person.place,
@@ -1290,11 +1294,22 @@ function buildScailPlan(projectId, project) {
             referenceRole: promptBuilder.roleOf(reference),
             description: person.description,
             identitySummary: person.identitySummary,
-            subjectDescription: resolvedSubject(person),
+            subjectDescription: subject,
+            sourceLabel: scailPrompt.sourcePhrase(subject),
             trackId: person.selectionId,
             anchorFrame,
             points
         };
+        target.prompt = scailPrompt.buildScailPrompt({
+            userPrompt: settings.positive,
+            description: target.description,
+            identitySummary: target.identitySummary,
+            subject: target.subjectDescription,
+            sourceLabel: target.sourceLabel,
+            scene: project.sceneDescription || null,
+            imageNumber: 1
+        });
+        return target;
     });
     const single = built.length === 1 ? built[0] : null;
     const prompt = scailPrompt.buildScailPrompt({

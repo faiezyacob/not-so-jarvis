@@ -135,9 +135,15 @@ test('SCAIL-2 graph omits optional LoRAs and chunk padding when disabled', () =>
     assert.equal(graph.conditioning.class_type, 'WanSCAILInfinity');
 });
 
-test('SCAIL-2 prompt describes the finished video instead of issuing an instruction', () => {
+test('SCAIL-2 prompt names the source character and maps the uploaded image', () => {
     const text = scailPrompt.buildScailPrompt({
         userPrompt: 'replace the person on the left with the reference character',
+        subject: {
+            version: 2,
+            gender: 'female',
+            age: 'young adult',
+            outfit: 'a blue outfit and white sneakers'
+        },
         description: {
             age: 'adult',
             gender: 'woman',
@@ -156,64 +162,68 @@ test('SCAIL-2 prompt describes the finished video instead of issuing an instruct
             otherPeople: 'a barista behind the counter'
         }
     });
-    assert.match(text, /A realistic video of the person on the left/);
+    assert.match(text, /^Replace a young adult female wearing a blue outfit and white sneakers in the video with the character in reference image 1\./);
     assert.match(text, /short red hair/);
     assert.match(text, /green coat/);
     assert.match(text, /a bright cafe/);
     assert.match(text, /front three-quarter medium shot/);
     assert.match(text, /barista/);
-    assert.doesNotMatch(text, /\breplace\b.*\bwith\b/i);
 });
 
-test('SCAIL-2 prompt leads with the selected subject description before the user direction', () => {
+test('SCAIL-2 prompt uses the selected subject action before the user direction', () => {
     const text = scailPrompt.buildScailPrompt({
         userPrompt: 'make it feel like a cosy afternoon',
         subject: {
-            summary: 'The woman is sitting at a cafe table holding a coffee cup and a paperback book.',
+            version: 2,
+            gender: 'woman',
+            outfit: 'a blue outfit',
             action: 'sitting at a cafe table',
             position: 'centred in the frame',
             objects: 'a coffee cup, a paperback book'
         }
     });
-    const subjectAt = text.indexOf('In the finished video, the woman is sitting at a cafe table');
+    const actionAt = text.indexOf('The character is sitting at a cafe table, centred in the frame, interacting with a coffee cup, a paperback book.');
     const directionAt = text.indexOf('Additional visible detail: make it feel like a cosy afternoon');
-    assert.ok(subjectAt >= 0, 'subject description is present');
+    assert.ok(actionAt >= 0, 'subject action is present');
     assert.ok(directionAt >= 0, 'user direction is present');
-    assert.ok(subjectAt < directionAt, 'subject description precedes the user direction');
-    assert.match(text, /a coffee cup/);
-    assert.doesNotMatch(text, /The woman is sitting/, 'the leading clause is lower-cased and descriptive');
+    assert.ok(actionAt < directionAt, 'subject action precedes the user direction');
+    assert.match(text, /Replace a woman wearing a blue outfit in the video/);
 });
 
-test('SCAIL-2 subject line is omitted when no subject was described', () => {
+test('SCAIL-2 prompt still replaces the person when no subject was described', () => {
     const text = scailPrompt.buildScailPrompt({ userPrompt: 'a calm cafe' });
-    assert.doesNotMatch(text, /In the finished video/);
+    assert.match(text, /^Replace the person in the video with the character in reference image 1\./);
     assert.equal(scailPrompt.subjectLine(null), '');
 });
 
-test('SCAIL-2 combines several selected characters into one finished-video prompt', () => {
+test('SCAIL-2 combines several selected characters into one prompt with an image per character', () => {
     const text = scailPrompt.buildScailPrompt({
         userPrompt: 'make it look like a sunny afternoon',
         people: [
             {
                 place: 'on the left',
+                sourceLabel: 'a young woman wearing a green coat',
                 description: { clothing: 'a green coat', footwear: 'black boots' },
-                subjectDescription: { summary: 'A woman is playing the violin.', objects: 'a violin, a bow' }
+                subjectDescription: {
+                    version: 2, gender: 'woman', outfit: 'a green coat',
+                    action: 'playing the violin', objects: 'a violin, a bow'
+                }
             },
             {
                 place: 'on the right',
+                sourceLabel: 'an older man wearing a blue suit',
                 description: { clothing: 'a blue suit' },
-                subjectDescription: { summary: 'A man is clapping along.' }
+                subjectDescription: { version: 2, gender: 'man', outfit: 'a blue suit', action: 'clapping along' }
             }
         ]
     });
-    assert.match(text, /A realistic video of the 2 selected people/);
-    assert.match(text, /In the finished video, a woman is playing the violin/);
-    assert.match(text, /In the finished video, a man is clapping along/);
-    assert.match(text, /The person on the left is wearing a green coat/);
-    assert.match(text, /The person on the right is wearing a blue suit/);
+    assert.match(text, /^Replace a young woman wearing a green coat with reference image 1 and an older man wearing a blue suit with reference image 2 in the video\./);
+    assert.match(text, /The person on the left wears a green coat/);
+    assert.match(text, /The person on the right wears a blue suit/);
+    assert.match(text, /The character is playing the violin, interacting with a violin, a bow\./);
     assert.ok(
-        text.indexOf('In the finished video, a man') < text.indexOf('Additional visible detail:'),
-        'both subjects precede the user direction'
+        text.indexOf('The person on the right wears') < text.indexOf('Additional visible detail:'),
+        'both characters precede the user direction'
     );
 });
 

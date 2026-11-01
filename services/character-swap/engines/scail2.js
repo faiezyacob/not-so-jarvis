@@ -460,7 +460,7 @@ async function render(plan, options = {}) {
         try {
             onStage('Preparing SCAIL-2');
             const prepared = await prepare(plan, { info, signal, onStage });
-            const positive = plan.prompt || scailPrompt.buildScailPrompt({
+            const combinedPrompt = plan.prompt || scailPrompt.buildScailPrompt({
                 userPrompt: settings.positive,
                 people: targets,
                 identitySummary: targets.length === 1 ? targets[0].identitySummary : undefined,
@@ -492,6 +492,17 @@ async function render(plan, options = {}) {
                         ' (' + (index + 1) + ' of ' + targets.length + ')'
                     : 'Generating with SCAIL-2';
                 onStage(passLabel);
+                // Each pass owns one uploaded reference image, so its prompt
+                // names that source person and maps them to reference image 1.
+                const positive = target.prompt || scailPrompt.buildScailPrompt({
+                    userPrompt: settings.positive,
+                    description: target.description,
+                    identitySummary: target.identitySummary,
+                    subject: target.subjectDescription || null,
+                    sourceLabel: target.sourceLabel || null,
+                    scene: plan.sceneDescription,
+                    imageNumber: 1
+                });
                 const referenceName = await uploadFile(target.referencePath, 'jarvis_scail2_ref', 'image/png');
                 uploaded.push(referenceName);
                 const performanceName = await uploadFile(drivingPath, 'jarvis_scail2_drive', 'video/mp4');
@@ -575,7 +586,7 @@ async function render(plan, options = {}) {
                 file: '/generated/' + encodeURIComponent(basename),
                 rawFilename: basename,
                 conversationId: options.conversationId || null,
-                prompt: positive,
+                prompt: combinedPrompt,
                 model: 'SCAIL-2',
                 modelFile: settings.unet,
                 modelVariant: settings.modelVariant || null,
@@ -656,7 +667,7 @@ async function render(plan, options = {}) {
                 engine: ID,
                 windows,
                 passes,
-                prompt: positive,
+                prompt: combinedPrompt,
                 generationMs: meta.generationMs,
                 metrics: peaks,
                 meta,

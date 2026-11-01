@@ -137,14 +137,21 @@ test('reference roles: close-up and full body normalize onto prompt roles', () =
 test('selected subject description normalizes and keeps a prompt-ready summary', () => {
     const subject = references.normalizeSubject({
         summary: 'A man is playing the violin on a pavement, holding the bow in his right hand.',
+        gender: 'man',
+        age: 'middle aged',
+        hair: 'grey hair',
+        outfit: 'a brown coat and dark trousers',
         action: 'playing the violin',
         position: 'standing on a city pavement',
         objects: 'a violin, a bow, an open instrument case',
         clothing: 'ignored'
     });
+    assert.equal(subject.version, references.SUBJECT_VERSION);
     assert.equal(subject.action, 'playing the violin');
     assert.match(subject.objects, /violin/);
     assert.equal(subject.clothing, undefined);
+    assert.equal(subject.gender, 'man');
+    assert.match(subject.outfit, /brown coat/);
     assert.match(references.subjectSummary(subject), /playing the violin/);
     assert.equal(references.subjectSummary({ action: 'dancing', position: 'stage centre' }), 'dancing, stage centre');
     assert.equal(references.subjectSummary({}), '');

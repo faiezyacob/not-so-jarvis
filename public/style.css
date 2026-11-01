@@ -5909,6 +5909,10 @@ a.modal-btn {
     box-shadow: var(--glow-focus);
 }
 
+.jv-player[hidden] {
+    display: none;
+}
+
 .jv-player video {
     display: block;
     width: 100%;
@@ -10611,6 +10615,32 @@ textarea.companion-input { resize: vertical; font-family: var(--font-sans); }
     background: #000;
 }
 .character-swap-video[hidden] { display: none; }
+.character-swap .jv-player {
+    width: 100%;
+    margin: 10px 0 0;
+}
+.character-swap-sidebar .jv-player video {
+    max-height: 260px;
+}
+.character-swap .jv-bar {
+    gap: 5px;
+    padding: 6px 7px;
+}
+.character-swap .jv-time {
+    font-size: var(--fs-2xs);
+    letter-spacing: 0;
+}
+.character-swap .jv-btn {
+    width: 26px;
+    height: 26px;
+}
+.character-swap .jv-seek {
+    min-width: 28px;
+}
+.character-swap .jv-vol,
+.character-swap .jv-open {
+    display: none;
+}
 .character-swap-meta { margin: 8px 0; color: var(--text-secondary); font-size: 11px; line-height: 1.4; }
 .character-swap-row { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; margin: 8px 0; }
 .character-swap-row--compact { gap: 6px; }

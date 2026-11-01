@@ -244,6 +244,22 @@
         wrap.setAttribute('role', 'region');
         wrap.setAttribute('aria-label', 'Video player');
 
+        // A video hidden by its owner (e.g. the Character Swap source panel
+        // before a clip is loaded) must hide the whole custom player too,
+        // otherwise the wrapper's black box and control bar stay visible.
+        function syncHidden() {
+            wrap.hidden = Boolean(video.hidden);
+        }
+        syncHidden();
+        if (window.MutationObserver) {
+            try {
+                new MutationObserver(syncHidden).observe(video, {
+                    attributes: true,
+                    attributeFilter: ['hidden']
+                });
+            } catch (err) {}
+        }
+
         syncPlay();
         syncTime();
         syncVolume();

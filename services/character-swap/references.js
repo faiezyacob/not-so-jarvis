@@ -55,25 +55,26 @@ const LOOK_USER =
     'Return {"look":"in ..."} describing the main person\'s visible clothing in at most eight words, ' +
     'starting with "in", for example "in a red hoodie and blue jeans". No sentence.';
 
-// SCAIL-2 replacement prompts describe the finished video, so the selected
-// source subject contributes what the replacement must keep: the pose, action,
-// position and the objects they interact with. Identity and clothing stay with
-// the reference character (see DESCRIBE_*), otherwise the old look leaks back
-// into the render.
+// SCAIL-2 replacement prompts identify the person being replaced. When the
+// clip has more than one person the prompt must name that person by appearance
+// and outfit, so the replacement maps to the right body and the uploaded image
+// supplies the new identity.
 const SUBJECT_SYSTEM =
     'You describe the person being replaced in a video clip for a character-replacement model. ' +
-    'Describe only that person: pose, action, position, gaze and the objects they hold, touch, ' +
-    'use or stay close to. Never judge or identify the person and never describe the background, ' +
-    'lighting, camera or other people. Reply with strict JSON only, no prose.';
+    'Describe that person\'s visible appearance and outfit, plus their pose, action, position and the ' +
+    'objects they hold, touch, use or stay close to. This is used to tell the model exactly which ' +
+    'person in a multi-person video is being replaced. Never judge or identify the person. ' +
+    'Reply with strict JSON only, no prose.';
 
 const SUBJECT_USER =
     'The images are crops of the same person from several moments of one clip. Return strict JSON with exactly these keys: ' +
-    '{"summary":"one factual sentence under 45 words describing what the person is doing, their pose and position, ' +
-    'and the objects they interact with or stay close to",' +
+    '{"summary":"one factual sentence under 45 words describing the person, their outfit, what they are doing and the objects they interact with",' +
+    '"gender":"woman|man|person","age":"short age phrase such as young adult or middle aged",' +
+    '"hair":"short hair description","outfit":"top-to-bottom visible clothing with colours and materials",' +
     '"action":"short phrase for what the person is doing",' +
     '"position":"short phrase for where the person is and how they are framed",' +
     '"objects":"comma-separated objects the person holds, touches, uses or stands next to, or an empty string"} ' +
-    'Do not describe the person\'s face, hair, skin or clothing. The replacement character supplies those.';
+    'Describe only this person; never describe the background, lighting, camera or other people.';
 
 // SCAIL-2 prompts describe the finished video, so the exact source scene
 // is captured once and reused as the scene section of the enhanced prompt.
@@ -170,10 +171,17 @@ function normalizeScene(value) {
     };
 }
 
+const SUBJECT_VERSION = 2;
+
 function normalizeSubject(value) {
     const src = value && typeof value === 'object' ? value : {};
     return {
+        version: SUBJECT_VERSION,
         summary: clean(src.summary, 500),
+        gender: clean(src.gender, 40),
+        age: clean(src.age, 60),
+        hair: clean(src.hair, 120),
+        outfit: clean(src.outfit, 300),
         action: clean(src.action, 160),
         position: clean(src.position, 160),
         objects: clean(src.objects, 240)
@@ -241,7 +249,7 @@ async function describeSubject(files, ctx) {
     const value = await askVision(files, SUBJECT_SYSTEM, SUBJECT_USER, ctx);
     if (!value || typeof value !== 'object') return null;
     const subject = normalizeSubject(value);
-    return (subject.summary || subject.action || subject.objects) ? subject : null;
+    return (subject.summary || subject.action || subject.outfit || subject.gender) ? subject : null;
 }
 
 // Crops the tracked subject out of sampled frames (with breathing room for
@@ -347,6 +355,7 @@ module.exports = {
     DESCRIBE_SYSTEM,
     SCENE_SYSTEM,
     SUBJECT_SYSTEM,
+    SUBJECT_VERSION,
     clean,
     normalizeDescription,
     normalizeScene,
