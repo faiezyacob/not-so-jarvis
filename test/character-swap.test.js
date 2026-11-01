@@ -134,6 +134,53 @@ test('reference roles: close-up and full body normalize onto prompt roles', () =
     assert.equal(promptBuilder.roleOf({ role: 'full_body' }), 'full');
 });
 
+test('selected subject description normalizes and keeps a prompt-ready summary', () => {
+    const subject = references.normalizeSubject({
+        summary: 'A man is playing the violin on a pavement, holding the bow in his right hand.',
+        action: 'playing the violin',
+        position: 'standing on a city pavement',
+        objects: 'a violin, a bow, an open instrument case',
+        clothing: 'ignored'
+    });
+    assert.equal(subject.action, 'playing the violin');
+    assert.match(subject.objects, /violin/);
+    assert.equal(subject.clothing, undefined);
+    assert.match(references.subjectSummary(subject), /playing the violin/);
+    assert.equal(references.subjectSummary({ action: 'dancing', position: 'stage centre' }), 'dancing, stage centre');
+    assert.equal(references.subjectSummary({}), '');
+});
+
+test('selection: a second target gets its own character image, not the first one', () => {
+    const characterSwap = require('../services/character-swap');
+    const project = characterState.createProject({ sessionId: 's1', filename: 'clip.mp4' });
+    characterState.update(project.id, (current) => {
+        current.selection.tracks = [
+            { id: 'track_1', label: 'Person 1', firstFrame: 0, lastFrame: 20, bbox: { x: 20, y: 10, width: 40, height: 80 } },
+            { id: 'track_2', label: 'Person 2', firstFrame: 0, lastFrame: 20, bbox: { x: 120, y: 10, width: 40, height: 80 } }
+        ];
+        const first = current.people[0];
+        first.selectionId = 'track_1';
+        first.lastSelectionId = 'track_1';
+        first.refs = [{ id: 'r1', file: 'front.png', role: 'front' }];
+        first.identitySummary = 'a woman in a green coat';
+    });
+    const updated = characterSwap.selectTracks(project.id, ['track_1', 'track_2']);
+    const first = updated.people.find((person) => person.selectionId === 'track_1');
+    const second = updated.people.find((person) => person.selectionId === 'track_2');
+    assert.ok(first, 'the first target stays bound');
+    assert.ok(second, 'the second target gets its own person record');
+    assert.equal(first.refs.length, 1);
+    assert.equal(second.refs.length, 0);
+    assert.equal(second.identitySummary, '');
+
+    // Deselecting and re-selecting the same track restores its own record.
+    characterSwap.selectTracks(project.id, ['track_1']);
+    const restored = characterSwap.selectTracks(project.id, ['track_1', 'track_2']);
+    const again = restored.people.find((person) => person.selectionId === 'track_2');
+    assert.equal(again.id, second.id);
+    characterState.remove(project.id);
+});
+
 test('project state: creation, people and reference persistence', () => {
     const project = characterState.createProject({ sessionId: 's1', filename: 'clip.mp4' });
     assert.ok(project.id.startsWith('cs_'));

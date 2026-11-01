@@ -173,6 +173,7 @@ function newPerson(index) {
         label: 'Person ' + (index + 1),
         tint: TINTS[index % TINTS.length],
         selectionId: null,
+        lastSelectionId: null,
         anchors: [],
         masks: null,
         refs: [],
@@ -182,6 +183,8 @@ function newPerson(index) {
         look: '',
         description: null,
         identitySummary: '',
+        subjectDescription: null,
+        subjectSummary: '',
         status: 'new'
     };
 }
@@ -293,6 +296,11 @@ function normalizeProject(project) {
         if (!Array.isArray(person.refs)) person.refs = [];
         if (!Array.isArray(person.anchors)) person.anchors = [];
         if (person.selectionId === undefined) person.selectionId = null;
+        if (person.lastSelectionId === undefined) person.lastSelectionId = null;
+        if (person.subjectDescription && typeof person.subjectDescription !== 'object') {
+            person.subjectDescription = null;
+        }
+        if (typeof person.subjectSummary !== 'string') person.subjectSummary = '';
     });
 
     (project.takes || []).forEach((take) => {

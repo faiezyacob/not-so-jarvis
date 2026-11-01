@@ -165,6 +165,58 @@ test('SCAIL-2 prompt describes the finished video instead of issuing an instruct
     assert.doesNotMatch(text, /\breplace\b.*\bwith\b/i);
 });
 
+test('SCAIL-2 prompt leads with the selected subject description before the user direction', () => {
+    const text = scailPrompt.buildScailPrompt({
+        userPrompt: 'make it feel like a cosy afternoon',
+        subject: {
+            summary: 'The woman is sitting at a cafe table holding a coffee cup and a paperback book.',
+            action: 'sitting at a cafe table',
+            position: 'centred in the frame',
+            objects: 'a coffee cup, a paperback book'
+        }
+    });
+    const subjectAt = text.indexOf('In the finished video, the woman is sitting at a cafe table');
+    const directionAt = text.indexOf('Additional visible detail: make it feel like a cosy afternoon');
+    assert.ok(subjectAt >= 0, 'subject description is present');
+    assert.ok(directionAt >= 0, 'user direction is present');
+    assert.ok(subjectAt < directionAt, 'subject description precedes the user direction');
+    assert.match(text, /a coffee cup/);
+    assert.doesNotMatch(text, /The woman is sitting/, 'the leading clause is lower-cased and descriptive');
+});
+
+test('SCAIL-2 subject line is omitted when no subject was described', () => {
+    const text = scailPrompt.buildScailPrompt({ userPrompt: 'a calm cafe' });
+    assert.doesNotMatch(text, /In the finished video/);
+    assert.equal(scailPrompt.subjectLine(null), '');
+});
+
+test('SCAIL-2 combines several selected characters into one finished-video prompt', () => {
+    const text = scailPrompt.buildScailPrompt({
+        userPrompt: 'make it look like a sunny afternoon',
+        people: [
+            {
+                place: 'on the left',
+                description: { clothing: 'a green coat', footwear: 'black boots' },
+                subjectDescription: { summary: 'A woman is playing the violin.', objects: 'a violin, a bow' }
+            },
+            {
+                place: 'on the right',
+                description: { clothing: 'a blue suit' },
+                subjectDescription: { summary: 'A man is clapping along.' }
+            }
+        ]
+    });
+    assert.match(text, /A realistic video of the 2 selected people/);
+    assert.match(text, /In the finished video, a woman is playing the violin/);
+    assert.match(text, /In the finished video, a man is clapping along/);
+    assert.match(text, /The person on the left is wearing a green coat/);
+    assert.match(text, /The person on the right is wearing a blue suit/);
+    assert.ok(
+        text.indexOf('In the finished video, a man') < text.indexOf('Additional visible detail:'),
+        'both subjects precede the user direction'
+    );
+});
+
 test('SCAIL-2 availability lists missing nodes, models and the Infinity pack', () => {
     const missing = scail2.availability({}, SETTINGS);
     assert.equal(missing.available, false);

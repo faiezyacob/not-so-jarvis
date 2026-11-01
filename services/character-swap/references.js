@@ -55,6 +55,26 @@ const LOOK_USER =
     'Return {"look":"in ..."} describing the main person\'s visible clothing in at most eight words, ' +
     'starting with "in", for example "in a red hoodie and blue jeans". No sentence.';
 
+// SCAIL-2 replacement prompts describe the finished video, so the selected
+// source subject contributes what the replacement must keep: the pose, action,
+// position and the objects they interact with. Identity and clothing stay with
+// the reference character (see DESCRIBE_*), otherwise the old look leaks back
+// into the render.
+const SUBJECT_SYSTEM =
+    'You describe the person being replaced in a video clip for a character-replacement model. ' +
+    'Describe only that person: pose, action, position, gaze and the objects they hold, touch, ' +
+    'use or stay close to. Never judge or identify the person and never describe the background, ' +
+    'lighting, camera or other people. Reply with strict JSON only, no prose.';
+
+const SUBJECT_USER =
+    'The images are crops of the same person from several moments of one clip. Return strict JSON with exactly these keys: ' +
+    '{"summary":"one factual sentence under 45 words describing what the person is doing, their pose and position, ' +
+    'and the objects they interact with or stay close to",' +
+    '"action":"short phrase for what the person is doing",' +
+    '"position":"short phrase for where the person is and how they are framed",' +
+    '"objects":"comma-separated objects the person holds, touches, uses or stands next to, or an empty string"} ' +
+    'Do not describe the person\'s face, hair, skin or clothing. The replacement character supplies those.';
+
 // SCAIL-2 prompts describe the finished video, so the exact source scene
 // is captured once and reused as the scene section of the enhanced prompt.
 // The caption ignores people and action on purpose: the preservation clause
@@ -150,6 +170,24 @@ function normalizeScene(value) {
     };
 }
 
+function normalizeSubject(value) {
+    const src = value && typeof value === 'object' ? value : {};
+    return {
+        summary: clean(src.summary, 500),
+        action: clean(src.action, 160),
+        position: clean(src.position, 160),
+        objects: clean(src.objects, 240)
+    };
+}
+
+// One line for the prompt. The summary owns the sentence; the structured
+// fields are the fallback so a partial model reply still contributes.
+function subjectSummary(value) {
+    const subject = normalizeSubject(value);
+    if (subject.summary) return subject.summary;
+    return [subject.action, subject.position].filter(Boolean).join(', ');
+}
+
 function normalizeRole(value) {    const role = String(value || '').toLowerCase().replace(/\s+/g, '_');
     if (role === 'closeup' || role === 'close-up' || role === 'face') return 'close_up';
     if (role === 'full' || role === 'full-body') return 'full_body';
@@ -196,6 +234,51 @@ async function describeScene(files, ctx) {
     if (!value || typeof value !== 'object') return null;
     const scene = normalizeScene(value);
     return scene.summary ? scene : null;
+}
+
+async function describeSubject(files, ctx) {
+    if (!Array.isArray(files) || !files.length) return null;
+    const value = await askVision(files, SUBJECT_SYSTEM, SUBJECT_USER, ctx);
+    if (!value || typeof value !== 'object') return null;
+    const subject = normalizeSubject(value);
+    return (subject.summary || subject.action || subject.objects) ? subject : null;
+}
+
+// Crops the tracked subject out of sampled frames (with breathing room for
+// props and hands) so the description reads the person, not the set.
+async function cropSubjectFrames(partPath, spec, outDir) {
+    const box = spec && spec.bbox;
+    if (!box || !partPath) return [];
+    const width = Math.max(2, Number(spec.width) || 0);
+    const height = Math.max(2, Number(spec.height) || 0);
+    const frames = Array.isArray(spec.frames) ? spec.frames : [];
+    if (!frames.length) return [];
+    fs.mkdirSync(outDir, { recursive: true });
+    const padX = Math.round(box.width * 0.35);
+    const padY = Math.round(box.height * 0.25);
+    const x = Math.max(0, Math.min(width - 2, Math.round(box.x - padX)));
+    const y = Math.max(0, Math.min(height - 2, Math.round(box.y - padY)));
+    const w = Math.max(2, Math.min(width - x, Math.round(box.width + padX * 2)));
+    const h = Math.max(2, Math.min(height - y, Math.round(box.height + padY * 2)));
+    const crops = [];
+    for (const frame of frames) {
+        const full = path.join(outDir, 'subject-full-' + frame + '.png');
+        const crop = path.join(outDir, 'subject-' + frame + '.png');
+        try {
+            await media.extractFrame(partPath, frame, full);
+            await media.run([
+                '-hide_banner', '-y', '-i', full,
+                '-vf', 'crop=' + w + ':' + h + ':' + x + ':' + y,
+                '-frames:v', '1', crop
+            ], { code: 'character_swap_subject_crop_failed' });
+            crops.push(crop);
+        } catch {
+            // A single unreadable frame must not drop the whole description.
+        } finally {
+            try { fs.unlinkSync(full); } catch { /* optional */ }
+        }
+    }
+    return crops;
 }
 
 async function cropForOrientation(partPath, anchor, maskPath, outDir) {
@@ -263,14 +346,19 @@ module.exports = {
     CLASSIFY_SYSTEM,
     DESCRIBE_SYSTEM,
     SCENE_SYSTEM,
+    SUBJECT_SYSTEM,
     clean,
     normalizeDescription,
     normalizeScene,
+    normalizeSubject,
+    subjectSummary,
     normalizeRole,
     normalizeFacing,
     classify,
     describe,
     describeScene,
+    describeSubject,
+    cropSubjectFrames,
     cropForOrientation,
     orientation,
     look,

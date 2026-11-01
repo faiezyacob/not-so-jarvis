@@ -147,7 +147,7 @@ const CharacterSwapUI = (() => {
         const label = engineLabel(active);
         if ($('csEngineNote')) {
             $('csEngineNote').textContent = isScail
-                ? 'SCAIL-2 replaces the selected person using its official replacement mode: SAM 3.1 tracks the target, colored reference/driving masks condition the model, and the original audio is kept.'
+                ? 'SCAIL-2 replaces each selected person using its official replacement mode: SAM 3.1 tracks the target, colored reference/driving masks condition the model, and the original audio is kept. Select more than one person to replace them all in one video.'
                 : 'MiniMax H3 uses the existing Ref2VA workflow and Character LoRA v1.5. One clip renders up to 15 seconds.';
         }
         if ($('csAddRefs')) $('csAddRefs').textContent = features.referenceViews ? 'Upload images' : 'Upload image';
@@ -379,6 +379,15 @@ const CharacterSwapUI = (() => {
             detectionSelection = new Set((project.people || []).map((person) => person.selectionId).filter(Boolean));
         }
         const ids = new Set(((project.selection && project.selection.tracks) || []).map((track) => track.id));
+        if (project.engine === 'scail2') {
+            // The project is the source of truth: only bound tracks stay selected,
+            // so removing a target can never leak its track back into the next
+            // selection request.
+            detectionSelection = new Set((project.people || [])
+                .map((person) => person.selectionId)
+                .filter((id) => id && ids.has(id)));
+            return;
+        }
         (project.people || []).forEach((person) => {
             if (person.selectionId && ids.has(person.selectionId)) detectionSelection.add(person.selectionId);
         });
@@ -425,18 +434,21 @@ const CharacterSwapUI = (() => {
             if (owner) bits.push('→ ' + owner.label);
             meta.textContent = bits.join(' · ');
             card.appendChild(meta);
+            card.title = engine === 'scail2'
+                ? 'Click to add or focus this person. Remove a target with the × on its person card.'
+                : '';
             card.addEventListener('click', () => {
+                if (bindingSelection) return;
                 if (engine === 'scail2') {
-                    if (bindingSelection) return;
-                    detectionSelection.clear();
-                    detectionSelection.add(track.id);
-                    renderDetections();
-                    const alreadyBound = (project.people || []).some((person) => person.selectionId === track.id);
-                    if (alreadyBound) {
-                        setStatus(track.label + ' is already the target. Add a character image, then press Render.', 'ok');
+                    const owner = (project.people || []).find((person) => person.selectionId === track.id);
+                    if (owner) {
+                        selectedPersonId = owner.id;
+                        renderAll();
+                        setStatus(owner.label + ' is focused. Add its character image below.', 'ok');
                         return;
                     }
-                    applySelection();
+                    detectionSelection.add(track.id);
+                    applySelection(track.id);
                     return;
                 }
                 if (detectionSelection.has(track.id)) {
@@ -462,7 +474,7 @@ const CharacterSwapUI = (() => {
         }
     }
 
-    async function applySelection() {
+    async function applySelection(focusTrackId) {
         if (!project || bindingSelection) return;
         const trackIds = Array.from(detectionSelection);
         if (!trackIds.length) {
@@ -476,15 +488,53 @@ const CharacterSwapUI = (() => {
                 method: 'POST',
                 body: JSON.stringify({ trackIds })
             });
+            // Focus the person record for the track just clicked so the next
+            // character image uploads to that person, not the previous one.
+            const targets = (data.people || []).filter((person) => person.selectionId);
+            const focus = (focusTrackId && targets.find((person) => person.selectionId === focusTrackId))
+                || targets[targets.length - 1];
+            if (focus) selectedPersonId = focus.id;
             setProject(data);
-            setStatus(engine === 'scail2'
-                ? 'Target selected. Add one character image, then press Render.'
-                : 'Selected ' + trackIds.length + ' person' + (trackIds.length === 1 ? '' : 's') + '. Add a reference, then build the masks.',
-                'ok');
+            if (engine === 'scail2') {
+                const missing = targets.filter((person) => !(person.refs || []).length);
+                setStatus(targets.length > 1
+                    ? targets.length + ' targets selected. Reading the subjects' +
+                        (missing.length ? ', add a character image for ' + missing[0].label + '.' : '.')
+                    : 'Target selected. Reading the subject, add one character image next.', 'ok');
+                describeSubject();
+            } else {
+                setStatus('Selected ' + trackIds.length + ' person' + (trackIds.length === 1 ? '' : 's') + '. Add a reference, then build the masks.', 'ok');
+            }
         } catch (err) {
             setStatus(err.message, 'error');
         } finally {
             bindingSelection = false;
+        }
+    }
+
+    // Runs right after a target is selected so the SCAIL-2 prompt can lead with
+    // a description of that subject. Fire-and-forget: the render endpoint holds
+    // the turn queue and will finish the description itself if this is missed.
+    async function describeSubject() {
+        if (!project) return;
+        const projectId = project.id;
+        try {
+            const data = await api('/api/character-swap/projects/' + encodeURIComponent(projectId) + '/selection/describe', {
+                method: 'POST',
+                body: '{}'
+            });
+            if (project && project.id === projectId) setProject(data);
+            const status = $('csStatus');
+            if (status && /Reading the subject/.test(status.textContent || '')) {
+                const targets = ((project && project.people) || []).filter((person) => person.selectionId);
+                const missing = targets.filter((person) => !(person.refs || []).length);
+                setStatus(targets.length > 1
+                    ? targets.length + ' targets selected. Subjects described' +
+                        (missing.length ? ', add a character image for ' + missing[0].label + '.' : '.')
+                    : 'Target selected. Subject described. Add one character image, then press Render.', 'ok');
+            }
+        } catch {
+            // Fail-open: the render path retries the description.
         }
     }
 
@@ -551,19 +601,22 @@ const CharacterSwapUI = (() => {
             text = 'Working — ' + (project.activity || 'processing the clip') + '…';
         } else if (isScail) {
             const tracks = (project.selection && project.selection.tracks) || [];
-            const targetPerson = (project.people || []).find((item) => item.selectionId);
-            const referencePerson = (project.people || []).find((item) => (item.refs || []).length);
+            const targets = (project.people || []).filter((item) => item.selectionId);
+            const missingReference = targets.filter((item) => !(item.refs || []).length);
             if (!tracks.length) {
                 text = 'Step 2 — Detect the people in the clip.';
                 target = $('csDetect');
-            } else if (!targetPerson) {
-                text = 'Step 3 — Click the detected person you want to replace.';
+            } else if (!targets.length) {
+                text = 'Step 3 — Click each detected person you want to replace.';
                 target = $('csDetections');
-            } else if (!referencePerson) {
-                text = 'Step 4 — Upload one character reference image.';
+            } else if (missingReference.length) {
+                text = 'Step 4 — Upload one character image for ' + missingReference[0].label +
+                    (targets.length > 1 ? ' (repeat for every selected person)' : '') + '.';
                 target = $('csAddRefs');
             } else {
-                text = 'Ready — render with SCAIL-2.';
+                text = targets.length > 1
+                    ? 'Ready — render ' + targets.length + ' replacements in one video.'
+                    : 'Ready — render with SCAIL-2.';
                 target = $('csRender');
             }
         } else if (!person || !person.anchors.length) {
@@ -591,7 +644,9 @@ const CharacterSwapUI = (() => {
             if (button) button.classList.remove('is-next');
         });
         if (target) target.classList.add('is-next');
-        const scailReady = Boolean(project && person && person.selectionId && (person.refs || []).length &&
+        const scailTargets = project ? (project.people || []).filter((item) => item.selectionId) : [];
+        const scailReady = Boolean(project && scailTargets.length &&
+            scailTargets.every((item) => (item.refs || []).length) &&
             (project.selection && (project.selection.tracks || []).length));
         const ready = isScail ? scailReady : Boolean(project && person && person.refs.length);
         $('csRender').disabled = !ready;
@@ -934,7 +989,9 @@ const CharacterSwapUI = (() => {
                     label.textContent = 'Pass ' + (Number(pass) + 1) + ' · ' + byPass[pass] + ' windows';
                     row.appendChild(label);
                     const wins = passInfo && Array.isArray(passInfo.windows) ? passInfo.windows : [];
-                    (take.engine === engine ? wins : []).forEach((entry) => {
+                    // Window redo is an H3-only resume path; SCAIL-2 passes are
+                    // rebuilt as a whole take.
+                    (take.engine === 'h3' && take.engine === engine ? wins : []).forEach((entry) => {
                         const button = document.createElement('button');
                         button.type = 'button';
                         button.className = 'character-swap-window-redo';

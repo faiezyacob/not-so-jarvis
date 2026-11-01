@@ -2542,6 +2542,17 @@ async function handleAPI(req, res, urlPath) {
                 json(res, 200, presentCharacterSwap(updated));
                 return true;
             }
+            if (rest === '/selection/describe' && req.method === 'POST') {
+                const turn = await acquireTurn(res, { label: 'character swap subject', conversationId: project.conversationId });
+                if (!turn) return true;
+                await vramManager.freeVRAMBeforeChat().catch(() => {});
+                const updated = await characterSwap.describeSelectedSubject(projectId, {
+                    provider: project.provider,
+                    model: project.model
+                }).catch(() => characterSwap.get(projectId));
+                json(res, 200, presentCharacterSwap(updated || characterSwap.get(projectId)));
+                return true;
+            }
             if (rest === '/selection/correction' && req.method === 'POST') {
                 const body = await readBody(req);
                 const updated = await characterSwap.applySelectionCorrection(projectId, body);
@@ -8812,8 +8823,16 @@ async function handleCharacterSwapRender(req, res, projectId, project) {
                 (person.refs || []).length && !person.identitySummary
             );
             const needsScene = !characterSwap.hasSceneDescription(current);
-            if (needsCharacter || needsScene) {
+            const needsSubject = !characterSwap.hasSubjectDescription(current);
+            if (needsCharacter || needsScene || needsSubject) {
                 await vramManager.freeVRAMBeforeChat();
+                if (needsSubject) {
+                    sseWrite(res, { generating: 'Reading the selected subject so the replacement keeps the same action…' });
+                    await characterSwap.describeSelectedSubject(projectId, {
+                        provider: project.provider,
+                        model: project.model
+                    }).catch(() => {});
+                }
                 if (needsCharacter) {
                     sseWrite(res, { generating: 'Reading the character reference…' });
                     await characterSwap.describeProject(projectId, {

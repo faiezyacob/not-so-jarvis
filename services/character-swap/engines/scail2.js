@@ -410,14 +410,26 @@ async function render(plan, options = {}) {
     return generationQueue.enqueue(async (signal) => {
         ensureDir(GENERATED_DIR);
         const settings = normalizeSettings(Object.assign({}, plan.settings, options.settings));
-        const target = plan.people && plan.people[0];
-        if (!target) throw new Error('Select the person to replace before rendering with SCAIL-2.');
-        if (!target.referencePath || !fs.existsSync(target.referencePath)) {
-            throw new Error('Upload one character reference image before rendering with SCAIL-2.');
-        }
-        if (!plan.points || !Array.isArray(plan.points.positive) || !plan.points.positive.length) {
-            throw new Error('The selected person has no usable tracking points. Detect people again and select the target.');
-        }
+        // One SCAIL-2 pass per selected character; the passes run in sequence and
+        // each one drives on the previous pass's output, so both replacements end
+        // up in the same video.
+        const fallbackTarget = plan.people && plan.people[0];
+        const targets = (Array.isArray(plan.targets) && plan.targets.length)
+            ? plan.targets.slice()
+            : (fallbackTarget
+                ? [Object.assign({}, fallbackTarget, { points: plan.points, subjectDescription: fallbackTarget.subjectDescription || null })]
+                : []);
+        if (!targets.length) throw new Error('Select the person to replace before rendering with SCAIL-2.');
+        targets.forEach((target, index) => {
+            if (!target.referencePath || !fs.existsSync(target.referencePath)) {
+                throw new Error('Upload a character image for ' + (target.place ? 'the person ' + target.place : target.label || ('person ' + (index + 1))) + ' before rendering with SCAIL-2.');
+            }
+            const points = target.points || plan.points;
+            if (!points || !Array.isArray(points.positive) || !points.positive.length) {
+                throw new Error('A selected person has no usable tracking points. Detect people again and select the target.');
+            }
+            target.points = points;
+        });
         if (!settings.width || !settings.height) {
             const dims = shared.dimensionsFor(1280, 720, settings);
             settings.width = dims.width;
@@ -448,16 +460,12 @@ async function render(plan, options = {}) {
         try {
             onStage('Preparing SCAIL-2');
             const prepared = await prepare(plan, { info, signal, onStage });
-            const planWindows = scailGraph.windowPlan(prepared.frames);
-            const referenceName = await uploadFile(target.referencePath, 'jarvis_scail2_ref', 'image/png');
-            uploaded.push(referenceName);
-            const performanceName = await uploadFile(prepared.sourcePath, 'jarvis_scail2_drive', 'video/mp4');
-            uploaded.push(performanceName);
-
             const positive = plan.prompt || scailPrompt.buildScailPrompt({
                 userPrompt: settings.positive,
-                identitySummary: target.identitySummary,
-                description: target.description,
+                people: targets,
+                identitySummary: targets.length === 1 ? targets[0].identitySummary : undefined,
+                description: targets.length === 1 ? targets[0].description : undefined,
+                subject: targets.length === 1 ? targets[0].subjectDescription || null : undefined,
                 scene: plan.sceneDescription
             });
             const negative = shared.buildNegativePrompt(settings.negative);
@@ -471,52 +479,98 @@ async function render(plan, options = {}) {
             const dpoLora = settings.dpo && settings.dpoLora && scailGraph.hasChoice(info, 'LoraLoaderModelOnly', 'lora_name', settings.dpoLora)
                 ? settings.dpoLora : null;
             const effectiveSettings = Object.assign({}, settings, { accelerationLora });
-            const built = scailGraph.buildGraph({
-                settings: effectiveSettings,
-                width: settings.width,
-                height: settings.height,
-                frames: prepared.frames,
-                windowPlan: planWindows,
-                positive,
-                negative,
-                seed,
-                referenceName,
-                performanceName,
-                points: plan.points,
-                anchorFrame: target.anchorFrame || plan.points.anchorFrame || 0,
-                relightLora,
-                dpoLora,
-                chunkFeedForward: settings.chunkFeedForward && Object.prototype.hasOwnProperty.call(info, 'WanChunkFeedForward'),
-                decodeTiled: settings.resolution === '720p'
-            });
-            validateGraph(info, built.graph);
 
-            onStage(planWindows.mode === 'infinity'
-                ? 'Generating with SCAIL-2 · ' + planWindows.windows + ' windows'
-                : 'Generating with SCAIL-2');
-            const pid = await comfyui.queuePrompt(built.graph);
-            const history = await comfyui.waitForPrompt(pid, {
-                timeoutMs: DEFAULTS.timeoutMs,
-                signal
-            });
-            const entry = outputEntryForNode(history, 'save');
-            if (!entry) throw new Error('SCAIL-2 produced no video.');
-            const buffer = await comfyui.downloadImage(entry);
-            await comfyui.deleteOutputFile(entry, { history: pid }).catch(() => {});
-            const passVideo = path.join(takeDir, 'pass-0.mp4');
-            fs.writeFileSync(passVideo, buffer);
+            const passes = [];
+            const windows = [];
+            let drivingPath = prepared.sourcePath;
+            let drivingFrames = prepared.frames;
+            let lastBuilt = null;
+            for (let index = 0; index < targets.length; index += 1) {
+                const target = targets[index];
+                const passLabel = targets.length > 1
+                    ? 'Replacing ' + (target.place ? 'the person ' + target.place : target.label || ('person ' + (index + 1))) +
+                        ' (' + (index + 1) + ' of ' + targets.length + ')'
+                    : 'Generating with SCAIL-2';
+                onStage(passLabel);
+                const referenceName = await uploadFile(target.referencePath, 'jarvis_scail2_ref', 'image/png');
+                uploaded.push(referenceName);
+                const performanceName = await uploadFile(drivingPath, 'jarvis_scail2_drive', 'video/mp4');
+                uploaded.push(performanceName);
+                const planWindows = scailGraph.windowPlan(drivingFrames);
+                const built = scailGraph.buildGraph({
+                    settings: effectiveSettings,
+                    width: settings.width,
+                    height: settings.height,
+                    frames: drivingFrames,
+                    windowPlan: planWindows,
+                    positive,
+                    negative,
+                    seed: seed + index,
+                    referenceName,
+                    performanceName,
+                    points: target.points,
+                    anchorFrame: target.anchorFrame || target.points.anchorFrame || 0,
+                    relightLora,
+                    dpoLora,
+                    chunkFeedForward: settings.chunkFeedForward && Object.prototype.hasOwnProperty.call(info, 'WanChunkFeedForward'),
+                    decodeTiled: settings.resolution === '720p'
+                });
+                validateGraph(info, built.graph);
+                const pid = await comfyui.queuePrompt(built.graph);
+                const history = await comfyui.waitForPrompt(pid, {
+                    timeoutMs: DEFAULTS.timeoutMs,
+                    signal
+                });
+                const entry = outputEntryForNode(history, 'save');
+                if (!entry) throw new Error('SCAIL-2 produced no video.');
+                const buffer = await comfyui.downloadImage(entry);
+                await comfyui.deleteOutputFile(entry, { history: pid }).catch(() => {});
+                const passVideo = path.join(takeDir, 'pass-' + index + '.mp4');
+                fs.writeFileSync(passVideo, buffer);
+                const windowEntry = {
+                    pass: index,
+                    index: 0,
+                    seed: seed + index,
+                    sourceStart: 0,
+                    keep: built.plan.frames,
+                    drop: 0,
+                    mode: built.plan.mode,
+                    windowCount: built.plan.windows,
+                    status: 'done',
+                    file: passVideo,
+                    prompt: positive
+                };
+                windows.push(windowEntry);
+                passes.push({
+                    pass: index,
+                    personId: target.id,
+                    label: target.label,
+                    video: passVideo,
+                    windows: [windowEntry]
+                });
+                lastBuilt = built;
+                drivingPath = passVideo;
+                const probedPass = await media.probeVideo(passVideo).catch(() => null);
+                drivingFrames = Math.max(1, Math.round(((probedPass && probedPass.duration) || prepared.duration || 0) * shared.FPS));
+            }
 
+            const finalPass = passes[passes.length - 1];
             onStage('Muxing the original audio');
             const stamp = new Date().toISOString().replace(/[:.]/g, '-');
             const basename = safeName(path.basename(plan.sourceVideoPath, path.extname(plan.sourceVideoPath))) +
                 '_scail2_' + stamp + '_' + crypto.randomBytes(3).toString('hex') + '.mp4';
             const outputPath = path.join(GENERATED_DIR, basename);
-            await media.muxAudio(passVideo, prepared.audioPath, outputPath, {
+            await media.muxAudio(finalPass.video, prepared.audioPath, outputPath, {
                 hasAudio: prepared.hasAudio
             });
             const probed = await media.probeVideo(outputPath).catch(() => null);
-            const duration = (probed && probed.duration) || prepared.duration || (built.plan.frames / shared.FPS);
+            const duration = (probed && probed.duration) || prepared.duration || (lastBuilt.plan.frames / shared.FPS);
             const outputFrames = Math.max(1, Math.round(duration * shared.FPS));
+            const metaWindows = windows.map((entry) => {
+                const clean = Object.assign({}, entry);
+                delete clean.file;
+                return clean;
+            });
             const meta = generatedHistory.add({
                 file: '/generated/' + encodeURIComponent(basename),
                 rawFilename: basename,
@@ -542,15 +596,17 @@ async function render(plan, options = {}) {
                     rawPrompt: settings.positive,
                     replacementMode: true,
                     sceneCaptured: Boolean(plan.sceneDescription && plan.sceneDescription.summary),
-                    windows: [{
-                        index: 0,
-                        seed,
-                        sourceStart: 0,
-                        keep: built.plan.frames,
-                        drop: 0,
-                        mode: built.plan.mode,
-                        windowCount: built.plan.windows
-                    }],
+                    subject: targets.length === 1 ? targets[0].subjectDescription || null : null,
+                    targets: targets.map((target) => ({
+                        personId: target.id,
+                        label: target.label,
+                        place: target.place || null,
+                        trackId: target.trackId || null,
+                        anchorFrame: target.anchorFrame || null,
+                        referenceImage: path.basename(target.referencePath)
+                    })),
+                    windows: metaWindows,
+                    passes: passes.length,
                     resolution: { width: settings.width, height: settings.height },
                     preset: settings.preset,
                     steps: settings.steps,
@@ -558,13 +614,13 @@ async function render(plan, options = {}) {
                     shift: settings.shift,
                     windowLength: scailGraph.WINDOW_FRAMES,
                     previousFrameCount: scailGraph.PREVIOUS_FRAMES,
-                    referenceImage: path.basename(target.referencePath),
-                    target: {
-                        personId: target.id,
-                        label: target.label,
-                        trackId: target.trackId || null,
-                        anchorFrame: target.anchorFrame || null
-                    },
+                    referenceImage: path.basename(targets[0].referencePath),
+                    target: targets.length === 1 ? {
+                        personId: targets[0].id,
+                        label: targets[0].label,
+                        trackId: targets[0].trackId || null,
+                        anchorFrame: targets[0].anchorFrame || null
+                    } : null,
                     loras: {
                         acceleration: accelerationLora,
                         accelerationStrength: settings.accelerationStrength,
@@ -598,23 +654,8 @@ async function render(plan, options = {}) {
                 frames: outputFrames,
                 fps: shared.FPS,
                 engine: ID,
-                windows: [{
-                    index: 0,
-                    seed,
-                    sourceStart: 0,
-                    keep: built.plan.frames,
-                    drop: 0,
-                    status: 'done',
-                    file: passVideo,
-                    prompt: positive
-                }],
-                passes: [{
-                    pass: 0,
-                    personId: target.id,
-                    label: target.label,
-                    video: passVideo,
-                    windows: []
-                }],
+                windows,
+                passes,
                 prompt: positive,
                 generationMs: meta.generationMs,
                 metrics: peaks,
