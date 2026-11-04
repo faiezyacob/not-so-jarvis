@@ -10,6 +10,7 @@
 
 const fs = require('fs');
 const os = require('os');
+const net = require('net');
 const path = require('path');
 const { spawn } = require('child_process');
 const comfyui = require('./comfyui');
@@ -27,6 +28,42 @@ let startPromise = null;
 
 function delay(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function comfyHostPort() {
+    try {
+        const url = new URL(comfyui.COMFYUI_URL);
+        return {
+            host: url.hostname || '127.0.0.1',
+            port: Number(url.port) || (url.protocol === 'https:' ? 443 : 80)
+        };
+    } catch {
+        return { host: '127.0.0.1', port: 8188 };
+    }
+}
+
+// A bound port means a ComfyUI process already exists (usually the Desktop
+// app) even when its HTTP API has not answered yet. Spawning a second headless
+// server on the same install then fails on the port AND both processes write
+// the same user/ asset database and ComfyUI-Manager cache, which can corrupt
+// what the Desktop frontend fetches (electron net::ERR_CONTENT_DECODING_FAILED).
+function portInUse(timeoutMs, target) {
+    const address = target || comfyHostPort();
+    const wait = Math.max(100, Number(timeoutMs) || 1200);
+    return new Promise((resolve) => {
+        const socket = net.connect({ host: address.host, port: address.port });
+        let settled = false;
+        const done = (value) => {
+            if (settled) return;
+            settled = true;
+            socket.destroy();
+            resolve(value);
+        };
+        socket.setTimeout(wait);
+        socket.once('connect', () => done(true));
+        socket.once('timeout', () => done(false));
+        socket.once('error', () => done(false));
+    });
 }
 
 function splitArgs(str) {
@@ -238,6 +275,17 @@ function spawnComfy(plan) {
 }
 
 async function runStart() {
+    // Another ComfyUI already owns the port (normally the Desktop app that is
+    // still booting). Wait for its API instead of spawning a duplicate.
+    if (await portInUse()) {
+        const ok = await waitForAvailable(START_TIMEOUT_MS);
+        if (ok) return { available: true, alreadyRunning: true, started: false };
+        const err = new Error('Another process is already using ' + comfyui.COMFYUI_URL +
+            ' but its API did not respond within ' + Math.round(START_TIMEOUT_MS / 1000) + 's. ' +
+            'Close the other ComfyUI (or wait for it to finish starting) and try again.');
+        err.code = 'comfyui_port_busy';
+        throw err;
+    }
     const plan = await planLaunch();
     if (!plan) {
         const err = new Error('I could not find a way to start ComfyUI automatically. Set COMFYUI_START_CMD (or COMFYUI_ROOT) and try again.');
@@ -332,5 +380,7 @@ module.exports = {
     getStatus,
     getLaunchInfo,
     planLaunch,
+    comfyHostPort,
+    portInUse,
     isStartComfyRequest
 };

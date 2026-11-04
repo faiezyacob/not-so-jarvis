@@ -517,7 +517,7 @@ test('buildReplacementGraph: applies the character-swap LoRA by default', () => 
         prompt: 'p', settings: {}, refImageNames: ['a.png'], refVideoName: 's.mp4'
     });
     assert.equal(graph.h3_char_swap_lora.class_type, 'LoraLoaderModelOnly');
-    assert.equal(graph.h3_char_swap_lora.inputs.lora_name, 'h3_character_swap_v1.5.safetensors');
+    assert.equal(graph.h3_char_swap_lora.inputs.lora_name, 'rigless-lora-v1.safetensors');
     assert.equal(graph.h3_char_swap_lora.inputs.strength_model, 1);
     // The adapter reads straight from the diffusion-model loader.
     assert.deepEqual(graph.h3_char_swap_lora.inputs.model, ['model', 0]);
@@ -569,7 +569,7 @@ test('resolveRefUnet: finds the installed Ref2VA model, override wins', () => {
 
 test('resolveH3CharacterSwapAvailability: ready when the adapter is installed', () => {
     const videoGenerator = require('../services/video-generator');
-    const info = { LoraLoaderModelOnly: { input: { required: { lora_name: [['h3_character_swap_v1.5.safetensors']] } } } };
+    const info = { LoraLoaderModelOnly: { input: { required: { lora_name: [['rigless-lora-v1.safetensors']] } } } };
     const state = videoGenerator.resolveH3CharacterSwapAvailability(info, {});
     assert.equal(state.enabled, true);
     assert.equal(state.ready, true);

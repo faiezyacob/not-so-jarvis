@@ -207,6 +207,44 @@ function setHuggingFace(patch) {
     return current;
 }
 
+// --- Civitai API token (BFS Character Swap LoRA download) ---
+//
+// Used by services/model-setup.js to authenticate the Civitai model-version
+// download API. CIVITAI_TOKEN / CIVITAI_API_KEY env vars win when set; the
+// Settings > Setup value is the fallback. The raw token is never returned by
+// the status endpoint (only a masked preview).
+
+const CIVITAI_SETTINGS_KEY = 'civitai';
+
+function getCivitai() {
+    const config = loadConfig();
+    const stored = config[CIVITAI_SETTINGS_KEY];
+    return stored && typeof stored === 'object' ? stored : {};
+}
+
+function getCivitaiToken() {
+    if (process.env.CIVITAI_TOKEN) return String(process.env.CIVITAI_TOKEN).trim();
+    if (process.env.CIVITAI_API_KEY) return String(process.env.CIVITAI_API_KEY).trim();
+    const stored = getCivitai();
+    return typeof stored.token === 'string' ? stored.token.trim() : '';
+}
+
+function setCivitai(patch) {
+    const config = loadConfig();
+    const current = { ...(config[CIVITAI_SETTINGS_KEY] || {}) };
+    for (const [key, value] of Object.entries(patch || {})) {
+        if (key !== 'token' && key !== 'user' && key !== 'verifiedAt') continue;
+        if (value === null || value === undefined || value === '') {
+            delete current[key];
+        } else {
+            current[key] = String(value);
+        }
+    }
+    config[CIVITAI_SETTINGS_KEY] = current;
+    saveConfig(config);
+    return current;
+}
+
 // --- Weather location (dashboard widget reports the browser's geolocation) ---
 
 const WEATHER_SETTINGS_KEY = 'weather';
@@ -368,4 +406,4 @@ function setComfyUI(patch) {
     return current;
 }
 
-module.exports = { getConfig, setModelConfig, getReasoningEnabled, setReasoningEnabled, getChatSettings, setChatSettings, getImageSettings, setImageSettings, getVideoSettings, setVideoSettings, getHuggingFace, getHuggingFaceToken, setHuggingFace, getWeather, setWeather, getNews, setNews, clearNewsFeeds, getComfyUI, setComfyUI, getCompanionSettings, setCompanionSettings };
+module.exports = { getConfig, setModelConfig, getReasoningEnabled, setReasoningEnabled, getChatSettings, setChatSettings, getImageSettings, setImageSettings, getVideoSettings, setVideoSettings, getHuggingFace, getHuggingFaceToken, setHuggingFace, getCivitai, getCivitaiToken, setCivitai, getWeather, setWeather, getNews, setNews, clearNewsFeeds, getComfyUI, setComfyUI, getCompanionSettings, setCompanionSettings };

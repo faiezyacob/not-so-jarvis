@@ -21,6 +21,8 @@ const selection = require('./selection');
 const references = require('./references');
 const promptBuilder = require('./prompt');
 const scailPrompt = require('./engines/scail2-prompt');
+const h3Caption = require('./engines/h3-recast-caption');
+const sceneReference = require('./scene-reference');
 const sheets = require('./sheets');
 const engines = require('./engines');
 
@@ -556,7 +558,7 @@ function selectTracks(projectId, trackIds) {
         err.status = 400;
         throw err;
     }
-    return characterState.update(projectId, (current) => {
+    characterState.update(projectId, (current) => {
         const tracks = (current.selection && current.selection.tracks) || [];
         const byId = new Map(tracks.map((track) => [track.id, track]));
         const isBlank = (person) => !(person.refs || []).length && !person.description && !person.subjectDescription;
@@ -612,6 +614,10 @@ function selectTracks(projectId, trackIds) {
         clearEngineCache(current);
         dropTakes(current);
     });
+    // The selected target set changed, so the edited scene frame no longer
+    // reflects the replacements. Drop it so it must be rebuilt.
+    sceneReference.clear(projectId);
+    return characterState.get(projectId);
 }
 
 async function applySelectionCorrection(projectId, correction) {
@@ -753,6 +759,36 @@ function updateMaskSettings(projectId, settings) {
     });
 }
 
+// H3 Recast can be selected without detection, but when the clip HAS been
+// detected a character image must be attached to a track to become a
+// replacement. If exactly one track is still unclaimed, bind the new image to
+// it so the common "detect, then upload" flow does not silently produce a
+// non-target and an unchanged scene reference.
+function bindUnclaimedTrack(current, person) {
+    if (!current || current.engine !== 'h3' || !person || person.selectionId) return;
+    const tracks = (current.selection && current.selection.tracks) || [];
+    if (!tracks.length) return;
+    const owned = new Set((current.people || []).map((item) => item.selectionId).filter(Boolean));
+    const unowned = tracks.filter((track) => !owned.has(track.id));
+    if (unowned.length !== 1) return;
+    const track = unowned[0];
+    person.selectionId = track.id;
+    person.lastSelectionId = track.id;
+    person.label = track.label;
+    person.status = 'selected';
+    const width = Number(current.selection.width) || Number(current.part && current.part.width) || 0;
+    const bbox = track.bbox || {};
+    if (width > 0) {
+        person.x = Math.max(0, Math.min(1,
+            ((Number(bbox.x) || 0) + (Number(bbox.width) || 0) / 2) / width));
+    }
+    const subject = person.subjectDescription;
+    if (subject && subject.trackId && subject.trackId !== track.id) {
+        person.subjectDescription = null;
+        person.subjectSummary = '';
+    }
+}
+
 function addReference(projectId, personId, filePath, role) {
     const project = characterState.requireProject(projectId);
     const person = personById(project, personId);
@@ -765,7 +801,7 @@ function addReference(projectId, personId, filePath, role) {
     const id = 'ref_' + crypto.randomBytes(5).toString('hex');
     const stored = path.join(dir, id + ext);
     fs.copyFileSync(filePath, stored);
-    return characterState.update(projectId, (current) => {
+    characterState.update(projectId, (current) => {
         const target = personById(current, personId);
         target.refs.push({
             id,
@@ -776,7 +812,13 @@ function addReference(projectId, personId, filePath, role) {
         });
         target.description = null;
         target.identitySummary = '';
+        bindUnclaimedTrack(current, target);
     });
+    // The scene reference encodes the previous identities, so it is stale after
+    // any character image change. Rebuilding it is what keeps the edit on the
+    // right person instead of silently rendering the old frame.
+    sceneReference.clear(projectId);
+    return characterState.get(projectId);
 }
 
 async function addReferenceImage(projectId, personId, filePath, role) {
@@ -799,7 +841,7 @@ async function addReferenceImage(projectId, personId, filePath, role) {
 }
 
 function removeReference(projectId, personId, referenceId) {
-    return characterState.update(projectId, (current) => {
+    characterState.update(projectId, (current) => {
         const target = personById(current, personId);
         const ref = target.refs.find((item) => item.id === referenceId);
         target.refs = target.refs.filter((item) => item.id !== referenceId);
@@ -810,15 +852,19 @@ function removeReference(projectId, personId, referenceId) {
             try { fs.unlinkSync(file); } catch { /* next cleanup */ }
         }
     });
+    sceneReference.clear(projectId);
+    return characterState.get(projectId);
 }
 
 function setReferenceRole(projectId, personId, referenceId, role) {
-    return characterState.update(projectId, (current) => {
+    characterState.update(projectId, (current) => {
         const target = personById(current, personId);
         const ref = target.refs.find((item) => item.id === referenceId);
         if (ref) ref.role = references.normalizeRole(role);
         target.referenceOrder = promptBuilder.orderReferences(target).map((item) => item.id);
     });
+    sceneReference.clear(projectId);
+    return characterState.get(projectId);
 }
 
 async function describeProject(projectId, ctx) {
@@ -876,9 +922,13 @@ async function describeProject(projectId, ctx) {
     }
     const updated = characterState.get(projectId);
     promptBuilder.assignPlaces(updated.people);
-    return characterState.update(projectId, (current) => {
+    characterState.update(projectId, (current) => {
         promptBuilder.assignPlaces(current.people);
     });
+    // Detection-first: after a character image is added/described, the person's
+    // line gains its "becomes" target without re-running detection.
+    refreshH3Lines(projectId);
+    return characterState.get(projectId);
 }
 
 // SCAIL-2 prompts describe the finished video, so the source scene is
@@ -960,7 +1010,7 @@ function subjectSampleFrames(track) {
 
 async function describeSelectedSubject(projectId, ctx) {
     const project = characterState.requireProject(projectId);
-    if (project.engine !== 'scail2') return project;
+    if (project.engine !== 'scail2' && project.engine !== 'h3') return project;
     if (hasSubjectDescription(project)) return project;
     const targets = selectedTargets(project);
     if (!targets.length) return project;
@@ -995,6 +1045,143 @@ async function describeSelectedSubject(projectId, ctx) {
             }
         }
     }
+    return characterState.get(projectId);
+}
+
+function h3LineForPerson(person, index, count) {
+    const place = h3PlaceFor(count || 1, index || 0);
+    const source = person && person.subjectSummary
+        ? String(person.subjectSummary).replace(/\.$/, '')
+        : 'the person ' + place;
+    const target = person
+        ? String(person.identitySummary || promptBuilder.structuredSummary(person.description) || '').replace(/\.$/, '')
+        : '';
+    const replaced = Boolean(person && (person.selectionId || (person.refs || []).length));
+    return replaced && target ? source + ' becomes ' + target : source;
+}
+
+// A stored auto line written before the 320-char cap was removed is a prefix of
+// the complete structured identity. Use the full identity so the caption carries
+// the whole character (face, hair, body and outfit) instead of a cut sentence.
+// A genuinely user-edited line (not a prefix) is preserved.
+function h3TargetFor(person, parsed) {
+    if (!person) return parsed && parsed.target ? parsed.target : '';
+    const full = String(person.identitySummary || promptBuilder.structuredSummary(person.description) || '').replace(/\.$/, '');
+    const target = parsed && parsed.target ? String(parsed.target) : '';
+    if (!full) return target;
+    if (!target) return full;
+    const norm = (value) => String(value).toLowerCase().replace(/[\s.,;:]+$/g, '');
+    const stored = norm(target);
+    const complete = norm(full);
+    if (complete.startsWith(stored) || stored.startsWith(complete)) return full;
+    return target;
+}
+
+// Keep the H3 person lines in sync when a character is bound/described after
+// detection. A source-only auto line is refreshed; a line that already carries
+// a "becomes" target (auto or user-edited) is left alone unless forced.
+function refreshH3Lines(projectId, options = {}) {
+    const project = characterState.get(projectId);
+    if (!project || project.engine !== 'h3') return;
+    const selected = (project.people || [])
+        .filter((person) => person.selectionId)
+        .sort((a, b) => (Number(a.x) || 0.5) - (Number(b.x) || 0.5));
+    const count = Math.max(1, selected.length);
+    selected.forEach((person, index) => {
+        const line = h3LineForPerson(person, index, count);
+        const existing = String(person.h3Line || '').trim();
+        const hasTarget = /\bbecomes\b|\bturns into\b|->|→|=/i.test(existing);
+        if (!options.force && hasTarget) return;
+        if (existing !== line) {
+            characterState.updatePerson(projectId, person.id, { h3Line: line });
+        }
+    });
+}
+
+function trackPlacement(project, track) {
+    const width = Number(project.part && project.part.width) ||
+        Number(project.selection && project.selection.width) || 0;
+    const bbox = track.bbox || {};
+    const area = Math.max(0, Number(bbox.width) || 0) * Math.max(0, Number(bbox.height) || 0);
+    const x = width > 0
+        ? ((Number(bbox.x) || 0) + (Number(bbox.width) || 0) / 2) / width
+        : 0.5;
+    return { area, x };
+}
+
+// The H3 Recast swap graph needs no pre-selection. This pass detects the
+// people in the clip (DWPose), describes each source person, and writes the
+// official 1/2/3-person lines for review. Detection works with or without a
+// character image: detect first, then bind a character to the person(s) to
+// replace (uploaded or from the gallery); unbound people stay unchanged.
+// The swap/caption/scene-reference workflow itself is unchanged.
+async function autoPeople(projectId, ctx = {}) {
+    let project = characterState.requireProject(projectId);
+    if (!project.part) throw new Error('The clip is still being prepared.');
+    // Optional: a character image uploaded before detection is bound to a
+    // detected person. With no image, detection still runs and creates the
+    // person cards so the user can bind afterwards.
+    const sources = (project.people || []).filter((person) => (person.refs || []).length);
+    let tracks = ((project.selection && project.selection.tracks) || []).slice();
+    if (!tracks.length) {
+        characterState.update(projectId, (current) => { current.status = 'tracking'; current.activity = 'Detecting people'; });
+        await runSelection(projectId);
+        project = characterState.requireProject(projectId);
+        tracks = ((project.selection && project.selection.tracks) || []).slice();
+    }
+    if (!tracks.length) throw new Error('No people were detected in the clip.');
+    const placed = tracks
+        .map((track) => Object.assign({ track }, trackPlacement(project, track)))
+        .sort((a, b) => a.x - b.x)
+        .slice(0, characterState.MAX_PEOPLE);
+    const people = placed.map((entry, index) => {
+        const person = characterState.newPerson(index);
+        person.label = entry.track.label;
+        person.selectionId = entry.track.id;
+        person.lastSelectionId = entry.track.id;
+        person.x = entry.x;
+        person.status = 'selected';
+        return person;
+    });
+    const used = new Set();
+    const largest = placed.slice().sort((a, b) => b.area - a.area)[0];
+    for (const source of sources) {
+        let target = source.selectionId
+            ? people.find((person) => person.selectionId === source.selectionId && !used.has(person.id))
+            : null;
+        if (!target && sources.length === 1 && largest) {
+            target = people.find((person) => person.selectionId === largest.track.id);
+        }
+        if (!target) target = people.find((person) => !used.has(person.id));
+        if (!target) break;
+        used.add(target.id);
+        target.refs = (source.refs || []).slice();
+        target.referenceOrder = (source.referenceOrder || []).slice();
+        target.description = source.description || null;
+        target.identitySummary = source.identitySummary || '';
+        target.look = source.look || '';
+        target.facing = source.facing || 'front';
+    }
+    characterState.update(projectId, (current) => {
+        current.people = people;
+        current.status = 'ready';
+        current.activity = null;
+        current.error = null;
+        current.maskExport = null;
+        dropTakes(current);
+    });
+    sceneReference.clear(projectId);
+    await vramManager.freeVRAMBeforeChat().catch(() => {});
+    characterState.update(projectId, (current) => {
+        current.status = 'working';
+        current.activity = sources.length ? 'Reading the replacement image' : 'Describing the people in the clip';
+    });
+    await describeProject(projectId, ctx).catch(() => {});
+    characterState.update(projectId, (current) => { current.activity = 'Describing the detected people'; });
+    await describeSelectedSubject(projectId, ctx).catch(() => {});
+    characterState.update(projectId, (current) => { current.activity = 'Writing the person lines'; });
+    refreshH3Lines(projectId, { force: true });
+    characterState.update(projectId, (current) => { current.status = 'ready'; current.activity = null; });
     return characterState.get(projectId);
 }
 
@@ -1167,52 +1354,139 @@ async function exportMask(projectId) {
     return exports.union;
 }
 
-function allocateReferences(people, max) {
-    const shares = people.map(() => 0);
-    let remaining = max;
-    const ordered = people.map((person) => promptBuilder.orderReferences(person));
-    let added = true;
-    while (remaining > 0 && added) {
-        added = false;
-        for (let i = 0; i < people.length && remaining > 0; i += 1) {
-            if (shares[i] >= ordered[i].length) continue;
-            shares[i] += 1;
-            remaining -= 1;
-            added = true;
+function h3PlaceFor(count, index) {
+    if (count === 2) return ['on the left', 'on the right'][index] || 'in the shot';
+    if (count === 3) return ['on the left', 'in the middle', 'on the right'][index] || 'in the shot';
+    return 'in the shot';
+}
+
+// H3 Recast writes a line for EVERYONE in the shot, not only the people being
+// replaced. Anyone left out gets re-dressed by the guide video.
+function buildH3Rows(project, selected) {
+    const width = Number(project.part && project.part.width) ||
+        Number(project.selection && project.selection.width) || 0;
+    // Replacement targets are the selected people with a character image. Every
+    // other person in the shot still needs a description (the author's hard
+    // rule: a person left out gets re-dressed), so bind the detected person
+    // records to their tracks even when they are not being replaced.
+    const selectedIds = new Set((selected || []).map((person) => person.id));
+    const personByTrack = new Map((project.people || [])
+        .filter((person) => person.selectionId)
+        .map((person) => [person.selectionId, person]));
+    const area = (entry) => {
+        const bbox = entry.track && entry.track.bbox || {};
+        return Math.max(0, Number(bbox.width) || 0) * Math.max(0, Number(bbox.height) || 0);
+    };
+    const tracks = ((project.selection && project.selection.tracks) || []).slice();
+    let entries;
+    if (!tracks.length) {
+        // No detection: the person-card order is the official left-to-right
+        // line order. A line-only person has no character image and is an
+        // UNCHANGED person in the shot (captioned, never replaced).
+        entries = (project.people || [])
+            .filter((person) => person.selectionId || (person.refs || []).length || person.h3Line)
+            .map((person) => ({
+                track: null,
+                person,
+                x: Number(person.x) || 0.5,
+                unchanged: !(person.selectionId || (person.refs || []).length)
+            }));
+    } else {
+        entries = tracks.map((track) => {
+            const person = personByTrack.get(track.id) || null;
+            const bbox = track.bbox || {};
+            const x = width > 0
+                ? ((Number(bbox.x) || 0) + (Number(bbox.width) || 0) / 2) / width
+                : (person ? Number(person.x) || 0.5 : 0.5);
+            return { track, person, x };
+        });
+        const trackedIds = new Set(entries.filter((entry) => entry.person).map((entry) => entry.person.id));
+        for (const person of (selected || [])) {
+            if (!trackedIds.has(person.id)) {
+                entries.push({ track: null, person, x: Number(person.x) || 0.5 });
+            }
+        }
+        for (const person of (project.people || [])) {
+            if (!person.h3Line || person.selectionId || (person.refs || []).length) continue;
+            if (entries.some((entry) => entry.person && entry.person.id === person.id)) continue;
+            entries.push({ track: null, person, x: Number(person.x) || 0.5, unchanged: true });
+        }
+        // With every target tracked, use their on-screen positions.
+        if (entries.length > 0 && entries.every((entry) => entry.track)) {
+            entries.sort((a, b) => a.x - b.x);
         }
     }
-    return ordered.map((refs, index) => refs.slice(0, shares[index]));
+    if (!entries.length) {
+        entries = (selected || []).map((person) => ({ track: null, person, x: Number(person.x) || 0.5 }));
+    }
+    if (entries.length > 3) {
+        const chosen = entries.filter((entry) => entry.person);
+        const others = entries.filter((entry) => !entry.person).sort((a, b) => area(b) - area(a));
+        for (const entry of others) {
+            if (chosen.length >= 3) break;
+            chosen.push(entry);
+        }
+        entries = entries.filter((entry) => chosen.includes(entry));
+    }
+    entries = entries.slice(0, 3);
+    const count = Math.max(1, entries.length);
+    return entries.map((entry, index) => {
+        const person = entry.person;
+        const place = h3PlaceFor(count, index);
+        const replaced = Boolean(person && selectedIds.has(person.id));
+        const parsed = person && person.h3Line ? h3Caption.parsePersonLine(person.h3Line) : null;
+        const source = parsed && parsed.source
+            ? parsed.source
+            : (person && person.subjectSummary
+                ? String(person.subjectSummary).replace(/\.$/, '')
+                : (person && person.h3Line ? person.h3Line : 'the person ' + place));
+        const target = replaced
+            ? (h3TargetFor(person, parsed) || source)
+            : source;
+        return {
+            id: person ? person.id : (entry.track ? entry.track.id : 'person_' + (index + 1)),
+            label: person ? person.label : (entry.track ? entry.track.label : 'Person ' + (index + 1)),
+            trackId: entry.track ? entry.track.id : (person ? person.selectionId : null),
+            person: person || null,
+            place,
+            source,
+            target,
+            replaced
+        };
+    });
 }
 
 function buildH3Plan(projectId, project) {
-    if (project.part.frames / media.FPS > MAX_SECONDS + 0.2) {
-        throw new Error('MiniMax H3 replacement supports up to ' + MAX_SECONDS + ' seconds. Trim the clip and re-track before generating with H3, or switch to SCAIL-2.');
+    if (!project.part || !project.part.file) throw new Error('The clip is still being prepared.');
+    const seconds = project.part.frames / media.FPS;
+    if (seconds > MAX_SECONDS + 0.2) {
+        throw new Error('MiniMax H3 Recast supports up to ' + MAX_SECONDS + ' seconds. Trim the clip and re-track before generating with H3, or switch to SCAIL-2.');
     }
-    if (!project.maskExport) throw new Error('Build the refined mask before generating.');
-    if (project.people.some((person) => !person.masks)) {
-        throw new Error('Track every selected person before generating, or remove the untracked person.');
+    const scene = sceneReference.current(projectId, project);
+    if (!scene) {
+        throw new Error('Build or upload the H3 Recast scene reference before rendering. It must show every intended replacement.');
     }
-    const peopleWithRefs = project.people.filter((person) => person.refs.length);
-    if (peopleWithRefs.length !== project.people.length) throw new Error('Add reference images for every selected person.');
-    promptBuilder.assignPlaces(project.people);
-    const allocated = allocateReferences(project.people, characterState.MAX_REFERENCES);
-    const replacements = [];
-    const targets = [];
-    let cursor = 1;
-    project.people.forEach((person, index) => {
-        const refs = allocated[index];
-        refs.forEach((ref) => {
-            const file = abs(projectId, ref.file);
-            replacements.push({ absPath: file, filename: path.basename(file), type: 'image' });
-        });
-        targets.push({
-            description: person.label + (person.place ? ' ' + person.place : ''),
-            referenceIndex: cursor,
-            referenceCount: refs.length
-        });
-        cursor += refs.length;
-    });
-    const promptText = promptBuilder.buildPrompt(project.people, project.description || '');
+    const selected = sceneReference.selectedPeople(project);
+    if (!selected.length) {
+        throw new Error('Add at least one person and upload a character image before rendering with H3 Recast.');
+    }
+    const missingReference = selected.filter((person) => !(person.refs || []).length);
+    if (missingReference.length) {
+        throw new Error('Upload a character image for ' + (missingReference[0].label || 'the selected person') + ' before rendering with H3 Recast.');
+    }
+    if (selected.length > characterState.MAX_PEOPLE) {
+        throw new Error('H3 Recast supports up to ' + characterState.MAX_PEOPLE + ' people per video.');
+    }
+    const settings = project.engineSettings && project.engineSettings.h3
+        ? project.engineSettings.h3
+        : {};
+    const dims = engines.h3.dimensionsFor(project.part.width, project.part.height, settings.h3Size);
+    const frames = engines.h3.framesFor(Math.min(seconds, MAX_SECONDS), project.part.frames);
+    if (!frames || frames < 5) {
+        throw new Error('The clip is too short for H3 Recast. Use at least 5 frames (about 0.2 seconds).');
+    }
+    const rows = buildH3Rows(project, selected);
+    const caption = h3Caption.buildCaption(rows);
     return {
         engine: 'h3',
         projectId,
@@ -1221,25 +1495,31 @@ function buildH3Plan(projectId, project) {
             filename: project.source.filename || 'source.mp4',
             type: 'video'
         },
-        replacements,
-        targets,
-        requestedDuration: project.part.frames / media.FPS,
-        audioPolicy: 'preserve',
-        replaceMode: 'identity_and_outfit',
-        replacementMode: 'identity_and_outfit',
-        replaceCount: project.people.length,
-        preserve: {
-            background: true,
-            camera: true,
-            lighting: true,
-            otherPeople: true,
-            audio: true,
-            motion: true,
-            clothing: true
+        sceneReference: {
+            absPath: scene.absPath,
+            file: scene.file,
+            filename: scene.filename
         },
-        promptText,
-        maskVideoPath: abs(projectId, project.maskExport.video),
-        maskExport: project.maskExport
+        caption: caption.caption,
+        captionRows: caption.rows,
+        people: rows.map((row) => ({
+            id: row.id,
+            label: row.label,
+            place: row.place,
+            source: row.source,
+            target: row.target,
+            replaced: row.replaced,
+            trackId: row.trackId
+        })),
+        rows,
+        frames,
+        duration: frames / media.FPS,
+        requestedDuration: frames / media.FPS,
+        width: dims.W,
+        height: dims.H,
+        settings,
+        audioPolicy: 'preserve',
+        replaceCount: rows.filter((row) => row.replaced).length
     };
 }
 
@@ -1261,9 +1541,14 @@ function buildScailPlan(projectId, project) {
         : capSeconds;
     const durationSeconds = Math.max(1 / media.FPS, Math.min(capSeconds, requested));
     settings.durationSeconds = durationSeconds;
+    // Frame indices here are on the shared workspace (DWPose) timeline; the
+    // SCAIL-2 engine converts the anchor to its own prepared fps at render time.
     const targetFrames = Math.max(1, Math.round(durationSeconds * media.FPS));
     const pointPrompts = require('./point-prompts');
     const allTracks = (project.selection && project.selection.tracks) || [];
+    const targetCount = targets.length;
+    const sam3Mode = settings.sam3Mode === 'anchor' ? 'anchor' : 'text';
+    const sam3Override = String(settings.sam3VideoObject || '').trim();
     const built = targets.map((person) => {
         const reference = promptBuilder.selectIdentityReference(person) || (person.refs || [])[0];
         if (!reference) {
@@ -1273,7 +1558,13 @@ function buildScailPlan(projectId, project) {
         if (!track) {
             throw new Error('A selected person is not in the current DWPose tracks. Detect people again and select the targets.');
         }
-        const anchorFrame = Math.max(0, Math.min(targetFrames - 1, Number(track.firstFrame) || 0));
+        // The anchor is the clicked-target fallback. Use the track's best-scoring
+        // frame (the same frame the person card shows) instead of the first frame
+        // the person happened to be detected in, which is often cropped or merged.
+        const firstFrame = Math.max(0, Number(track.firstFrame) || 0);
+        const lastFrame = Math.max(firstFrame, Number(track.lastFrame) || firstFrame);
+        const bestFrame = Number.isFinite(Number(track.thumbFrame)) ? Number(track.thumbFrame) : firstFrame;
+        const anchorFrame = Math.max(0, Math.min(targetFrames - 1, Math.min(lastFrame, Math.max(firstFrame, bestFrame))));
         const points = pointPrompts.buildPointPrompts(project, {
             trackId: person.selectionId,
             frame: anchorFrame,
@@ -1282,10 +1573,18 @@ function buildScailPlan(projectId, project) {
             sourceWidth: project.part.width,
             sourceHeight: project.part.height
         });
-        if (!points || !(points.positive || []).length) {
-            throw new Error('A selected person has no usable DWPose points. Detect people again, correct the tracking if needed, and select the target.');
-        }
         const subject = resolvedSubject(person);
+        // Open-vocabulary mask text (official SCAIL-2 flow). An explicit
+        // project-level override wins for a single target; multi-target plans
+        // always describe each selected person separately.
+        const derivedText = scailPrompt.detectionPhrase(subject);
+        const samText = (targetCount === 1 && sam3Override ? sam3Override : derivedText) || '';
+        const mode = (sam3Mode === 'text' && samText) ? 'text' : 'anchor';
+        if (mode === 'anchor') {
+            if (!points || !(points.positive || []).length) {
+                throw new Error('A selected person has no usable DWPose points. Detect people again, correct the tracking if needed, and select the target.');
+            }
+        }
         const target = {
             id: person.id,
             label: person.label,
@@ -1296,9 +1595,12 @@ function buildScailPlan(projectId, project) {
             identitySummary: person.identitySummary,
             subjectDescription: subject,
             sourceLabel: scailPrompt.sourcePhrase(subject),
+            sam3Mode: mode,
+            samText,
+            sam3ImageObject: settings.sam3ImageObject,
             trackId: person.selectionId,
             anchorFrame,
-            points
+            points: points || null
         };
         target.prompt = scailPrompt.buildScailPrompt({
             userPrompt: settings.positive,
@@ -1327,6 +1629,7 @@ function buildScailPlan(projectId, project) {
         sourceVideoPath: abs(projectId, project.part.file),
         sourceFilename: project.source.filename || 'source.mp4',
         frames: targetFrames,
+        sourceFps: Number(project.part.fps) || media.FPS,
         duration: durationSeconds,
         durationSeconds,
         prompt,
@@ -1334,6 +1637,8 @@ function buildScailPlan(projectId, project) {
         rawPrompt: settings.positive,
         sceneDescription: project.sceneDescription || null,
         settings,
+        sam3Mode,
+        sam3ImageObject: settings.sam3ImageObject,
         targets: built,
         points: built.length === 1 ? built[0].points : null,
         people: built.map((target) => ({
@@ -1345,6 +1650,8 @@ function buildScailPlan(projectId, project) {
             description: target.description,
             identitySummary: target.identitySummary,
             subjectDescription: target.subjectDescription,
+            sam3Mode: target.sam3Mode,
+            samText: target.samText,
             trackId: target.trackId,
             anchorFrame: target.anchorFrame
         })),
@@ -1370,16 +1677,23 @@ function takeRecord(projectId, plan, engine, options, seed, startedAt, extra) {
         url: null,
         filename: null,
         createdAt: new Date().toISOString(),
-        prompt: extra && extra.prompt || plan.prompt || plan.promptText || '',
+        prompt: extra && extra.prompt || plan.caption || plan.prompt || plan.promptText || '',
         width: null,
         height: null,
         duration: null,
-        fps: (engine === 'scail2') ? (plan.settings && plan.settings.fps) || 24 : null,
+        fps: (engine === 'scail2')
+            ? (plan.settings && plan.settings.fps) || engines.scail2.DEFAULTS.fps
+            : null,
+        frames: plan.frames || null,
         generationMs: Date.now() - startedAt,
         mask: plan.maskExport ? plan.maskExport.settings : (project.maskSettings || null),
         windows: [],
         passes: [],
         metrics: null,
+        sceneReference: plan.sceneReference ? plan.sceneReference.file : null,
+        captionRows: plan.captionRows || null,
+        people: plan.people || null,
+        lipRepair: null,
         error: null
     }, extra || {});
 }
@@ -1424,11 +1738,8 @@ async function renderTake(projectId, options = {}) {
         if (engine === 'h3') {
             result = await adapter.render(plan, {
                 conversationId: options.conversationId || null,
-                promptOverride: plan.promptText,
-                maskVideoPath: plan.maskVideoPath,
-                h3Size: options.h3Size,
                 seed,
-                label: 'character swap',
+                label: 'character swap H3 Recast',
                 kind: 'video_generation',
                 onQueued: options.onQueued,
                 onStart: options.onStart,
@@ -1478,11 +1789,17 @@ async function renderTake(projectId, options = {}) {
         height: result.height,
         duration: result.duration,
         fps: result.fps || null,
+        frames: result.frames || plan.frames || null,
         generationMs: Date.now() - startedAt,
         mask: plan.maskExport ? plan.maskExport.settings : null,
         windows: result.windows || [],
         passes: result.passes || [],
         metrics: result.metrics || null,
+        sceneReference: plan.sceneReference ? plan.sceneReference.file : null,
+        captionRows: plan.captionRows || null,
+        people: plan.people || null,
+        pipeline: result.meta && result.meta.video ? result.meta.video.videoPipeline : null,
+        lipRepair: result.lipRepair || null,
         error: null
     };
     characterState.update(projectId, (current) => {
@@ -1492,6 +1809,155 @@ async function renderTake(projectId, options = {}) {
         current.error = null;
     });
     return take;
+}
+
+function generatedFilePath(filename) {
+    const name = path.basename(String(filename || '').split('?')[0]);
+    if (!name) return null;
+    const dir = process.env.GENERATED_DIR || path.join(__dirname, '..', '..', 'data', 'generated');
+    const file = path.join(dir, name);
+    return fs.existsSync(file) ? file : null;
+}
+
+function buildH3LipPlan(projectId, project, take, options = {}) {
+    if (!take || take.engine !== 'h3') {
+        const error = new Error('Lip repair is only available for an H3 Recast take.');
+        error.status = 400;
+        throw error;
+    }
+    const settings = project.engineSettings && project.engineSettings.h3
+        ? project.engineSettings.h3
+        : {};
+    const baseFilename = take.lipRepair && take.lipRepair.sourceFilename
+        ? take.lipRepair.sourceFilename
+        : take.filename;
+    const baseAbs = generatedFilePath(baseFilename);
+    if (!baseAbs) {
+        const error = new Error('The H3 Recast take file could not be found. Render it again.');
+        error.status = 404;
+        throw error;
+    }
+    const selected = sceneReference.selectedPeople(project);
+    const rows = buildH3Rows(project, selected);
+    const requested = Number(options.person) || Number(settings.lipRepair && settings.lipRepair.person) || 1;
+    const personNumber = Math.max(1, Math.min(rows.length, Math.round(requested)));
+    const row = rows[personNumber - 1];
+    if (!row || !row.person) {
+        const error = new Error('That person is not being replaced, so there is no face reference to refine.');
+        error.status = 400;
+        throw error;
+    }
+    const reference = promptBuilder.selectIdentityReference(row.person) || (row.person.refs || [])[0];
+    if (!reference) {
+        const error = new Error('Upload a character image for the person whose face should be refined.');
+        error.status = 400;
+        throw error;
+    }
+    const frames = Number(take.frames) || engines.h3.framesFor(Number(take.duration) || 0, 0);
+    const scene = sceneReference.current(projectId, project);
+    const width = Number(take.width) || 0;
+    const height = Number(take.height) || 0;
+    return {
+        engine: 'h3',
+        projectId,
+        takeId: take.takeId,
+        baseVideoAbsPath: baseAbs,
+        baseVideoFilename: baseFilename,
+        baseVideoUrl: take.lipRepair && take.lipRepair.sourceUrl ? take.lipRepair.sourceUrl : take.url,
+        faceReferenceAbsPath: abs(projectId, reference.file),
+        faceReferenceFilename: path.basename(reference.file),
+        personIndex: personNumber - 1,
+        personNumber,
+        frames,
+        duration: frames / media.FPS,
+        width,
+        height,
+        sceneReference: scene ? { absPath: scene.absPath, filename: scene.filename } : null,
+        prompt: (settings.lipRepair && settings.lipRepair.prompt) || '',
+        settings: Object.assign({}, settings, {
+            lipRepair: Object.assign({}, settings.lipRepair, { person: personNumber })
+        })
+    };
+}
+
+function markTakeRefined(projectId, takeId, result) {
+    let updated = null;
+    characterState.update(projectId, (current) => {
+        const take = (current.takes || []).find((item) => item.takeId === takeId);
+        if (!take) return;
+        const sourceUrl = take.lipRepair && take.lipRepair.sourceUrl
+            ? take.lipRepair.sourceUrl
+            : take.url;
+        const sourceFilename = take.lipRepair && take.lipRepair.sourceFilename
+            ? take.lipRepair.sourceFilename
+            : take.filename;
+        take.lipRepair = Object.assign({}, result.lipRepair || {}, {
+            sourceUrl,
+            sourceFilename
+        });
+        take.url = result.url;
+        take.filename = result.filename;
+        take.width = result.width || take.width;
+        take.height = result.height || take.height;
+        take.duration = result.duration || take.duration;
+        take.fps = result.fps || take.fps;
+        take.frames = result.frames || take.frames;
+        take.generationMs = (Number(take.generationMs) || 0) + (Number(result.generationMs) || 0);
+        take.metrics = result.metrics || take.metrics;
+        take.status = 'done';
+        take.error = null;
+        current.bestTake = take;
+        updated = JSON.parse(JSON.stringify(take));
+    });
+    return updated;
+}
+
+async function renderLipRefine(projectId, options = {}) {
+    const project = characterState.requireProject(projectId);
+    const take = options.takeId
+        ? (project.takes || []).find((item) => item.takeId === options.takeId)
+        : project.bestTake;
+    if (!take) {
+        const error = new Error('Render an H3 Recast take before refining a face.');
+        error.status = 400;
+        throw error;
+    }
+    const plan = buildH3LipPlan(projectId, project, take, options);
+    const adapter = engines.getEngine('h3');
+    const result = await adapter.renderLipRepair(plan, {
+        conversationId: options.conversationId || null,
+        seed: options.seed,
+        label: 'character swap H3 Recast lip repair',
+        kind: 'video_generation',
+        onQueued: options.onQueued,
+        onStart: options.onStart,
+        timeoutMs: options.timeoutMs
+    });
+    return markTakeRefined(projectId, take.takeId, result);
+}
+
+async function buildSceneReference(projectId, options = {}) {
+    await sceneReference.build(projectId, options);
+    return characterState.get(projectId);
+}
+
+function setSceneReference(projectId, filePath, meta) {
+    sceneReference.upload(projectId, filePath, meta);
+    return characterState.get(projectId);
+}
+
+function clearSceneReference(projectId) {
+    sceneReference.clear(projectId);
+    return characterState.get(projectId);
+}
+
+function sceneReferenceUrl(projectId, project) {
+    return sceneReference.urlFor(projectId, project);
+}
+
+function sceneReferencePath(projectId, project) {
+    const scene = sceneReference.current(projectId, project);
+    return scene ? scene.absPath : null;
 }
 
 async function needsRetrack(projectId) {
@@ -1524,6 +1990,9 @@ function takeFilenames(take) {
         if (name) names.add(name);
     };
     add(take.filename);
+    if (take.lipRepair) {
+        add(take.lipRepair.sourceFilename);
+    }
     if (take.upscale) {
         add(take.upscale.originalFilename);
         add(take.upscale.upscaledFilename);
@@ -1592,7 +2061,9 @@ function removePerson(projectId, personId) {
             }
         }
     }
-    return characterState.removePerson(projectId, personId);
+    characterState.removePerson(projectId, personId);
+    sceneReference.clear(projectId);
+    return characterState.get(projectId);
 }
 
 function setEngine(projectId, engine, settings) {
@@ -1626,9 +2097,13 @@ function remove(projectId) {
     const project = characterState.get(projectId);
     if (project) {
         for (const take of project.takes || []) {
-            if (take.filename) {
-                try { generatedHistory.removeByFilename(take.filename); } catch { /* ignore */ }
+            for (const name of takeFilenames(take)) {
+                try { generatedHistory.removeByFilename(name); } catch { /* ignore */ }
             }
+        }
+        const scene = sceneReference.current(projectId, project);
+        if (scene) {
+            try { fs.unlinkSync(scene.absPath); } catch { /* already gone */ }
         }
     }
     return characterState.remove(projectId);
@@ -1652,9 +2127,13 @@ function removeForConversation(conversationId) {
     for (const project of characterState.list()) {
         if (project.conversationId !== conversationId) continue;
         for (const take of project.takes || []) {
-            if (take.filename) {
-                try { generatedHistory.removeByFilename(take.filename); } catch { /* ignore */ }
+            for (const name of takeFilenames(take)) {
+                try { generatedHistory.removeByFilename(name); } catch { /* ignore */ }
             }
+        }
+        const scene = sceneReference.current(project.id, project);
+        if (scene) {
+            try { fs.unlinkSync(scene.absPath); } catch { /* already gone */ }
         }
         characterState.remove(project.id);
     }
@@ -1679,6 +2158,7 @@ module.exports = {
     createProject,
     setTrim,
     addPerson: characterState.addPerson,
+    updatePerson: characterState.updatePerson,
     removePerson,
     addAnchor,
     removeAnchor,
@@ -1702,6 +2182,8 @@ module.exports = {
     describeProject,
     describeSourceScene,
     describeSelectedSubject,
+    autoPeople,
+    h3LineForPerson,
     hasSceneDescription,
     hasSubjectDescription,
     generateView,
@@ -1709,8 +2191,17 @@ module.exports = {
     exportMask,
     exportMasks,
     buildScailPlan,
+    buildH3Rows,
+    buildH3LipPlan,
     buildRenderPlan,
     renderTake,
+    renderLipRefine,
+    markTakeRefined,
+    buildSceneReference,
+    setSceneReference,
+    clearSceneReference,
+    sceneReferenceUrl,
+    sceneReferencePath,
     markTakeUpscaled,
     removeTake,
     removeTakeByFilename,

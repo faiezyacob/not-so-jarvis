@@ -68,40 +68,15 @@ const KNOWN_FILES = {
         hfPath: 'split_files/vae/wan_2.1_vae.safetensors',
         approxMB: 254
     },
-    'SCAIL-2-Q2_K.gguf': {
-        repo: 'realrebelai/SCAIL-2_GGUF',
-        hfPath: 'SCAIL-2-Q2_K.gguf',
-        approxMB: 5610
-    },
-    'SCAIL-2-Q3_K_M.gguf': {
-        repo: 'realrebelai/SCAIL-2_GGUF',
-        hfPath: 'SCAIL-2-Q3_K_M.gguf',
-        approxMB: 7550
-    },
-    'SCAIL-2-Q4_K_M.gguf': {
-        repo: 'realrebelai/SCAIL-2_GGUF',
-        hfPath: 'SCAIL-2-Q4_K_M.gguf',
-        approxMB: 10360
-    },
-    'SCAIL-2-Q5_K_M.gguf': {
-        repo: 'realrebelai/SCAIL-2_GGUF',
-        hfPath: 'SCAIL-2-Q5_K_M.gguf',
-        approxMB: 11420
-    },
-    'SCAIL-2-Q6_K.gguf': {
-        repo: 'realrebelai/SCAIL-2_GGUF',
-        hfPath: 'SCAIL-2-Q6_K.gguf',
-        approxMB: 12810
-    },
-    'SCAIL-2-Q8_0.gguf': {
-        repo: 'realrebelai/SCAIL-2_GGUF',
-        hfPath: 'SCAIL-2-Q8_0.gguf',
-        approxMB: 16450
-    },
-    'wan2.1_14B_SCAIL_2_fp16.safetensors': {
+    'wan2.1_14B_SCAIL_2_int8_convrot.safetensors': {
         repo: 'Comfy-Org/SCAIL-2',
-        hfPath: 'diffusion_models/wan2.1_14B_SCAIL_2_fp16.safetensors',
-        approxMB: 30540
+        hfPath: 'diffusion_models/wan2.1_14B_SCAIL_2_int8_convrot.safetensors',
+        approxMB: 15880
+    },
+    'face_yolov8m.pt': {
+        repo: 'Bingsu/adetailer',
+        hfPath: 'face_yolov8m.pt',
+        approxMB: 52
     },
     'sam3.1_multiplex_fp16.safetensors': {
         repo: 'Comfy-Org/sam3.1',
@@ -228,14 +203,9 @@ const KNOWN_FILES = {
         hfPath: 'loras/minimax_h3_n_turbo_4step_v0.1_comfy_resized_avg_rank_21_bf16.safetensors',
         approxMB: 400
     },
-    'h3_character_swap_v1.5.safetensors': {
-        repo: 'akatz-ai/MiniMax-H3-Character-Swap-LoRA',
-        hfPath: 'h3_character_swap_v1.5.safetensors',
-        approxMB: 148
-    },
-    'h3_character_swap_pro4500_1000.safetensors': {
-        repo: 'akatz-ai/MiniMax-H3-Character-Swap-LoRA',
-        hfPath: 'h3_character_swap_pro4500_1000.safetensors',
+    'rigless-lora-v1.safetensors': {
+        repo: 'StephenShumway/rigless-lora',
+        hfPath: 'rigless-lora-v1.safetensors',
         approxMB: 148
     },
     'minimax_h3_fun_controlnet_union_2.0_pruned_int8_convrot.safetensors': {
@@ -277,6 +247,14 @@ const KNOWN_FILES = {
         repo: 'LBH-123-AI/Minimax_h3_latent_Upscaler',
         hfPath: 'minimax_h3_latent_upscaler_3d_conv_v1/minimax_h3_latent_upscaler_3d_conv_v1_fp32.pth',
         approxMB: 1380
+    },
+    'minimax_h3_character_swap_v1.0_ref2va_r64_gl.safetensors': {
+        civitai: {
+            modelVersionId: 3401556,
+            fileId: 3293741,
+            modelId: 2027766
+        },
+        approxMB: 580
     }
 };
 
@@ -286,6 +264,24 @@ function hfDownloadUrl(repo, hfPath) {
 
 function hfRepoUrl(repo) {
     return 'https://huggingface.co/' + repo;
+}
+
+function civitaiDownloadUrl(civitai) {
+    if (!civitai || !civitai.modelVersionId) return null;
+    return 'https://civitai.com/api/download/models/' + civitai.modelVersionId +
+        (civitai.fileId ? '?fileId=' + civitai.fileId : '');
+}
+
+function civitaiPageUrl(civitai) {
+    if (!civitai || !civitai.modelId) return 'https://civitai.com';
+    return 'https://civitai.com/models/' + civitai.modelId +
+        (civitai.modelVersionId ? '?modelVersionId=' + civitai.modelVersionId : '');
+}
+
+function civitaiWithToken(url, token) {
+    const parsed = new URL(url);
+    parsed.searchParams.set('token', token);
+    return parsed.toString();
 }
 
 // --- Model catalog ------------------------------------------------------------
@@ -309,16 +305,12 @@ const MODEL_CATALOG = [
     { id: 'h3_video_vae', group: 'video', label: 'H3 video VAE', required: true, dest: 'vae', file: { settings: 'video', key: 'h3VideoVae' }, minBytes: 100 * 1024 ** 2 },
     { id: 'h3_audio_vae', group: 'video', label: 'H3 audio VAE', required: true, dest: 'vae', file: { settings: 'video', key: 'h3AudioVae' }, minBytes: 10 * 1024 ** 2 },
     { id: 'h3_turbo_lora', group: 'video', label: 'MiniMax H3 Turbo LoRA (v4 step600 EMA)', required: false, dest: 'loras', file: { settings: 'video', key: 'h3TurboLora' }, minBytes: 100 * 1024 ** 2, note: 'Needed only when MiniMax H3 Turbo is enabled in Settings > Video (the default). Used for text-to-video and image-to-video.' },
-    { id: 'h3_character_swap_lora', group: 'video', label: 'H3 Character Swap LoRA (V1.5)', required: false, dest: 'loras', file: { settings: 'video', key: 'h3CharSwapLora' }, minBytes: 100 * 1024 ** 2, note: 'Recommended adapter for @video character replacement (replacing a person in an existing clip with an @image reference). Enabled by default in Settings > Video > H3 CHARACTER SWAP. Pair it with the Ref2VA model above.' },
+    { id: 'h3_character_swap_lora', group: 'video', label: 'H3 Character Swap LoRA (Rigless v1)', required: false, dest: 'loras', file: { settings: 'video', key: 'h3CharSwapLora' }, minBytes: 100 * 1024 ** 2, note: 'Recommended adapter for @video character replacement (replacing a person in an existing clip with an @image reference). Rigless v1 is a fine-tune of akatz\'s Character Swap LoRA v1.5 trained on real footage. Enabled by default in Settings > Video > H3 CHARACTER SWAP. Pair it with the Ref2VA model above.' },
+    { id: 'h3_recast_swap_lora', group: 'video', label: 'H3 Recast BFS Character Swap LoRA (v1.0 r64)', required: false, dest: 'loras', file: 'minimax_h3_character_swap_v1.0_ref2va_r64_gl.safetensors', minBytes: 500 * 1024 ** 2, note: 'The trained BFS character-swap adapter for H3 Recast (Character Swap > MiniMax H3). About 0.58 GB. It is distributed on Civitai ("BFS - Best Face Swap" by NRDX, model version 3401556). Add a Civitai API key in the CIVITAI TOKEN card to let Setup download it automatically, or download it manually. Put it in models/loras/. The caption templates are trained against this adapter.' },
+    { id: 'h3_face_detector', group: 'video', label: 'H3 Recast face detector (face_yolov8m)', required: false, dest: 'ultralytics/bbox', also: ['ultralytics'], seen: 'ultralytics', file: 'face_yolov8m.pt', minBytes: 20 * 1024 ** 2, note: 'Used by the optional H3 Recast lip-repair (FaceRefine) pass to track the face being refined. Download face_yolov8m.pt from huggingface.co/Bingsu/adetailer into models/ultralytics/bbox/.' },
     { id: 'h3_fun_controlnet', group: 'video', label: 'H3 Fun ControlNet-Union (inpainting)', required: false, dest: 'model_patches', file: { settings: 'video', key: 'h3FunControlNet' }, minBytes: 1500 * 1024 ** 2, note: 'Required by Character Swap. The inpaint branch keeps the source video behind the tracked mask so H3 redraws the replacement in the same position and scale instead of moving or enlarging it.' },
     { id: 'h3_latent_upscaler', group: 'video', label: 'MiniMax H3 Latent Upscaler 3D (fp16)', required: false, dest: 'latent_upscale_models', file: { settings: 'video', key: 'h3LatentUpscaleModel' }, minBytes: 100 * 1024 ** 2, note: 'Needed only when H3 Latent Upscale is enabled in Settings > Video. A ~691 MB learned 24-channel H3 latent upscaler (fp16/bf16; fp32 is ~1.4 GB). Optional: Auto mode falls back to direct generation when it is missing.' },
-    { id: 'scail2_unet', group: 'video', label: 'SCAIL-2 14B — Q4_K_M ~10 GB (recommended, default)', required: false, dest: 'unet', file: 'SCAIL-2-Q4_K_M.gguf', minBytes: 8 * 1024 ** 3, note: 'Recommended daily driver: best balance of quality and 16 GB VRAM headroom. GGUF loads through UnetLoaderGGUF from models/unet. Select it in Character Swap > SCAIL-2 model.' },
-    { id: 'scail2_unet_q2', group: 'video', label: 'SCAIL-2 14B — Q2_K ~6 GB', required: false, dest: 'unet', file: 'SCAIL-2-Q2_K.gguf', minBytes: 4 * 1024 ** 3, note: 'Smallest quant. Runs on minimal VRAM but expect visible quality loss. GGUF (UnetLoaderGGUF, models/unet).' },
-    { id: 'scail2_unet_q3', group: 'video', label: 'SCAIL-2 14B — Q3_K_M ~8.1 GB', required: false, dest: 'unet', file: 'SCAIL-2-Q3_K_M.gguf', minBytes: 6 * 1024 ** 3, note: 'Budget tier. Better coherence than Q2 while staying under ~8 GB. GGUF (UnetLoaderGGUF, models/unet).' },
-    { id: 'scail2_unet_q5', group: 'video', label: 'SCAIL-2 14B — Q5_K_M ~12 GB', required: false, dest: 'unet', file: 'SCAIL-2-Q5_K_M.gguf', minBytes: 10 * 1024 ** 3, note: 'Sweet spot above Q4 when you can spare a little more VRAM. GGUF (UnetLoaderGGUF, models/unet).' },
-    { id: 'scail2_unet_q6', group: 'video', label: 'SCAIL-2 14B — Q6_K ~14 GB', required: false, dest: 'unet', file: 'SCAIL-2-Q6_K.gguf', minBytes: 11 * 1024 ** 3, note: 'Higher fidelity. Tight on a 16 GB card once SAM 3.1 and activations are resident. GGUF (UnetLoaderGGUF, models/unet).' },
-    { id: 'scail2_unet_q8', group: 'video', label: 'SCAIL-2 14B — Q8_0 ~17 GB', required: false, dest: 'unet', file: 'SCAIL-2-Q8_0.gguf', minBytes: 14 * 1024 ** 3, note: 'Closest GGUF to FP16. Exceeds 16 GB of VRAM; expect heavy offload and slow renders. GGUF (UnetLoaderGGUF, models/unet).' },
-    { id: 'scail2_unet_fp16', group: 'video', label: 'SCAIL-2 14B — FP16 full precision ~30.5 GB', required: false, dest: 'diffusion_models', file: 'wan2.1_14B_SCAIL_2_fp16.safetensors', minBytes: 26 * 1024 ** 3, note: 'Full-precision SCAIL-2 from Comfy-Org. Place it in models/diffusion_models; it loads through the normal UNETLoader, NOT UnetLoaderGGUF. Needs far more than 16 GB and heavy offload.' },
+    { id: 'scail2_unet', group: 'video', label: 'SCAIL-2 14B — INT8 convrot ~15.5 GB (official, default)', required: false, dest: 'diffusion_models', file: 'wan2.1_14B_SCAIL_2_int8_convrot.safetensors', minBytes: 13 * 1024 ** 3, note: 'The official SCAIL-2 checkpoint used by the ComfyUI template. Place it in models/diffusion_models; it loads through UNETLoader (weight_dtype default). Required for the Character Swap > SCAIL-2 engine.' },
     { id: 'scail2_sam', group: 'video', label: 'SAM 3.1 multiplex checkpoint (SCAIL-2 target tracking)', required: false, dest: 'checkpoints', file: 'sam3.1_multiplex_fp16.safetensors', minBytes: 1000 * 1024 ** 2, note: 'SAM 3.1 tracks the selected person and builds the colored driving/reference masks SCAIL-2 replacement mode needs. Loaded with CheckpointLoaderSimple.' },
     { id: 'scail2_lightx2v', group: 'video', label: 'LightX2V step/cfg distill LoRA (SCAIL-2)', required: false, dest: 'loras', file: 'Wan21_I2V_14B_lightx2v_cfg_step_distill_lora_rank64.safetensors', minBytes: 400 * 1024 ** 2, note: 'Enables the 6-step cfg 1 SCAIL-2 sampling configuration. Without it SCAIL-2 runs more steps.' },
     { id: 'scail2_dpo_lora', group: 'video', label: 'SCAIL-2 DPO LoRA (optional detail adapter)', required: false, dest: 'loras', file: 'wan2.1_SCAIL_2_DPO_lora_bf16.safetensors', minBytes: 500 * 1024 ** 2, note: 'Optional official DPO LoRA that improves detail and lip/eye motion. It is not an audio-driven lip-sync model. Off by default; enable with SCAIL2_DPO=true.' },
@@ -387,6 +379,24 @@ const NODE_CATALOG = [
         nodes: ['MiniMaxH3ReferenceToVideo'],
         repo: null, dir: null,
         note: 'Ships with current ComfyUI (>= 0.30). Powers @video character replacement (replacing people in an existing clip with @image references). Needs the Ref2VA model above and VideoHelperSuite.'
+    },
+    {
+        id: 'h3_recast_native', label: 'H3 Recast guide/attention nodes (built into ComfyUI)', required: false,
+        nodes: ['MiniMaxH3AddGuide', 'MiniMaxH3SigmaShift', 'ModelAttentionBackend'],
+        repo: null, dir: null,
+        note: 'Ships with current ComfyUI. Needed for the one-pass H3 Recast character swap (guide video conditioning, sigma shift and the Comfy Kitchen attention backend).'
+    },
+    {
+        id: 'h3_face_refine', label: 'H3 FaceRefine (H3 Recast lip repair)', required: false,
+        nodes: ['H3FaceTrackCrop', 'H3PerFrameDenoise', 'H3FaceStitch', 'H3InjectVideoLatent'],
+        repo: 'https://github.com/Carasibana/ComfyUI-H3-FaceRefine', dir: 'ComfyUI-H3-FaceRefine', recursive: false, requirements: true, preserveTorch: true,
+        note: 'Optional H3 Recast lip-repair (FaceRefine) pass. Clone into ComfyUI/custom_nodes, run pip install -r requirements.txt (ultralytics + insightface), then restart ComfyUI. The first run downloads insightface buffalo_l (~280 MB).'
+    },
+    {
+        id: 'h3_native_audio_lock', label: 'H3 NativeAudioLock (lip repair audio lock)', required: false,
+        nodes: ['MiniMaxH3NativeAudioLock'],
+        repo: null, dir: null,
+        note: 'Copy the custom_nodes/ComfyUI-H3-NativeAudioLock folder from github.com/Shrek3OnVH5/MiniMax-H3-NativeAudio-MusicVideo-Workflow into ComfyUI/custom_nodes. Used only by H3 Recast lip repair.'
     },
     {
         id: 'h3_motion_context', label: 'MiniMax H3 Motion Context (LongTake engine)', required: false,
@@ -471,6 +481,7 @@ function settingsFilename(source) {
 function resolveCatalogEntry(entry) {
     const filename = typeof entry.file === 'string' ? entry.file : settingsFilename(entry.file);
     const known = KNOWN_FILES[filename] || null;
+    const civitai = known && known.civitai ? known.civitai : null;
     return {
         id: entry.id,
         group: entry.group,
@@ -479,11 +490,14 @@ function resolveCatalogEntry(entry) {
         note: entry.note || null,
         filename,
         dest: entry.dest,
-        repo: known ? known.repo : null,
-        hfPath: known ? known.hfPath : null,
-        url: known ? hfDownloadUrl(known.repo, known.hfPath) : null,
-        repoUrl: known ? hfRepoUrl(known.repo) : null,
+        repo: civitai ? 'Civitai' : (known ? known.repo : null),
+        hfPath: civitai ? null : (known ? known.hfPath : null),
+        url: civitai ? civitaiDownloadUrl(civitai) : (known ? hfDownloadUrl(known.repo, known.hfPath) : null),
+        repoUrl: civitai ? civitaiPageUrl(civitai) : (known ? hfRepoUrl(known.repo) : null),
         approxMB: known ? known.approxMB : null,
+        source: civitai ? 'civitai' : (known ? 'huggingface' : null),
+        requiresToken: civitai ? 'civitai' : null,
+        civitai,
         minBytes: entry.minBytes
     };
 }
@@ -556,7 +570,16 @@ function authHeaders() {
 // Reports progress into job.current. Downloads to `<dest>.download` first so
 // an interrupted run never leaves a half file behind under the real name.
 async function downloadFileTo(entry, destPath) {
-    const headers = authHeaders();
+    let requestUrl = entry.url;
+    let headers = authHeaders();
+    if (entry.civitai) {
+        const token = configManager.getCivitaiToken();
+        if (!token) {
+            throw new Error('A Civitai API token is required to download ' + entry.filename + '. Add one in Settings > Setup and retry.');
+        }
+        requestUrl = civitaiWithToken(entry.url, token);
+        headers = {};
+    }
     // Bound only the connection/header phase: AbortSignal.timeout would abort
     // the whole request (including the multi-GB body) on a fixed wall clock,
     // so clear it once headers arrive. A per-chunk idle watchdog aborts a
@@ -566,15 +589,18 @@ async function downloadFileTo(entry, destPath) {
     try {
         const connectTimer = setTimeout(() => controller.abort(), 30 * 1000);
         try {
-            res = await fetch(entry.url, { headers, signal: controller.signal });
+            res = await fetch(requestUrl, { headers, signal: controller.signal });
         } finally {
             clearTimeout(connectTimer);
         }
     } catch (err) {
-        throw new Error('Could not reach Hugging Face: ' + (err.message || err) + '. Check your network connection.');
+        throw new Error((entry.civitai ? 'Could not reach Civitai' : 'Could not reach Hugging Face') +
+            ': ' + (err.message || err) + '. Check your network connection.');
     }
     if (res.status === 401 || res.status === 403) {
-        throw new Error('Hugging Face denied access (HTTP ' + res.status + '). The repo may require accepting its license terms, or your token is missing/invalid — save a token in Step 2 and accept the license on the repo page.');
+        throw new Error(entry.civitai
+            ? 'Civitai denied access (HTTP ' + res.status + '). Add a valid Civitai API token in Settings > Setup, or accept the model terms on Civitai.'
+            : 'Hugging Face denied access (HTTP ' + res.status + '). The repo may require accepting its license terms, or your token is missing/invalid - save a token in Step 2 and accept the license on the repo page.');
     }
     if (!res.ok) {
         throw new Error('Download failed with HTTP ' + res.status + ' for ' + entry.filename + '. The file may have moved — try the manual link in the guide.');
@@ -653,7 +679,12 @@ async function runDownloadJob(ids) {
         job.total = entries.length;
         for (const entry of entries) {
             if (!entry.url) {
-                logLine('SKIP ' + entry.label + ': custom filename "' + entry.filename + '" has no known Hugging Face source — download it manually into models/' + entry.dest + '/.');
+                logLine('SKIP ' + entry.label + ': custom filename "' + entry.filename + '" has no known download source - download it manually into models/' + entry.dest + '/.');
+                job.finished += 1;
+                continue;
+            }
+            if (entry.requiresToken === 'civitai' && !configManager.getCivitaiToken()) {
+                logLine('SKIP ' + entry.label + ': add a Civitai API token in the CIVITAI TOKEN card, then download it.');
                 job.finished += 1;
                 continue;
             }
@@ -1057,6 +1088,28 @@ async function verifyToken(token) {
     }
 }
 
+async function verifyCivitaiToken(token) {
+    const value = String(token || '').trim();
+    if (!value) return { valid: false, user: null, error: 'Token is empty.' };
+    try {
+        const res = await fetch('https://civitai.com/api/v1/me', {
+            headers: { Authorization: 'Bearer ' + value },
+            signal: AbortSignal.timeout(15000)
+        });
+        if (res.status === 401 || res.status === 403) {
+            return { valid: false, user: null, error: 'Token rejected by Civitai (HTTP ' + res.status + '). Create a new API key and try again.' };
+        }
+        if (!res.ok) {
+            return { valid: false, user: null, error: 'Civitai answered HTTP ' + res.status + ' - saved anyway, downloads may fail.' };
+        }
+        const data = await res.json().catch(() => ({}));
+        const user = data && (data.username || (data.user && data.user.username) || data.name);
+        return { valid: true, user: user ? String(user) : null, error: null };
+    } catch (err) {
+        return { valid: false, user: null, error: 'Could not reach Civitai (' + (err.message || err) + ') - saved anyway, retry verification later.' };
+    }
+}
+
 // --- Status ---------------------------------------------------------------------
 
 let cachedObjectInfo = null;
@@ -1118,9 +1171,10 @@ async function getStatus() {
         modelRoot: null,
         comfyRoot: null,
         token: { configured: false, source: null, user: null, masked: null },
+        civitaiToken: { configured: false, source: null, user: null, masked: null },
         models: [],
         nodes: [],
-        ready: { image: false, qwenImage: false, video: false, upscale: false, edit: false, characterSwapScail: false },
+        ready: { image: false, qwenImage: false, video: false, upscale: false, edit: false, characterSwapScail: false, characterSwapH3Recast: false },
         job: jobState()
     };
 
@@ -1130,7 +1184,18 @@ async function getStatus() {
         status.token.configured = true;
         status.token.source = (process.env.HF_TOKEN || process.env.HUGGINGFACE_TOKEN) ? 'env' : 'settings';
         status.token.user = stored.user || null;
-        status.token.masked = token.length > 7 ? token.slice(0, 3) + '…' + token.slice(-4) : '•••';
+        status.token.masked = token.length > 7 ? token.slice(0, 3) + '�?�' + token.slice(-4) : '�?��?��?�';
+    }
+
+    const civitaiToken = configManager.getCivitaiToken();
+    if (civitaiToken) {
+        const stored = configManager.getCivitai();
+        status.civitaiToken.configured = true;
+        status.civitaiToken.source = (process.env.CIVITAI_TOKEN || process.env.CIVITAI_API_KEY) ? 'env' : 'settings';
+        status.civitaiToken.user = stored.user || null;
+        status.civitaiToken.masked = civitaiToken.length > 7
+            ? civitaiToken.slice(0, 3) + '�?�' + civitaiToken.slice(-4)
+            : '�?��?��?�';
     }
 
     if (!(await comfyui.isAvailable())) return status;
@@ -1211,11 +1276,13 @@ async function getStatus() {
     // the comfyui-krea2edit node pack.
     status.ready.krea2Edit = has('krea2_unet') && has('krea2_clip') && has('krea2_vae')
         && has('krea2_identity_edit_lora') && nodeReady('krea2_edit');
-    const scailModelInstalled = ['scail2_unet', 'scail2_unet_q2', 'scail2_unet_q3',
-        'scail2_unet_q5', 'scail2_unet_q6', 'scail2_unet_q8', 'scail2_unet_fp16'].some((id) => has(id));
+    const scailModelInstalled = has('scail2_unet');
     status.ready.characterSwapScail = scailModelInstalled && has('scail2_sam') &&
         has('wan_animate_text_encoder') && has('wan_animate_vae') && has('wan_animate_clip_vision') &&
-        nodeReady('scail2_native') && nodeReady('scail2_infinity');
+        nodeReady('scail2_native') && nodeReady('scail2_infinity');
+    status.ready.characterSwapH3Recast = has('h3_ref_unet') && has('h3_clip') &&
+        has('h3_video_vae') && has('h3_audio_vae') && has('h3_recast_swap_lora') &&
+        nodeReady('h3_recast_native');
     return status;
 }
 
@@ -1224,10 +1291,13 @@ module.exports = {
     NODE_CATALOG,
     getStatus,
     verifyToken,
+    verifyCivitaiToken,
     startDownload,
     startNodeInstall,
     startKrea2EditInstall,
     ensureKrea2EditReady,
     jobState,
-    resolveCatalogEntry
+    resolveCatalogEntry,
+    civitaiDownloadUrl,
+    civitaiPageUrl
 };

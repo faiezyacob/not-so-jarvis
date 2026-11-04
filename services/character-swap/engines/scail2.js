@@ -26,74 +26,48 @@ const shared = require('./scail2-shared');
 const ID = 'scail2';
 const LABEL = 'SCAIL-2';
 
-const PREPROCESS_VERSION = 'scail2-prepare-v1';
+const PREPROCESS_VERSION = 'scail2-prepare-v2';
 
-// Ordered from lightest to highest fidelity. GGUF files load through
-// UnetLoaderGGUF (models/unet); the full-precision safetensors loads through
-// the ordinary UNETLoader (models/diffusion_models), never the GGUF loader.
+// The official ComfyUI SCAIL-2 template uses one diffusion model: the INT8
+// convolution-rotated checkpoint from Comfy-Org/SCAIL-2. It lives in
+// models/diffusion_models and loads through the ordinary UNETLoader
+// (weight_dtype: default). GGUF and FP16 are no longer offered.
+const INT8_MODEL_FILE = 'wan2.1_14B_SCAIL_2_int8_convrot.safetensors';
+
 const MODEL_VARIANTS = Object.freeze([
     {
-        id: 'q2_k',
-        label: 'Q2_K — ~6 GB',
-        file: 'SCAIL-2-Q2_K.gguf',
-        loader: 'gguf',
-        approxGB: 5.6,
-        description: 'Smallest quant. Runs on minimal VRAM but expect visible quality loss.'
-    },
-    {
-        id: 'q3_k_m',
-        label: 'Q3_K_M — ~8.1 GB',
-        file: 'SCAIL-2-Q3_K_M.gguf',
-        loader: 'gguf',
-        approxGB: 7.6,
-        description: 'Budget tier. Better coherence than Q2 while staying under ~8 GB.'
-    },
-    {
-        id: 'q4_k_m',
-        label: 'Q4_K_M — ~10 GB (recommended)',
-        file: 'SCAIL-2-Q4_K_M.gguf',
-        loader: 'gguf',
-        approxGB: 10.1,
-        description: 'Recommended daily driver. Best balance of quality and 16 GB VRAM headroom.'
-    },
-    {
-        id: 'q5_k_m',
-        label: 'Q5_K_M — ~12 GB',
-        file: 'SCAIL-2-Q5_K_M.gguf',
-        loader: 'gguf',
-        approxGB: 11.4,
-        description: 'Sweet spot above Q4 when you can spare a little more VRAM.'
-    },
-    {
-        id: 'q6_k',
-        label: 'Q6_K — ~14 GB',
-        file: 'SCAIL-2-Q6_K.gguf',
-        loader: 'gguf',
-        approxGB: 12.8,
-        description: 'Higher fidelity. Tight on a 16 GB card once SAM 3.1 and activations are resident.'
-    },
-    {
-        id: 'q8_0',
-        label: 'Q8_0 — ~17 GB',
-        file: 'SCAIL-2-Q8_0.gguf',
-        loader: 'gguf',
-        approxGB: 16.5,
-        description: 'Closest GGUF to FP16. Exceeds 16 GB of VRAM; expect heavy offload and slow renders.'
-    },
-    {
-        id: 'fp16',
-        label: 'FP16 — full precision, ~30.5 GB',
-        file: 'wan2.1_14B_SCAIL_2_fp16.safetensors',
+        id: 'int8',
+        label: 'INT8 — ~15.5 GB (official)',
+        file: INT8_MODEL_FILE,
         loader: 'safetensors',
-        approxGB: 30.5,
-        description: 'Full-precision SCAIL-2 from Comfy-Org. Lives in models/diffusion_models and uses UNETLoader, not the GGUF loader. Needs far more than 16 GB and heavy offload.'
+        approxGB: 15.5,
+        description: 'Official SCAIL-2 INT8 convrot checkpoint. Loads through UNETLoader from models/diffusion_models.'
     }
 ]);
 
-const DEFAULT_MODEL_FILE = MODEL_VARIANTS.find((variant) => variant.id === 'q4_k_m').file;
+const DEFAULT_MODEL_FILE = INT8_MODEL_FILE;
 
-function isGgufFile(name) {
-    return /\.gguf$/i.test(String(name || ''));
+// Older projects stored a GGUF quant or the FP16 file. Both are retired, so a
+// stored value migrates to the INT8 checkpoint instead of failing to load.
+const LEGACY_MODEL_FILES = Object.freeze([
+    'SCAIL-2-Q2_K.gguf',
+    'SCAIL-2-Q3_K_M.gguf',
+    'SCAIL-2-Q4_K_M.gguf',
+    'SCAIL-2-Q5_K_M.gguf',
+    'SCAIL-2-Q6_K.gguf',
+    'SCAIL-2-Q8_0.gguf',
+    'wan2.1_14B_SCAIL_2_fp16.safetensors'
+]);
+
+function isLegacyModelFile(name) {
+    const value = String(name || '').trim().toLowerCase();
+    return LEGACY_MODEL_FILES.some((file) => file.toLowerCase() === value);
+}
+
+function resolveModelFile(value) {
+    const name = String(value || '').trim();
+    if (!name || isLegacyModelFile(name)) return INT8_MODEL_FILE;
+    return name;
 }
 
 function variantFor(file) {
@@ -103,8 +77,7 @@ function variantFor(file) {
 
 function listVariants(info) {
     return MODEL_VARIANTS.map((variant) => {
-        const loader = variant.loader === 'gguf' ? 'UnetLoaderGGUF' : 'UNETLoader';
-        const installed = Boolean(info && scailGraph.hasChoice(info, loader, 'unet_name', variant.file));
+        const installed = Boolean(info && scailGraph.hasChoice(info, 'UNETLoader', 'unet_name', variant.file));
         return Object.assign({}, variant, { installed });
     });
 }
@@ -176,14 +149,21 @@ function truthy(value, fallback) {
     return !['0', 'false', 'off', 'no'].includes(String(value).toLowerCase());
 }
 
+// DWPose keypoints and the clicked anchor are indexed on the shared 24 fps
+// workspace clip, while SCAIL-2 conforms the driving video to its own fps.
+// Convert a source frame index to the prepared driving timeline.
+function preparedFrame(sourceFrame, sourceFps, targetFps) {
+    const from = Math.max(1, Number(sourceFps) || media.FPS);
+    const to = Math.max(1, Number(targetFps) || shared.FPS);
+    return Math.max(0, Math.round((Number(sourceFrame) || 0) * to / from));
+}
+
 function normalizeSettings(input = {}) {
     const source = input && typeof input === 'object' ? input : {};
     const preset = ['draft', 'standard', 'quality'].includes(String(source.preset)) ? String(source.preset) : 'standard';
-    // The per-project setting wins so the UI can switch variants even when the
-    // environment supplies a default. The loader is always derived from the
-    // file extension: .gguf -> UnetLoaderGGUF, otherwise UNETLoader.
-    const unet = String(source.unet || process.env.SCAIL2_UNET || DEFAULTS.unet);
-    const gguf = isGgufFile(unet);
+    // One official checkpoint. A stored GGUF/FP16 value (older project or env)
+    // migrates to the INT8 model; UNETLoader is always used.
+    const unet = resolveModelFile(source.unet || process.env.SCAIL2_UNET || DEFAULTS.unet);
     const modelVariant = variantFor(unet);
     const steps = Math.round(Math.max(1, Math.min(100, finite(source.steps, PRESET_STEPS[preset] || DEFAULTS.steps))));
     return {
@@ -207,13 +187,17 @@ function normalizeSettings(input = {}) {
         durationSeconds: source.durationSeconds === null || source.durationSeconds === undefined || source.durationSeconds === ''
             ? null
             : Math.max(1, Math.min(scailGraph.MAX_SECONDS, finite(source.durationSeconds, scailGraph.MAX_SECONDS))),
+        // text = official ComfyUI open-vocabulary SAM 3.1 detection (default),
+        // anchor = seed from the clicked DWPose target on one frame.
+        sam3Mode: source.sam3Mode === 'anchor' ? 'anchor' : 'text',
+        sam3ImageObject: String(source.sam3ImageObject || 'human').slice(0, 200),
+        sam3VideoObject: String(source.sam3VideoObject || '').slice(0, 400),
+        sam3MaxObjects: Math.round(Math.max(1, Math.min(16, finite(source.sam3MaxObjects, 4)))),
         positive: String(source.positive || '').slice(0, 4000),
         negative: String(source.negative || '').slice(0, 4000),
         unet,
         modelVariant: modelVariant ? modelVariant.id : null,
         modelLabel: modelVariant ? modelVariant.label : unet,
-        gguf,
-        loadWithGguf: gguf,
         samModel: String(process.env.SCAIL2_SAM_MODEL || source.samModel || DEFAULTS.samModel),
         textEncoder: String(process.env.SCAIL2_TEXT_ENCODER || source.textEncoder || DEFAULTS.textEncoder),
         vae: String(process.env.SCAIL2_VAE || source.vae || DEFAULTS.vae),
@@ -246,15 +230,14 @@ function availability(info, inputSettings = {}) {
     for (const name of REQUIRED_NODES) {
         if (!Object.prototype.hasOwnProperty.call(info, name)) missing.push('ComfyUI node "' + name + '"');
     }
-    const loader = settings.loadWithGguf ? 'UnetLoaderGGUF' : 'UNETLoader';
-    if (!Object.prototype.hasOwnProperty.call(info, loader)) {
-        missing.push('ComfyUI node "' + loader + '"');
+    if (!Object.prototype.hasOwnProperty.call(info, 'UNETLoader')) {
+        missing.push('ComfyUI node "UNETLoader"');
     }
     if (settings.requireInfinity && !Object.prototype.hasOwnProperty.call(info, INFINITY_NODE)) {
         missing.push('ComfyUI node "' + INFINITY_NODE + '" (comfyui-scail2-infinity)');
     }
     if (!missing.length) {
-        if (!scailGraph.hasChoice(info, loader, 'unet_name', settings.unet)) {
+        if (!scailGraph.hasChoice(info, 'UNETLoader', 'unet_name', settings.unet)) {
             missing.push('SCAIL-2 diffusion model "' + settings.unet + '"');
         }
         if (!scailGraph.hasChoice(info, 'CheckpointLoaderSimple', 'ckpt_name', settings.samModel)) {
@@ -287,31 +270,6 @@ function availability(info, inputSettings = {}) {
         }
     }
     return { id: ID, label: LABEL, available: missing.length === 0, missing, warnings };
-}
-
-function preflight(inputSettings, stats) {
-    const settings = normalizeSettings(inputSettings);
-    const device = stats && stats.devices && stats.devices[0];
-    const freeBytes = Number(device && device.vram_free) || 0;
-    const freeRam = Number(stats && stats.system && stats.system.ram_free) || 0;
-    const variant = variantFor(settings.unet);
-    const modelMB = variant
-        ? Math.round(variant.approxGB * 1024)
-        : (settings.gguf ? 10300 : 30600);
-    // Model weights plus SAM 3.1, the VAE and the attention workspace. A larger
-    // quant or FP16 is blocked early with an actionable message instead of
-    // letting ComfyUI OOM mid-render.
-    const requiredMB = Math.max(6500, modelMB + 2400 + (settings.resolution === '720p' ? 1800 : 0));
-    return {
-        freeVramMB: Math.round(freeBytes / (1024 * 1024)),
-        requiredVramMB: requiredMB,
-        modelMB,
-        variant: variant ? variant.id : null,
-        freeRamMB: Math.round(freeRam / (1024 * 1024)),
-        ramOk: freeRam === 0 || freeRam >= 8 * 1024 ** 3,
-        ok: freeBytes >= requiredMB * 1024 * 1024,
-        preset: settings.preset
-    };
 }
 
 function validateGraph(info, graph) {
@@ -352,7 +310,7 @@ async function prepare(plan, opts = {}) {
         return Object.assign({}, meta, { sourcePath, audioPath: sourcePath });
     }
 
-    if (opts.onStage) opts.onStage('Preparing the driving video at 24 fps');
+    if (opts.onStage) opts.onStage('Preparing the driving video at ' + shared.FPS + ' fps');
     const durationLimit = Number(plan.durationSeconds) > 0 ? Number(plan.durationSeconds) : undefined;
     const source = await media.conformExact(plan.sourceVideoPath, sourcePath, {
         fps: shared.FPS,
@@ -424,11 +382,22 @@ async function render(plan, options = {}) {
             if (!target.referencePath || !fs.existsSync(target.referencePath)) {
                 throw new Error('Upload a character image for ' + (target.place ? 'the person ' + target.place : target.label || ('person ' + (index + 1))) + ' before rendering with SCAIL-2.');
             }
+            // Text mode needs a description of the SOURCE person; without one the
+            // pass falls back to the clicked-target anchor so it never renders an
+            // unconstrained mask.
+            const samText = String(target.samText || settings.sam3VideoObject || '').trim();
+            const mode = settings.sam3Mode === 'anchor' || !samText ? 'anchor' : 'text';
+            target.sam3Mode = mode;
+            target.samText = samText;
+            target.samRefText = String(settings.sam3ImageObject || 'human').trim() || 'human';
+            target.maxObjects = settings.sam3MaxObjects;
             const points = target.points || plan.points;
-            if (!points || !Array.isArray(points.positive) || !points.positive.length) {
-                throw new Error('A selected person has no usable tracking points. Detect people again and select the target.');
+            if (mode === 'anchor') {
+                if (!points || !Array.isArray(points.positive) || !points.positive.length) {
+                    throw new Error('A selected person has no usable tracking points. Detect people again, select the target, or add a mask description.');
+                }
+                target.points = points;
             }
-            target.points = points;
         });
         if (!settings.width || !settings.height) {
             const dims = shared.dimensionsFor(1280, 720, settings);
@@ -520,7 +489,17 @@ async function render(plan, options = {}) {
                     referenceName,
                     performanceName,
                     points: target.points,
-                    anchorFrame: target.anchorFrame || target.points.anchorFrame || 0,
+                    // Anchor/points are in the shared workspace timeline; the
+                    // driving video is conformed to the SCAIL-2 fps.
+                    anchorFrame: preparedFrame(
+                        target.anchorFrame || (target.points && target.points.anchorFrame) || 0,
+                        plan.sourceFps || media.FPS,
+                        shared.FPS
+                    ),
+                    sam3Mode: target.sam3Mode,
+                    samText: target.samText,
+                    samRefText: target.samRefText,
+                    maxObjects: target.maxObjects,
                     relightLora,
                     dpoLora,
                     chunkFeedForward: settings.chunkFeedForward && Object.prototype.hasOwnProperty.call(info, 'WanChunkFeedForward'),
@@ -549,6 +528,8 @@ async function render(plan, options = {}) {
                     windowCount: built.plan.windows,
                     status: 'done',
                     file: passVideo,
+                    sam3Mode: target.sam3Mode,
+                    sam3Text: target.samText || null,
                     prompt: positive
                 };
                 windows.push(windowEntry);
@@ -603,7 +584,7 @@ async function render(plan, options = {}) {
                     videoPipeline: 'scail-2',
                     modelFile: settings.unet,
                     modelVariant: settings.modelVariant || null,
-                    loader: settings.gguf ? 'UnetLoaderGGUF' : 'UNETLoader',
+                    loader: 'UNETLoader',
                     rawPrompt: settings.positive,
                     replacementMode: true,
                     sceneCaptured: Boolean(plan.sceneDescription && plan.sceneDescription.summary),
@@ -618,6 +599,14 @@ async function render(plan, options = {}) {
                     })),
                     windows: metaWindows,
                     passes: passes.length,
+                    sam3: {
+                        mode: targets.every((item) => item.sam3Mode === 'text')
+                            ? 'text'
+                            : (targets.every((item) => item.sam3Mode === 'anchor') ? 'anchor' : 'mixed'),
+                        imageObject: settings.sam3ImageObject,
+                        videoObject: settings.sam3VideoObject || null,
+                        maxObjects: settings.sam3MaxObjects
+                    },
                     resolution: { width: settings.width, height: settings.height },
                     preset: settings.preset,
                     steps: settings.steps,
@@ -695,12 +684,13 @@ module.exports = {
     PREPROCESS_VERSION,
     MODEL_VARIANTS,
     DEFAULT_MODEL_FILE,
-    isGgufFile,
+    INT8_MODEL_FILE,
+    resolveModelFile,
+    preparedFrame,
     variantFor,
     listVariants,
     normalizeSettings,
     availability,
-    preflight,
     validateGraph,
     prepare,
     render,

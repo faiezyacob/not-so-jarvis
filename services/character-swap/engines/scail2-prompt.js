@@ -154,6 +154,35 @@ function subjectActionLine(subject) {
     return line ? line + '.' : '';
 }
 
+// A short noun phrase for SAM 3.1's open-vocabulary detector (the official
+// SCAIL-2 mask input). It names only the selected source person, so a second
+// person is not detected and tracked alongside them. The main SCAIL prompt is
+// separate; this is never written into the generation prompt.
+function detectionPhrase(subject) {
+    if (!subject || typeof subject !== 'object') return '';
+    const gender = clean(subject.gender, 40).toLowerCase();
+    const person = /\b(woman|women|female|girl|lady)\b/.test(gender)
+        ? 'woman'
+        : (/\b(man|men|male|boy)\b/.test(gender) ? 'man' : 'person');
+    const outfit = clean(subject.outfit, 220);
+    const hair = clean(subject.hair, 120);
+    let detail = '';
+    if (outfit) {
+        detail = outfit.split(/\s*,\s*|\s+and\s+/i)[0] || outfit;
+    } else if (hair) {
+        detail = hair;
+    }
+    detail = clean(detail, 90)
+        .replace(/^(?:a|an|the)\s+/i, '')
+        .split(/\s+/)
+        .slice(0, 10)
+        .join(' ');
+    // Without a specific attribute (outfit or hair) the phrase is too generic to
+    // single out one person, so the caller falls back to the clicked mask.
+    if (!detail) return '';
+    return person + ', ' + detail;
+}
+
 function replaceSentence(source, imageNumber) {
     const value = clean(source, 240).replace(/\s+in\s+the\s+video\.?$/i, '');
     return 'Replace ' + (value || 'the person') + ' in the video with the character in reference image ' + (imageNumber || 1) + '.';
@@ -254,5 +283,6 @@ module.exports = {
     subjectClause,
     sourcePhrase,
     subjectActionLine,
+    detectionPhrase,
     buildScailPrompt
 };

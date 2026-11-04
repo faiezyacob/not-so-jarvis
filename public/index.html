@@ -81,6 +81,21 @@
                                 <span class="settings-save-status" id="setupHfStatus"></span>
                             </div>
                         </div>
+                        <div class="settings-card" data-search="setup civitai token api key bfs character swap lora">
+                            <div class="settings-card-title">CIVITAI TOKEN</div>
+                            <div class="settings-card-sub">Needed to download the BFS Character Swap LoRA used by H3 Recast. Create an API key at civitai.com &#8594; Account settings &#8594; API Keys, then paste it here. The key is only used for Civitai model downloads.</div>
+                            <div class="settings-field-row">
+                                <div class="settings-field">
+                                    <label class="settings-field-label" for="setupCivitaiToken">API key</label>
+                                    <input type="password" class="settings-input" id="setupCivitaiToken" placeholder="Civitai API key" autocomplete="off">
+                                </div>
+                            </div>
+                            <div class="settings-field">
+                                <button class="settings-browse-btn" id="setupCivitaiSave" type="button">Save key</button>
+                                <button class="settings-browse-btn" id="setupCivitaiRemove" type="button">Remove</button>
+                                <span class="settings-save-status" id="setupCivitaiStatus"></span>
+                            </div>
+                        </div>
                         <div class="settings-card" data-search="setup models download checkpoints unet clip vae lora seedvr2 upscale">
                             <div class="settings-card-title">MODELS</div>
                             <div class="settings-card-sub" id="setupModelsSub">Checked against ComfyUI's models/ folder.</div>
@@ -700,7 +715,7 @@
                         </div>
                         <div class="settings-card" data-search="video minimax h3 character swap lora reference replace ref2va identity @video @image">
                             <div class="settings-card-title">H3 CHARACTER SWAP</div>
-                            <div class="settings-card-sub">Model-only LoRA used by @video character replacement: replace a person in an existing clip with the identity from an @image reference. Recommended checkpoint (V1.5) at strength 1.0.</div>
+                            <div class="settings-card-sub">Model-only LoRA used by @video character replacement: replace a person in an existing clip with the identity from an @image reference. Recommended checkpoint (Rigless v1) at strength 1.0.</div>
                         <div class="settings-field">
                             <label class="settings-toggle">
                                 <span class="settings-toggle-label">Use the H3 Character Swap LoRA</span>
@@ -712,13 +727,13 @@
                         <div class="settings-field">
                             <label class="settings-field-label" for="videoCharSwapLora">Character Swap LoRA</label>
                             <input type="text" class="settings-input" id="videoCharSwapLora"
-                                placeholder="h3_character_swap_v1.5.safetensors" autocomplete="off">
-                            <span class="settings-hint">Place the LoRA in ComfyUI models/loras. Default: h3_character_swap_v1.5.safetensors</span>
+                                placeholder="rigless-lora-v1.safetensors" autocomplete="off">
+                            <span class="settings-hint">Place the LoRA in ComfyUI models/loras. Default: rigless-lora-v1.safetensors</span>
                         </div>
                         <div class="settings-field">
                             <label class="settings-field-label" for="videoCharSwapStrength">Strength</label>
                             <input type="number" class="settings-input" id="videoCharSwapStrength" min="0" max="2" step="0.05" value="1">
-                            <span class="settings-hint">1.0 is the recommended strength for the V1.5 adapter.</span>
+                            <span class="settings-hint">1.0 is the recommended strength for the Rigless v1 adapter.</span>
                         </div>
                             </div>
                         </div>
@@ -1707,7 +1722,7 @@
                 <div>
                     <div class="creator-studio-kicker">NOT-SO-JARVIS · VIDEO CHARACTER REPLACEMENT</div>
                     <h1 id="characterSwapTitle">CHARACTER SWAP</h1>
-                    <p>SCAIL-2 replaces the selected person with official replacement-mode conditioning. MiniMax H3 needs tracked people and character references.</p>
+                    <p>SCAIL-2 replaces the selected person with official replacement-mode conditioning. H3 Recast swaps up to three people in one pass using a scene reference and the BFS Character Swap LoRA.</p>
                 </div>
                 <div class="character-swap-header-actions">
                     <button class="character-swap-btn character-swap-btn--ghost" id="csStartOver" type="button" title="Discard this workspace and start a new character swap">Start over</button>
@@ -1724,8 +1739,8 @@
                                 <span>Official replacement mode</span>
                             </button>
                             <button class="character-swap-engine-btn" type="button" data-cs-engine="h3">
-                                <strong>MiniMax H3</strong>
-                                <span>Ref2VA · Character LoRA v1.5</span>
+                                <strong>H3 Recast</strong>
+                                <span>BFS Character Swap LoRA</span>
                             </button>
                         </div>
                         <div class="character-swap-engine-note" id="csEngineNote"></div>
@@ -1744,7 +1759,7 @@
                         <label>Trim end <input type="number" id="csTrimEnd" min="1" step="0.1" value="0"></label>
                         <button class="character-swap-btn" id="csTrimApply" type="button">Apply</button>
                     </div>
-                    <div class="character-swap-hint" id="csTrimHint">MiniMax H3 replacement renders up to 15 seconds. Longer clips are trimmed to the selected range.</div>
+                    <div class="character-swap-hint" id="csTrimHint">H3 Recast renders up to 15 seconds. Longer clips are trimmed to the selected range.</div>
 
                     <div id="csPeopleSection">
                     <div class="character-swap-section" id="csPeopleTitle">2 · PEOPLE</div>
@@ -1758,7 +1773,10 @@
                     </div>
                     <div class="character-swap-people" id="csPeople"></div>
                     <div class="character-swap-anchors" id="csAnchors"></div>
-                    <button class="character-swap-btn" id="csAddPerson" type="button">+ Add person</button>
+                    <div class="character-swap-row">
+                        <button class="character-swap-btn character-swap-btn--primary" id="csAutoPeople" type="button">Auto-detect &amp; describe</button>
+                        <button class="character-swap-btn" id="csAddPerson" type="button">+ Add person</button>
+                    </div>
                     </div>
 
                     <div id="csMaskSection">
@@ -1832,18 +1850,76 @@
                                     <option value="full" selected>Full</option>
                                 </select>
                             </label>
-                        </div>
-                        <div class="character-swap-hint">H3 renders one clip up to 15 seconds through Ref2VA + Character LoRA v1.5. Rendered takes stay available when you switch engines.</div>
-                    </div>
-                    <div class="character-swap-engine-settings" id="csWanSettings">
-                        <div class="character-swap-row">
-                            <label>SCAIL-2 model
-                                <select id="csScailModel">
-                                    <option value="SCAIL-2-Q4_K_M.gguf">Q4_K_M — ~10 GB (recommended)</option>
+                            <label>Size
+                                <select id="csH3Size">
+                                    <option value="S">S</option>
+                                    <option value="M">M</option>
+                                    <option value="L" selected>L</option>
+                                    <option value="XL">XL</option>
+                                </select>
+                            </label>
+                            <label>Steps
+                                <input type="number" id="csH3Steps" min="1" max="60" step="1" value="20">
+                            </label>
+                            <label>Attention
+                                <select id="csH3Attention">
+                                    <option value="auto" selected>Auto</option>
+                                    <option value="comfy kitchen attention">Comfy Kitchen</option>
+                                    <option value="pytorch attention">PyTorch</option>
                                 </select>
                             </label>
                         </div>
-                        <div class="character-swap-hint" id="csScailModelHint">Recommended daily driver: best balance of quality and 16 GB VRAM headroom.</div>
+                        <div class="character-swap-hint">Comfy Kitchen is the official H3 Recast attention backend; PyTorch is the fallback. The workflow's ModelAttentionBackend node does not accept SageAttention.</div>
+                        <div class="character-swap-h3-scene">
+                            <div class="character-swap-section">SCENE REFERENCE</div>
+                            <div class="character-swap-h3-scene-row">
+                                <img id="csSceneRefPreview" alt="H3 Recast scene reference" hidden>
+                                <div class="character-swap-h3-scene-actions">
+                                    <div id="csSceneRefMeta" class="character-swap-hint">No scene reference yet. Select the people to replace, then build it from the clip.</div>
+                                    <div class="character-swap-row">
+                                        <label>Frame <input type="number" id="csSceneFrame" min="0" step="1" placeholder="auto"></label>
+                                        <button class="character-swap-btn" id="csBuildScene" type="button">Build from clip</button>
+                                    </div>
+                                    <div class="character-swap-row">
+                                        <button class="character-swap-btn" id="csPickScene" type="button">From generated</button>
+                                        <button class="character-swap-btn" id="csUploadScene" type="button">Upload</button>
+                                        <button class="character-swap-btn" id="csClearScene" type="button">Clear</button>
+                                    </div>
+                                    <input type="file" id="csSceneFile" accept="image/png,image/jpeg,image/webp" hidden>
+                                </div>
+                            </div>
+                            <div class="character-swap-hint">H3 Recast conditions on ONE frame of the clip with every intended replacement already edited in. Build it automatically, or upload a frame you edited yourself. Leave people you are not replacing unedited.</div>
+                        </div>
+                        <div class="character-swap-h3-lip">
+                            <div class="character-swap-section">LIP REPAIR (FACEREFINE)</div>
+                            <div class="character-swap-row">
+                                <label>Person
+                                    <select id="csLipPerson">
+                                        <option value="1">1</option>
+                                        <option value="2">2</option>
+                                        <option value="3">3</option>
+                                    </select>
+                                </label>
+                                <label>Denoise
+                                    <input type="number" id="csLipDenoise" min="0.05" max="0.8" step="0.05" value="0.35">
+                                </label>
+                                <label>Steps
+                                    <input type="number" id="csLipSteps" min="1" max="40" step="1" value="20">
+                                </label>
+                            </div>
+                            <div class="character-swap-row">
+                                <label>Face pick
+                                    <select id="csLipFacePick">
+                                        <option value="position">Left-to-right</option>
+                                        <option value="identity">Face identity</option>
+                                    </select>
+                                </label>
+                            </div>
+                            <div class="character-swap-hint">Lip repair runs as a separate pass on a finished take. Use the Refine lip button on a take; the swap itself is reused from the cached result, so the whole video is not regenerated.</div>
+                        </div>
+                        <div class="character-swap-hint">H3 Recast swaps up to three people in one pass with the BFS Character Swap LoRA. The clip supplies motion, set, accessories and audio; the scene reference supplies faces and bodies; the caption lines are generated from the people you select.</div>
+                    </div>
+                    <div class="character-swap-engine-settings" id="csWanSettings">
                         <label class="character-swap-prompt">Replacement direction
                             <textarea id="csWanPrompt" rows="4" placeholder="Describe the person to replace, e.g. replace the person on the left."></textarea>
                         </label>
@@ -1866,7 +1942,18 @@
                         <div class="character-swap-row character-swap-row--compact">
                             <label>Steps <input type="number" id="csWanSteps" min="1" max="100" value="6"></label>
                         </div>
-                        <div class="character-swap-hint">SCAIL-2 uses SAM 3.1 coloring to replace only the selected person. The original background, other people, camera motion and audio are preserved, and the produced video is described as a positive prompt rather than an instruction.</div>
+                        <div class="character-swap-row">
+                            <label>Mask description
+                                <input type="text" id="csWanSam3Text" placeholder="Optional - built from the selected person">
+                            </label>
+                        </div>
+                        <div class="character-swap-row">
+                            <label>Reference label
+                                <input type="text" id="csWanSam3RefText" value="human">
+                            </label>
+                        </div>
+                        <div class="character-swap-hint">SCAIL-2 uses the official INT8 convrot checkpoint. SAM 3.1 finds the described person on every frame, so a crossing cannot move the mask to the other person. Leave the description blank to use the selected person's appearance automatically; add clothing or hair when two people look alike. Reference label is the SAM 3.1 word for the uploaded character image (default human).</div>
+                        <div class="character-swap-hint">SCAIL-2 replaces only the selected person. The original background, other people, camera motion and audio are preserved, and the produced video is described as a positive prompt rather than an instruction.</div>
                     </div>
                     <button class="character-swap-btn character-swap-btn--render" id="csRender" type="button">Render</button>
                     <div class="character-swap-status" id="csStatus" aria-live="polite"></div>

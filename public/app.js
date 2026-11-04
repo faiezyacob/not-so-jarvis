@@ -369,15 +369,19 @@ function renderSetupModels(data) {
             const badge = m.installed
                 ? '<span class="setup-badge setup-badge--ok">READY</span>'
                 : '<span class="setup-badge setup-badge--missing">MISSING</span>';
+            const needsCivitai = m.requiresToken === 'civitai' &&
+                !(data.civitaiToken && data.civitaiToken.configured);
             const sub = escHtml(m.filename || '(no file configured)') +
-                ' · ' + escHtml(m.sizeLabel || '—') +
-                (m.repo ? ' · <a href="' + escHtml(m.repoUrl || ('https://huggingface.co/' + m.repo)) + '" target="_blank" rel="noreferrer">' + escHtml(m.repo) + '</a>' : '') +
-                (m.required ? '' : ' · optional') +
+                ' A� ' + escHtml(m.sizeLabel || '�?"') +
+                (m.repo ? ' A� <a href="' + escHtml(m.repoUrl || ('https://huggingface.co/' + m.repo)) + '" target="_blank" rel="noreferrer">' + escHtml(m.repo) + '</a>' : '') +
+                (m.required ? '' : ' A� optional') +
                 (m.note ? '<br>' + escHtml(m.note) : '') +
-                (!m.installed && !m.url && m.filename && !m.note ? '<br><span class="setup-warn">Unknown source for this filename — place it in ComfyUI models/' + escHtml(m.dest) + '/ by hand.</span>' : '');
+                (needsCivitai ? '<br><span class="setup-warn">Add a Civitai API key above to download this file.</span>' : '') +
+                (!m.installed && !m.url && m.filename && !m.note ? '<br><span class="setup-warn">Unknown source for this filename �?" place it in ComfyUI models/' + escHtml(m.dest) + '/ by hand.</span>' : '');
             const btn = m.installed
                 ? ''
-                : (m.url ? '<button class="settings-browse-btn setup-row-btn" type="button" data-setup-download="' + escHtml(m.id) + '">Download</button>' : '');
+                : (m.url ? '<button class="settings-browse-btn setup-row-btn" type="button" data-setup-download="' + escHtml(m.id) + '"' +
+                    (needsCivitai ? ' disabled title="Add a Civitai API key above"' : '') + '>Download</button>' : '');
             const job = m.installed
                 ? ''
                 : '<div class="setup-row-job" data-setup-job="' + escHtml(m.id) + '" hidden>' +
@@ -585,8 +589,13 @@ function renderSetupStatus(data) {
 
     const tok = (data && data.token) || {};
     setSetupStatus('setupHfStatus', tok.configured
-        ? 'Saved (' + tok.source + (tok.user ? ' as ' + tok.user : '') + ', ' + (tok.masked || '•••') + ').'
+        ? 'Saved (' + tok.source + (tok.user ? ' as ' + tok.user : '') + ', ' + (tok.masked || '�?��?��?�') + ').'
         : 'No token saved.', false);
+
+    const civitai = (data && data.civitaiToken) || {};
+    setSetupStatus('setupCivitaiStatus', civitai.configured
+        ? 'Saved (' + civitai.source + (civitai.user ? ' as ' + civitai.user : '') + ', ' + (civitai.masked || '...') + ').'
+        : 'No Civitai key saved. Add one to auto-download the BFS LoRA.', false);
 
     const ready = (data && data.ready) || {};
     const bits = [
@@ -758,6 +767,44 @@ function initModelSetup() {
             refreshSetup();
         } catch (err) {
             setSetupStatus('setupHfStatus', 'Remove failed: ' + err.message, true);
+        }
+    });
+    const civitaiSave = document.getElementById('setupCivitaiSave');
+    if (civitaiSave) civitaiSave.addEventListener('click', async () => {
+        const input = document.getElementById('setupCivitaiToken');
+        const token = input ? String(input.value || '').trim() : '';
+        if (!token) {
+            setSetupStatus('setupCivitaiStatus', 'Paste a Civitai API key first.', true);
+            return;
+        }
+        setSetupStatus('setupCivitaiStatus', 'Saving...');
+        try {
+            const res = await fetch('/api/setup/civitai-token', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ token })
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || !data.ok) {
+                setSetupStatus('setupCivitaiStatus', 'Save failed: ' + ((data && data.error) || res.status), true);
+                return;
+            }
+            if (input) input.value = '';
+            setSetupStatus('setupCivitaiStatus', 'Saved' + (data.user ? ' as ' + data.user : '') +
+                (data.warning ? '. Note: ' + data.warning : '.'), Boolean(data.warning && !data.valid));
+            refreshSetup();
+        } catch (err) {
+            setSetupStatus('setupCivitaiStatus', 'Save failed: ' + err.message, true);
+        }
+    });
+    const civitaiRemove = document.getElementById('setupCivitaiRemove');
+    if (civitaiRemove) civitaiRemove.addEventListener('click', async () => {
+        try {
+            await fetch('/api/setup/civitai-token', { method: 'DELETE' });
+            setSetupStatus('setupCivitaiStatus', 'Civitai key removed (env-provided keys still apply).');
+            refreshSetup();
+        } catch (err) {
+            setSetupStatus('setupCivitaiStatus', 'Remove failed: ' + err.message, true);
         }
     });
     const missingBtn = document.getElementById('setupDownloadMissing');
@@ -1726,7 +1773,7 @@ const VIDEO_HINTS = {
     videoVae: 'minimax_h3_video_vae_int8_convrot.safetensors',
     videoAudioVae: 'minimax_h3_audio_vae_fp32.safetensors',
     videoTurboLora: 'minimax_h3_turbo_v4_step600_ema.safetensors',
-    videoCharSwapLora: 'h3_character_swap_v1.5.safetensors'
+    videoCharSwapLora: 'rigless-lora-v1.safetensors'
 };
 
 const VIDEO_FACEREFINE_SELECT_FIELDS = [

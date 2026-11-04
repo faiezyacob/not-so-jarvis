@@ -73,10 +73,9 @@ function pointsJson(points) {
 
 function buildModelChain(graph, opts) {
     const settings = opts.settings || {};
-    const loader = settings.gguf === true
-        ? node('UnetLoaderGGUF', { unet_name: settings.unet })
-        : node('UNETLoader', { unet_name: settings.unet, weight_dtype: 'default' });
-    graph.unet = loader;
+    // The official SCAIL-2 INT8 convrot checkpoint always loads through
+    // UNETLoader from models/diffusion_models.
+    graph.unet = node('UNETLoader', { unet_name: settings.unet, weight_dtype: 'default' });
     let model = ['unet', 0];
 
     const lora = (key, name, strength) => {
@@ -119,67 +118,107 @@ function buildPromptNodes(graph, opts) {
     graph.negative = node('CLIPTextEncode', { clip: ['clip', 0], text: opts.negative });
 }
 
-// SAM 3.1 produces per-object tracks. The driving track is seeded from the
-// DWPose point prompts on one frame, so it follows exactly that person and
-// never the other people in the shot. The reference track is the character
-// image's own person; both become the same colour in SCAIL2ColoredMask.
+// SAM 3.1 produces per-object tracks. Two mask modes are supported:
+//
+//   text   (default, the official ComfyUI template) - open-vocabulary detection
+//          from a short description of the selected person, re-detected across
+//          every frame. The reference image is tracked the same way. Because
+//          both sides produce track data, SCAIL2ColoredMask keeps each identity
+//          on one colour for the whole clip and a crossing cannot silently
+//          reassign the mask to the other person.
+//   anchor (fallback) - seed the driving track from the DWPose point prompts on
+//          one frame when the subject could not be described. No text
+//          conditioning is supplied, so new people are never detected; the
+//          tracker can only follow the seeded mask.
 function buildMaskNodes(graph, opts) {
     const settings = opts.settings || {};
     const start = clampInt(opts.anchorFrame, 0, Math.max(0, opts.frames - 1), 0);
+    const samText = String(opts.samText || '').trim();
+    const mode = (opts.sam3Mode === 'anchor' || !samText) ? 'anchor' : 'text';
 
     graph.sam = node('CheckpointLoaderSimple', { ckpt_name: settings.samModel });
-    graph.sam_text = node('CLIPTextEncode', { clip: ['sam', 1], text: SCAIL_PROMPT });
 
     graph.performance = node('LoadVideo', { file: opts.performanceName });
     graph.performance_parts = node('GetVideoComponents', { video: ['performance', 0] });
-    graph.anchor_frame = node('ImageFromBatch', {
-        image: ['performance_parts', 0],
-        batch_index: start,
-        length: 1
-    });
-
-    // The driving track is seeded ONLY from the DWPose points. Adding a text
-    // prompt here would union in every other person SAM 3.1 detects, which is
-    // exactly what selective replacement must avoid.
-    const detectInputs = {
-        model: ['sam', 0],
-        image: ['anchor_frame', 0],
-        positive_coords: pointsJson(opts.points && opts.points.positive),
-        threshold: 0.5,
-        refine_iterations: 2,
-        individual_masks: false
-    };
-    const negative = pointsJson(opts.points && opts.points.negative);
-    if (negative && negative !== '[]') detectInputs.negative_coords = negative;
-    graph.anchor_detect = node('SAM3_Detect', detectInputs);
-
-    graph.driving_track = node('SAM3_VideoTrack', {
-        images: ['performance_parts', 0],
-        model: ['sam', 0],
-        initial_mask: ['anchor_detect', 0],
-        detection_threshold: 0.5,
-        max_objects: 1,
-        detect_interval: 1
-    });
-
     graph.reference = node('LoadImage', { image: opts.referenceName });
-    // One reference identity, unioned, so it maps to the single driving colour.
-    graph.reference_detect = node('SAM3_Detect', {
-        model: ['sam', 0],
-        image: ['reference', 0],
-        conditioning: ['sam_text', 0],
-        threshold: 0.5,
-        refine_iterations: 2,
-        individual_masks: false
-    });
 
-    graph.colored = node('SCAIL2ColoredMask', {
-        driving_track_data: ['driving_track', 0],
-        ref_track_data: ['reference_detect', 0],
-        object_indices: '',
-        sort_by: 'left_to_right',
-        replacement_mode: true
-    });
+    if (mode === 'text') {
+        const refText = String(opts.samRefText || settings.sam3ImageObject || 'human').trim() || 'human';
+        const maxObjects = clampInt(
+            opts.maxObjects === undefined ? settings.sam3MaxObjects : opts.maxObjects,
+            1, 16, 4
+        );
+        graph.sam_text = node('CLIPTextEncode', { clip: ['sam', 1], text: samText });
+        graph.sam_ref_text = node('CLIPTextEncode', { clip: ['sam', 1], text: refText });
+        graph.driving_track = node('SAM3_VideoTrack', {
+            images: ['performance_parts', 0],
+            model: ['sam', 0],
+            conditioning: ['sam_text', 0],
+            detection_threshold: 0.5,
+            max_objects: maxObjects,
+            detect_interval: 1
+        });
+        graph.reference_track = node('SAM3_VideoTrack', {
+            images: ['reference', 0],
+            model: ['sam', 0],
+            conditioning: ['sam_ref_text', 0],
+            detection_threshold: 0.5,
+            max_objects: maxObjects,
+            detect_interval: 1
+        });
+        graph.colored = node('SCAIL2ColoredMask', {
+            driving_track_data: ['driving_track', 0],
+            ref_track_data: ['reference_track', 0],
+            object_indices: '',
+            sort_by: 'left_to_right',
+            replacement_mode: true
+        });
+    } else {
+        graph.sam_text = node('CLIPTextEncode', { clip: ['sam', 1], text: SCAIL_PROMPT });
+        graph.anchor_frame = node('ImageFromBatch', {
+            image: ['performance_parts', 0],
+            batch_index: start,
+            length: 1
+        });
+        // Seed ONLY from the DWPose points. Adding text conditioning here would
+        // union in every other person SAM 3.1 detects.
+        const detectInputs = {
+            model: ['sam', 0],
+            image: ['anchor_frame', 0],
+            positive_coords: pointsJson(opts.points && opts.points.positive),
+            threshold: 0.5,
+            refine_iterations: 2,
+            individual_masks: false
+        };
+        const negative = pointsJson(opts.points && opts.points.negative);
+        if (negative && negative !== '[]') detectInputs.negative_coords = negative;
+        graph.anchor_detect = node('SAM3_Detect', detectInputs);
+
+        graph.driving_track = node('SAM3_VideoTrack', {
+            images: ['performance_parts', 0],
+            model: ['sam', 0],
+            initial_mask: ['anchor_detect', 0],
+            detection_threshold: 0.5,
+            max_objects: 1,
+            detect_interval: 1
+        });
+        // One reference identity, unioned, so it maps to the single driving colour.
+        graph.reference_detect = node('SAM3_Detect', {
+            model: ['sam', 0],
+            image: ['reference', 0],
+            conditioning: ['sam_text', 0],
+            threshold: 0.5,
+            refine_iterations: 2,
+            individual_masks: false
+        });
+        graph.colored = node('SCAIL2ColoredMask', {
+            driving_track_data: ['driving_track', 0],
+            ref_track_data: ['reference_detect', 0],
+            object_indices: '',
+            sort_by: 'left_to_right',
+            replacement_mode: true
+        });
+    }
 
     graph.clip_vision = node('CLIPVisionLoader', { clip_name: settings.clipVision });
     graph.reference_vision = node('CLIPVisionEncode', {

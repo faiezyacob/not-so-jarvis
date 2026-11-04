@@ -138,21 +138,30 @@ function normalizeH3Turbo(settings) {
     };
 }
 
-// --- MiniMax H3 Character Swap LoRA (akatz-ai/MiniMax-H3-Character-Swap-LoRA) ---
+// --- MiniMax H3 Character Swap LoRA (StephenShumway/rigless-lora) ---
 //
 // The reference-to-video (Ref2VA) character-swap adapter. It is a model-only
 // LoRA applied at strength 1.0 on the @video reference replacement graph,
 // immediately after the diffusion-model loader, so the Ref2VA base learns to
 // replace the person in the source performance with the identity from a
-// <Picture N> reference. It is the recommended checkpoint for new character
-// swaps (V1.5). It is enabled by default — the reference pipeline exists to
+// <Picture N> reference. Rigless v1 is a fine-tune of akatz's Character Swap
+// LoRA v1.5 trained on real footage, and is the recommended checkpoint for
+// character swaps. It is enabled by default — the reference pipeline exists to
 // perform character swaps — with an explicit toggle so the adapter can be
 // disabled when only the stock Ref2VA behaviour is wanted.
 
-const H3_CHAR_SWAP_DEFAULT_LORA = 'h3_character_swap_v1.5.safetensors';
+const H3_CHAR_SWAP_DEFAULT_LORA = 'rigless-lora-v1.safetensors';
 const H3_CHAR_SWAP_STRENGTH = 1.0;
-const H3_CHAR_SWAP_MODEL_REPO = 'akatz-ai/MiniMax-H3-Character-Swap-LoRA';
+const H3_CHAR_SWAP_MODEL_REPO = 'StephenShumway/rigless-lora';
 const H3_CHAR_SWAP_MODEL_PAGE = 'https://huggingface.co/' + H3_CHAR_SWAP_MODEL_REPO;
+
+// Filenames from before the Rigless v1 default. A stored setting that still
+// points at one of them is migrated to the new default so an upgrade does not
+// keep loading the old adapter.
+const H3_CHAR_SWAP_LEGACY_LORAS = new Set([
+    'h3_character_swap_v1.5.safetensors',
+    'h3_character_swap_pro4500_1000.safetensors'
+]);
 
 function normalizeH3CharacterSwapStrength(value, fallback) {
     return clampToRange(value, 0, 2, fallback !== undefined ? fallback : H3_CHAR_SWAP_STRENGTH);
@@ -2516,6 +2525,7 @@ function effectiveVideoSettings() {
                 value = value === true || value === 1 || String(value).toLowerCase() === 'true' || String(value) === '1';
             } else if (key === 'h3CharSwapLora') {
                 value = String(value || '').trim() || H3_DEFAULTS.h3CharSwapLora;
+                if (H3_CHAR_SWAP_LEGACY_LORAS.has(value)) value = H3_CHAR_SWAP_DEFAULT_LORA;
             } else if (key === 'h3CharSwapStrength') {
                 value = normalizeH3CharacterSwapStrength(value, H3_DEFAULTS.h3CharSwapStrength);
             } else if (key === 'h3FunControlNet') {
@@ -2707,7 +2717,8 @@ function saveVideoSettings(patch) {
         } else if (key === 'h3CharSwapEnabled') {
             out[key] = value === true || value === 1 || String(value).toLowerCase() === 'true' || String(value) === '1';
         } else if (key === 'h3CharSwapLora') {
-            out[key] = String(value || '').trim() || null;
+            const loraName = String(value || '').trim() || null;
+            out[key] = loraName && H3_CHAR_SWAP_LEGACY_LORAS.has(loraName) ? H3_CHAR_SWAP_DEFAULT_LORA : loraName;
         } else if (key === 'h3CharSwapStrength') {
             out[key] = normalizeH3CharacterSwapStrength(value, H3_DEFAULTS.h3CharSwapStrength);
         } else if (key === 'h3FunControlNet') {
@@ -5887,5 +5898,6 @@ module.exports = {
     VIDEO_UPSCALE_DEFAULT_TIMEOUT_MS,
     readVideoDimensions,
     probeVideoBuffer,
+    readStillImageDimensions,
     expectedUpscaleDims,
 };

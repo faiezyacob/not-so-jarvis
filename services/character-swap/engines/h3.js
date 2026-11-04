@@ -1,35 +1,22 @@
 /* ============================================
    JARVIS — MiniMax H3 Character Swap engine
-   Thin adapter over the existing Ref2VA /
-   Character LoRA v1.5 replacement pipeline.
+   H3 Recast: the official BFS character-swap
+   workflow (scene reference + trained caption +
+   guide video) with optional lip repair.
+
+   The chat @video reference-replacement adapter
+   (services/video-replacement.js) is separate
+   and unchanged.
 
    SPDX-License-Identifier: MIT
    Copyright (c) 2026 not-so-jarvis.
    ============================================ */
 
-const videoReplacement = require('../../video-replacement');
+const recast = require('./h3-recast');
 
 const ID = 'h3';
-const LABEL = 'MiniMax H3 + Character LoRA v1.5';
-const MAX_SECONDS = 15;
-
-function availability(info, settings = {}) {
-    const missing = [];
-    const warnings = [];
-    if (!info || typeof info !== 'object') {
-        return { id: ID, label: LABEL, available: false, missing: ['ComfyUI is not reachable.'], warnings };
-    }
-    for (const node of videoReplacement.REQUIRED_NODES) {
-        if (!Object.prototype.hasOwnProperty.call(info, node)) missing.push('ComfyUI node "' + node + '"');
-    }
-    const unet = videoReplacement.resolveRefUnet(info, settings);
-    if (!unet) missing.push('MiniMax H3 Ref2VA diffusion model');
-    return { id: ID, label: LABEL, available: missing.length === 0, missing, warnings };
-}
-
-async function render(plan, options = {}) {
-    return videoReplacement.generateReplacementVideo(plan, options);
-}
+const LABEL = recast.LABEL;
+const MAX_SECONDS = recast.MAX_SECONDS;
 
 module.exports = {
     id: ID,
@@ -37,6 +24,13 @@ module.exports = {
     label: LABEL,
     LABEL,
     MAX_SECONDS,
-    availability,
-    render
+    DEFAULT_SETTINGS: recast.normalizeSettings({}, null),
+    normalizeSettings: recast.normalizeSettings,
+    resolveModels: recast.resolveModels,
+    availability: recast.availability,
+    dimensionsFor: recast.dimensionsFor,
+    framesFor: recast.framesFor,
+    render: recast.renderSwap,
+    renderSwap: recast.renderSwap,
+    renderLipRepair: recast.renderLipRepair
 };

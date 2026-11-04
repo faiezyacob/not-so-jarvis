@@ -779,7 +779,8 @@ function resolveRefUnet(info, settings) {
 
 // --- Conditioning strategy ----------------------------------------------------
 //
-// The character-swap adapter (akatz-ai/MiniMax-H3-Character-Swap-LoRA) replaces
+// The character-swap adapter (StephenShumway/rigless-lora, a fine-tune of
+// akatz-ai/MiniMax-H3-Character-Swap-LoRA v1.5) replaces
 // ONE selected person; it is the verified adapter for a single-person swap and
 // is what makes the replacement land. Applied model-wide on a multi-reference
 // request it binds a single identity, so every extra <Picture N> is ignored —

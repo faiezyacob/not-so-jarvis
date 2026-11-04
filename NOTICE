@@ -7,5 +7,15 @@ Shumway, licensed under the Apache License, Version 2.0. The JavaScript
 implementation in services/character-swap is original code; no Rigless source
 files are vendored.
 
+The H3 Recast Character Swap workflow shape and its 1/2/3-person `body_swap`
+caption templates were adapted from H3 Recast
+(https://github.com/Bambushu/h3-recast), Copyright Bambushu, licensed under the
+MIT License. The ComfyUI graph builders in
+services/character-swap/engines/h3-recast-graph.js are original JavaScript; the
+upstream workflow JSON is not vendored.
+
 MiniMax H3, H3 Relay, SAM 3.1 and their model weights are separate upstream
-works and remain under their own licenses.
+works and remain under their own licenses. This includes the Rigless v1
+Character Swap LoRA (StephenShumway/rigless-lora) and the BFS Character Swap
+LoRA ("BFS - Best Face Swap" by NRDX on Civitai), which are downloaded by the
+user and are not vendored.

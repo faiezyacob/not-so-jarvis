@@ -88,8 +88,8 @@ Everything runs from a single chat surface — there are no separate tools or da
 
 ### Character Swap
 
-- **Two replacement engines** — SCAIL-2 (default; official replacement mode with SAM 3.1 colored masks) and MiniMax H3 + Character Swap LoRA v1.5
-- **Continuation rendering** — SCAIL-2 runs 81-frame windows with its trained 5-frame anchor (WanSCAILInfinity) at 24 fps with the original audio muxed back, capped at 15 seconds
+- **Two replacement engines** - SCAIL-2 (default; official replacement mode with SAM 3.1 colored masks) and MiniMax H3 Recast (one-pass BFS character swap with optional FaceRefine lip repair)
+- **Continuation rendering** — SCAIL-2 runs 81-frame windows with its trained 5-frame anchor (WanSCAILInfinity) at 16 fps with the original audio muxed back, capped at 15 seconds
 
 ### UGC Studio
 
@@ -136,7 +136,7 @@ Everything runs from a single chat surface — there are no separate tools or da
 - **News widget** — keyless RSS headlines (BBC, NPR, Hacker News by default, or your own feeds) with ALL / GLOBAL / LOCAL scopes; set a local area and the LOCAL scope searches it. Every headline links out to the source, and asking *"what's the news about X?"* or *"local news"* in chat answers from the same live headlines
 - **Model library** — browse, download, load, unload, and remove models with hardware-compatibility detection
 - **Generated gallery** — thumbnails, full-grid view, preview lightbox with zoom/pan, grouped upscales, and before/after compare
-- **First-run setup guide** — Settings > Setup checks your ComfyUI install, downloads missing models from Hugging Face, and installs missing custom nodes
+- **First-run setup guide** — Settings > Setup checks your ComfyUI install, downloads missing models from Hugging Face and Civitai, and installs missing custom nodes
 - **Settings panel** — provider, chat, image, upscale, video, and system configuration with search
 
 ### Engineering
@@ -150,7 +150,7 @@ Everything runs from a single chat surface — there are no separate tools or da
 - **Node.js** — no `npm install` needed (zero dependencies)
 - **NVIDIA GPU with 16 GB VRAM is required** to run the full image, video, and upscale stack (Krea2, MiniMax H3, SeedVR2). VRAM is freed and reloaded between chat and generation as needed via `vram-manager`.
 - **[Ollama](https://ollama.com)** running at `localhost:11434` for chat
-- **Optional, for image/video/upscale:** [ComfyUI](https://github.com/comfyanonymous/ComfyUI) with the Krea2 / MiniMax H3 models and custom nodes. The in-app **Settings > Setup** guide can install these for you. Character Swap's default SCAIL-2 engine additionally needs the SCAIL-2 14B checkpoint (GGUF or Comfy-Org safetensors), the SAM 3.1 multiplex checkpoint, UMT5 XXL text encoder, Wan 2.1 VAE, CLIP Vision H, the LightX2V acceleration LoRA and the optional relighting LoRA and uses the installed SAM 3.1 checkpoint, DWPose, KJNodes and VideoHelperSuite — all listed in Settings > Setup.
+- **Optional, for image/video/upscale:** [ComfyUI](https://github.com/comfyanonymous/ComfyUI) with the Krea2 / MiniMax H3 models and custom nodes. The in-app **Settings > Setup** guide can install these for you. Character Swap's default SCAIL-2 engine additionally needs the official SCAIL-2 14B INT8 convrot checkpoint (`wan2.1_14B_SCAIL_2_int8_convrot.safetensors`), the SAM 3.1 multiplex checkpoint, UMT5 XXL text encoder, Wan 2.1 VAE, CLIP Vision H, the LightX2V acceleration LoRA and the optional relighting LoRA and uses the installed SAM 3.1 checkpoint, DWPose, KJNodes and VideoHelperSuite — all listed in Settings > Setup. Character Swap's MiniMax H3 Recast engine additionally needs the BFS Character Swap LoRA (`minimax_h3_character_swap_v1.0_ref2va_r64_gl.safetensors`, Civitai), the Ref2VA + FL2VA H3 models, the FaceRefine and NativeAudioLock node packs, and `face_yolov8m.pt` for lip repair.
 
 > **Reference machine.** Developed and tested on **16 GB VRAM + 64 GB system RAM**. 64 GB of system RAM is recommended for video upscaling, which holds the full source and the upscaled output in memory (see [Upscaling](#upscaling)).
 
@@ -181,8 +181,9 @@ If image or video features report missing pieces, open **Settings > Setup**:
 
 1. Install and start **ComfyUI** (Desktop or portable), then start this server so the guide can detect it.
 2. Create a free **Hugging Face** account, accept the **Krea 2 / MiniMax H3** model licenses, and paste a **read** access token (stored in `data/config.json`).
-3. Click **Download all missing** — the model set is large (60 GB+), so leave it running.
-4. Click **Install all missing** for custom nodes, then **restart ComfyUI**.
+3. For **H3 Recast**, create a Civitai **API key** (civitai.com -> Account settings -> API Keys) and paste it into the **CIVITAI TOKEN** card so Setup can download the BFS Character Swap LoRA (~0.58 GB).
+4. Click **Download all missing** — the model set is large (60 GB+), so leave it running.
+5. Click **Install all missing** for custom nodes, then **restart ComfyUI**.
 
 Green indicators mean each capability (image, video, upscale, edit) is ready to use.
 
@@ -225,12 +226,12 @@ Text prompts (T2VA) or an attached/referenced image (I2VA) produce a MiniMax H3 
 
 ### Character Swap
 
-Open **Character Swap** from the top-right header button next to Creator Studio, or from a generated video's asset actions. Import a clip by uploading it or picking any generated video from the app. SCAIL-2 needs one selected person and one character image; MiniMax H3 uses the tap-to-select SAM 3.1 tracking/mask flow with reference views:
+Open **Character Swap** from the top-right header button next to Creator Studio, or from a generated video's asset actions. Import a clip by uploading it or picking any generated video from the app. SCAIL-2 needs one selected person and one character image; MiniMax H3 Recast needs the detected people, one character image per person, and a scene reference (built from the clip automatically or uploaded):
 
-- **SCAIL-2 (default)** — official replacement mode through ComfyUI's native `WanSCAILToVideo` / `SCAIL2ColoredMask` nodes. Detect the people in the clip and click the one to replace. JARVIS tracks that person with SAM 3.1 from the DWPose keypoints, renders the identity-coloured driving mask (white background = keep the source) and the black-background reference mask, and conditions the 14B SCAIL-2 model in replacement mode. Choose a SCAIL-2 checkpoint in the **SCAIL-2 model** selector: GGUF Q2_K (~6 GB), Q3_K_M (~8.1 GB), Q4_K_M (~10 GB, recommended), Q5_K_M (~12 GB), Q6_K (~14 GB) or Q8_0 (~17 GB), or the full-precision FP16 safetensors (~30.5 GB). GGUF files load through the GGUF UNET loader from `models/unet`; FP16 lives in `models/diffusion_models` and loads through the normal `UNETLoader` (`weight_dtype: default`), so no GGUF loader is used for it. The official relighting LoRA is on for blending; the DPO LoRA is optional and does not guarantee audio-driven lip-sync. Clips are conformed to 24 fps at 480p (default) or 720p, capped at 15 seconds; `WanSCAILInfinity` loops the trained 81-frame / 5-frame-anchor window and trims to the exact length, and the original audio is muxed back unchanged. The prompt is a positive description of the finished video (character appearance/clothing, motion, background, camera and lighting), built from your short direction plus the cached character and scene captions.
-- **MiniMax H3 + Character LoRA v1.5** — the existing Ref2VA reference-to-video path, capped at 15 s.
+- **SCAIL-2 (default)** — official replacement mode through ComfyUI's native `WanSCAILToVideo` / `SCAIL2ColoredMask` nodes. Detect the people in the clip and click the one to replace. SAM 3.1 then finds the described person on every frame (the official ComfyUI flow), renders the identity-coloured driving mask (white background = keep the source) and the black-background reference mask, and conditions the 14B SCAIL-2 model in replacement mode; the clicked-target point mask remains available as a fallback. SCAIL-2 uses the official `wan2.1_14B_SCAIL_2_int8_convrot.safetensors` checkpoint from `models/diffusion_models`, loaded through the normal `UNETLoader` (`weight_dtype: default`) — GGUF and FP16 are no longer offered. The official relighting LoRA is on for blending; the DPO LoRA is optional and does not guarantee audio-driven lip-sync. Clips are conformed to 16 fps at 480p (default) or 720p, capped at 15 seconds; `WanSCAILInfinity` loops the trained 81-frame / 5-frame-anchor window and trims to the exact length, and the original audio is muxed back unchanged. The prompt is a positive description of the finished video (character appearance/clothing, motion, background, camera and lighting), built from your short direction plus the cached character and scene captions.
+- **MiniMax H3 Recast** - the official one-pass BFS character swap (`Bambushu/h3-recast`). Upload a character image, then **Auto-detect & describe** finds up to three people, describes each source and the replacement (including outfit) and writes the lines for review. You can also add people and lines manually. Then build the **scene reference**: one frame of the clip with every intended replacement already edited in. The app builds that frame with the Qwen Image 2.1 editor (each selected portrait becomes a reference image) or accepts a frame you edited yourself; people you are not replacing are left unedited. The scene-reference instruction copies the uploaded outfit, shoes and accessories; the official swap still takes motion and performance from the guide clip, so outfit transfer is requested rather than guaranteed. The swap is Ref2VA + the BFS Character Swap LoRA, conditioned on the scene reference and a trained `body_swap` caption, with the clip itself as a 24 fps video-to-video guide and its original audio preserved. Caption rows are written for everyone in the shot (up to three), so an unchanged person is described as they are instead of being re-dressed. **Lip repair (FaceRefine)** is an optional second pass on a finished take: it reuses the cached swap result, tracks the chosen person with `H3FaceTrackCrop`, locks the original audio with `MiniMaxH3NativeAudioLock`, and pastes the refined face back with `H3FaceStitch`, so the whole video is not regenerated. It needs the BFS LoRA (`minimax_h3_character_swap_v1.0_ref2va_r64_gl.safetensors`, Civitai, ~0.58 GB), the FL2VA model, the FaceRefine + NativeAudioLock node packs, and `face_yolov8m.pt`. Lip-sync is improved, not guaranteed.
 
-Switching engines never clears the uploaded video, trim, tracking, masks, references or takes. Missing SCAIL-2 models/nodes are reported explicitly; JARVIS never silently switches to H3. All engines run through the same VRAM manager (one backend resident at a time) and record peak VRAM/RAM in the take metadata.
+Switching engines never clears the uploaded video, trim, tracking, references, scene reference or takes. Missing SCAIL-2/H3 Recast models and nodes are reported explicitly; JARVIS never silently switches engines or falls back to a different graph. All engines run through the same VRAM manager (one backend resident at a time) and record peak VRAM/RAM in the take metadata.
 
 ### Upscaling
 

@@ -21,11 +21,10 @@ const scailPrompt = require('../services/character-swap/engines/scail2-prompt');
 const scail2 = require('../services/character-swap/engines/scail2');
 const engines = require('../services/character-swap/engines');
 const characterState = require('../services/character-swap/state');
+const characterSwap = require('../services/character-swap');
 
 const SETTINGS = {
-    unet: 'SCAIL-2-Q4_K_M.gguf',
-    gguf: true,
-    loadWithGguf: true,
+    unet: 'wan2.1_14B_SCAIL_2_int8_convrot.safetensors',
     samModel: 'sam3.1_multiplex_fp16.safetensors',
     textEncoder: 'umt5_xxl_fp8_e4m3fn_scaled.safetensors',
     vae: 'wan_2.1_vae.safetensors',
@@ -64,6 +63,9 @@ function graphFor(frames, overrides = {}) {
         referenceName: 'ref.png',
         points: { positive: [{ x: 10, y: 20 }], negative: [] },
         anchorFrame: 0,
+        sam3Mode: 'text',
+        samText: 'woman, white sleeveless top',
+        samRefText: 'human',
         relightLora: SETTINGS.relightLora,
         dpoLora: null,
         chunkFeedForward: true
@@ -88,21 +90,31 @@ test('SCAIL-2 graph uses official replacement conditioning, never WanAnimate2ToV
     assert.equal(graph.colored.class_type, 'SCAIL2ColoredMask');
     assert.equal(graph.colored.inputs.replacement_mode, true);
     assert.equal(graph.colored.inputs.driving_track_data[0], 'driving_track');
-    assert.equal(graph.colored.inputs.ref_track_data[0], 'reference_detect');
+    assert.equal(graph.colored.inputs.ref_track_data[0], 'reference_track');
     assert.equal(graph.conditioning.class_type, 'WanSCAILInfinity');
     assert.equal(graph.conditioning.inputs.replacement_mode, true);
     assert.deepEqual(graph.conditioning.inputs.pose_video_mask, ['colored', 0]);
     assert.deepEqual(graph.conditioning.inputs.reference_image_mask, ['colored', 1]);
     assert.deepEqual(graph.conditioning.inputs.reference_image, ['reference', 0]);
     assert.deepEqual(graph.conditioning.inputs.pose_video, ['performance_parts', 0]);
+    assert.equal(graph.video.class_type, 'CreateVideo');
+    assert.equal(graph.video.inputs.fps, 16);
     assert.equal(graph.driving_track.class_type, 'SAM3_VideoTrack');
-    assert.equal(graph.driving_track.inputs.max_objects, 1);
-    assert.deepEqual(graph.driving_track.inputs.initial_mask, ['anchor_detect', 0]);
-    assert.equal(graph.anchor_detect.class_type, 'SAM3_Detect');
-    assert.match(graph.anchor_detect.inputs.positive_coords, /"x":10,"y":20/);
-    assert.equal(graph.anchor_detect.inputs.conditioning, undefined);
-    assert.equal(graph.driving_track.inputs.conditioning, undefined);
-    assert.equal(graph.unet.class_type, 'UnetLoaderGGUF');
+    assert.equal(graph.driving_track.inputs.max_objects, 4);
+    assert.equal(graph.driving_track.inputs.initial_mask, undefined);
+    assert.deepEqual(graph.driving_track.inputs.conditioning, ['sam_text', 0]);
+    assert.equal(graph.sam_text.class_type, 'CLIPTextEncode');
+    assert.deepEqual(graph.sam_text.inputs.clip, ['sam', 1]);
+    assert.equal(graph.sam_text.inputs.text, 'woman, white sleeveless top');
+    assert.equal(graph.reference_track.class_type, 'SAM3_VideoTrack');
+    assert.equal(graph.reference_track.inputs.initial_mask, undefined);
+    assert.deepEqual(graph.reference_track.inputs.conditioning, ['sam_ref_text', 0]);
+    assert.equal(graph.sam_ref_text.inputs.text, 'human');
+    assert.deepEqual(graph.colored.inputs.ref_track_data, ['reference_track', 0]);
+    assert.equal(graph.anchor_detect, undefined);
+    assert.equal(graph.unet.class_type, 'UNETLoader');
+    assert.equal(graph.unet.inputs.unet_name, 'wan2.1_14B_SCAIL_2_int8_convrot.safetensors');
+    assert.equal(graph.unet.inputs.weight_dtype, 'default');
     assert.equal(graph.lora_accel.class_type, 'LoraLoaderModelOnly');
     assert.equal(graph.lora_relight.class_type, 'LoraLoaderModelOnly');
     assert.equal(graph.lora_dpo, undefined);
@@ -110,17 +122,58 @@ test('SCAIL-2 graph uses official replacement conditioning, never WanAnimate2ToV
     assert.ok(!Object.values(graph).some((entry) => entry.class_type === 'WanAnimate2ToVideo'));
 });
 
-test('SCAIL-2 graph uses UNETLoader for the full-precision safetensors', () => {
-    const { graph } = graphFor(60, {
-        settings: Object.assign({}, SETTINGS, {
-            unet: 'wan2.1_14B_SCAIL_2_fp16.safetensors',
-            gguf: false,
-            loadWithGguf: false
-        })
-    });
+test('SCAIL-2 anchor mode seeds SAM 3.1 from the clicked target', () => {
+    const { graph } = graphFor(240, { sam3Mode: 'anchor', samText: '' });
+    assert.equal(graph.driving_track.class_type, 'SAM3_VideoTrack');
+    assert.equal(graph.driving_track.inputs.max_objects, 1);
+    assert.deepEqual(graph.driving_track.inputs.initial_mask, ['anchor_detect', 0]);
+    assert.equal(graph.driving_track.inputs.conditioning, undefined);
+    assert.equal(graph.anchor_detect.class_type, 'SAM3_Detect');
+    assert.match(graph.anchor_detect.inputs.positive_coords, /"x":10,"y":20/);
+    assert.equal(graph.anchor_detect.inputs.conditioning, undefined);
+    assert.equal(graph.reference_detect.class_type, 'SAM3_Detect');
+    assert.equal(graph.reference_detect.inputs.individual_masks, false);
+    assert.deepEqual(graph.colored.inputs.ref_track_data, ['reference_detect', 0]);
+    assert.equal(graph.reference_track, undefined);
+});
+
+test('SCAIL-2 falls back to the anchor mask when no description is available', () => {
+    const { graph } = graphFor(60, { sam3Mode: 'text', samText: '   ' });
+    assert.equal(graph.anchor_detect.class_type, 'SAM3_Detect');
+    assert.equal(graph.driving_track.inputs.conditioning, undefined);
+});
+
+test('SCAIL-2 mask description names only the selected source person', () => {
+    assert.equal(
+        scailPrompt.detectionPhrase({
+            version: 2,
+            gender: 'female',
+            outfit: 'a white sleeveless ribbed mock-neck top and black leggings'
+        }),
+        'woman, white sleeveless ribbed mock-neck top'
+    );
+    assert.equal(
+        scailPrompt.detectionPhrase({ version: 2, gender: 'man', hair: 'short dark hair' }),
+        'man, short dark hair'
+    );
+    assert.equal(scailPrompt.detectionPhrase({ version: 2, gender: 'woman' }), '');
+    assert.equal(scailPrompt.detectionPhrase({ version: 2 }), '');
+    assert.equal(scailPrompt.detectionPhrase(null), '');
+});
+
+test('SCAIL-2 converts clicked anchor frames from the 24 fps workspace to 16 fps', () => {
+    assert.equal(scail2.preparedFrame(0, 24, 16), 0);
+    assert.equal(scail2.preparedFrame(24, 24, 16), 16);
+    assert.equal(scail2.preparedFrame(120, 24, 16), 80);
+    assert.equal(scail2.preparedFrame(72, 24, 16), 48);
+});
+
+test('SCAIL-2 always loads the INT8 checkpoint through UNETLoader', () => {
+    const { graph } = graphFor(60);
     assert.equal(graph.unet.class_type, 'UNETLoader');
-    assert.equal(graph.unet.inputs.unet_name, 'wan2.1_14B_SCAIL_2_fp16.safetensors');
+    assert.equal(graph.unet.inputs.unet_name, 'wan2.1_14B_SCAIL_2_int8_convrot.safetensors');
     assert.equal(graph.unet.inputs.weight_dtype, 'default');
+    assert.equal(Object.values(graph).some((entry) => entry.class_type === 'UnetLoaderGGUF'), false);
 });
 
 test('SCAIL-2 graph omits optional LoRAs and chunk padding when disabled', () => {
@@ -234,72 +287,74 @@ test('SCAIL-2 availability lists missing nodes, models and the Infinity pack', (
     assert.ok(missing.missing.some((item) => /WanSCAILInfinity/.test(item)));
 });
 
-test('SCAIL-2 settings default to the GGUF 6-step replacement configuration', () => {
+test('SCAIL-2 settings default to the official INT8 6-step configuration', () => {
     const settings = scail2.normalizeSettings({});
-    assert.equal(settings.gguf, true);
-    assert.equal(settings.unet, 'SCAIL-2-Q4_K_M.gguf');
-    assert.equal(settings.modelVariant, 'q4_k_m');
+    assert.equal(settings.unet, 'wan2.1_14B_SCAIL_2_int8_convrot.safetensors');
+    assert.equal(settings.modelVariant, 'int8');
     assert.equal(settings.steps, 6);
     assert.equal(settings.cfg, 1);
     assert.equal(settings.relight, true);
     assert.equal(settings.dpo, false);
     assert.equal(settings.accelerationStrength, 0.8);
+    assert.equal(settings.sam3Mode, 'text');
+    assert.equal(settings.sam3ImageObject, 'human');
+    assert.equal(settings.sam3VideoObject, '');
+    assert.equal(settings.sam3MaxObjects, 4);
+    assert.equal(settings.fps, 16);
+    assert.equal(scail2.normalizeSettings({ sam3Mode: 'anchor' }).sam3Mode, 'anchor');
+    assert.equal(scail2.normalizeSettings({ sam3MaxObjects: 99 }).sam3MaxObjects, 16);
 });
 
-test('SCAIL-2 offers GGUF quant variants and full-precision safetensors', () => {
+test('SCAIL-2 offers only the official INT8 checkpoint', () => {
     const ids = scail2.MODEL_VARIANTS.map((variant) => variant.id);
-    assert.deepEqual(ids, ['q2_k', 'q3_k_m', 'q4_k_m', 'q5_k_m', 'q6_k', 'q8_0', 'fp16']);
-    assert.equal(scail2.DEFAULT_MODEL_FILE, 'SCAIL-2-Q4_K_M.gguf');
-    const fp16 = scail2.MODEL_VARIANTS.find((variant) => variant.id === 'fp16');
-    assert.equal(fp16.file, 'wan2.1_14B_SCAIL_2_fp16.safetensors');
-    assert.equal(fp16.loader, 'safetensors');
-    assert.match(fp16.description, /diffusion_models/);
-    for (const variant of scail2.MODEL_VARIANTS) {
-        if (variant.id === 'fp16') continue;
-        assert.match(variant.file, /\.gguf$/);
-        assert.equal(variant.loader, 'gguf');
-    }
+    assert.deepEqual(ids, ['int8']);
+    assert.equal(scail2.DEFAULT_MODEL_FILE, 'wan2.1_14B_SCAIL_2_int8_convrot.safetensors');
+    const int8 = scail2.MODEL_VARIANTS.find((variant) => variant.id === 'int8');
+    assert.equal(int8.file, 'wan2.1_14B_SCAIL_2_int8_convrot.safetensors');
+    assert.equal(int8.loader, 'safetensors');
+    assert.match(int8.description, /UNETLoader/);
 });
 
-test('SCAIL-2 variant list reports which checkpoints are installed', () => {
+test('SCAIL-2 variant list reports whether the INT8 checkpoint is installed', () => {
     const info = {
-        UnetLoaderGGUF: { input: { required: { unet_name: [['SCAIL-2-Q4_K_M.gguf']] } } },
-        UNETLoader: { input: { required: { unet_name: [['wan2.1_14B_SCAIL_2_fp16.safetensors']] } } }
+        UNETLoader: { input: { required: { unet_name: [['wan2.1_14B_SCAIL_2_int8_convrot.safetensors']] } } }
     };
     const list = scail2.listVariants(info);
-    const byId = Object.fromEntries(list.map((variant) => [variant.id, variant]));
-    assert.equal(byId.q4_k_m.installed, true);
-    assert.equal(byId.q2_k.installed, false);
-    assert.equal(byId.fp16.installed, true);
+    assert.equal(list.length, 1);
+    assert.equal(list[0].id, 'int8');
+    assert.equal(list[0].installed, true);
+    assert.equal(scail2.listVariants({})[0].installed, false);
 });
 
-test('SCAIL-2 switches loader automatically between GGUF and safetensors', () => {
+test('SCAIL-2 migrates retired GGUF and FP16 settings to the INT8 checkpoint', () => {
     const gguf = scail2.normalizeSettings({ unet: 'SCAIL-2-Q8_0.gguf' });
-    assert.equal(gguf.gguf, true);
-    assert.equal(gguf.loadWithGguf, true);
-    assert.equal(gguf.modelVariant, 'q8_0');
+    assert.equal(gguf.unet, 'wan2.1_14B_SCAIL_2_int8_convrot.safetensors');
+    assert.equal(gguf.modelVariant, 'int8');
 
     const full = scail2.normalizeSettings({ unet: 'wan2.1_14B_SCAIL_2_fp16.safetensors' });
-    assert.equal(full.gguf, false);
-    assert.equal(full.loadWithGguf, false);
-    assert.equal(full.modelVariant, 'fp16');
+    assert.equal(full.unet, 'wan2.1_14B_SCAIL_2_int8_convrot.safetensors');
+    assert.equal(full.modelVariant, 'int8');
 
-    const custom = scail2.normalizeSettings({ unet: 'my-scail-custom.gguf' });
-    assert.equal(custom.gguf, true);
+    const custom = scail2.normalizeSettings({ unet: 'my-scail-custom.safetensors' });
+    assert.equal(custom.unet, 'my-scail-custom.safetensors');
     assert.equal(custom.modelVariant, null);
     assert.match(custom.modelLabel, /my-scail-custom/);
 });
 
-test('SCAIL-2 model choice persists in project engine settings', () => {
+test('SCAIL-2 model choice persists and retires GGUF/FP16 values', () => {
     const source = path.join(TMP, 'variant-source.mp4');
     fs.writeFileSync(source, 'dummy');
     const project = characterState.createProject({ sourcePath: source, title: 'variant', engine: 'scail2' });
     const updated = characterState.setEngine(project.id, 'scail2', {
         scail2: { unet: 'SCAIL-2-Q8_0.gguf' }
     });
-    assert.equal(updated.engineSettings.scail2.unet, 'SCAIL-2-Q8_0.gguf');
+    assert.equal(updated.engineSettings.scail2.unet, 'wan2.1_14B_SCAIL_2_int8_convrot.safetensors');
+    const custom = characterState.setEngine(project.id, 'scail2', {
+        scail2: { unet: 'my-scail-custom.safetensors' }
+    });
+    assert.equal(custom.engineSettings.scail2.unet, 'my-scail-custom.safetensors');
     const reloaded = characterState.get(project.id);
-    assert.equal(reloaded.engineSettings.scail2.unet, 'SCAIL-2-Q8_0.gguf');
+    assert.equal(reloaded.engineSettings.scail2.unet, 'my-scail-custom.safetensors');
 });
 
 test('Wan Animate 2 is gone and its aliases resolve to SCAIL-2', () => {
@@ -316,4 +371,47 @@ test('Wan Animate 2 is gone and its aliases resolve to SCAIL-2', () => {
     assert.equal(characterState.defaultEngineSettings().wanAnimate, undefined);
     assert.equal(characterState.defaultEngineSettings().wanAnimateMix, undefined);
     assert.ok(characterState.defaultEngineSettings().scail2);
+});
+
+test('SCAIL-2 plan uses the official text mask and the best anchor frame', () => {
+    const project = characterState.createProject({ title: 'plan', engine: 'scail2' });
+    const refDir = path.join(characterState.projectDir(project.id), 'refs');
+    fs.mkdirSync(refDir, { recursive: true });
+    fs.writeFileSync(path.join(refDir, 'ref.png'), 'dummy');
+    characterState.update(project.id, (current) => {
+        current.part = { file: 'part.mp4', width: 1280, height: 720, fps: 24, frames: 240 };
+        current.selection = {
+            method: 'dwpose',
+            version: 'selection-v1',
+            width: 1280,
+            height: 720,
+            keypointsFile: null,
+            corrections: [],
+            tracks: [{
+                id: 'track_1',
+                label: 'Person 1',
+                firstFrame: 0,
+                lastFrame: 220,
+                thumbFrame: 120,
+                bbox: { x: 100, y: 80, width: 220, height: 420 }
+            }]
+        };
+        current.people[0].selectionId = 'track_1';
+        current.people[0].refs = [{ id: 'ref_1', file: 'refs/ref.png', role: 'front' }];
+        current.people[0].subjectDescription = {
+            version: 2,
+            gender: 'woman',
+            outfit: 'a red coat and black boots',
+            trackId: 'track_1'
+        };
+        current.engineSettings.scail2.sam3Mode = 'text';
+        current.engineSettings.scail2.sam3VideoObject = '';
+    });
+    const plan = characterSwap.buildScailPlan(project.id, characterState.get(project.id));
+    assert.equal(plan.sam3Mode, 'text');
+    assert.equal(plan.targets.length, 1);
+    assert.equal(plan.targets[0].sam3Mode, 'text');
+    assert.equal(plan.targets[0].samText, 'woman, red coat');
+    assert.equal(plan.targets[0].anchorFrame, 120);
+    assert.equal(plan.targets[0].sam3ImageObject, 'human');
 });

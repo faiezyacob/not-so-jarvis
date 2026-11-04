@@ -7,6 +7,8 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const net = require('node:net');
+const { once } = require('node:events');
 
 const launcher = require('../services/comfyui-launcher');
 
@@ -42,4 +44,23 @@ test('leaves questions and unrelated turns alone', () => {
     for (const phrase of negatives) {
         assert.equal(launcher.isStartComfyRequest(phrase), false, phrase);
     }
+});
+
+test('portInUse sees a process already holding the ComfyUI port', async () => {
+    const server = net.createServer();
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const port = server.address().port;
+    try {
+        assert.equal(await launcher.portInUse(500, { host: '127.0.0.1', port }), true);
+    } finally {
+        await new Promise((resolve) => server.close(resolve));
+    }
+    assert.equal(await launcher.portInUse(300, { host: '127.0.0.1', port }), false);
+});
+
+test('comfyHostPort derives the host and port from COMFYUI_URL', () => {
+    const address = launcher.comfyHostPort();
+    assert.equal(typeof address.host, 'string');
+    assert.ok(Number.isInteger(address.port) && address.port > 0);
 });

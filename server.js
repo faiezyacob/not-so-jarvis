@@ -958,6 +958,51 @@ async function handleAPI(req, res, urlPath) {
         return true;
     }
 
+    // POST /api/setup/civitai-token - save the Civitai API key used by the
+    // Setup guide to download the BFS H3 Recast character-swap LoRA.
+    // Best-effort verification via /api/v1/me; the key is stored even when
+    // verification is inconclusive (offline), with a warning.
+    if (urlPath === '/api/setup/civitai-token' && req.method === 'POST') {
+        try {
+            const body = await readBody(req);
+            const token = String((body && body.token) || '').trim();
+            if (!token) {
+                json(res, 400, { error: 'token is required' });
+                return true;
+            }
+            const check = await modelSetup.verifyCivitaiToken(token);
+            const stored = configManager.setCivitai({
+                token,
+                user: check.user || null,
+                verifiedAt: check.valid ? new Date().toISOString() : null
+            });
+            json(res, 200, {
+                ok: true,
+                valid: check.valid,
+                user: check.user || null,
+                warning: check.valid ? null : check.error,
+                source: 'settings',
+                masked: token.length > 7 ? token.slice(0, 3) + '...' + token.slice(-4) : '***',
+                storedUser: stored.user || null
+            });
+        } catch (err) {
+            json(res, 500, { error: err.message });
+        }
+        return true;
+    }
+
+    // DELETE /api/setup/civitai-token - forget the stored Civitai API key
+    // (env-provided keys are unaffected).
+    if (urlPath === '/api/setup/civitai-token' && req.method === 'DELETE') {
+        try {
+            configManager.setCivitai({ token: null, user: null, verifiedAt: null });
+            json(res, 200, { ok: true });
+        } catch (err) {
+            json(res, 500, { error: err.message });
+        }
+        return true;
+    }
+
     // POST /api/setup/download — download missing models from Hugging Face
     // ({ ids: [...] }, or omit for all missing required). Runs in the
     // background; poll GET /api/setup/status for progress.
@@ -2468,6 +2513,7 @@ async function handleAPI(req, res, urlPath) {
                 conversationId: body.conversationId || null,
                 provider: body.provider || '',
                 model: body.model || '',
+                engine: body.engine || null,
                 title: body.title || filename
             });
             json(res, 201, presentCharacterSwap(project));
@@ -2500,6 +2546,39 @@ async function handleAPI(req, res, urlPath) {
                 const file = characterSwap.projectFilePath(projectId, project.part && project.part.file);
                 if (!file || !fs.existsSync(file)) { send404(res); return true; }
                 sendMediaFile(req, res, file);
+                return true;
+            }
+            if (rest === '/scene' && req.method === 'GET') {
+                const file = characterSwap.sceneReferencePath(projectId, project);
+                if (!file || !fs.existsSync(file)) { send404(res); return true; }
+                sendMediaFile(req, res, file);
+                return true;
+            }
+            if (rest === '/scene' && req.method === 'POST') {
+                const body = await readBody(req);
+                const turn = await acquireTurn(res, { label: 'character swap scene reference', conversationId: project.conversationId });
+                if (!turn) return true;
+                await vramManager.freeVRAMBeforeImage();
+                const updated = await characterSwap.buildSceneReference(projectId, {
+                    frame: body.frame
+                });
+                json(res, 200, presentCharacterSwap(updated));
+                return true;
+            }
+            if (rest === '/scene/upload' && req.method === 'POST') {
+                const body = await readBody(req);
+                adoptLegacyState(req.jarvisSession);
+                const sourcePath = resolveCharacterSwapAssetPath(body, req.jarvisSession, 'image');
+                if (!sourcePath) {
+                    throw badRequest('Select a generated image or upload a scene reference image first.');
+                }
+                const updated = characterSwap.setSceneReference(projectId, sourcePath, { source: 'upload' });
+                json(res, 200, presentCharacterSwap(updated));
+                return true;
+            }
+            if (rest === '/scene' && req.method === 'DELETE') {
+                const updated = characterSwap.clearSceneReference(projectId);
+                json(res, 200, presentCharacterSwap(updated));
                 return true;
             }
             if (rest === '/frame' && req.method === 'GET') {
@@ -2570,6 +2649,18 @@ async function handleAPI(req, res, urlPath) {
                 res.end(fs.readFileSync(file));
                 return true;
             }
+            if (rest === '/auto-people' && req.method === 'POST') {
+                const body = await readBody(req);
+                const turn = await acquireTurn(res, { label: 'character swap auto people', conversationId: project.conversationId });
+                if (!turn) return true;
+                await vramManager.freeVRAMBeforeImage();
+                const updated = await characterSwap.autoPeople(projectId, {
+                    provider: body.provider || project.provider,
+                    model: body.model || project.model
+                });
+                json(res, 200, presentCharacterSwap(updated));
+                return true;
+            }
             if (rest === '/describe' && req.method === 'POST') {
                 const body = await readBody(req);
                 const turn = await acquireTurn(res, { label: 'character swap describe', conversationId: project.conversationId });
@@ -2614,6 +2705,12 @@ async function handleAPI(req, res, urlPath) {
             const personRemoveMatch = rest.match(/^\/person\/([^/]+)$/);
             if (personRemoveMatch && req.method === 'DELETE') {
                 const updated = characterSwap.removePerson(projectId, decodeURIComponent(personRemoveMatch[1]));
+                json(res, 200, presentCharacterSwap(updated));
+                return true;
+            }
+            if (personRemoveMatch && req.method === 'PATCH') {
+                const body = await readBody(req);
+                const updated = characterSwap.updatePerson(projectId, decodeURIComponent(personRemoveMatch[1]), body);
                 json(res, 200, presentCharacterSwap(updated));
                 return true;
             }
@@ -8663,6 +8760,7 @@ function presentCharacterSwap(project) {
     const copy = JSON.parse(JSON.stringify(project));
     const base = '/api/character-swap/projects/' + encodeURIComponent(copy.id);
     copy.videoUrl = base + '/video';
+    copy.sceneReferenceUrl = characterSwap.sceneReferenceUrl(copy.id, project);
     copy.selection = copy.selection || { tracks: [] };
     copy.selection.tracks = (copy.selection.tracks || []).map((track) => Object.assign({}, track, {
         thumbUrl: track.thumb ? base + '/selection/' + encodeURIComponent(track.id) + '/thumb' : null
@@ -8685,6 +8783,11 @@ function presentCharacterSwap(project) {
     });
     delete copy.mix;
     copy.takes = (copy.takes || []).map((take) => Object.assign({}, take, {
+        lipRepair: take.lipRepair ? Object.assign({}, take.lipRepair, {
+            sourceUrl: take.lipRepair.sourceFilename
+                ? '/generated/' + encodeURIComponent(take.lipRepair.sourceFilename)
+                : take.lipRepair.sourceUrl || null
+        }) : null,
         windows: (take.windows || []).map((window) => {
             const clean = Object.assign({}, window);
             delete clean.file;
@@ -8712,16 +8815,27 @@ async function handleCharacterSwapRender(req, res, projectId, project) {
         json(res, 400, { error: err.message });
         return;
     }
+    const isRefine = Boolean(body.refineTakeId);
     const engine = characterSwap.getEngine(body.engine || project.engine).id;
     if (body.settings || (body.engine && body.engine !== project.engine)) {
         project = characterSwap.setEngine(projectId, engine, body.settings);
     }
     let info = null;
     try { info = await comfyui.getObjectInfo(); } catch { info = null; }
-    const status = characterSwap.engineStatus(project, info).find((item) => item.id === engine);
+    let status;
+    if (isRefine) {
+        const h3Settings = (project.engineSettings && project.engineSettings.h3) || {};
+        status = characterSwap.getEngine('h3').availability(info, Object.assign({}, h3Settings, {
+            refineOnly: true,
+            lipRepair: Object.assign({}, h3Settings.lipRepair, { enabled: true })
+        }));
+    } else {
+        status = characterSwap.engineStatus(project, info).find((item) => item.id === engine);
+    }
     if (!status || !status.available) {
         const missing = status && status.missing ? status.missing : ['ComfyUI is not reachable.'];
-        const label = engine === 'scail2' ? 'SCAIL-2' : 'MiniMax H3 replacement';
+        const label = isRefine ? 'H3 Recast lip repair'
+            : (engine === 'scail2' ? 'SCAIL-2' : 'MiniMax H3 Recast');
         json(res, 400, {
             error: label + ' is not ready. Missing: ' + missing.join('; '),
             code: 'engine_unavailable',
@@ -8730,34 +8844,14 @@ async function handleCharacterSwapRender(req, res, projectId, project) {
         });
         return;
     }
-    const turn = await acquireTurn(res, { label: 'character swap render', conversationId: project.conversationId });
+    const turn = await acquireTurn(res, { label: isRefine ? 'character swap lip repair' : 'character swap render', conversationId: project.conversationId });
     if (!turn) return;
-    if (engine === 'h3' && project.part && project.part.frames / 24 > 15.2) {
+    if (!isRefine && engine === 'h3' && project.part && project.part.frames / 24 > 15.2) {
         json(res, 400, {
-            error: 'MiniMax H3 replacement supports up to 15 seconds. Trim the clip (and re-track) or switch to SCAIL-2.',
+            error: 'H3 Recast supports up to 15 seconds. Trim the clip (and re-track) or switch to SCAIL-2.',
             code: 'h3_duration_exceeded'
         });
         return;
-    }
-    if (engine === 'scail2') {
-        const adapter = characterSwap.getEngine(engine);
-        const settings = project.engineSettings && project.engineSettings.scail2;
-        let stats = await comfyui.getSystemStats().catch(() => null);
-        let preflight = adapter.preflight(settings, stats);
-        if (!preflight.ok) {
-            await vramManager.freeVRAMBeforeImage().catch(() => {});
-            stats = await comfyui.getSystemStats().catch(() => null);
-            preflight = adapter.preflight(settings, stats);
-        }
-        if (!preflight.ok && !body.allowLowVram) {
-            json(res, 409, {
-                error: 'SCAIL-2 needs about ' + preflight.requiredVramMB + ' MB of free VRAM for the selected model; ComfyUI reports ' +
-                    preflight.freeVramMB + ' MB. Close other GPU apps, choose a smaller quant, or retry with allowLowVram.',
-                code: 'wan_insufficient_vram',
-                preflight
-            });
-            return;
-        }
     }
     const quality = body.quality === 'draft' ? 'draft' : 'full';
     const h3Size = body.h3Size || (quality === 'draft' ? 'S' : 'L');
@@ -8815,8 +8909,33 @@ async function handleCharacterSwapRender(req, res, projectId, project) {
         }
     };
     req.on('close', onClose);
-    const stopProgress = forwardComfyProgressToCompletion(res, 'Rendering the character swap…');
+    const stopProgress = forwardComfyProgressToCompletion(res, isRefine
+        ? 'Refining the selected face.'
+        : 'Rendering the H3 Recast character swap.');
     try {
+        if (isRefine) {
+            sseWrite(res, { generating: 'Refining the selected face from the cached H3 Recast take.' });
+            const refined = await characterSwap.renderLipRefine(projectId, {
+                takeId: body.refineTakeId,
+                person: body.lipPerson,
+                conversationId: project.conversationId,
+                seed: Number.isInteger(Number(body.seed)) ? Number(body.seed) : undefined,
+                onQueued: (position, id) => {
+                    queueId = id;
+                    sseWrite(res, { queued: { position, queueId: id } });
+                },
+                onStart: () => sseWrite(res, { generating: 'Refining the selected face.' })
+            });
+            if (!refined) throw new Error('Lip repair finished without an updated take.');
+            sseWrite(res, { take: refined, refined: true });
+            sseWrite(res, {
+                done: true,
+                takes: [refined],
+                project: presentCharacterSwap(characterSwap.get(projectId))
+            });
+            return;
+        }
+
         if (engine === 'scail2') {
             const current = characterSwap.get(projectId);
             const needsCharacter = (current.people || []).some((person) =>
@@ -8848,31 +8967,48 @@ async function handleCharacterSwapRender(req, res, projectId, project) {
                     }).catch(() => {});
                 }
             }
-        } else if (engine === 'h3' && await characterSwap.needsRetrack(projectId)) {
-            sseWrite(res, { generating: 'Tracking the selected people…' });
-            await characterSwap.runTrack(projectId);
-        }
-        if (engine === 'h3') {
-            const described = characterSwap.get(projectId);
-            const needsDescription = described && (described.people || []).some((person) =>
-                (person.refs || []).length && !person.description
+        } else if (engine === 'h3') {
+            const current = characterSwap.get(projectId);
+            const needsCharacter = (current.people || []).some((person) =>
+                (person.refs || []).length && !person.identitySummary
             );
-            if (needsDescription) {
-                sseWrite(res, { generating: 'Describing the character…' });
+            const hasTrackedTargets = (current.people || []).some((person) => person.selectionId);
+            const needsSubject = hasTrackedTargets && !characterSwap.hasSubjectDescription(current);
+            if (needsCharacter || needsSubject) {
                 await vramManager.freeVRAMBeforeChat();
-                await characterSwap.describeProject(projectId, {
-                    provider: project.provider,
-                    model: project.model
-                });
+                if (needsCharacter) {
+                    sseWrite(res, { generating: 'Reading the character reference.' });
+                    await characterSwap.describeProject(projectId, {
+                        provider: project.provider,
+                        model: project.model
+                    }).catch(() => {});
+                }
+                if (needsSubject) {
+                    sseWrite(res, { generating: 'Reading the selected people.' });
+                    await characterSwap.describeSelectedSubject(projectId, {
+                        provider: project.provider,
+                        model: project.model
+                    }).catch(() => {});
+                }
             }
-            sseWrite(res, { generating: 'Preparing the refined masks…' });
-            await characterSwap.exportMasks(projectId);
+            if (!characterSwap.sceneReferencePath(projectId, characterSwap.get(projectId))) {
+                sseWrite(res, { generating: 'Building the H3 Recast scene reference from the clip.' });
+                await vramManager.freeVRAMBeforeImage();
+                try {
+                    await characterSwap.buildSceneReference(projectId);
+                } catch (err) {
+                    const error = new Error('The H3 Recast scene reference could not be built: ' + err.message + ' Upload a scene reference image or try again.');
+                    error.code = 'h3_recast_scene_reference_failed';
+                    throw error;
+                }
+            }
         }
+
         await vramManager.freeVRAMBeforeImage();
         sseWrite(res, {
             generating: engine === 'scail2'
                 ? 'Rendering the SCAIL-2 character replacement…'
-                : 'Rendering the MiniMax H3 character swap…'
+                : 'Rendering the MiniMax H3 Recast character swap.'
         });
         const takes = [];
         const autoUpscale = Boolean(videoGenerator.effectiveVideoSettings().autoUpscaleEnabled);

@@ -24,6 +24,7 @@ const H3_MAX_SECONDS = 15;
 const WAN_MAX_SECONDS = Math.max(1, Number(process.env.WAN_ANIMATE_MAX_SECONDS) || 15);
 const DEFAULT_ENGINE = 'scail2';
 const ENGINES = ['scail2', 'h3'];
+const h3Graph = require('./engines/h3-recast-graph');
 
 function clampNumber(value, min, max, fallback) {
     const n = Number(value);
@@ -31,11 +32,14 @@ function clampNumber(value, min, max, fallback) {
     return Math.max(min, Math.min(max, n));
 }
 
+// The official ComfyUI SCAIL-2 checkpoint (INT8 convrot, models/diffusion_models).
+const SCAIL2_INT8_MODEL = 'wan2.1_14B_SCAIL_2_int8_convrot.safetensors';
+
 function defaultEngineSettings() {
     return {
         scail2: {
             preset: 'standard',
-            unet: 'SCAIL-2-Q4_K_M.gguf',
+            unet: SCAIL2_INT8_MODEL,
             resolution: '480p',
             width: 0,
             height: 0,
@@ -53,13 +57,30 @@ function defaultEngineSettings() {
             seed: null,
             durationMode: 'match',
             durationSeconds: null,
+            sam3Mode: 'text',
+            sam3ImageObject: 'human',
+            sam3VideoObject: '',
             positive: '',
             negative: '',
             maxSeconds: WAN_MAX_SECONDS
         },
         h3: {
             quality: 'full',
-            h3Size: 'L'
+            h3Size: 'L',
+            unet: '',
+            lipUnet: '',
+            clip: '',
+            videoVae: '',
+            audioVae: '',
+            swapLora: '',
+            swapStrength: 1,
+            steps: 20,
+            denoise: 1,
+            shiftVideo: 12,
+            shiftAudio: 3,
+            attention: 'auto',
+            sceneReference: null,
+            lipRepair: h3Graph.normalizeSettings({}, null).lip
         }
     };
 }
@@ -86,7 +107,11 @@ function normalizeEngineSettings(source) {
         : (input.wanAnimate && typeof input.wanAnimate === 'object' ? input.wanAnimate : {});
     const h3 = input.h3 && typeof input.h3 === 'object' ? input.h3 : {};
     base.scail2.preset = ['draft', 'standard', 'quality'].includes(String(scail.preset)) ? String(scail.preset) : base.scail2.preset;
-    base.scail2.unet = String(scail.unet || base.scail2.unet).trim().slice(0, 200) || base.scail2.unet;
+    // Retired GGUF/FP16 values migrate to the official INT8 checkpoint; a custom
+    // safetensors file is still honoured.
+    const storedUnet = String(scail.unet || '').trim();
+    const legacyUnet = /\.gguf$/i.test(storedUnet) || /SCAIL_2_fp16/i.test(storedUnet);
+    base.scail2.unet = (!storedUnet || legacyUnet) ? SCAIL2_INT8_MODEL : storedUnet.slice(0, 200);
     base.scail2.resolution = ['480p', '720p'].includes(String(scail.resolution)) ? String(scail.resolution) : base.scail2.resolution;
     base.scail2.width = Math.max(0, Math.min(2048, Math.round(Number(scail.width) || 0)));
     base.scail2.height = Math.max(0, Math.min(2048, Math.round(Number(scail.height) || 0)));
@@ -108,6 +133,12 @@ function normalizeEngineSettings(source) {
     base.scail2.durationSeconds = scail.durationSeconds === null || scail.durationSeconds === undefined || scail.durationSeconds === ''
         ? null
         : Math.round(clampNumber(scail.durationSeconds, 1, WAN_MAX_SECONDS, WAN_MAX_SECONDS) * 10) / 10;
+    // SAM 3.1 target mask: always the official open-vocabulary text detection.
+    // The clicked-target point mask is an automatic fallback when no usable
+    // subject description exists, not a user-selectable mode.
+    base.scail2.sam3Mode = 'text';
+    base.scail2.sam3ImageObject = String(scail.sam3ImageObject || base.scail2.sam3ImageObject).slice(0, 200);
+    base.scail2.sam3VideoObject = String(scail.sam3VideoObject || '').slice(0, 400);
     base.scail2.positive = String(scail.positive || '').slice(0, 4000);
     base.scail2.negative = String(scail.negative || '').slice(0, 4000);
     base.scail2.maxSeconds = Math.round(clampNumber(scail.maxSeconds, H3_MAX_SECONDS, WAN_MAX_SECONDS, WAN_MAX_SECONDS));
@@ -116,6 +147,35 @@ function normalizeEngineSettings(source) {
     base.h3.h3Size = ['S', 'M', 'L', 'XL'].includes(String(h3.h3Size).toUpperCase())
         ? String(h3.h3Size).toUpperCase()
         : base.h3.h3Size;
+    base.h3.unet = String(h3.unet || '').trim().slice(0, 260);
+    base.h3.lipUnet = String(h3.lipUnet || '').trim().slice(0, 260);
+    base.h3.clip = String(h3.clip || '').trim().slice(0, 260);
+    base.h3.videoVae = String(h3.videoVae || '').trim().slice(0, 260);
+    base.h3.audioVae = String(h3.audioVae || '').trim().slice(0, 260);
+    base.h3.swapLora = String(h3.swapLora || '').trim().slice(0, 260);
+    base.h3.swapStrength = clampNumber(h3.swapStrength, 0, 2, base.h3.swapStrength);
+    base.h3.steps = Math.round(clampNumber(h3.steps, 1, 100, base.h3.steps));
+    base.h3.denoise = clampNumber(h3.denoise, 0.05, 1, base.h3.denoise);
+    base.h3.shiftVideo = clampNumber(h3.shiftVideo, 1, 20, base.h3.shiftVideo);
+    base.h3.shiftAudio = clampNumber(h3.shiftAudio, 1, 20, base.h3.shiftAudio);
+    base.h3.attention = ['auto', 'comfy kitchen attention', 'pytorch attention'].includes(String(h3.attention))
+        ? String(h3.attention)
+        : 'auto';
+    base.h3.sceneReference = h3.sceneReference && typeof h3.sceneReference === 'object' &&
+        typeof h3.sceneReference.file === 'string' && h3.sceneReference.file
+        ? {
+            file: String(h3.sceneReference.file).slice(0, 400),
+            source: ['generated', 'clip'].includes(h3.sceneReference.source) ? h3.sceneReference.source : 'upload',
+            frame: h3.sceneReference.frame === null || h3.sceneReference.frame === undefined
+                ? null
+                : Math.max(0, Math.round(Number(h3.sceneReference.frame) || 0)),
+            prompt: String(h3.sceneReference.prompt || '').slice(0, 4000),
+            width: Math.max(0, Math.round(Number(h3.sceneReference.width) || 0)),
+            height: Math.max(0, Math.round(Number(h3.sceneReference.height) || 0)),
+            createdAt: h3.sceneReference.createdAt ? String(h3.sceneReference.createdAt) : null
+        }
+        : null;
+    base.h3.lipRepair = h3Graph.normalizeSettings({ lipRepair: h3.lipRepair }, null).lip;
     return base;
 }
 
@@ -138,6 +198,7 @@ function ensureProjectDir(id) {
     fs.mkdirSync(path.join(dir, 'takes'), { recursive: true });
     fs.mkdirSync(path.join(dir, 'wan'), { recursive: true });
     fs.mkdirSync(path.join(dir, 'scail2'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'scene'), { recursive: true });
     fs.mkdirSync(path.join(dir, 'selection'), { recursive: true });
     fs.mkdirSync(path.join(dir, 'segmentation'), { recursive: true });
     return dir;
@@ -185,6 +246,8 @@ function newPerson(index) {
         identitySummary: '',
         subjectDescription: null,
         subjectSummary: '',
+        h3Line: '',
+        manual: false,
         status: 'new'
     };
 }
@@ -217,7 +280,7 @@ function createProject(input = {}) {
         footage: null,
         part: null,
         trim: { start: 0, end: 0 },
-        people: [newPerson(0)],
+        people: normalizeEngineName(input.engine) === 'h3' ? [] : [newPerson(0)],
         maskSettings: {
             grow: 12,
             feather: 2,
@@ -301,7 +364,16 @@ function normalizeProject(project) {
             person.subjectDescription = null;
         }
         if (typeof person.subjectSummary !== 'string') person.subjectSummary = '';
+        if (typeof person.h3Line !== 'string') person.h3Line = '';
+        person.h3Line = person.h3Line.slice(0, 600);
+        person.manual = person.manual === true;
     });
+    if (project.engine === 'h3') {
+        project.people = (project.people || []).filter((person) =>
+            person.manual || person.selectionId || (person.refs || []).length || person.h3Line ||
+            person.description || person.identitySummary
+        );
+    }
 
     (project.takes || []).forEach((take) => {
         if (!take.engine) {
@@ -378,6 +450,12 @@ function setEngine(id, engine, settings) {
         project.engine = next;
         project.engineSettings = normalizeEngineSettings(Object.assign({}, project.engineSettings, settings || {}));
         project.engineChangedAt = changed ? now() : project.engineChangedAt || null;
+        if (next === 'h3') {
+            project.people = (project.people || []).filter((person) =>
+                person.manual || person.selectionId || (person.refs || []).length || person.h3Line ||
+                person.description || person.identitySummary
+            );
+        }
     });
 }
 
@@ -388,7 +466,9 @@ function addPerson(id) {
             err.status = 400;
             throw err;
         }
-        project.people.push(newPerson(project.people.length));
+        const person = newPerson(project.people.length);
+        person.manual = true;
+        project.people.push(person);
     });
 }
 
@@ -400,6 +480,15 @@ function getPerson(project, personId) {
         throw err;
     }
     return person;
+}
+
+function updatePerson(id, personId, patch = {}) {
+    return update(id, (project) => {
+        const person = getPerson(project, personId);
+        if (typeof patch.h3Line === 'string') {
+            person.h3Line = patch.h3Line.slice(0, 600);
+        }
+    });
 }
 
 function removePerson(id, personId) {
@@ -466,6 +555,7 @@ module.exports = {
     setEngine,
     addPerson,
     getPerson,
+    updatePerson,
     removePerson,
     relative,
     absolute,

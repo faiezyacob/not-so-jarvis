@@ -2568,6 +2568,27 @@ function buildQwenImage21EditGraph(instruction, loadName, options = {}) {
         latentInput = ['canvas', 0];
     }
 
+    // Optional masked edit (H3 Recast scene reference): start from the SOURCE
+    // image's own latent and only denoise inside the mask. This keeps the clip's
+    // exact pose/background/other people while the reference replaces the
+    // selected person in place.
+    const maskLoadName = String(options.maskLoadName || '').trim();
+    if (maskLoadName) {
+        graph.source_latent = {
+            class_type: 'VAEEncode',
+            inputs: { pixels: ['load_image', 0], vae: ['vae', 0] }
+        };
+        graph.mask = {
+            class_type: 'LoadImageMask',
+            inputs: { image: maskLoadName, channel: 'red' }
+        };
+        graph.noise_mask = {
+            class_type: 'SetLatentNoiseMask',
+            inputs: { samples: ['source_latent', 0], mask: ['mask', 0] }
+        };
+        latentInput = ['noise_mask', 0];
+    }
+
     graph.sampler = {
         class_type: 'KSampler',
         inputs: {
@@ -2860,6 +2881,11 @@ async function editImage(sourceAbsPath, instruction, options = {}) {
         for (let i = 0; i < referencePaths.length; i++) {
             referenceLoadNames.push(await uploadSource(referencePaths[i], i + 1));
         }
+        // Optional mask (Qwen edit only): uploaded like any other LoadImage.
+        let maskLoadName = null;
+        if (editEngine !== 'krea2' && options.maskPath && fs.existsSync(options.maskPath)) {
+            maskLoadName = await uploadSource(options.maskPath, referencePaths.length + 1);
+        }
 
         let basename;
         let usedModel;
@@ -2892,7 +2918,8 @@ async function editImage(sourceAbsPath, instruction, options = {}) {
                     width: canvasWidth,
                     height: canvasHeight,
                     negativePrompt: options.negativePrompt,
-                    referenceLoadNames
+                    referenceLoadNames,
+                    maskLoadName
                 });
 
             const clipType = editEngine === 'krea2'

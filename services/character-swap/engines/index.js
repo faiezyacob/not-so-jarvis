@@ -1,7 +1,7 @@
 /* ============================================
    JARVIS — Character Swap engine registry
-   SCAIL-2 is the replacement engine; MiniMax H3
-   stays available as the alternative. The legacy
+   SCAIL-2 is the default replacement engine; H3
+   Recast (the official BFS swap) stays available as the alternative. The legacy
    Wan engines are gone; their old aliases resolve
    to SCAIL-2 so nothing can fall back to a removed
    graph.

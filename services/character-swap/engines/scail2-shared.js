@@ -9,7 +9,7 @@
    Copyright (c) 2026 not-so-jarvis.
    ============================================ */
 
-const FPS = 24;
+const FPS = 16;
 const MAX_SECONDS = 15;
 
 const RESOLUTION_BUDGETS = Object.freeze({
