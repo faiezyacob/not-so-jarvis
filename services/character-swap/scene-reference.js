@@ -209,6 +209,7 @@ function buildInstruction(project, rows) {
         const reference = index + 2;
         return 'Replace ' + label + ' with the person in image ' + reference +
             '. Copy the ENTIRE look from image ' + reference + ': face, facial structure, hair, skin tone, body proportions, and exactly the clothing, shoes and accessories shown in image ' + reference + outfitClause(person) +
+            '. Replace the hair completely with the hair from image ' + reference + ': match its exact colour, length and style, and remove every trace of the original person\'s hair.' +
             '. Keep ' + label + '\'s exact body pose, head angle, gaze, hand positions, seated or standing position, size, scale, screen position and framing from image 1 unchanged' + poseClause(project, person) +
             '. Do not copy the reference image\'s pose, camera angle, framing, background or lighting.';
     });
@@ -298,7 +299,9 @@ function targetMaskBoxes(project, rows) {
 async function buildTargetMask(boxes, W, H, dir) {
     const mask = path.join(dir, 'target-mask.png');
     const draw = boxes.map((bbox) => {
-        const margin = Math.max(48, Math.round(Math.min(Number(bbox.width), Number(bbox.height)) * 0.35));
+        // A generous margin keeps the source hair fully inside the solid mask,
+        // so the feathered edge falls on the background, not on the hair.
+        const margin = Math.max(80, Math.round(Math.min(Number(bbox.width), Number(bbox.height)) * 0.5));
         const x = Math.max(0, Math.round(Number(bbox.x) - margin));
         const y = Math.max(0, Math.round(Number(bbox.y) - margin));
         const w = Math.max(1, Math.min(W - x, Math.round(Number(bbox.width) + margin * 2)));
@@ -307,7 +310,7 @@ async function buildTargetMask(boxes, W, H, dir) {
     }).join(',');
     await media.run([
         '-hide_banner', '-y', '-f', 'lavfi', '-i', 'color=c=black:s=' + W + 'x' + H + ':d=1',
-        '-vf', draw + ',gblur=sigma=18,format=gray', '-frames:v', '1', mask
+        '-vf', draw + ',gblur=sigma=14,format=gray', '-frames:v', '1', mask
     ], { code: 'character_swap_scene_mask_failed' });
     return mask;
 }
