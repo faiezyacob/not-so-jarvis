@@ -124,12 +124,23 @@ const UPLOAD_MIME_TO_EXT = {
     'image/webp': '.webp',
     'video/mp4': '.mp4',
     'video/webm': '.webm',
-    'video/quicktime': '.mov'
+    'video/quicktime': '.mov',
+    'audio/mpeg': '.mp3',
+    'audio/mp3': '.mp3',
+    'audio/wav': '.wav',
+    'audio/x-wav': '.wav',
+    'audio/mp4': '.m4a',
+    'audio/x-m4a': '.m4a',
+    'audio/flac': '.flac',
+    'audio/ogg': '.ogg'
 };
 const UPLOAD_MAX_BYTES = 10 * 1024 * 1024;
 // Uploaded videos are the source footage for character replacement, so they get
 // their own (larger) size cap while images keep the 10 MB limit.
 const UPLOAD_VIDEO_MAX_BYTES = 64 * 1024 * 1024;
+// Isolated vocal stems are usually short and compressed; allow the same cap as
+// videos so a lossless WAV stem is not rejected.
+const UPLOAD_AUDIO_MAX_BYTES = 64 * 1024 * 1024;
 const VIDEO_REFERENCE_MAX = 3;
 const CHAT_IMAGES_MAX = 3;
 // The @ picker can reference more than one generated image per turn (e.g.
@@ -2581,6 +2592,22 @@ async function handleAPI(req, res, urlPath) {
                 json(res, 200, presentCharacterSwap(updated));
                 return true;
             }
+            if (rest === '/lip-audio' && req.method === 'POST') {
+                const body = await readBody(req);
+                adoptLegacyState(req.jarvisSession);
+                const sourcePath = resolveCharacterSwapAssetPath(body, req.jarvisSession, 'audio');
+                if (!sourcePath) {
+                    throw badRequest('Upload an MP3, WAV, M4A, FLAC or OGG vocal stem first.');
+                }
+                const updated = characterSwap.setLipAudio(projectId, sourcePath);
+                json(res, 200, presentCharacterSwap(updated));
+                return true;
+            }
+            if (rest === '/lip-audio' && req.method === 'DELETE') {
+                const updated = characterSwap.clearLipAudio(projectId);
+                json(res, 200, presentCharacterSwap(updated));
+                return true;
+            }
             if (rest === '/frame' && req.method === 'GET') {
                 const frame = Number(new URL(req.url, 'http://localhost').searchParams.get('index') || 0);
                 const file = await characterSwap.sourceFrame(projectId, frame);
@@ -2976,8 +3003,9 @@ function badRequest(message) {
 function saveUpload(body) {
     const mime = String((body && body.mime) || '').toLowerCase();
     const ext = UPLOAD_MIME_TO_EXT[mime];
-    if (!ext) throw badRequest('Unsupported media type. Use PNG, JPEG, WebP, MP4, WebM or MOV.');
+    if (!ext) throw badRequest('Unsupported media type. Use PNG, JPEG, WebP, MP4, WebM, MOV, MP3, WAV, M4A, FLAC or OGG.');
     const isVideo = mime.startsWith('video/');
+    const isAudio = mime.startsWith('audio/');
     let data = String((body && body.data) || '');
     const dataPrefix = data.match(/^data:[^;]+;base64,/);
     if (dataPrefix) data = data.slice(dataPrefix[0].length);
@@ -2990,9 +3018,9 @@ function saveUpload(body) {
         throw badRequest('Invalid base64 media data.');
     }
     if (!buffer.length) throw badRequest('Empty upload.');
-    const maxBytes = isVideo ? UPLOAD_VIDEO_MAX_BYTES : UPLOAD_MAX_BYTES;
+    const maxBytes = isVideo ? UPLOAD_VIDEO_MAX_BYTES : (isAudio ? UPLOAD_AUDIO_MAX_BYTES : UPLOAD_MAX_BYTES);
     if (buffer.length > maxBytes) {
-        throw badRequest((isVideo ? 'Video' : 'Image') + ' is too large. Max ' +
+        throw badRequest((isVideo ? 'Video' : (isAudio ? 'Audio' : 'Image')) + ' is too large. Max ' +
             Math.round(maxBytes / (1024 * 1024)) + ' MB.');
     }
     if (!fs.existsSync(IMAGES_DIR)) fs.mkdirSync(IMAGES_DIR, { recursive: true });
@@ -8742,6 +8770,12 @@ function isGeneratedVideoEntry(entry) {
 function resolveCharacterSwapAssetPath(body, sessionId, kind) {
     const safeName = path.basename(String((body && body.filename) || '').split('?')[0]);
     if (!safeName) return null;
+    if (kind === 'audio') {
+        const ext = path.extname(safeName).toLowerCase();
+        if (!['.mp3', '.wav', '.m4a', '.flac', '.ogg', '.oga'].includes(ext)) return null;
+        const uploaded = path.join(IMAGES_DIR, safeName);
+        return uploaded.startsWith(IMAGES_DIR) && fs.existsSync(uploaded) ? uploaded : null;
+    }
     if (String((body && body.source) || '').toLowerCase() === 'generated') {
         const entry = generatedHistory.listPublic(sessionId).find((item) => generatedEntryFilename(item) === safeName);
         if (!entry) return null;
@@ -8759,7 +8793,10 @@ function presentCharacterSwap(project) {
     if (!project) return null;
     const copy = JSON.parse(JSON.stringify(project));
     const base = '/api/character-swap/projects/' + encodeURIComponent(copy.id);
-    copy.videoUrl = base + '/video';
+    // The video endpoint is served with immutable caching. Version the URL by
+    // part file so a re-trim (a new part file) always reloads the player.
+    const partName = copy.part && copy.part.file ? path.basename(copy.part.file) : '';
+    copy.videoUrl = base + '/video' + (partName ? '?v=' + encodeURIComponent(partName) : '');
     copy.sceneReferenceUrl = characterSwap.sceneReferenceUrl(copy.id, project);
     copy.selection = copy.selection || { tracks: [] };
     copy.selection.tracks = (copy.selection.tracks || []).map((track) => Object.assign({}, track, {

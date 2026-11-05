@@ -195,12 +195,28 @@ async function setTrim(projectId, start, end) {
     const project = characterState.requireProject(projectId);
     const footagePath = abs(projectId, project.footage && project.footage.file);
     if (!footagePath || !fs.existsSync(footagePath)) throw new Error('The prepared footage is missing.');
-    const available = Math.min(project.source.duration || project.footage.frames / media.FPS, WAN_MAX_SECONDS);
-    const from = clamp(start, 0, Math.max(0, available - 1 / media.FPS), 0);
-    const to = clamp(end, from + 1 / media.FPS, available, available);
-    const partPath = path.join(projectDir(projectId), 'part.mp4');
-    const part = await media.conform(footagePath, partPath, { start: from, duration: to - from });
-    return characterState.update(projectId, (current) => {
+    const frameStep = 1 / media.FPS;
+    const footageDuration = project.footage && Number(project.footage.frames) > 0
+        ? Number(project.footage.frames) / (Number(project.footage.fps) || media.FPS)
+        : 0;
+    const sourceDuration = footageDuration || Number(project.source.duration) || 0;
+    const from = clamp(start, 0, Math.max(0, sourceDuration - frameStep), 0);
+    const maxEnd = Math.max(from + frameStep, Math.min(sourceDuration, from + WAN_MAX_SECONDS));
+    const to = clamp(end, from + frameStep, maxEnd, maxEnd);
+    // Render the trim to a fresh file instead of overwriting part.mp4. The
+    // browser may still hold a read stream on the previous take, and an
+    // interrupted ffmpeg run would otherwise leave a corrupt video behind.
+    const previousPart = project.part && project.part.file;
+    const partName = 'part-' + Date.now().toString(36) + '.mp4';
+    const partPath = path.join(projectDir(projectId), partName);
+    let part;
+    try {
+        part = await media.conform(footagePath, partPath, { start: from, duration: to - from });
+    } catch (err) {
+        try { fs.unlinkSync(partPath); } catch { /* nothing to clean up */ }
+        throw err;
+    }
+    const updated = characterState.update(projectId, (current) => {
         current.part = {
             file: rel(projectId, partPath),
             width: part.width,
@@ -222,6 +238,10 @@ async function setTrim(projectId, start, end) {
         current.error = null;
         current.activity = null;
     });
+    if (previousPart && previousPart !== updated.part.file) {
+        try { fs.unlinkSync(abs(projectId, previousPart)); } catch { /* in use; the next trim retries */ }
+    }
+    return updated;
 }
 
 async function addAnchor(projectId, personId, anchor) {
@@ -1857,6 +1877,32 @@ function buildH3LipPlan(projectId, project, take, options = {}) {
     const scene = sceneReference.current(projectId, project);
     const width = Number(take.width) || 0;
     const height = Number(take.height) || 0;
+    // The lip pass conditions on the ORIGINAL clip audio (the same track the
+    // swap used), not the generated take's re-encoded AAC. An optional vocals
+    // stem replaces it for conditioning only; the output keeps the original.
+    const sourceRel = project.part && project.part.file ? project.part.file : '';
+    let sourceAbs = sourceRel ? abs(projectId, sourceRel) : '';
+    // The take was generated from the clip as it existed at render time. If the
+    // clip has since been re-trimmed (setTrim rewrites part.mp4) its audio no
+    // longer matches the cached take, so fall back to the take's own audio.
+    if (sourceAbs && fs.existsSync(sourceAbs)) {
+        try {
+            const takeTime = Date.parse(take.createdAt) || 0;
+            const sourceTime = fs.statSync(sourceAbs).mtimeMs;
+            const sourceFrames = Number(project.part && project.part.frames) || 0;
+            if ((takeTime && sourceTime > takeTime + 2000) || (sourceFrames && sourceFrames < frames)) {
+                sourceAbs = '';
+            }
+        } catch {
+            sourceAbs = '';
+        }
+    } else {
+        sourceAbs = '';
+    }
+    const vocalsRel = settings.lipRepair && settings.lipRepair.vocalsFile
+        ? String(settings.lipRepair.vocalsFile)
+        : '';
+    const vocalsAbs = vocalsRel ? abs(projectId, vocalsRel) : '';
     return {
         engine: 'h3',
         projectId,
@@ -1866,6 +1912,10 @@ function buildH3LipPlan(projectId, project, take, options = {}) {
         baseVideoUrl: take.lipRepair && take.lipRepair.sourceUrl ? take.lipRepair.sourceUrl : take.url,
         faceReferenceAbsPath: abs(projectId, reference.file),
         faceReferenceFilename: path.basename(reference.file),
+        sourceVideoAbsPath: sourceAbs && fs.existsSync(sourceAbs) ? sourceAbs : null,
+        sourceVideoFilename: sourceRel || null,
+        lipAudioAbsPath: vocalsAbs && fs.existsSync(vocalsAbs) ? vocalsAbs : null,
+        lipAudioFilename: vocalsAbs && fs.existsSync(vocalsAbs) ? vocalsRel : null,
         personIndex: personNumber - 1,
         personNumber,
         frames,
@@ -1948,6 +1998,61 @@ function setSceneReference(projectId, filePath, meta) {
 
 function clearSceneReference(projectId) {
     sceneReference.clear(projectId);
+    return characterState.get(projectId);
+}
+
+// Optional isolated vocal stem for the H3 Recast lip pass. It is stored in the
+// project workspace so the lip plan can feed it to NativeAudioLock while the
+// rendered output keeps the original clip audio.
+const LIP_AUDIO_EXTENSIONS = ['.mp3', '.wav', '.m4a', '.flac', '.ogg', '.oga'];
+
+function lipAudioDir(projectId) {
+    return path.join(characterState.projectDir(projectId), 'lip');
+}
+
+function setLipAudio(projectId, sourcePath) {
+    characterState.requireProject(projectId);
+    const source = String(sourcePath || '');
+    if (!source || !fs.existsSync(source)) {
+        const err = new Error('Select a vocal stem to upload first.');
+        err.status = 400;
+        throw err;
+    }
+    const ext = (path.extname(source) || '').toLowerCase();
+    if (!LIP_AUDIO_EXTENSIONS.includes(ext)) {
+        const err = new Error('Use an MP3, WAV, M4A, FLAC or OGG vocal stem.');
+        err.status = 400;
+        throw err;
+    }
+    const dir = lipAudioDir(projectId);
+    fs.mkdirSync(dir, { recursive: true });
+    for (const name of fs.readdirSync(dir)) {
+        if (/^vocals\./i.test(name)) fs.unlinkSync(path.join(dir, name));
+    }
+    const target = path.join(dir, 'vocals' + ext);
+    fs.copyFileSync(source, target);
+    const vocalsFile = rel(projectId, target);
+    characterState.update(projectId, (current) => {
+        current.engineSettings = characterState.normalizeEngineSettings(current.engineSettings);
+        current.engineSettings.h3.lipRepair.vocalsFile = vocalsFile;
+        current.error = null;
+    });
+    return characterState.get(projectId);
+}
+
+function clearLipAudio(projectId) {
+    characterState.requireProject(projectId);
+    const dir = lipAudioDir(projectId);
+    if (fs.existsSync(dir)) {
+        for (const name of fs.readdirSync(dir)) {
+            if (/^vocals\./i.test(name)) fs.unlinkSync(path.join(dir, name));
+        }
+    }
+    characterState.update(projectId, (current) => {
+        current.engineSettings = characterState.normalizeEngineSettings(current.engineSettings);
+        current.engineSettings.h3.lipRepair.vocalsFile = '';
+        current.error = null;
+    });
     return characterState.get(projectId);
 }
 
@@ -2200,6 +2305,8 @@ module.exports = {
     buildSceneReference,
     setSceneReference,
     clearSceneReference,
+    setLipAudio,
+    clearLipAudio,
     sceneReferenceUrl,
     sceneReferencePath,
     markTakeUpscaled,

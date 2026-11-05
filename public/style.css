@@ -905,7 +905,11 @@ details.settings-card[open] summary.settings-card-title::after {
     }
 }
 
-.settings-toggle input[type="checkbox"] {
+.settings-toggle input[type="checkbox"],
+.ml-reasoning-toggle input[type="checkbox"],
+.character-swap-check input[type="checkbox"],
+.companion-check input[type="checkbox"],
+.playground-lock input[type="checkbox"] {
     appearance: none;
     width: 32px;
     height: 18px;
@@ -916,9 +920,14 @@ details.settings-card[open] summary.settings-card-title::after {
     cursor: pointer;
     transition: all 0.2s ease;
     flex-shrink: 0;
+    margin: 0;
 }
 
-.settings-toggle input[type="checkbox"]::after {
+.settings-toggle input[type="checkbox"]::after,
+.ml-reasoning-toggle input[type="checkbox"]::after,
+.character-swap-check input[type="checkbox"]::after,
+.companion-check input[type="checkbox"]::after,
+.playground-lock input[type="checkbox"]::after {
     content: '';
     position: absolute;
     top: 2px;
@@ -930,14 +939,31 @@ details.settings-card[open] summary.settings-card-title::after {
     transition: all 0.2s ease;
 }
 
-.settings-toggle input[type="checkbox"]:checked {
+.settings-toggle input[type="checkbox"]:checked,
+.ml-reasoning-toggle input[type="checkbox"]:checked,
+.character-swap-check input[type="checkbox"]:checked,
+.companion-check input[type="checkbox"]:checked,
+.playground-lock input[type="checkbox"]:checked {
     background: rgba(108, 255, 154, 0.15);
     border-color: rgba(108, 255, 154, 0.3);
 }
 
-.settings-toggle input[type="checkbox"]:checked::after {
+.settings-toggle input[type="checkbox"]:checked::after,
+.ml-reasoning-toggle input[type="checkbox"]:checked::after,
+.character-swap-check input[type="checkbox"]:checked::after,
+.companion-check input[type="checkbox"]:checked::after,
+.playground-lock input[type="checkbox"]:checked::after {
     transform: translateX(14px);
     background: var(--accent);
+}
+
+.settings-toggle input[type="checkbox"]:focus-visible,
+.ml-reasoning-toggle input[type="checkbox"]:focus-visible,
+.character-swap-check input[type="checkbox"]:focus-visible,
+.companion-check input[type="checkbox"]:focus-visible,
+.playground-lock input[type="checkbox"]:focus-visible {
+    outline: 2px solid var(--border-focus);
+    outline-offset: 2px;
 }
 
 .settings-toggle-label {
@@ -4316,41 +4342,6 @@ em {
     align-items: center;
     gap: 8px;
     cursor: pointer;
-}
-
-.ml-reasoning-toggle input[type="checkbox"] {
-    appearance: none;
-    width: 32px;
-    height: 18px;
-    background: var(--bg-card);
-    border: 1px solid var(--border-color);
-    border-radius: 9px;
-    position: relative;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    flex-shrink: 0;
-}
-
-.ml-reasoning-toggle input[type="checkbox"]::after {
-    content: '';
-    position: absolute;
-    top: 2px;
-    left: 2px;
-    width: 12px;
-    height: 12px;
-    background: var(--text-dim);
-    border-radius: 50%;
-    transition: all 0.2s ease;
-}
-
-.ml-reasoning-toggle input[type="checkbox"]:checked {
-    background: rgba(108, 255, 154, 0.15);
-    border-color: rgba(108, 255, 154, 0.3);
-}
-
-.ml-reasoning-toggle input[type="checkbox"]:checked::after {
-    transform: translateX(14px);
-    background: var(--accent);
 }
 
 .ml-reasoning-label {
@@ -10642,6 +10633,34 @@ textarea.companion-input { resize: vertical; font-family: var(--font-sans); }
     display: none;
 }
 .character-swap-meta { margin: 8px 0; color: var(--text-secondary); font-size: 11px; line-height: 1.4; }
+.character-swap-trim {
+    margin: 10px 0 6px;
+    padding: 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: var(--bg-card);
+}
+.character-swap-trim-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 8px;
+    color: var(--text-secondary);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+.character-swap-trim-head > span:first-child { color: var(--text-primary); font-weight: 600; }
+.character-swap-trim-readout {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0;
+    text-transform: none;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+}
+.character-swap-row--trim { margin: 8px 0; }
+.character-swap-trim-apply { display: block; width: 100%; margin-top: 2px; text-align: center; }
 .character-swap-row { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; margin: 8px 0; }
 .character-swap-row--compact { gap: 6px; }
 .character-swap-row label { display: flex; flex-direction: column; gap: 3px; color: var(--text-secondary); font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; flex: 1; min-width: 76px; }

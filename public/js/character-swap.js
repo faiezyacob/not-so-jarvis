@@ -80,10 +80,15 @@ const CharacterSwapUI = (() => {
             (taskDepth > 0 ? ' character-swap-status--busy' : '');
     }
 
-    const TASK_CONTROL_SELECTOR = '.character-swap-sidebar button, .character-swap-sidebar input, ' +
-        '.character-swap-sidebar select, .character-swap-sidebar textarea, .character-swap-stage button';
+    // Only the workflow buttons are locked while a step runs. Inputs, the
+    // timeline, the video and the local selection tools stay usable so the
+    // user can keep reviewing/scrubbing the clip during a render.
+    const TASK_CONTROL_SELECTOR = '.character-swap-sidebar .character-swap-btn, ' +
+        '.character-swap-sidebar [data-cs-engine], ' +
+        '.character-swap-stage .character-swap-btn:not(#csPrevFrame):not(#csNextFrame), ' +
+        '.character-swap-stage .character-swap-take-delete';
 
-    // Disable individual controls instead of making the whole panel inert:
+    // Disable the action buttons instead of making the whole panel inert:
     // the sidebar still needs to scroll while a render/detection is running.
     function lockTaskControls() {
         document.querySelectorAll(TASK_CONTROL_SELECTOR).forEach((el) => {
@@ -207,7 +212,10 @@ const CharacterSwapUI = (() => {
                 person: Number($('csLipPerson') && $('csLipPerson').value) || 1,
                 denoise: Number($('csLipDenoise') && $('csLipDenoise').value) || 0.35,
                 steps: Number($('csLipSteps') && $('csLipSteps').value) || 20,
-                facePick: $('csLipFacePick') ? $('csLipFacePick').value : 'position'
+                facePick: $('csLipFacePick') ? $('csLipFacePick').value : 'position',
+                largeFaceMultiplier: $('csLipRetime') && !$('csLipRetime').checked ? 0.35 : 1,
+                vocalsFile: (project && project.engineSettings && project.engineSettings.h3 &&
+                    project.engineSettings.h3.lipRepair && project.engineSettings.h3.lipRepair.vocalsFile) || ''
             }
         };
     }
@@ -285,10 +293,9 @@ const CharacterSwapUI = (() => {
         }
         if ($('csTrimHint')) {
             $('csTrimHint').textContent = isH3
-                ? 'H3 Recast renders up to 15 seconds. Trim the clip and detect the people again before rendering.'
-                : label + ' matches the original clip length, capped at 15 seconds. Longer imports are trimmed to the selected range.';
+                ? 'H3 Recast renders up to 15 seconds. Pick the window to swap, then detect the people again before rendering.'
+                : label + ' renders up to 15 seconds. Pick any window of the clip; the preview and frame timeline use the trimmed range.';
         }
-        if ($('csTrimEnd')) $('csTrimEnd').max = '15';
         if ($('csRender')) $('csRender').textContent = isH3 ? 'Render H3 Recast' : 'Render';
         updateSectionLabels(features);
         applyToolClass();
@@ -339,6 +346,12 @@ const CharacterSwapUI = (() => {
         if ($('csLipDenoise')) $('csLipDenoise').value = String(Number(lip.denoise) || 0.35);
         if ($('csLipSteps')) $('csLipSteps').value = String(Number(lip.steps) || 20);
         if ($('csLipFacePick')) $('csLipFacePick').value = lip.facePick === 'identity' ? 'identity' : 'position';
+        if ($('csLipRetime')) $('csLipRetime').checked = Number(lip.largeFaceMultiplier) >= 0.99;
+        if ($('csLipVocalsMeta')) {
+            $('csLipVocalsMeta').textContent = lip.vocalsFile
+                ? 'Vocal stem: ' + String(lip.vocalsFile).split('/').pop() + '. The original audio stays in the output.'
+                : "Lip sync conditions on the clip's original audio.";
+        }
         const scene = h3.sceneReference || null;
         if ($('csSceneFrame')) {
             $('csSceneFrame').max = project && project.part ? String(Math.max(0, Number(project.part.frames) - 1)) : '0';
@@ -768,24 +781,132 @@ const CharacterSwapUI = (() => {
         $('csStartOver').disabled = !project;
     }
 
+    const TRIM_MAX_SECONDS = 15;
+
+    function trimClipDuration() {
+        if (!project) return 0;
+        const source = Number(project.source && project.source.duration) || 0;
+        const footage = project.footage && Number(project.footage.frames) && Number(project.footage.fps)
+            ? Number(project.footage.frames) / Number(project.footage.fps)
+            : 0;
+        return Math.max(0, Math.min(source || footage, footage || source));
+    }
+
+    function trimOffset() {
+        return Number(project && project.trim && project.trim.start) || 0;
+    }
+
+    function updateTrimMeta() {
+        const startInput = $('csTrimStart');
+        const endInput = $('csTrimEnd');
+        if (!startInput || !endInput) return;
+        const duration = trimClipDuration();
+        startInput.max = String(duration);
+        endInput.max = String(duration);
+        const start = Number(startInput.value) || 0;
+        const end = Number(endInput.value) || 0;
+        const video = $('csVideo');
+        const playhead = project && video && video.getAttribute('src')
+            ? trimOffset() + (Number(video.currentTime) || 0)
+            : null;
+        const range = $('csTrimRange');
+        if (range) {
+            if (!project) {
+                range.textContent = 'No clip loaded';
+            } else {
+                const bits = [Math.max(0, end - start).toFixed(1) + 's selected'];
+                if (playhead !== null) bits.push('playhead ' + playhead.toFixed(1) + 's');
+                bits.push('max ' + TRIM_MAX_SECONDS + 's');
+                range.textContent = bits.join(' · ');
+            }
+        }
+        const apply = $('csTrimApply');
+        if (apply && taskDepth === 0) apply.disabled = !project || !(end > start);
+    }
+
+    function normalizeTrimInputs() {
+        const duration = trimClipDuration();
+        if (!duration) return;
+        let start = Number($('csTrimStart').value) || 0;
+        let end = Number($('csTrimEnd').value) || 0;
+        start = Math.max(0, Math.min(start, Math.max(0, duration - 0.1)));
+        end = Math.max(0, Math.min(end, duration));
+        if (end <= start) end = Math.min(duration, start + 1);
+        if (end - start > TRIM_MAX_SECONDS) end = Math.min(duration, start + TRIM_MAX_SECONDS);
+        $('csTrimStart').value = String(Math.round(start * 10) / 10);
+        $('csTrimEnd').value = String(Math.round(end * 10) / 10);
+        updateTrimMeta();
+    }
+
+    function setTrimFromPlayhead(which) {
+        if (!project) {
+            setStatus('Import a clip first.', 'error');
+            return;
+        }
+        const video = $('csVideo');
+        const duration = trimClipDuration();
+        const playhead = Math.max(0, Math.min(duration,
+            trimOffset() + (video ? Number(video.currentTime) || 0 : 0)));
+        const value = String(Math.round(playhead * 10) / 10);
+        if (which === 'start') {
+            $('csTrimStart').value = value;
+            if ((Number($('csTrimEnd').value) || 0) <= playhead) {
+                $('csTrimEnd').value = String(Math.round(Math.min(duration, playhead + 1) * 10) / 10);
+            }
+        } else {
+            $('csTrimEnd').value = value;
+            if ((Number($('csTrimStart').value) || 0) >= playhead) {
+                $('csTrimStart').value = String(Math.round(Math.max(0, playhead - 1) * 10) / 10);
+            }
+        }
+        normalizeTrimInputs();
+    }
+
+    function seekVideoToFrame() {
+        const video = $('csVideo');
+        if (!video || !video.getAttribute('src') || video.hidden) return;
+        const seek = () => {
+            const target = Math.max(0, Math.min(Number(video.duration) || frame / fps(), frame / fps()));
+            try { video.currentTime = target; } catch { /* metadata not ready yet */ }
+            updateTrimMeta();
+        };
+        if (video.readyState >= 1) seek();
+        else video.addEventListener('loadedmetadata', seek, { once: true });
+    }
+
     function renderSource() {
         const video = $('csVideo');
+        const src = project && project.videoUrl ? project.videoUrl : '';
         if (video) {
-            const hasVideo = Boolean(project && project.videoUrl);
-            video.hidden = !hasVideo;
-            if (hasVideo && video.getAttribute('src') !== project.videoUrl) {
-                video.src = project.videoUrl;
+            video.hidden = !src;
+            if (!src) {
+                try { video.pause(); } catch { /* not playing */ }
+                if (video.getAttribute('src')) {
+                    video.removeAttribute('src');
+                    try { video.load(); } catch { /* nothing to reload */ }
+                }
+            } else if (video.getAttribute('src') !== src) {
+                // A re-trim points at a fresh part file, so the immutable media
+                // URL changes and the player reloads instead of serving stale
+                // cached bytes. Only a genuine source change seeks the video;
+                // background task refreshes leave playback alone.
+                video.src = src;
+                try { video.load(); } catch { /* src already triggers load */ }
+                seekVideoToFrame();
             }
-            if (hasVideo) video.currentTime = Math.min((project.source && project.source.duration) || 0, frame / fps());
         }
         const part = (project && project.part) || { width: 0, height: 0, frames: 1 };
         $('csSourceMeta').textContent = project
             ? (project.source.filename + ' · ' + Math.round(project.source.duration * 10) / 10 + 's · ' +
                 part.width + '×' + part.height + ' · ' + frames() + ' frames')
             : 'No clip loaded.';
-        $('csTrimStart').value = project ? (project.trim && project.trim.start) || 0 : 0;
-        $('csTrimEnd').value = project ? (project.trim && project.trim.end) || 0 : 0;
-        $('csTrimEnd').max = '15';
+        const trimStart = project ? (project.trim && project.trim.start) || 0 : 0;
+        const trimEnd = project ? (project.trim && project.trim.end) || 0 : 0;
+        $('csTrimStart').value = trimStart;
+        $('csTrimEnd').value = project && trimEnd > trimStart
+            ? trimEnd
+            : (project ? Math.min(trimClipDuration(), trimStart + TRIM_MAX_SECONDS) : 0);
+        updateTrimMeta();
         $('csTimeline').max = String(frames() - 1);
         $('csTimeline').value = String(frame);
         $('csFrameLabel').textContent = 'Frame ' + frame + ' / ' + (frames() - 1);
@@ -912,6 +1033,7 @@ const CharacterSwapUI = (() => {
             jump.addEventListener('click', () => {
                 frame = anchor.frame;
                 renderSource();
+                seekVideoToFrame();
                 loadFrame();
             });
             const remove = document.createElement('button');
@@ -1884,6 +2006,35 @@ const CharacterSwapUI = (() => {
         });
     }
 
+    async function uploadLipVocals(file) {
+        if (!file || !project) return;
+        try {
+            setStatus('Uploading the vocal stem.');
+            const uploaded = await uploadFile(file);
+            const data = await api('/api/character-swap/projects/' + encodeURIComponent(project.id) + '/lip-audio', {
+                method: 'POST',
+                body: JSON.stringify({ filename: uploaded.filename })
+            });
+            setProject(data);
+            setStatus('Vocal stem ready for lip sync. The original audio stays in the output.', 'ok');
+        } catch (err) {
+            setStatus(err.message, 'error');
+        }
+    }
+
+    async function clearLipVocals() {
+        if (!project) return;
+        try {
+            const data = await api('/api/character-swap/projects/' + encodeURIComponent(project.id) + '/lip-audio', {
+                method: 'DELETE'
+            });
+            setProject(data);
+            setStatus("Lip sync uses the clip's original audio.", 'ok');
+        } catch (err) {
+            setStatus(err.message, 'error');
+        }
+    }
+
     async function clearScene() {
         if (!project) return;
         try {
@@ -2069,6 +2220,8 @@ const CharacterSwapUI = (() => {
     const buildSceneTask = () => runTask('Building the scene reference.', buildScene);
     const uploadSceneFileTask = (file) => runTask('Uploading the scene reference.', () => uploadSceneFile(file));
     const clearSceneTask = () => runTask('Clearing the scene reference.', clearScene);
+    const uploadLipVocalsTask = (file) => runTask('Uploading the vocal stem.', () => uploadLipVocals(file));
+    const clearLipVocalsTask = () => runTask('Clearing the vocal stem.', clearLipVocals);
     const renderTask = (options) => runTask(
         options && options.refineTakeId ? 'Refining the selected face.' : 'Rendering the character swap.',
         () => render(options)
@@ -2126,18 +2279,35 @@ const CharacterSwapUI = (() => {
         });
         $('csTrimApply').addEventListener('click', () => runTask('Applying the trim.', async () => {
             if (!project) return;
-            try {
-                const data = await api('/api/character-swap/projects/' + encodeURIComponent(project.id) + '/trim', {
-                    method: 'PATCH',
-                    body: JSON.stringify({ start: Number($('csTrimStart').value), end: Number($('csTrimEnd').value) })
-                });
-                frame = 0;
-                setProject(data);
-                setStatus(featuresFor(project && project.engine).anchors
-                    ? 'Trim applied. Re-add anchors for the new range.'
-                    : 'Trim applied.', 'ok');
-            } catch (err) { setStatus(err.message, 'error'); }
+            normalizeTrimInputs();
+            const start = Number($('csTrimStart').value);
+            const end = Number($('csTrimEnd').value);
+            if (!(end > start)) throw new Error('Trim end must be after the trim start.');
+            const data = await api('/api/character-swap/projects/' + encodeURIComponent(project.id) + '/trim', {
+                method: 'PATCH',
+                body: JSON.stringify({ start, end })
+            });
+            frame = 0;
+            setProject(data);
+            setStatus(featuresFor(project && project.engine).anchors
+                ? 'Trim applied. Re-add anchors for the new range.'
+                : 'Trim applied.', 'ok');
         }));
+        ['csTrimStart', 'csTrimEnd'].forEach((id) => {
+            $(id).addEventListener('input', updateTrimMeta);
+            $(id).addEventListener('change', normalizeTrimInputs);
+        });
+        if ($('csTrimStartPlayhead')) $('csTrimStartPlayhead').addEventListener('click', () => setTrimFromPlayhead('start'));
+        if ($('csTrimEndPlayhead')) $('csTrimEndPlayhead').addEventListener('click', () => setTrimFromPlayhead('end'));
+        if ($('csTrimReset')) $('csTrimReset').addEventListener('click', () => {
+            if (!project) return;
+            $('csTrimStart').value = '0';
+            $('csTrimEnd').value = String(Math.round(Math.min(trimClipDuration(), TRIM_MAX_SECONDS) * 10) / 10);
+            updateTrimMeta();
+        });
+        ['timeupdate', 'loadedmetadata', 'seeked'].forEach((event) => {
+            $('csVideo').addEventListener(event, updateTrimMeta);
+        });
         document.querySelectorAll('[data-cs-tool]').forEach((button) => {
             button.addEventListener('click', () => setTool(button.getAttribute('data-cs-tool')));
         });
@@ -2151,16 +2321,19 @@ const CharacterSwapUI = (() => {
         $('csPrevFrame').addEventListener('click', () => {
             frame = Math.max(0, frame - 1);
             renderSource();
+            seekVideoToFrame();
             loadFrame();
         });
         $('csNextFrame').addEventListener('click', () => {
             frame = Math.min(frames() - 1, frame + 1);
             renderSource();
+            seekVideoToFrame();
             loadFrame();
         });
         $('csTimeline').addEventListener('input', () => {
             frame = Number($('csTimeline').value);
             renderSource();
+            seekVideoToFrame();
             loadFrame();
         });
         $('csTrack').addEventListener('click', trackTask);
@@ -2200,6 +2373,12 @@ const CharacterSwapUI = (() => {
         });
         if ($('csPickScene')) $('csPickScene').addEventListener('click', pickScene);
         if ($('csClearScene')) $('csClearScene').addEventListener('click', clearSceneTask);
+        if ($('csLipVocalsPick')) $('csLipVocalsPick').addEventListener('click', () => $('csLipVocalsFile').click());
+        if ($('csLipVocalsFile')) $('csLipVocalsFile').addEventListener('change', (event) => {
+            uploadLipVocalsTask(event.target.files && event.target.files[0]);
+            event.target.value = '';
+        });
+        if ($('csLipVocalsClear')) $('csLipVocalsClear').addEventListener('click', clearLipVocalsTask);
         $('csStartOver').addEventListener('click', startOverTask);
         document.querySelectorAll('[data-cs-engine]').forEach((button) => {
             button.addEventListener('click', () => switchEngineTask(button.getAttribute('data-cs-engine')));
@@ -2208,7 +2387,7 @@ const CharacterSwapUI = (() => {
             'csWanDuration', 'csWanResolution', 'csWanSteps', 'csQuality',
             'csWanSam3Text', 'csWanSam3RefText',
             'csH3Size', 'csH3Steps', 'csH3Attention', 'csLipPerson',
-            'csLipDenoise', 'csLipSteps', 'csLipFacePick'
+            'csLipDenoise', 'csLipSteps', 'csLipFacePick', 'csLipRetime'
         ];
         engineInputs.forEach((id) => {
             const input = $(id);

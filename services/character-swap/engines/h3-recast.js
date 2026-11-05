@@ -46,6 +46,11 @@ function mimeFor(file) {
     if (ext === '.webp') return 'image/webp';
     if (ext === '.webm') return 'video/webm';
     if (ext === '.mov') return 'video/quicktime';
+    if (ext === '.mp3') return 'audio/mpeg';
+    if (ext === '.wav') return 'audio/wav';
+    if (ext === '.m4a') return 'audio/mp4';
+    if (ext === '.flac') return 'audio/flac';
+    if (ext === '.ogg' || ext === '.oga') return 'audio/ogg';
     return 'video/mp4';
 }
 
@@ -262,7 +267,8 @@ async function renderLipRepair(plan, options = {}) {
             error.code = 'h3_recast_model_missing';
             throw error;
         }
-        const sourceBuffer = fs.readFileSync(plan.baseVideoAbsPath);
+        const audioSourcePath = plan.sourceVideoAbsPath || plan.baseVideoAbsPath;
+        const sourceBuffer = fs.readFileSync(audioSourcePath);
         const sourceHasAudio = videoReplacement.hasLikelyAudioTrack(sourceBuffer);
         const graph = graphBuilder.buildLipGraph({
             prompt: plan.prompt,
@@ -272,6 +278,8 @@ async function renderLipRepair(plan, options = {}) {
             models,
             baseVideoName: '__pending__',
             faceRefName: '__pending__',
+            sourceVideoName: plan.sourceVideoAbsPath ? '__pending__' : '',
+            lipAudioName: plan.lipAudioAbsPath ? '__pending__' : '',
             personIndex: plan.personIndex,
             sourceHasAudio,
             filenamePrefix: 'video/h3-recast-lip'
@@ -288,6 +296,24 @@ async function renderLipRepair(plan, options = {}) {
             uploaded.push(faceUpload.name);
             graph.base_video.inputs.video = baseUpload.name;
             graph.face_ref.inputs.image = faceUpload.name;
+            if (graph.source_video) {
+                const sourceUpload = await uploadFile(plan.sourceVideoAbsPath, 'jarvis_recast_source');
+                uploaded.push(sourceUpload.name);
+                graph.source_video.inputs.video = sourceUpload.name;
+            }
+            if (graph.lip_audio) {
+                const audioUpload = await uploadFile(plan.lipAudioAbsPath, 'jarvis_recast_vocals');
+                uploaded.push(audioUpload.name);
+                // VHS_LoadAudio validates a real filesystem path (it does not
+                // resolve a bare input-folder name like the video loaders do),
+                // so hand it the absolute path of the uploaded stem.
+                const inputDir = await comfyui.resolveInputDir();
+                graph.lip_audio.inputs.audio_file = path.join(
+                    inputDir,
+                    audioUpload.subfolder || '',
+                    audioUpload.name
+                );
+            }
 
             graphBuilder.validateGraph(info, graph, { lip: true });
             const pid = await comfyui.queuePrompt(graph);
@@ -334,6 +360,10 @@ async function renderLipRepair(plan, options = {}) {
                         denoise: settings.lip.denoise,
                         steps: settings.lip.steps,
                         facePick: settings.lip.facePick,
+                        largeFaceMultiplier: settings.lip.largeFaceMultiplier,
+                        smallFaceMultiplier: settings.lip.smallFaceMultiplier,
+                        conditioningAudio: plan.lipAudioFilename ? 'vocals' : 'source',
+                        lipAudio: plan.lipAudioFilename || null,
                         cachedSource: true
                     },
                     lipSyncGuaranteed: false,
@@ -359,6 +389,9 @@ async function renderLipRepair(plan, options = {}) {
                     denoise: settings.lip.denoise,
                     steps: settings.lip.steps,
                     facePick: settings.lip.facePick,
+                    largeFaceMultiplier: settings.lip.largeFaceMultiplier,
+                    smallFaceMultiplier: settings.lip.smallFaceMultiplier,
+                    conditioningAudio: plan.lipAudioFilename ? 'vocals' : 'source',
                     createdAt: new Date().toISOString()
                 },
                 meta

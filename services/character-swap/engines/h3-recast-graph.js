@@ -89,7 +89,18 @@ const DEFAULT_SETTINGS = Object.freeze({
         canvasMode: 'manual',
         canvasWidth: 768,
         canvasHeight: 768,
-        detector: ''
+        detector: '',
+        // FaceRefine scales the scheduler denoise per frame by face size. Its
+        // shipped large-face multiplier (0.35) protects big faces from being
+        // rewritten, but on a large face it also preserves the first pass's
+        // mouth timing. For lip synchronisation the mouth must be regenerated
+        // against the locked audio, so the default here is 1.0 (full denoise on
+        // every face). Lower it to 0.35 for the author's detail-only behaviour.
+        smallFaceMultiplier: 1,
+        largeFaceMultiplier: 1,
+        // Optional isolated vocal stem used ONLY to condition lipsync. The
+        // original source audio always stays in the rendered output.
+        vocalsFile: ''
     }
 });
 
@@ -135,7 +146,13 @@ function normalizeAttention(value, info) {
 
 function normalizeSettings(settings, info) {
     const input = settings && typeof settings === 'object' ? settings : {};
-    const lipInput = input.lipRepair && typeof input.lipRepair === 'object' ? input.lipRepair : {};
+    // Accept both the persisted shape ({ lipRepair: {...} }) and an already
+    // normalized shape ({ lip: {...} }). renderLipRepair normalizes before
+    // calling buildLipGraph, which normalizes again; without this fallback the
+    // second pass silently replaced every user lip setting with the defaults.
+    const lipInput = input.lipRepair && typeof input.lipRepair === 'object'
+        ? input.lipRepair
+        : (input.lip && typeof input.lip === 'object' ? input.lip : {});
     return {
         steps: clampInt(input.steps, 1, 100, Number(process.env.H3_RECAST_STEPS) || DEFAULT_SETTINGS.steps),
         denoise: clampNumber(input.denoise, 0.05, 1, DEFAULT_SETTINGS.denoise),
@@ -155,9 +172,21 @@ function normalizeSettings(settings, info) {
                 : DEFAULT_SETTINGS.lip.canvasMode,
             canvasWidth: snap32(clampInt(lipInput.canvasWidth, 128, 1344, DEFAULT_SETTINGS.lip.canvasWidth)),
             canvasHeight: snap32(clampInt(lipInput.canvasHeight, 128, 1344, DEFAULT_SETTINGS.lip.canvasHeight)),
-            detector: String(lipInput.detector || '').slice(0, 260)
+            detector: String(lipInput.detector || '').slice(0, 260),
+            smallFaceMultiplier: clampNumber(lipInput.smallFaceMultiplier, 0, 1, DEFAULT_SETTINGS.lip.smallFaceMultiplier),
+            largeFaceMultiplier: clampNumber(lipInput.largeFaceMultiplier, 0, 1, DEFAULT_SETTINGS.lip.largeFaceMultiplier),
+            vocalsFile: sanitizeVocalsFile(lipInput.vocalsFile)
         }
     };
+}
+
+// A vocals stem is stored as a project-relative path under lip/. Keep it to a
+// safe basename so a persisted value can never escape the project directory.
+function sanitizeVocalsFile(value) {
+    const name = String(value || '').trim().replace(/\\/g, '/');
+    if (!name) return '';
+    const match = name.match(/^lip\/([A-Za-z0-9._-]{1,120})$/);
+    return match ? 'lip/' + match[1] : '';
 }
 
 function inputSpec(info, node, key) {
@@ -406,6 +435,8 @@ function buildLipGraph(opts = {}) {
         models,
         baseVideoName,
         faceRefName,
+        sourceVideoName = '',
+        lipAudioName = '',
         personIndex = 0,
         sourceHasAudio = false,
         filenamePrefix = 'not-so-jarvis/h3-recast-lip'
@@ -432,7 +463,6 @@ function buildLipGraph(opts = {}) {
         error.code = 'h3_recast_frames_invalid';
         throw error;
     }
-    const audioLink = sourceHasAudio ? ['base_video', 2] : ['empty_audio', 0];
     const lip = resolved.lip;
     const useIdentity = lip.facePick === 'identity';
 
@@ -459,6 +489,39 @@ function buildLipGraph(opts = {}) {
             inputs: { duration: length / FPS, sample_rate: 44100, channels: 2 }
         };
     }
+
+    // The output must carry the clip's own soundtrack. The author's lip pass
+    // reads that audio straight from the source clip rather than decoding the
+    // generated take back out of its container; do the same when the source is
+    // available (the base video is the fallback for older callers).
+    let sourceAudioLink = sourceHasAudio ? ['base_video', 2] : ['empty_audio', 0];
+    if (sourceVideoName) {
+        graph.source_video = {
+            class_type: 'VHS_LoadVideoFFmpeg',
+            inputs: {
+                video: sourceVideoName,
+                force_rate: FPS,
+                custom_width: 0,
+                custom_height: 0,
+                frame_load_cap: length,
+                start_time: 0,
+                format: 'None'
+            }
+        };
+        sourceAudioLink = sourceHasAudio ? ['source_video', 2] : ['empty_audio', 0];
+    }
+
+    // Optional isolated vocal stem: it conditions the H3 node and the audio
+    // lock only. The rendered output always keeps the original source audio.
+    let conditioningAudioLink = sourceAudioLink;
+    if (lipAudioName) {
+        graph.lip_audio = {
+            class_type: 'VHS_LoadAudio',
+            inputs: { audio_file: lipAudioName, duration: length / FPS }
+        };
+        conditioningAudioLink = ['lip_audio', 0];
+    }
+
     graph.face_ref = { class_type: 'LoadImage', inputs: { image: faceRefName } };
     const cropInputs = {
         images: ['base_video', 0],
@@ -501,7 +564,7 @@ function buildLipGraph(opts = {}) {
             ref_image_size: 'match',
             'ref_images.ref_image_0': ['face_ref', 0],
             'ref_images.ref_image_1': ['face_ref', 0],
-            'ref_audios.ref_audio_0': audioLink
+            'ref_audios.ref_audio_0': conditioningAudioLink
         }
     };
     graph.inject = {
@@ -510,7 +573,7 @@ function buildLipGraph(opts = {}) {
     };
     graph.audio_lock = {
         class_type: 'MiniMaxH3NativeAudioLock',
-        inputs: { model: ['unet', 0], av_latent: ['inject', 0], audio_vae: ['audio_vae', 0], audio: audioLink }
+        inputs: { model: ['unet', 0], av_latent: ['inject', 0], audio_vae: ['audio_vae', 0], audio: conditioningAudioLink }
     };
     graph.per_frame = {
         class_type: 'H3PerFrameDenoise',
@@ -518,8 +581,8 @@ function buildLipGraph(opts = {}) {
             model: ['audio_lock', 0],
             av_latent: ['audio_lock', 1],
             transform: ['face_crop', 1],
-            denoise_multiplier_small_face: 1,
-            denoise_multiplier_large_face: 0.35,
+            denoise_multiplier_small_face: lip.smallFaceMultiplier,
+            denoise_multiplier_large_face: lip.largeFaceMultiplier,
             scale_mode: 'absolute_px',
             face_px_small: 30,
             face_px_large: 120,
@@ -565,7 +628,7 @@ function buildLipGraph(opts = {}) {
     };
     graph.video_out = {
         class_type: 'CreateVideo',
-        inputs: { images: ['stitch', 0], audio: audioLink, fps: FPS, bit_depth: 8, color_space: 'sRGB', codec: 'none' }
+        inputs: { images: ['stitch', 0], audio: sourceAudioLink, fps: FPS, bit_depth: 8, color_space: 'sRGB', codec: 'none' }
     };
     graph.save = {
         class_type: 'SaveVideo',

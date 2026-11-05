@@ -286,6 +286,79 @@ test('lip graph can lock the face by identity reference', () => {
     assert.deepEqual(graph.audio_lock.inputs.audio, ['empty_audio', 0]);
 });
 
+test('lip settings survive the second normalization', () => {
+    const first = graphBuilder.normalizeSettings({
+        lipRepair: {
+            denoise: 0.55,
+            steps: 32,
+            facePick: 'identity',
+            canvasWidth: 512,
+            canvasHeight: 512,
+            largeFaceMultiplier: 0.9,
+            vocalsFile: 'lip/vocals.wav'
+        }
+    }, null);
+    const second = graphBuilder.normalizeSettings(first, null);
+    assert.equal(second.lip.denoise, 0.55);
+    assert.equal(second.lip.steps, 32);
+    assert.equal(second.lip.facePick, 'identity');
+    assert.equal(second.lip.canvasWidth, 512);
+    assert.equal(second.lip.largeFaceMultiplier, 0.9);
+    assert.equal(second.lip.vocalsFile, 'lip/vocals.wav');
+});
+
+test('lip graph conditions on the source audio and optional vocals while the output keeps the source', () => {
+    const models = modelsFor(mockInfo());
+    const graph = graphBuilder.buildLipGraph({
+        prompt: 'lip',
+        frames: 124,
+        seed: 1,
+        settings: {
+            lipRepair: {
+                person: 1,
+                largeFaceMultiplier: 1,
+                smallFaceMultiplier: 1
+            }
+        },
+        models,
+        baseVideoName: 'base.mp4',
+        faceRefName: 'face.png',
+        sourceVideoName: 'source.mp4',
+        lipAudioName: 'vocals.wav',
+        personIndex: 0,
+        sourceHasAudio: true
+    });
+    assert.equal(graph.source_video.class_type, 'VHS_LoadVideoFFmpeg');
+    assert.equal(graph.lip_audio.class_type, 'VHS_LoadAudio');
+    assert.equal(graph.lip_audio.inputs.audio_file, 'vocals.wav');
+    assert.deepEqual(graph.reference.inputs['ref_audios.ref_audio_0'], ['lip_audio', 0]);
+    assert.deepEqual(graph.audio_lock.inputs.audio, ['lip_audio', 0]);
+    assert.deepEqual(graph.video_out.inputs.audio, ['source_video', 2]);
+    assert.equal(graph.per_frame.inputs.denoise_multiplier_small_face, 1);
+    assert.equal(graph.per_frame.inputs.denoise_multiplier_large_face, 1);
+    assert.equal(graphBuilder.validateGraph(permissiveInfo(graph), graph, { lip: true }), true);
+});
+
+test('lip graph without a vocals stem conditions on the source audio', () => {
+    const models = modelsFor(mockInfo());
+    const graph = graphBuilder.buildLipGraph({
+        prompt: 'lip',
+        frames: 124,
+        seed: 1,
+        settings: { lipRepair: { person: 1 } },
+        models,
+        baseVideoName: 'base.mp4',
+        faceRefName: 'face.png',
+        sourceVideoName: 'source.mp4',
+        personIndex: 0,
+        sourceHasAudio: true
+    });
+    assert.equal(graph.lip_audio, undefined);
+    assert.deepEqual(graph.reference.inputs['ref_audios.ref_audio_0'], ['source_video', 2]);
+    assert.deepEqual(graph.audio_lock.inputs.audio, ['source_video', 2]);
+    assert.deepEqual(graph.video_out.inputs.audio, ['source_video', 2]);
+});
+
 test('validator rejects a missing node and a dangling link', () => {
     const models = modelsFor(mockInfo());
     const graph = graphBuilder.buildSwapGraph({

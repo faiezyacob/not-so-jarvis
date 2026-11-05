@@ -1754,12 +1754,23 @@
                     </div>
                     <video class="character-swap-video" id="csVideo" controls playsinline preload="metadata"></video>
                     <div class="character-swap-meta" id="csSourceMeta">No clip loaded.</div>
-                    <div class="character-swap-row">
-                        <label>Trim start <input type="number" id="csTrimStart" min="0" step="0.1" value="0"></label>
-                        <label>Trim end <input type="number" id="csTrimEnd" min="1" step="0.1" value="0"></label>
-                        <button class="character-swap-btn" id="csTrimApply" type="button">Apply</button>
+                    <div class="character-swap-trim" id="csTrim">
+                        <div class="character-swap-trim-head">
+                            <span>Trim range</span>
+                            <span class="character-swap-trim-readout" id="csTrimRange">No clip loaded</span>
+                        </div>
+                        <div class="character-swap-row character-swap-row--trim">
+                            <label>Start (s) <input type="number" id="csTrimStart" min="0" step="0.1" value="0"></label>
+                            <label>End (s) <input type="number" id="csTrimEnd" min="0.1" step="0.1" value="0"></label>
+                        </div>
+                        <div class="character-swap-row character-swap-row--compact">
+                            <button class="character-swap-btn" id="csTrimStartPlayhead" type="button">Start at playhead</button>
+                            <button class="character-swap-btn" id="csTrimEndPlayhead" type="button">End at playhead</button>
+                            <button class="character-swap-btn" id="csTrimReset" type="button" title="Reset to the first 15 seconds (or the whole clip if it is shorter)">First 15s</button>
+                        </div>
+                        <button class="character-swap-btn character-swap-btn--primary character-swap-trim-apply" id="csTrimApply" type="button">Apply trim</button>
+                        <div class="character-swap-hint" id="csTrimHint">H3 Recast and SCAIL-2 render up to 15 seconds. Pick any window of the clip; the preview and frame timeline use the trimmed range.</div>
                     </div>
-                    <div class="character-swap-hint" id="csTrimHint">H3 Recast renders up to 15 seconds. Longer clips are trimmed to the selected range.</div>
 
                     <div id="csPeopleSection">
                     <div class="character-swap-section" id="csPeopleTitle">2 · PEOPLE</div>
@@ -1914,7 +1925,14 @@
                                         <option value="identity">Face identity</option>
                                     </select>
                                 </label>
+                                <label class="character-swap-check"><input type="checkbox" id="csLipRetime" checked> Re-time mouth</label>
                             </div>
+                            <div class="character-swap-row">
+                                <button class="character-swap-btn" id="csLipVocalsPick" type="button">Vocals stem...</button>
+                                <button class="character-swap-btn" id="csLipVocalsClear" type="button">Use original</button>
+                            </div>
+                            <div id="csLipVocalsMeta" class="character-swap-hint">Lip sync conditions on the clip's original audio.</div>
+                            <input type="file" id="csLipVocalsFile" accept="audio/mpeg,audio/wav,audio/x-wav,audio/mp4,audio/flac,audio/ogg" hidden>
                             <div class="character-swap-hint">Lip repair runs as a separate pass on a finished take. Use the Refine lip button on a take; the swap itself is reused from the cached result, so the whole video is not regenerated.</div>
                         </div>
                         <div class="character-swap-hint">H3 Recast swaps up to three people in one pass with the BFS Character Swap LoRA. The clip supplies motion, set, accessories and audio; the scene reference supplies faces and bodies; the caption lines are generated from the people you select.</div>
