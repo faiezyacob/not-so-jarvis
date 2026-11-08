@@ -2525,6 +2525,8 @@ async function handleAPI(req, res, urlPath) {
                 provider: body.provider || '',
                 model: body.model || '',
                 engine: body.engine || null,
+                engineSettings: body.settings || null,
+                maskSettings: body.maskSettings || null,
                 title: body.title || filename
             });
             json(res, 201, presentCharacterSwap(project));
@@ -9066,6 +9068,53 @@ async function handleCharacterSwapRender(req, res, projectId, project) {
                 },
                 onStage: (text) => sseWrite(res, { generating: text })
             });
+            // Automatic FaceRefine lip pass for H3 Recast: run on every
+            // replaced face before the upscale so the final file is the
+            // polished one. It is fail-open: an unavailable node pack or a
+            // failed pass keeps the swap take and continues. `lipRepair.auto`
+            // is the user-facing opt-out and defaults to true.
+            const h3Settings = (project.engineSettings && project.engineSettings.h3) || {};
+            const autoLip = !h3Settings.lipRepair || h3Settings.lipRepair.auto !== false;
+            if (engine === 'h3' && take && take.filename && autoLip) {
+                let lipInfo = info;
+                if (!lipInfo) {
+                    try { lipInfo = await comfyui.getObjectInfo(); } catch { lipInfo = null; }
+                }
+                const lipStatus = characterSwap.getEngine('h3').availability(lipInfo, Object.assign({}, h3Settings, {
+                    refineOnly: true,
+                    lipRepair: Object.assign({}, h3Settings.lipRepair, { enabled: true })
+                }));
+                if (lipStatus && lipStatus.available) {
+                    const targets = characterSwap.lipTargets(characterSwap.get(projectId));
+                    for (let targetIndex = 0; targetIndex < targets.length; targetIndex += 1) {
+                        if (cancelled) break;
+                        sseWrite(res, {
+                            generating: 'Refining lip sync (' + (targetIndex + 1) + ' of ' + targets.length + ')…'
+                        });
+                        try {
+                            const refined = await characterSwap.renderLipRefine(projectId, {
+                                takeId: take.takeId,
+                                person: targets[targetIndex],
+                                chain: true,
+                                conversationId: project.conversationId,
+                                seed: take.seed,
+                                onQueued: (position, id) => {
+                                    queueId = id;
+                                    sseWrite(res, { queued: { position, queueId: id } });
+                                },
+                                onStart: () => sseWrite(res, { generating: 'Refining lip sync…' })
+                            });
+                            if (refined) take = refined;
+                        } catch (err) {
+                            console.warn('[character-swap] auto lip refine skipped:', err.message);
+                            sseWrite(res, { generating: 'Lip refine skipped: ' + err.message });
+                        }
+                    }
+                } else if (lipStatus && lipStatus.missing && lipStatus.missing.length) {
+                    console.warn('[character-swap] auto lip refine unavailable:', lipStatus.missing.join('; '));
+                }
+            }
+            if (cancelled) break;
             // Auto-upscale (Settings > Video): renderTake has released the
             // generation lock, so the upscale pass can safely acquire it.
             if (autoUpscale && take && take.filename) {

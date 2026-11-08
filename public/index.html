@@ -1901,41 +1901,7 @@
                             </div>
                             <div class="character-swap-hint">H3 Recast conditions on ONE frame of the clip with every intended replacement already edited in. Build it automatically, or upload a frame you edited yourself. Leave people you are not replacing unedited.</div>
                         </div>
-                        <div class="character-swap-h3-lip">
-                            <div class="character-swap-section">LIP REPAIR (FACEREFINE)</div>
-                            <div class="character-swap-row">
-                                <label>Person
-                                    <select id="csLipPerson">
-                                        <option value="1">1</option>
-                                        <option value="2">2</option>
-                                        <option value="3">3</option>
-                                    </select>
-                                </label>
-                                <label>Denoise
-                                    <input type="number" id="csLipDenoise" min="0.05" max="0.8" step="0.05" value="0.35">
-                                </label>
-                                <label>Steps
-                                    <input type="number" id="csLipSteps" min="1" max="40" step="1" value="20">
-                                </label>
-                            </div>
-                            <div class="character-swap-row">
-                                <label>Face pick
-                                    <select id="csLipFacePick">
-                                        <option value="position">Left-to-right</option>
-                                        <option value="identity">Face identity</option>
-                                    </select>
-                                </label>
-                                <label class="character-swap-check"><input type="checkbox" id="csLipRetime" checked> Re-time mouth</label>
-                            </div>
-                            <div class="character-swap-row">
-                                <button class="character-swap-btn" id="csLipVocalsPick" type="button">Vocals stem...</button>
-                                <button class="character-swap-btn" id="csLipVocalsClear" type="button">Use original</button>
-                            </div>
-                            <div id="csLipVocalsMeta" class="character-swap-hint">Lip sync conditions on the clip's original audio.</div>
-                            <input type="file" id="csLipVocalsFile" accept="audio/mpeg,audio/wav,audio/x-wav,audio/mp4,audio/flac,audio/ogg" hidden>
-                            <div class="character-swap-hint">Lip repair runs as a separate pass on a finished take. Use the Refine lip button on a take; the swap itself is reused from the cached result, so the whole video is not regenerated.</div>
-                        </div>
-                        <div class="character-swap-hint">H3 Recast swaps up to three people in one pass with the BFS Character Swap LoRA. The clip supplies motion, set, accessories and audio; the scene reference supplies faces and bodies; the caption lines are generated from the people you select.</div>
+                        <div class="character-swap-hint">H3 Recast swaps up to three people in one pass with the BFS Character Swap LoRA. The clip supplies motion, set, accessories and audio; the scene reference supplies faces and bodies; the caption lines are generated from the people you select. Lip sync is refined automatically before upscaling.</div>
                     </div>
                     <div class="character-swap-engine-settings" id="csWanSettings">
                         <label class="character-swap-prompt">Replacement direction

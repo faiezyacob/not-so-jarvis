@@ -164,10 +164,19 @@ test('settings are clamped and the scene reference survives normalization', () =
     assert.equal(settings.h3.sceneReference.file, 'scene/reference.png');
     assert.equal(settings.h3.sceneReference.frame, 4);
     assert.equal(settings.h3.lipRepair.enabled, true);
+    assert.equal(settings.h3.lipRepair.auto, true);
     assert.equal(settings.h3.lipRepair.person, 3);
     assert.equal(settings.h3.lipRepair.denoise, 0.8);
     assert.equal(settings.h3.lipRepair.steps, 50);
     assert.equal(settings.h3.lipRepair.facePick, 'identity');
+});
+
+test('FaceRefine is on by default and can be opted out', () => {
+    const defaults = graphBuilder.normalizeSettings({}, null).lip;
+    assert.equal(defaults.auto, true);
+    assert.equal(defaults.enabled, true);
+    const off = graphBuilder.normalizeSettings({ lipRepair: { auto: false } }, null).lip;
+    assert.equal(off.auto, false);
 });
 
 test('BFS LoRA resolves from the live lora list and is reported when missing', () => {

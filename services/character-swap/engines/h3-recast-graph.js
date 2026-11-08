@@ -80,7 +80,11 @@ const DEFAULT_SETTINGS = Object.freeze({
     shiftAudio: 3,
     attention: 'auto',
     lip: {
-        enabled: false,
+        // FaceRefine runs automatically after every H3 Recast swap, before any
+        // upscale. `auto` is the user-facing opt-out; `enabled` is kept for the
+        // manual availability check.
+        enabled: true,
+        auto: true,
         person: 1,
         denoise: 0.35,
         steps: 20,
@@ -161,7 +165,8 @@ function normalizeSettings(settings, info) {
         shiftAudio: clampNumber(input.shiftAudio, 1, 20, DEFAULT_SETTINGS.shiftAudio),
         attention: normalizeAttention(input.attention || process.env.H3_RECAST_ATTENTION, info),
         lip: {
-            enabled: lipInput.enabled === true,
+            enabled: lipInput.enabled !== false,
+            auto: lipInput.auto !== false,
             person: clampInt(lipInput.person, 1, 3, DEFAULT_SETTINGS.lip.person),
             denoise: clampNumber(lipInput.denoise, 0.05, 0.8, Number(process.env.H3_RECAST_LIP_DENOISE) || DEFAULT_SETTINGS.lip.denoise),
             steps: clampInt(lipInput.steps, 1, 50, Number(process.env.H3_RECAST_LIP_STEPS) || DEFAULT_SETTINGS.lip.steps),

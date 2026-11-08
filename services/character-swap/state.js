@@ -179,6 +179,17 @@ function normalizeEngineSettings(source) {
     return base;
 }
 
+function normalizeMaskSettings(source) {
+    const input = source && typeof source === 'object' ? source : {};
+    return {
+        grow: Math.round(clampNumber(input.grow, -128, 128, 12)),
+        feather: Math.round(clampNumber(input.feather, 0, 32, 2)),
+        temporal: Math.round(clampNumber(input.temporal, 0, 9, 3)),
+        opacity: clampNumber(input.opacity, 0.1, 1, 0.55),
+        compositeTuned: true
+    };
+}
+
 let cache = null;
 
 function now() {
@@ -281,13 +292,7 @@ function createProject(input = {}) {
         part: null,
         trim: { start: 0, end: 0 },
         people: normalizeEngineName(input.engine) === 'h3' ? [] : [newPerson(0)],
-        maskSettings: {
-            grow: 12,
-            feather: 2,
-            temporal: 3,
-            opacity: 0.55,
-            compositeTuned: true
-        },
+        maskSettings: normalizeMaskSettings(input.maskSettings),
         maskExport: null,
         maskExports: { union: null, people: {}, settings: null, createdAt: null },
         selection: { method: null, version: null, tracks: [], corrections: [], keypointsFile: null, createdAt: null },
@@ -315,10 +320,7 @@ function normalizeProject(project) {
         project.maskSettings.grow = 12;
     }
     if (!project.maskSettings.compositeTuned) project.maskSettings.compositeTuned = true;
-    project.maskSettings.grow = Math.round(clampNumber(project.maskSettings.grow, -128, 128, 12));
-    project.maskSettings.feather = Math.round(clampNumber(project.maskSettings.feather, 0, 32, 2));
-    project.maskSettings.temporal = Math.round(clampNumber(project.maskSettings.temporal, 0, 9, 3));
-    project.maskSettings.opacity = clampNumber(project.maskSettings.opacity, 0.1, 1, 0.55);
+    project.maskSettings = normalizeMaskSettings(project.maskSettings);
 
     project.engine = normalizeEngineName(project.engine);
     project.engineSettings = normalizeEngineSettings(project.engineSettings);

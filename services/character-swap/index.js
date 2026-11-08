@@ -1839,18 +1839,38 @@ function generatedFilePath(filename) {
     return fs.existsSync(file) ? file : null;
 }
 
+// Replaced people in shot order, as 1-based face slots for the automatic lip
+// pass. Only people with a character image are replacement targets.
+function lipTargets(project) {
+    const selected = sceneReference.selectedPeople(project);
+    const rows = buildH3Rows(project, selected);
+    return rows
+        .map((row, index) => (row.person && (row.person.refs || []).length ? index + 1 : null))
+        .filter((value) => value !== null);
+}
+
 function buildH3LipPlan(projectId, project, take, options = {}) {
     if (!take || take.engine !== 'h3') {
         const error = new Error('Lip repair is only available for an H3 Recast take.');
         error.status = 400;
         throw error;
     }
-    const settings = project.engineSettings && project.engineSettings.h3
+    const stored = project.engineSettings && project.engineSettings.h3
         ? project.engineSettings.h3
         : {};
-    const baseFilename = take.lipRepair && take.lipRepair.sourceFilename
-        ? take.lipRepair.sourceFilename
-        : take.filename;
+    // The pass is automatic but still honours the user's lip controls
+    // (denoise, steps, face pick, Re-time mouth, vocals stem). Normalize the
+    // stored settings so legacy projects pick up the new defaults.
+    const settings = Object.assign({}, stored, {
+        lipRepair: engines.getEngine('h3').normalizeSettings(stored, null).lip
+    });
+    // The automatic pass chains: a later target refines the current take file,
+    // while the original render stays available as the compare source.
+    const baseFilename = options.chain
+        ? take.filename
+        : (take.lipRepair && take.lipRepair.sourceFilename
+            ? take.lipRepair.sourceFilename
+            : take.filename);
     const baseAbs = generatedFilePath(baseFilename);
     if (!baseAbs) {
         const error = new Error('The H3 Recast take file could not be found. Render it again.');
@@ -2298,6 +2318,7 @@ module.exports = {
     buildScailPlan,
     buildH3Rows,
     buildH3LipPlan,
+    lipTargets,
     buildRenderPlan,
     renderTake,
     renderLipRefine,

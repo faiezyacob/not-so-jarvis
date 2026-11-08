@@ -32,6 +32,10 @@ const CharacterSwapUI = (() => {
 
     const $ = (id) => document.getElementById(id);
 
+    // Last-used workspace settings, kept per device so reopening the workspace
+    // or starting a new clip never silently falls back to defaults.
+    const PREF_KEY = 'jarvis-character-swap-prefs';
+
     const ENGINE_FEATURES = {
         scail2: {
             peopleSection: true,
@@ -207,16 +211,7 @@ const CharacterSwapUI = (() => {
             quality: $('csQuality') ? $('csQuality').value : 'full',
             h3Size: $('csH3Size') ? $('csH3Size').value : '',
             steps: Number($('csH3Steps') && $('csH3Steps').value) || 20,
-            attention: $('csH3Attention') ? $('csH3Attention').value : 'auto',
-            lipRepair: {
-                person: Number($('csLipPerson') && $('csLipPerson').value) || 1,
-                denoise: Number($('csLipDenoise') && $('csLipDenoise').value) || 0.35,
-                steps: Number($('csLipSteps') && $('csLipSteps').value) || 20,
-                facePick: $('csLipFacePick') ? $('csLipFacePick').value : 'position',
-                largeFaceMultiplier: $('csLipRetime') && !$('csLipRetime').checked ? 0.35 : 1,
-                vocalsFile: (project && project.engineSettings && project.engineSettings.h3 &&
-                    project.engineSettings.h3.lipRepair && project.engineSettings.h3.lipRepair.vocalsFile) || ''
-            }
+            attention: $('csH3Attention') ? $('csH3Attention').value : 'auto'
         };
     }
 
@@ -252,7 +247,7 @@ const CharacterSwapUI = (() => {
         if ($('csMaskFeather')) $('csMaskFeather').disabled = !features.maskTuning;
         if ($('csMaskTemporal')) $('csMaskTemporal').disabled = !features.maskTuning;
         if ($('csMaskHint')) {
-            $('csMaskHint').textContent = 'Select: click the person (Shift-click excludes background). The tint is SAM�?Ts current mask �?" if it covers the scene, add exclude points. Track follows it through the clip. Brush/Eraser fix the tracked mask on the current frame. Keep Grow small (8�?"16); large growth paints a generated halo around the subject.';
+            $('csMaskHint').textContent = 'Select: click the person (Shift-click excludes background). The tint is SAM’s current mask — if it covers the scene, add exclude points. Track follows it through the clip. Brush/Eraser fix the tracked mask on the current frame. Keep Grow small (8–16); large growth paints a generated halo around the subject.';
         }
         if ($('csDetectionHint')) {
             $('csDetectionHint').textContent = isScail
@@ -266,7 +261,7 @@ const CharacterSwapUI = (() => {
         if ($('csEngineNote')) {
             $('csEngineNote').textContent = isScail
                 ? 'SCAIL-2 uses the official replacement flow: SAM 3.1 finds the described person across the whole clip, colored driving/reference masks bind the identity, and the original audio is kept. Click one person to target them; Shift-click adds another.'
-                : 'H3 Recast swaps up to three people in one pass with the BFS Character Swap LoRA. It needs one edited scene-reference frame plus one character image and one line per person (no detection required), keeps the clip motion, set and audio, and can run an optional FaceRefine lip pass on a finished take.';
+                : 'H3 Recast swaps up to three people in one pass with the BFS Character Swap LoRA. It needs one edited scene-reference frame plus one character image and one line per person (no detection required), keeps the clip motion, set and audio, and refines lip sync automatically before upscaling.';
         }
         if ($('csAddRefs')) $('csAddRefs').textContent = features.referenceViews ? 'Upload images' : 'Upload image';
         if ($('csRefFiles')) $('csRefFiles').multiple = features.referenceViews;
@@ -321,37 +316,97 @@ const CharacterSwapUI = (() => {
     }
 
 
-    function applySettingsToForm() {
-        const settings = (project && project.engineSettings) || {};
-        const wan = settings.scail2 || {};
-        if ($('csWanResolution')) $('csWanResolution').value = wan.resolution === '720p' ? '720p' : '480p';
-        if ($('csWanSteps')) $('csWanSteps').value = String(wan.steps || 6);
-        if ($('csWanPrompt')) $('csWanPrompt').value = wan.positive || '';
-        if ($('csWanSam3Text')) $('csWanSam3Text').value = wan.sam3VideoObject || '';
-        if ($('csWanSam3RefText')) $('csWanSam3RefText').value = wan.sam3ImageObject || 'human';
+    function applyScailSettings(wan) {
+        const settings = wan || {};
+        if ($('csWanResolution')) $('csWanResolution').value = settings.resolution === '720p' ? '720p' : '480p';
+        if ($('csWanSteps')) $('csWanSteps').value = String(settings.steps || 6);
+        if ($('csWanPrompt')) $('csWanPrompt').value = settings.positive || '';
+        if ($('csWanSam3Text')) $('csWanSam3Text').value = settings.sam3VideoObject || '';
+        if ($('csWanSam3RefText')) $('csWanSam3RefText').value = settings.sam3ImageObject || 'human';
         if ($('csWanDuration')) {
-            const fixed = wan.durationMode === 'fixed' && ['5', '10', '15'].includes(String(wan.durationSeconds));
-            $('csWanDuration').value = fixed ? String(wan.durationSeconds) : 'match';
+            const fixed = settings.durationMode === 'fixed' && ['5', '10', '15'].includes(String(settings.durationSeconds));
+            $('csWanDuration').value = fixed ? String(settings.durationSeconds) : 'match';
         }
-        const h3 = settings.h3 || {};
-        if ($('csQuality')) $('csQuality').value = h3.quality || 'full';
-        if ($('csH3Size')) $('csH3Size').value = ['S', 'M', 'L', 'XL'].includes(h3.h3Size) ? h3.h3Size : 'L';
-        if ($('csH3Steps')) $('csH3Steps').value = String(h3.steps || 20);
+    }
+
+    function applyH3Settings(h3) {
+        const settings = h3 || {};
+        if ($('csQuality')) $('csQuality').value = settings.quality || 'full';
+        if ($('csH3Size')) $('csH3Size').value = ['S', 'M', 'L', 'XL'].includes(settings.h3Size) ? settings.h3Size : 'L';
+        if ($('csH3Steps')) $('csH3Steps').value = String(settings.steps || 20);
         if ($('csH3Attention')) {
-            const attention = ['comfy kitchen attention', 'pytorch attention'].includes(h3.attention) ? h3.attention : 'auto';
+            const attention = ['comfy kitchen attention', 'pytorch attention'].includes(settings.attention) ? settings.attention : 'auto';
             $('csH3Attention').value = attention;
         }
-        const lip = h3.lipRepair || {};
-        if ($('csLipPerson')) $('csLipPerson').value = String(Math.max(1, Math.min(3, Number(lip.person) || 1)));
-        if ($('csLipDenoise')) $('csLipDenoise').value = String(Number(lip.denoise) || 0.35);
-        if ($('csLipSteps')) $('csLipSteps').value = String(Number(lip.steps) || 20);
-        if ($('csLipFacePick')) $('csLipFacePick').value = lip.facePick === 'identity' ? 'identity' : 'position';
-        if ($('csLipRetime')) $('csLipRetime').checked = Number(lip.largeFaceMultiplier) >= 0.99;
-        if ($('csLipVocalsMeta')) {
-            $('csLipVocalsMeta').textContent = lip.vocalsFile
-                ? 'Vocal stem: ' + String(lip.vocalsFile).split('/').pop() + '. The original audio stays in the output.'
-                : "Lip sync conditions on the clip's original audio.";
+    }
+
+    function applyMaskSettings(mask) {
+        const settings = mask || {};
+        if ($('csMaskGrow')) $('csMaskGrow').value = String(Number.isFinite(Number(settings.grow)) ? Number(settings.grow) : 12);
+        if ($('csMaskFeather')) $('csMaskFeather').value = String(Number.isFinite(Number(settings.feather)) ? Number(settings.feather) : 2);
+        if ($('csMaskTemporal')) $('csMaskTemporal').value = String(Number.isFinite(Number(settings.temporal)) ? Number(settings.temporal) : 3);
+        if ($('csMaskOpacity')) $('csMaskOpacity').value = String(Math.round((Number(settings.opacity) || 0.55) * 100));
+        maskOpacity = Number(settings.opacity) || 0.55;
+        maskVisible = settings.visible !== false;
+        if ($('csMaskVisible')) $('csMaskVisible').checked = maskVisible;
+    }
+
+    function currentPreferences() {
+        const h3 = readH3Settings();
+        return {
+            engine,
+            engineSettings: { scail2: readScailSettings(), h3 },
+            maskSettings: {
+                grow: Number($('csMaskGrow') && $('csMaskGrow').value),
+                feather: Number($('csMaskFeather') && $('csMaskFeather').value),
+                temporal: Number($('csMaskTemporal') && $('csMaskTemporal').value),
+                opacity: Number($('csMaskOpacity') && $('csMaskOpacity').value) / 100,
+                visible: Boolean($('csMaskVisible') && $('csMaskVisible').checked)
+            },
+            takes: Math.max(1, Math.min(3, Number($('csTakeCount') && $('csTakeCount').value) || 1)),
+            brushSize: Math.max(1, Math.min(64, Number($('csBrushSize') && $('csBrushSize').value) || 16))
+        };
+    }
+
+    function loadPreferences() {
+        try {
+            const raw = localStorage.getItem(PREF_KEY);
+            const parsed = raw ? JSON.parse(raw) : null;
+            return parsed && typeof parsed === 'object' ? parsed : null;
+        } catch {
+            return null;
         }
+    }
+
+    function savePreferences() {
+        try {
+            localStorage.setItem(PREF_KEY, JSON.stringify(currentPreferences()));
+        } catch {
+            // Storage can be unavailable; the project still persists its settings.
+        }
+    }
+
+    function applySettingsToForm() {
+        const prefs = loadPreferences();
+        const settings = project
+            ? (project.engineSettings || {})
+            : ((prefs && prefs.engineSettings) || {});
+        applyScailSettings(settings.scail2 || {});
+        applyH3Settings(settings.h3 || {});
+        if (prefs) {
+            if (prefs.takes != null && $('csTakeCount')) $('csTakeCount').value = String(prefs.takes);
+            if (prefs.brushSize != null && $('csBrushSize')) {
+                brushSize = Math.max(1, Math.min(64, Number(prefs.brushSize) || 16));
+                $('csBrushSize').value = String(brushSize);
+            }
+            if (!project && prefs.maskSettings) {
+                applyMaskSettings(prefs.maskSettings);
+            } else if (prefs.maskSettings && $('csMaskVisible')) {
+                maskVisible = prefs.maskSettings.visible !== false;
+                $('csMaskVisible').checked = maskVisible;
+            }
+        }
+        const h3 = settings.h3 || {};
         const scene = h3.sceneReference || null;
         if ($('csSceneFrame')) {
             $('csSceneFrame').max = project && project.part ? String(Math.max(0, Number(project.part.frames) - 1)) : '0';
@@ -391,6 +446,7 @@ const CharacterSwapUI = (() => {
     async function switchEngine(next) {
         if (!next || next === engine) return;
         engine = next;
+        savePreferences();
         if (!project) {
             applyEngineUI();
             return;
@@ -401,6 +457,7 @@ const CharacterSwapUI = (() => {
                 body: JSON.stringify({ engine, settings: collectEngineSettings() })
             });
             setProject(data);
+            savePreferences();
             setStatus('Engine set to ' + engineLabel(engine) + '. Uploads, tracking, masks and references are unchanged.', 'ok');
         } catch (err) {
             engine = project.engine || 'scail2';
@@ -418,6 +475,7 @@ const CharacterSwapUI = (() => {
             });
             project = data;
             applyEngineUI();
+            savePreferences();
             updateFlow();
         } catch (err) {
             setStatus(err.message, 'error');
@@ -733,7 +791,7 @@ const CharacterSwapUI = (() => {
                 }
                 target = $('csBuildScene');
             } else if (targets.length) {
-                text = 'Ready - render H3 Recast. Lip repair can be run on the take afterwards.';
+                text = 'Ready - render H3 Recast. Lip sync is refined automatically before upscaling.';
                 target = $('csRender');
             } else {
                 text = 'Scene reference ready. Upload a character image for a person to enable rendering.';
@@ -1235,32 +1293,20 @@ const CharacterSwapUI = (() => {
                     take.metrics && take.metrics.peakVramMB ? 'peak VRAM ' + Math.round(take.metrics.peakVramMB / 1024) + ' GB' : '',
                     take.upscaled ? 'upscaled' : '',
                     take.upscaleError ? 'upscale failed' : '',
-                    take.lipRepair ? 'lip repaired p' + take.lipRepair.person : ''
+                    take.lipRepair ? 'lip refined' : ''
                 ].filter(Boolean);
                 meta.textContent = bits.join(' - ');
             }
             card.appendChild(meta);
-            if (take.engine === 'h3' && take.url && take.status !== 'failed') {
+            if (take.lipRepair && take.lipRepair.sourceUrl) {
                 const lipRow = document.createElement('div');
                 lipRow.className = 'character-swap-take-lip';
-                const refine = document.createElement('button');
-                refine.type = 'button';
-                refine.className = 'character-swap-btn';
-                refine.textContent = take.lipRepair ? 'Refine lip again' : 'Refine lip';
-                refine.title = 'Run the FaceRefine lip pass on this cached H3 Recast take';
-                refine.addEventListener('click', () => {
-                    const person = Number($('csLipPerson') && $('csLipPerson').value) || 1;
-                    renderTask({ refineTakeId: take.takeId, lipPerson: person });
-                });
-                lipRow.appendChild(refine);
-                if (take.lipRepair && take.lipRepair.sourceUrl) {
-                    const original = document.createElement('a');
-                    original.href = take.lipRepair.sourceUrl;
-                    original.target = '_blank';
-                    original.rel = 'noreferrer';
-                    original.textContent = 'Original';
-                    lipRow.appendChild(original);
-                }
+                const original = document.createElement('a');
+                original.href = take.lipRepair.sourceUrl;
+                original.target = '_blank';
+                original.rel = 'noreferrer';
+                original.textContent = 'Original (before lip refine)';
+                lipRow.appendChild(original);
                 card.appendChild(lipRow);
             }
             if (Array.isArray(take.windows) && take.windows.length) {
@@ -1446,6 +1492,7 @@ const CharacterSwapUI = (() => {
             const conversationId = window.Conversations && typeof window.Conversations.currentId === 'function'
                 ? window.Conversations.currentId()
                 : null;
+            const prefs = currentPreferences();
             const data = await api('/api/character-swap/projects', {
                 method: 'POST',
                 body: JSON.stringify({
@@ -1453,11 +1500,14 @@ const CharacterSwapUI = (() => {
                     source: 'generated',
                     title: filename,
                     engine,
-                    conversationId
+                    conversationId,
+                    settings: prefs.engineSettings,
+                    maskSettings: prefs.maskSettings
                 })
             });
             frame = 0;
             setProject(data);
+            savePreferences();
             setStatus('Clip ready. Upload a character image to start.', 'ok');
         } catch (err) {
             setStatus(err.message, 'error');
@@ -1699,6 +1749,7 @@ const CharacterSwapUI = (() => {
         $('csMaskVisible').checked = true;
         maskOpacity = 0.55;
         maskVisible = true;
+        applySettingsToForm();
         setTool('select');
         renderAll();
         setStatus('', '');
@@ -1857,17 +1908,21 @@ const CharacterSwapUI = (() => {
             const conversationId = window.Conversations && typeof window.Conversations.currentId === 'function'
                 ? window.Conversations.currentId()
                 : null;
+            const prefs = currentPreferences();
             const data = await api('/api/character-swap/projects', {
                 method: 'POST',
                 body: JSON.stringify({
                     filename: uploaded.filename,
                     title: file.name,
                     engine,
-                    conversationId
+                    conversationId,
+                    settings: prefs.engineSettings,
+                    maskSettings: prefs.maskSettings
                 })
             });
             frame = 0;
             setProject(data);
+            savePreferences();
             setStatus('Clip ready. Upload a character image to start.', 'ok');
         } catch (err) {
             setStatus(err.message, 'error');
@@ -2006,35 +2061,6 @@ const CharacterSwapUI = (() => {
         });
     }
 
-    async function uploadLipVocals(file) {
-        if (!file || !project) return;
-        try {
-            setStatus('Uploading the vocal stem.');
-            const uploaded = await uploadFile(file);
-            const data = await api('/api/character-swap/projects/' + encodeURIComponent(project.id) + '/lip-audio', {
-                method: 'POST',
-                body: JSON.stringify({ filename: uploaded.filename })
-            });
-            setProject(data);
-            setStatus('Vocal stem ready for lip sync. The original audio stays in the output.', 'ok');
-        } catch (err) {
-            setStatus(err.message, 'error');
-        }
-    }
-
-    async function clearLipVocals() {
-        if (!project) return;
-        try {
-            const data = await api('/api/character-swap/projects/' + encodeURIComponent(project.id) + '/lip-audio', {
-                method: 'DELETE'
-            });
-            setProject(data);
-            setStatus("Lip sync uses the clip's original audio.", 'ok');
-        } catch (err) {
-            setStatus(err.message, 'error');
-        }
-    }
-
     async function clearScene() {
         if (!project) return;
         try {
@@ -2135,6 +2161,7 @@ const CharacterSwapUI = (() => {
                 })
             });
             setProject(data);
+            savePreferences();
             setStatus('Mask settings saved.', 'ok');
         } catch (err) {
             setStatus(err.message, 'error');
@@ -2145,23 +2172,18 @@ const CharacterSwapUI = (() => {
         if (!project) return;
         const button = $('csRender');
         button.disabled = true;
-        const isRefine = Boolean(options.refineTakeId);
         try {
-            setStatus(isRefine
-                ? 'Refining the selected face from the cached take�?�'
-                : (engine === 'scail2' ? 'Preparing the SCAIL-2 replacement�?�' : 'Preparing the H3 Recast render�?�'));
+            setStatus(engine === 'scail2' ? 'Preparing the SCAIL-2 replacement…' : 'Preparing the H3 Recast render…');
             const settings = collectEngineSettings();
             const response = await fetch('/api/character-swap/projects/' + encodeURIComponent(project.id) + '/render', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    engine: isRefine ? 'h3' : engine,
+                    engine,
                     quality: $('csQuality') ? $('csQuality').value : 'full',
                     takes: Number($('csTakeCount').value),
                     resumeTakeId: options.resumeTakeId || null,
                     redoWindow: options.redoWindow || null,
-                    refineTakeId: options.refineTakeId || null,
-                    lipPerson: options.lipPerson || null,
                     settings
                 })
             });
@@ -2190,9 +2212,7 @@ const CharacterSwapUI = (() => {
                         setStatus('Rendering… ' + Math.round(payload.progress.value / payload.progress.max * 100) + '%');
                     }
                     if (payload.take) {
-                        setStatus(payload.refined
-                            ? 'Lip repair complete. The original take is still available.'
-                            : 'Take ' + payload.take.seed + ' complete.', 'ok');
+                        setStatus('Take ' + payload.take.seed + ' complete.', 'ok');
                     }
                     if (payload.error) throw new Error(payload.error);
                     if (payload.done) {
@@ -2220,12 +2240,7 @@ const CharacterSwapUI = (() => {
     const buildSceneTask = () => runTask('Building the scene reference.', buildScene);
     const uploadSceneFileTask = (file) => runTask('Uploading the scene reference.', () => uploadSceneFile(file));
     const clearSceneTask = () => runTask('Clearing the scene reference.', clearScene);
-    const uploadLipVocalsTask = (file) => runTask('Uploading the vocal stem.', () => uploadLipVocals(file));
-    const clearLipVocalsTask = () => runTask('Clearing the vocal stem.', clearLipVocals);
-    const renderTask = (options) => runTask(
-        options && options.refineTakeId ? 'Refining the selected face.' : 'Rendering the character swap.',
-        () => render(options)
-    );
+    const renderTask = (options) => runTask('Rendering the character swap.', () => render(options));
     const generateViewTask = () => runTask('Generating the reference view.', generateView);
     const generateSheetTask = () => runTask('Generating the reference sheet.', generateSheet);
     const trackTask = () => runTask('Tracking the selected people.', track);
@@ -2311,13 +2326,30 @@ const CharacterSwapUI = (() => {
         document.querySelectorAll('[data-cs-tool]').forEach((button) => {
             button.addEventListener('click', () => setTool(button.getAttribute('data-cs-tool')));
         });
-        $('csBrushSize').addEventListener('input', () => { brushSize = Number($('csBrushSize').value); });
-        $('csMaskOpacity').addEventListener('input', () => { maskOpacity = Number($('csMaskOpacity').value) / 100; drawMask(); });
-        $('csMaskVisible').addEventListener('change', () => { maskVisible = $('csMaskVisible').checked; drawMask(); });
+        $('csBrushSize').addEventListener('input', () => {
+            brushSize = Number($('csBrushSize').value);
+            savePreferences();
+        });
+        $('csMaskOpacity').addEventListener('input', () => {
+            maskOpacity = Number($('csMaskOpacity').value) / 100;
+            drawMask();
+        });
+        $('csMaskOpacity').addEventListener('change', savePreferences);
+        $('csMaskVisible').addEventListener('change', () => {
+            maskVisible = $('csMaskVisible').checked;
+            drawMask();
+            savePreferences();
+        });
         $('csMaskSync').addEventListener('click', saveMaskSettingsTask);
         ['csMaskGrow', 'csMaskFeather', 'csMaskTemporal'].forEach((id) => {
-            $(id).addEventListener('change', saveMaskSettings);
+            $(id).addEventListener('change', () => {
+                savePreferences();
+                saveMaskSettings();
+            });
         });
+        if ($('csTakeCount')) {
+            $('csTakeCount').addEventListener('change', savePreferences);
+        }
         $('csPrevFrame').addEventListener('click', () => {
             frame = Math.max(0, frame - 1);
             renderSource();
@@ -2373,12 +2405,6 @@ const CharacterSwapUI = (() => {
         });
         if ($('csPickScene')) $('csPickScene').addEventListener('click', pickScene);
         if ($('csClearScene')) $('csClearScene').addEventListener('click', clearSceneTask);
-        if ($('csLipVocalsPick')) $('csLipVocalsPick').addEventListener('click', () => $('csLipVocalsFile').click());
-        if ($('csLipVocalsFile')) $('csLipVocalsFile').addEventListener('change', (event) => {
-            uploadLipVocalsTask(event.target.files && event.target.files[0]);
-            event.target.value = '';
-        });
-        if ($('csLipVocalsClear')) $('csLipVocalsClear').addEventListener('click', clearLipVocalsTask);
         $('csStartOver').addEventListener('click', startOverTask);
         document.querySelectorAll('[data-cs-engine]').forEach((button) => {
             button.addEventListener('click', () => switchEngineTask(button.getAttribute('data-cs-engine')));
@@ -2386,16 +2412,21 @@ const CharacterSwapUI = (() => {
         const engineInputs = [
             'csWanDuration', 'csWanResolution', 'csWanSteps', 'csQuality',
             'csWanSam3Text', 'csWanSam3RefText',
-            'csH3Size', 'csH3Steps', 'csH3Attention', 'csLipPerson',
-            'csLipDenoise', 'csLipSteps', 'csLipFacePick', 'csLipRetime'
+            'csH3Size', 'csH3Steps', 'csH3Attention'
         ];
         engineInputs.forEach((id) => {
             const input = $(id);
             if (!input) return;
-            input.addEventListener('change', saveEngineSettingsTask);
+            input.addEventListener('change', () => {
+                savePreferences();
+                saveEngineSettingsTask();
+            });
         });
         if ($('csWanPrompt')) {
-            $('csWanPrompt').addEventListener('change', saveEngineSettingsTask);
+            $('csWanPrompt').addEventListener('change', () => {
+                savePreferences();
+                saveEngineSettingsTask();
+            });
             $('csWanPrompt').addEventListener('input', updateFlow);
         }
         const draw = $('csDrawCanvas');
@@ -2480,6 +2511,8 @@ const CharacterSwapUI = (() => {
         bind();
         const button = $('chatCharacterSwap');
         if (button) button.addEventListener('click', open);
+        const prefs = loadPreferences();
+        if (prefs && (prefs.engine === 'scail2' || prefs.engine === 'h3')) engine = prefs.engine;
         setTool('select');
         loadEngines();
         window.addEventListener('resize', layoutCanvases);
