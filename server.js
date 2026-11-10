@@ -1953,8 +1953,9 @@ async function handleAPI(req, res, urlPath) {
     // POST /api/video/upscale — upscale the last generated video in a conversation
     // (or an explicit data/generated filename). Used by the chat pipeline and
     // available for the gallery. Reads the shared upscale settings (same as
-    // image upscale); optional body overrides: engine (seedvr2|rtx), resolution,
-    // profile, noise, preScale (SeedVR2), scale, quality, fps (RTX).
+    // image upscale); optional body overrides: engine (seedvr2|rtx), mode
+    // (target|multiplier), resolution (target short side), profile, noise,
+    // preScale (SeedVR2), scale, quality, fps.
     if (urlPath === '/api/video/upscale' && req.method === 'POST') {
         try {
             const body = await readBody(req);
@@ -1976,6 +1977,7 @@ async function handleAPI(req, res, urlPath) {
             await vramManager.freeVRAMBeforeImage();
             const result = await videoGenerator.upscaleVideo(source.rawFilename, {
                 engine: body.engine,
+                mode: body.mode,
                 resolution: body.resolution,
                 profile: body.profile,
                 noise: body.noise,

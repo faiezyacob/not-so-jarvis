@@ -494,7 +494,7 @@
                                 <option value="seedvr2">SeedVR2</option>
                                 <option value="ultimate">Ultimate SD</option>
                             </select>
-                            <span class="settings-hint">SeedVR2 is the default: a diffusion upscaler that gives the best quality for images and video. RTX is a fast single-pass video super-resolution (softer); images fall back to SeedVR2. Ultimate SD is image-only. Both SeedVR2 and Ultimate SD use the Mode setting below.</span>
+                            <span class="settings-hint">SeedVR2 is the default: a diffusion upscaler that gives the best quality for images and video. RTX is a fast single-pass video super-resolution (softer); images fall back to SeedVR2. Ultimate SD is image-only. RTX and SeedVR2 use the Mode setting below so every source can land on the same output size.</span>
                         </div>
                         <div class="settings-card" data-search="upscale mode target resolution multiplier scale">
                             <div class="settings-card-title">SCALE</div>
@@ -511,9 +511,10 @@
                             <select class="settings-select" id="upscaleResolution">
                                 <option value="1080">1080p</option>
                                 <option value="1440">1440p</option>
-                                <option value="2160">2160p</option>
+                                <option value="2160">2160p (4K)</option>
+                                <option value="3840">3840p (8K short side)</option>
                             </select>
-                            <span class="settings-hint">Target short-side resolution for SeedVR2 and Ultimate SD.</span>
+                            <span class="settings-hint">Target short-side resolution for RTX and SeedVR2. The source aspect ratio is kept, so 2160p is 3840×2160 for 16:9, 2160×3840 for 9:16 and 2160×2160 for square, regardless of the initial resolution.</span>
                         </div>
                         <div class="settings-field" id="upscaleMultiplierField">
                             <label class="settings-field-label" for="upscaleMultiplier">Multiplier</label>
@@ -523,7 +524,7 @@
                                 <option value="3">3x</option>
                                 <option value="4">4x</option>
                             </select>
-                            <span class="settings-hint">RTX scale factor, or the source scale for SeedVR2/Ultimate SD in Multiplier mode.</span>
+                            <span class="settings-hint">Scale factor for RTX in Multiplier mode, or the source scale for SeedVR2/Ultimate SD in Multiplier mode.</span>
                         </div>
                             </div>
                             <div class="settings-warning" id="upscaleMultiplierWarning" style="display:none;">

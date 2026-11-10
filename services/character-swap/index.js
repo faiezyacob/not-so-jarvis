@@ -1961,12 +1961,28 @@ function markTakeRefined(projectId, takeId, result) {
         const sourceFilename = take.lipRepair && take.lipRepair.sourceFilename
             ? take.lipRepair.sourceFilename
             : take.filename;
+        // The refined file supersedes the file it was built from. Keep that
+        // file on disk (the take card links to it as the pre-refine source) but
+        // drop it from the public gallery/activity feed so only the final
+        // video is shown. Chained per-person passes also record their
+        // intermediate files so deleting the take can clean them up.
+        const previousFilename = take.filename;
+        const intermediates = Array.isArray(take.lipRepair && take.lipRepair.intermediates)
+            ? take.lipRepair.intermediates.slice()
+            : [];
+        if (previousFilename && previousFilename !== sourceFilename && !intermediates.includes(previousFilename)) {
+            intermediates.push(previousFilename);
+        }
         take.lipRepair = Object.assign({}, result.lipRepair || {}, {
             sourceUrl,
-            sourceFilename
+            sourceFilename,
+            intermediates
         });
         take.url = result.url;
         take.filename = result.filename;
+        if (previousFilename && previousFilename !== result.filename) {
+            try { generatedHistory.setHiddenByFilename(previousFilename, true); } catch { /* best-effort */ }
+        }
         take.width = result.width || take.width;
         take.height = result.height || take.height;
         take.duration = result.duration || take.duration;
@@ -2117,6 +2133,7 @@ function takeFilenames(take) {
     add(take.filename);
     if (take.lipRepair) {
         add(take.lipRepair.sourceFilename);
+        for (const name of take.lipRepair.intermediates || []) add(name);
     }
     if (take.upscale) {
         add(take.upscale.originalFilename);
@@ -2245,6 +2262,20 @@ function list(sessionId) {
 
 function recover() {
     characterState.recover();
+    // Idempotent gallery cleanup for takes refined before the superseded files
+    // were hidden: the swap/intermediate lip files stay on disk (the take card
+    // links to the original) but leave the public gallery and activity feed.
+    for (const project of characterState.list()) {
+        for (const take of project.takes || []) {
+            if (!take.lipRepair) continue;
+            const superseded = [take.lipRepair.sourceFilename]
+                .concat(Array.isArray(take.lipRepair.intermediates) ? take.lipRepair.intermediates : []);
+            for (const name of superseded) {
+                if (!name || name === take.filename) continue;
+                try { generatedHistory.setHiddenByFilename(name, true); } catch { /* best-effort */ }
+            }
+        }
+    }
 }
 
 function removeForConversation(conversationId) {

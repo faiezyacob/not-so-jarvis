@@ -1144,8 +1144,10 @@ const DEFAULT_SETTINGS = {
     // preScale applies an optional lanczos pre-resize before SeedVR2 (1 = off).
     // Engine is shared with video: images run SeedVR2/Ultimate SD (an RTX
     // selection falls back to SeedVR2 for images); videos run SeedVR2/RTX (an
-    // Ultimate SD selection falls back to RTX for video). RTX video upscale
-    // uses upscaleMultiplier as its scale factor. Default is SeedVR2: the
+    // Ultimate SD selection falls back to RTX for video). In target mode both
+    // video engines pin the source short side to upscaleResolution (RTX uses
+    // the node's "target dimensions" resize); in multiplier mode RTX uses
+    // upscaleMultiplier. Default is SeedVR2: the
     // diffusion DiT upscaler yields noticeably better quality than the fast
     // single-pass RTX path, which is a quality-first default. Choose RTX in
     // Settings > Upscale for a faster (softer) video upscale.

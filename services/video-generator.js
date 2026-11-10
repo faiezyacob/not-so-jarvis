@@ -961,7 +961,8 @@ function readVideoDimensions(filePath) {
 
 // Best-effort output size for an upscaled video whose header could not be
 // parsed. SeedVR2 pins the short side to the target resolution and keeps the
-// aspect ratio on even pixel boundaries; RTX multiplies both sides.
+// aspect ratio on even pixel boundaries. RTX either uses the same target
+// short-side math (target mode) or multiplies both sides (multiplier mode).
 function expectedUpscaleDims(sourceWidth, sourceHeight, opts) {
     const width = Number(sourceWidth);
     const height = Number(sourceHeight);
@@ -970,8 +971,11 @@ function expectedUpscaleDims(sourceWidth, sourceHeight, opts) {
 
     let targetWidth;
     let targetHeight;
-    if (options.engine === 'seedvr2') {
-        const shortSide = clampToRange(options.resolution, 512, 8192, 2160);
+    if (options.targetWidth > 0 && options.targetHeight > 0) {
+        targetWidth = options.targetWidth;
+        targetHeight = options.targetHeight;
+    } else if (options.engine === 'seedvr2' || options.mode === 'target') {
+        const shortSide = clampToRange(options.resolution, 64, 8192, 2160);
         const factor = shortSide / Math.min(width, height);
         targetWidth = Math.max(2, Math.round((width * factor) / 2) * 2);
         targetHeight = Math.max(2, Math.round((height * factor) / 2) * 2);
@@ -2633,10 +2637,12 @@ function clampToRange(value, min, max, fallback) {
 // noise/pre-scale/DiT/VAE/attention live under imageGeneration). The engine
 // is shared too but interpreted per medium: video accepts SeedVR2 or the fast
 // single-pass RTX super-resolution node (an Ultimate SD choice, which is
-// image-only, degrades to RTX). RTX is the default and uses upscaleMultiplier
-// as its scale factor; SeedVR2 is the slower diffusion DiT path and uses
-// upscaleResolution as its target short side. The image-only keys
-// (upscaleMode, Ultimate SD) are ignored on this side.
+// image-only, degrades to RTX). Both video engines honour upscaleMode:
+// "target" pins the source short side to upscaleResolution (so every initial
+// resolution lands on the same output size, e.g. 2160 = 3840x2160 for 16:9),
+// while "multiplier" scales the source by upscaleMultiplier. SeedVR2 is the
+// slower diffusion DiT path; RTX is the fast path and uses the node's native
+// "target dimensions" mode for exact sizes.
 
 const VIDEO_UPSCALE_RESOLUTIONS = [1080, 1440, 2160, 3840];
 const VIDEO_UPSCALE_SCALES = [1.5, 2, 3, 4];
@@ -2645,6 +2651,9 @@ const VIDEO_UPSCALE_NOISE_LEVELS = { off: 0, low: 0.06, medium: 0.15 };
 const VIDEO_UPSCALE_ENGINES = ['seedvr2', 'rtx'];
 const VIDEO_UPSCALE_DEFAULT_ENGINE = 'rtx';
 const VIDEO_UPSCALE_RTX_QUALITIES = ['ULTRA', 'HIGH', 'BALANCED', 'FAST'];
+const RTX_DIMENSION_ALIGN = 8;
+const RTX_DIMENSION_MIN = 64;
+const RTX_DIMENSION_MAX = 8192;
 
 // Only an explicit SeedVR2 request selects the diffusion path; every other
 // value (including the image-only "ultimate") resolves to fast RTX.
@@ -2655,11 +2664,40 @@ function normalizeVideoUpscaleEngine(value, fallback) {
     return fallback !== undefined ? fallback : VIDEO_UPSCALE_DEFAULT_ENGINE;
 }
 
+function normalizeVideoUpscaleMode(value, fallback) {
+    const requested = String(value || '').trim().toLowerCase();
+    if (requested === 'target' || requested === 'multiplier') return requested;
+    return fallback !== undefined ? fallback : 'target';
+}
+
 function normalizeVideoUpscaleScale(value, fallback) {
     const n = Number(value);
     if (!Number.isFinite(n)) return fallback !== undefined ? fallback : 2;
     const bounded = Math.max(1, Math.min(4, n));
     return Math.round(bounded * 10) / 10;
+}
+
+function snapRtxDimension(value) {
+    const n = Math.round(Number(value) || 0);
+    if (!Number.isFinite(n) || n <= 0) return 0;
+    const snapped = Math.round(n / RTX_DIMENSION_ALIGN) * RTX_DIMENSION_ALIGN;
+    return Math.max(RTX_DIMENSION_MIN, Math.min(RTX_DIMENSION_MAX, snapped));
+}
+
+// Turn a target short side into exact output dimensions for the RTX node's
+// "target dimensions" mode. Keeps the source aspect ratio and snaps to the
+// node's 8 px grid, so 2160 on a 16:9 source is 3840x2160 (4K UHD) regardless
+// of the initial resolution.
+function rtxTargetDimensions(sourceWidth, sourceHeight, targetShortSide) {
+    const width = Number(sourceWidth);
+    const height = Number(sourceHeight);
+    if (!(width > 0 && height > 0)) return null;
+    const shortSide = clampToRange(targetShortSide, RTX_DIMENSION_MIN, RTX_DIMENSION_MAX, 2160);
+    const factor = shortSide / Math.min(width, height);
+    const targetWidth = snapRtxDimension(width * factor);
+    const targetHeight = snapRtxDimension(height * factor);
+    if (!(targetWidth >= RTX_DIMENSION_MIN && targetHeight >= RTX_DIMENSION_MIN)) return null;
+    return { width: targetWidth, height: targetHeight, shortSide };
 }
 
 function normalizeRtxQuality(value, fallback) {
@@ -4772,9 +4810,12 @@ async function autoUpscaleGenerated(baseResult, options = {}) {
             meta: upscaled.meta || baseResult.meta,
             upscale: {
                 engine: upscaled.engine,
+                mode: upscaled.mode,
                 resolution: upscaled.resolution,
                 scale: upscaled.scale,
                 quality: upscaled.quality,
+                targetWidth: upscaled.targetWidth || null,
+                targetHeight: upscaled.targetHeight || null,
                 profile: upscaled.profile,
                 noise: upscaled.noise,
                 originalUrl: baseResult.url,
@@ -5005,26 +5046,38 @@ function buildSeedVr2VideoUpscaleGraph(videoName, options = {}) {
     return { graph, profile };
 }
 
-// Fast single-pass path: VHS_LoadVideo -> RTXVideoSuperResolution (scale by
-// multiplier) -> CreateVideo -> SaveVideo. No DiT/VAE loads, no diffusion;
-// roughly two orders of magnitude faster than SeedVR2.
+// Fast single-pass path: VHS_LoadVideo -> RTXVideoSuperResolution -> CreateVideo
+// -> SaveVideo. No DiT/VAE loads, no diffusion; roughly two orders of magnitude
+// faster than SeedVR2. The node supports "target dimensions" (exact width/
+// height) as well as "scale by multiplier"; target mode makes every source
+// resolution land on the same output size.
 function buildRtxVideoUpscaleGraph(videoName, options = {}) {
-    const scale = normalizeVideoUpscaleScale(options.scale, 2);
+    const targetWidth = snapRtxDimension(options.targetWidth);
+    const targetHeight = snapRtxDimension(options.targetHeight);
+    const useTarget = targetWidth >= RTX_DIMENSION_MIN && targetHeight >= RTX_DIMENSION_MIN;
+    const scale = useTarget ? null : normalizeVideoUpscaleScale(options.scale, 2);
     const quality = normalizeRtxQuality(options.quality, 'ULTRA');
     const fps = Number(options.fps) > 0 ? Number(options.fps) : H3_FPS;
     const hasAudio = options.hasAudio !== false;
     const savePrefix = String(options.savePrefix || 'not-so-jarvis/video_upscale_rtx');
 
+    const vsrInputs = {
+        images: ['src', 0],
+        resize_type: useTarget ? 'target dimensions' : 'scale by multiplier',
+        quality
+    };
+    if (useTarget) {
+        vsrInputs['resize_type.width'] = targetWidth;
+        vsrInputs['resize_type.height'] = targetHeight;
+    } else {
+        vsrInputs['resize_type.scale'] = scale;
+    }
+
     const graph = {};
     graph.src = videoLoadNode(videoName, fps);
     graph.vsr = {
         class_type: 'RTXVideoSuperResolution',
-        inputs: {
-            images: ['src', 0],
-            resize_type: 'scale by multiplier',
-            'resize_type.scale': scale,
-            quality
-        }
+        inputs: vsrInputs
     };
 
     const videoInputs = { images: ['vsr', 0], fps };
@@ -5032,7 +5085,13 @@ function buildRtxVideoUpscaleGraph(videoName, options = {}) {
     graph.video = { class_type: 'CreateVideo', inputs: videoInputs };
     graph.save = { class_type: 'SaveVideo', inputs: { video: ['video', 0], filename_prefix: savePrefix, format: 'auto', codec: 'auto' } };
 
-    return { graph, scale, quality };
+    return {
+        graph,
+        scale,
+        quality,
+        targetWidth: useTarget ? targetWidth : null,
+        targetHeight: useTarget ? targetHeight : null
+    };
 }
 
 async function upscaleVideo(rawFilename, options = {}) {
@@ -5091,13 +5150,23 @@ async function upscaleVideo(rawFilename, options = {}) {
         const seed = Math.floor(Math.random() * 2 ** 32);
 
         const isSeedVr2 = engine === 'seedvr2';
-        const resolution = isSeedVr2
-            ? clampToRange(options.resolution || upscale.upscaleResolution, 512, 8192, 2160)
+        const mode = normalizeVideoUpscaleMode(
+            options.mode !== undefined && options.mode !== null && options.mode !== ''
+                ? options.mode
+                : upscale.upscaleMode,
+            'target');
+        const targetShortSide = clampToRange(options.resolution || upscale.upscaleResolution, 512, 8192, 2160);
+        // RTX target mode resolves the requested short side into exact output
+        // dimensions so every initial resolution lands on the same 4K/1440p
+        // size. Unknown source dimensions fall back to multiplier mode.
+        const rtxTarget = !isSeedVr2 && mode === 'target'
+            ? rtxTargetDimensions(sourceWidth, sourceHeight, targetShortSide)
             : null;
+        const resolution = isSeedVr2 ? targetShortSide : (rtxTarget ? targetShortSide : null);
         const profile = isSeedVr2 ? (options.profile || upscale.upscaleProfile || 'sharp') : null;
         const noise = isSeedVr2 ? (options.noise || upscale.upscaleNoise || 'low') : null;
         const preScale = isSeedVr2 ? (options.preScale || upscale.upscalePreScale || 1) : 1;
-        const scale = !isSeedVr2
+        const scale = !isSeedVr2 && !rtxTarget
             ? normalizeVideoUpscaleScale(
                 options.scale !== undefined && options.scale !== null && options.scale !== ''
                     ? options.scale
@@ -5115,6 +5184,8 @@ async function upscaleVideo(rawFilename, options = {}) {
         let effectiveProfile = null;
         let effectiveScale = null;
         let effectiveQuality = null;
+        let effectiveTargetWidth = null;
+        let effectiveTargetHeight = null;
         try {
             if (isSeedVr2) {
                 // Resolve the authoritative SeedVR2 checkpoint list from the
@@ -5144,6 +5215,8 @@ async function upscaleVideo(rawFilename, options = {}) {
             } else {
                 const built = buildRtxVideoUpscaleGraph(loadName, {
                     scale,
+                    targetWidth: rtxTarget ? rtxTarget.width : undefined,
+                    targetHeight: rtxTarget ? rtxTarget.height : undefined,
                     quality,
                     fps,
                     hasAudio: true
@@ -5151,6 +5224,8 @@ async function upscaleVideo(rawFilename, options = {}) {
                 graph = built.graph;
                 effectiveScale = built.scale;
                 effectiveQuality = built.quality;
+                effectiveTargetWidth = built.targetWidth;
+                effectiveTargetHeight = built.targetHeight;
             }
 
             const info = await comfyui.getObjectInfo();
@@ -5209,7 +5284,10 @@ async function upscaleVideo(rawFilename, options = {}) {
         if (!(outWidth > 0 && outHeight > 0)) {
             const expected = expectedUpscaleDims(sourceWidth, sourceHeight, {
                 engine,
+                mode,
                 resolution,
+                targetWidth: effectiveTargetWidth,
+                targetHeight: effectiveTargetHeight,
                 scale: effectiveScale
             });
             if (expected) {
@@ -5233,11 +5311,14 @@ async function upscaleVideo(rawFilename, options = {}) {
             generationMs: Date.now() - startedAt,
             upscale: {
                 engine,
+                mode,
                 profile: effectiveProfile ? effectiveProfile.key : null,
                 noise: effectiveProfile ? effectiveProfile.noise : null,
                 resolution,
                 scale: effectiveScale,
                 quality: effectiveQuality,
+                targetWidth: effectiveTargetWidth,
+                targetHeight: effectiveTargetHeight,
                 fps,
                 source: safeName,
                 sourceWidth: sourceWidth || null,
@@ -5257,11 +5338,14 @@ async function upscaleVideo(rawFilename, options = {}) {
             url: meta.file,
             filename: basename,
             engine,
+            mode,
             profile: effectiveProfile ? effectiveProfile.key : null,
             noise: effectiveProfile ? effectiveProfile.noise : null,
             resolution,
             scale: effectiveScale,
             quality: effectiveQuality,
+            targetWidth: effectiveTargetWidth,
+            targetHeight: effectiveTargetHeight,
             fps,
             width: outWidth || null,
             height: outHeight || null,
@@ -5892,8 +5976,11 @@ module.exports = {
     VIDEO_UPSCALE_DEFAULT_ENGINE,
     VIDEO_UPSCALE_RTX_QUALITIES,
     normalizeVideoUpscaleEngine,
+    normalizeVideoUpscaleMode,
     normalizeVideoUpscaleScale,
     normalizeRtxQuality,
+    rtxTargetDimensions,
+    snapRtxDimension,
     buildRtxVideoUpscaleGraph,
     VIDEO_UPSCALE_DEFAULT_TIMEOUT_MS,
     readVideoDimensions,

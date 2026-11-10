@@ -1609,20 +1609,21 @@ function initUpscaleSettings() {
         const engine = engineSel ? engineSel.value : 'rtx';
         const mode = modeSel ? modeSel.value : 'target';
 
-        // RTX ignores mode/target resolution and always scales by the
-        // multiplier; SeedVR2 and Ultimate SD either target a short-side
-        // resolution or scale by the multiplier. Show only the control the
-        // active engine actually reads.
-        const isRtx = engine === 'rtx';
+        // RTX and SeedVR2 either target a short-side resolution (so every
+        // source lands on the same output size, e.g. 2160 -> 3840x2160 for
+        // 16:9) or scale by the multiplier. Ultimate SD is image-only and
+        // always uses the multiplier. Show only the control the active engine
+        // actually reads.
+        const usesTargetResolution = engine === 'rtx' || engine === 'seedvr2';
 
         const modeField = document.getElementById('upscaleModeField');
-        if (modeField) modeField.style.display = isRtx ? 'none' : '';
+        if (modeField) modeField.style.display = engine === 'ultimate' ? 'none' : '';
 
         const resField = document.getElementById('upscaleResolutionField');
-        if (resField) resField.style.display = (!isRtx && mode === 'target') ? '' : 'none';
+        if (resField) resField.style.display = (usesTargetResolution && mode === 'target') ? '' : 'none';
 
         const multField = document.getElementById('upscaleMultiplierField');
-        if (multField) multField.style.display = (isRtx || mode === 'multiplier') ? '' : 'none';
+        if (multField) multField.style.display = (!usesTargetResolution || mode === 'multiplier') ? '' : 'none';
 
         ['upscaleProfileField', 'upscaleNoiseField', 'upscalePreScaleField', 'upscaleDiTField', 'upscaleVaeField', 'upscaleAttentionField'].forEach((id) => {
             const el = document.getElementById(id);
@@ -1635,7 +1636,9 @@ function initUpscaleSettings() {
             const is4x = multSel && Number(multSel.value) >= 4;
             // Ultimate SD is image-only and falls back to RTX for video, so it
             // shares the same 4x video cost; SeedVR2 ignores the multiplier.
-            warningEl.style.display = (engine !== 'seedvr2' && is4x) ? '' : 'none';
+            // Target mode has no multiplier, so the cost warning cannot apply.
+            const multiplierVisible = multField && multField.style.display !== 'none';
+            warningEl.style.display = (engine !== 'seedvr2' && multiplierVisible && is4x) ? '' : 'none';
         }
     };
 

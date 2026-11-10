@@ -188,6 +188,101 @@ test('selection: a second target gets its own character image, not the first one
     characterState.remove(project.id);
 });
 
+test('lip refine hides the superseded take from the public gallery', () => {
+    const characterSwap = require('../services/character-swap');
+    const generatedHistory = require('../services/generated-history');
+    const project = characterState.createProject({ sessionId: 's-hide', filename: 'clip.mp4' });
+    const swapName = 'swap_before_lip.mp4';
+    const lipName = 'swap_after_lip.mp4';
+    generatedHistory.add({
+        file: '/generated/' + swapName,
+        rawFilename: swapName,
+        conversationId: null,
+        model: 'MiniMax H3 Recast',
+        sessionId: 's-hide'
+    });
+    characterState.update(project.id, (current) => {
+        current.takes = [{
+            takeId: 't-hide',
+            engine: 'h3',
+            seed: 1,
+            status: 'done',
+            filename: swapName,
+            url: '/generated/' + swapName,
+            width: 100,
+            height: 100,
+            duration: 1,
+            fps: 24,
+            frames: 24
+        }];
+        current.bestTake = current.takes[0];
+    });
+    generatedHistory.add({
+        file: '/generated/' + lipName,
+        rawFilename: lipName,
+        conversationId: null,
+        model: 'MiniMax H3 Recast Lip Repair',
+        sessionId: 's-hide'
+    });
+    const refined = characterSwap.markTakeRefined(project.id, 't-hide', {
+        url: '/generated/' + lipName,
+        filename: lipName,
+        width: 100,
+        height: 100,
+        duration: 1,
+        fps: 24,
+        frames: 24,
+        lipRepair: { person: 1, denoise: 0.35, steps: 20 }
+    });
+    assert.equal(refined.filename, lipName);
+    assert.equal(refined.lipRepair.sourceFilename, swapName);
+    const publicFiles = generatedHistory.listPublic('s-hide').map((entry) => entry.file);
+    assert.ok(publicFiles.some((file) => file.endsWith(lipName)), 'the final lip-refined video stays in the gallery');
+    assert.ok(!publicFiles.some((file) => file.endsWith(swapName)), 'the superseded swap video leaves the gallery');
+    const allNames = generatedHistory.list().map((entry) => entry.rawFilename);
+    assert.ok(allNames.includes(swapName), 'the superseded file stays tracked for cleanup');
+    characterState.remove(project.id);
+});
+
+test('recover hides superseded files from already-refined takes', () => {
+    const characterSwap = require('../services/character-swap');
+    const generatedHistory = require('../services/generated-history');
+    const project = characterState.createProject({ sessionId: 's-recover', filename: 'clip.mp4' });
+    const swapName = 'recover_swap.mp4';
+    const lipName = 'recover_lip.mp4';
+    generatedHistory.add({
+        file: '/generated/' + swapName,
+        rawFilename: swapName,
+        conversationId: null,
+        model: 'MiniMax H3 Recast',
+        sessionId: 's-recover'
+    });
+    generatedHistory.add({
+        file: '/generated/' + lipName,
+        rawFilename: lipName,
+        conversationId: null,
+        model: 'MiniMax H3 Recast Lip Repair',
+        sessionId: 's-recover'
+    });
+    characterState.update(project.id, (current) => {
+        current.takes = [{
+            takeId: 't-recover',
+            engine: 'h3',
+            seed: 1,
+            status: 'done',
+            filename: lipName,
+            url: '/generated/' + lipName,
+            lipRepair: { sourceFilename: swapName }
+        }];
+        current.bestTake = current.takes[0];
+    });
+    characterSwap.recover();
+    const publicFiles = generatedHistory.listPublic('s-recover').map((entry) => entry.file);
+    assert.ok(publicFiles.some((file) => file.endsWith(lipName)), 'the final video stays in the gallery');
+    assert.ok(!publicFiles.some((file) => file.endsWith(swapName)), 'the superseded original leaves the gallery');
+    characterState.remove(project.id);
+});
+
 test('project state: creation, people and reference persistence', () => {
     const project = characterState.createProject({ sessionId: 's1', filename: 'clip.mp4' });
     assert.ok(project.id.startsWith('cs_'));
