@@ -255,6 +255,31 @@ const KNOWN_FILES = {
             modelId: 2027766
         },
         approxMB: 580
+    },
+    'minimax_h3_image_pruned_int8_convrot.safetensors': {
+        repo: 'Comfy-Org/MiniMax-H3-Image',
+        hfPath: 'diffusion_models/minimax_h3_image_pruned_int8_convrot.safetensors',
+        approxMB: 20010
+    },
+    'minimax_h3_image_pruned_w4a8.safetensors': {
+        repo: 'Comfy-Org/MiniMax-H3-Image',
+        hfPath: 'diffusion_models/minimax_h3_image_pruned_w4a8.safetensors',
+        approxMB: 11970
+    },
+    'minimax_h3_image_pruned_bf16.safetensors': {
+        repo: 'Comfy-Org/MiniMax-H3-Image',
+        hfPath: 'diffusion_models/minimax_h3_image_pruned_bf16.safetensors',
+        approxMB: 38370
+    },
+    'qwen3vl_32b_minimax_h3_int8_convrot.safetensors': {
+        repo: 'Comfy-Org/MiniMax-H3-Image',
+        hfPath: 'text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors',
+        approxMB: 25880
+    },
+    'minimax_h3_image_vae_fp16.safetensors': {
+        repo: 'Comfy-Org/MiniMax-H3-Image',
+        hfPath: 'vae/minimax_h3_image_vae_fp16.safetensors',
+        approxMB: 1114
     }
 };
 
@@ -299,6 +324,11 @@ const MODEL_CATALOG = [
     { id: 'qwen_image_unet', group: 'image', label: 'Qwen Image 2.1 UNET (int8)', required: true, dest: 'diffusion_models', file: { settings: 'image', key: 'qwenUnet' }, minBytes: 5 * 1024 ** 3, note: 'The default image model. Needed for Qwen Image 2.1 generation and for the default Qwen Image Edit engine.' },
     { id: 'qwen_image_clip', group: 'image', label: 'Qwen Image 2.1 text encoder (Qwen3-VL 8B int8)', required: true, dest: 'text_encoders', file: { settings: 'image', key: 'qwenClip' }, minBytes: 5 * 1024 ** 3, note: 'The default image model. Needed for Qwen Image 2.1 generation and for the default Qwen Image Edit engine.' },
     { id: 'qwen_image_vae', group: 'image', label: 'Qwen Image 2.1 VAE', required: true, dest: 'vae', file: { settings: 'image', key: 'qwenVae' }, minBytes: 100 * 1024 ** 2, note: 'The default image model. Needed for Qwen Image 2.1 generation and for the default Qwen Image Edit engine.' },
+    { id: 'minimax_image_unet', group: 'image', label: 'MiniMax H3 Image UNET (int8 convrot, ~21 GB)', required: false, dest: 'diffusion_models', file: { settings: 'image', key: 'minimaxUnet' }, minBytes: 15 * 1024 ** 3, note: 'Needed only when MiniMax H3 Image is selected as the image model or editor. The int8 quantized diffusion model from Comfy-Org/MiniMax-H3-Image. It exceeds 16 GB VRAM, so ComfyUI offloads it block by block and generation is slower than Qwen/Krea.' },
+    { id: 'minimax_image_unet_w4a8', group: 'image', label: 'MiniMax H3 Image UNET (w4a8, ~12.5 GB, optional alternate)', required: false, dest: 'diffusion_models', file: 'minimax_h3_image_pruned_w4a8.safetensors', minBytes: 8 * 1024 ** 3, note: 'Optional smaller MiniMax H3 Image diffusion model. Use it by setting Settings > Image > BASE MODELS > UNET to this filename while MiniMax H3 Image is selected.' },
+    { id: 'minimax_image_vae', group: 'image', label: 'MiniMax H3 Image VAE (fp16)', required: false, dest: 'vae', file: { settings: 'image', key: 'minimaxVae' }, minBytes: 500 * 1024 ** 2, note: 'Needed only when MiniMax H3 Image is selected. The p-h3-image VAE (about 1.1 GB), separate from the H3 video VAEs.' },
+    { id: 'minimax_image_clip', group: 'image', label: 'MiniMax H3 Image text encoder (configured file)', required: false, dest: 'text_encoders', file: { settings: 'image', key: 'minimaxClip' }, minBytes: 5 * 1024 ** 3, note: 'Needed only when MiniMax H3 Image is selected. The default is the Qwen3-VL 32B NVFP4 encoder already used by the H3 video stack; the official image template uses the int8 variant below. Either works.' },
+    { id: 'minimax_image_clip_int8', group: 'image', label: 'MiniMax H3 Image text encoder (int8 convrot, ~27 GB, optional alternate)', required: false, dest: 'text_encoders', file: 'qwen3vl_32b_minimax_h3_int8_convrot.safetensors', minBytes: 15 * 1024 ** 3, note: 'The official Comfy-Org/MiniMax-H3-Image text encoder. Set Settings > Image > BASE MODELS > CLIP to this filename to use it instead of the NVFP4 encoder.' },
     { id: 'h3_unet', group: 'video', label: 'H3 UNET (FL2VA, text- and image-to-video)', required: true, dest: 'diffusion_models', file: { settings: 'video', key: 'h3Unet' }, minBytes: 5 * 1024 ** 3 },
     { id: 'h3_ref_unet', group: 'video', label: 'H3 UNET (Ref2VA, reference-to-video / character replacement)', required: false, dest: 'diffusion_models', file: 'minimax_h3_ref2va_pruned_int8_convrot.safetensors', minBytes: 5 * 1024 ** 3, note: 'Needed only for @video reference-based character replacement. Same Comfy-Org/MiniMax-H3 repo as the FL2VA model. The reference-to-video node itself ships with ComfyUI.' },
     { id: 'h3_clip', group: 'video', label: 'H3 CLIP (Qwen3-VL 32B NVFP4)', required: true, dest: 'text_encoders', file: { settings: 'video', key: 'h3Clip' }, minBytes: 5 * 1024 ** 3 },
@@ -340,6 +370,18 @@ const NODE_CATALOG = [
         nodes: ['TextEncodeQwenImage21'],
         repo: null, dir: null,
         note: 'Ships with current ComfyUI. The default image-edit engine. If missing, update ComfyUI.'
+    },
+    {
+        id: 'minimax_image_conditioning', label: 'MiniMax H3 Image conditioning (older p-h3-image core node)', required: false,
+        nodes: ['PH3ImageConditioning', 'MiniMaxH3SigmaShift'],
+        repo: null, dir: null,
+        note: 'The older p-h3-image conditioning node and its 1.0/1.0 sigma shift. The current MiniMax-H3-Image release VAE needs ComfyUI v0.45.2+ and the official node below; this entry is only for an older p-h3-image model/VAE stack.'
+    },
+    {
+        id: 'minimax_image_conditioning_official', label: 'MiniMax H3 Image conditioning (official Comfy-Org node)', required: false,
+        nodes: ['MiniMaxH3ImageConditioning'],
+        repo: null, dir: null,
+        note: 'Needed for the default MiniMax H3 Image model set. Ships with ComfyUI v0.45.2+, together with the MiniMaxH3ImageVAE decoder the release image VAE requires. If this node is missing, update ComfyUI.'
     },
     {
         id: 'krea2_edit', label: 'Krea 2 Identity Edit (comfyui-krea2edit)', required: false,
@@ -1174,7 +1216,7 @@ async function getStatus() {
         civitaiToken: { configured: false, source: null, user: null, masked: null },
         models: [],
         nodes: [],
-        ready: { image: false, qwenImage: false, video: false, upscale: false, edit: false, characterSwapScail: false, characterSwapH3Recast: false },
+        ready: { image: false, qwenImage: false, minimaxImage: false, video: false, upscale: false, edit: false, minimaxImageEdit: false, characterSwapScail: false, characterSwapH3Recast: false },
         job: jobState()
     };
 
@@ -1184,7 +1226,7 @@ async function getStatus() {
         status.token.configured = true;
         status.token.source = (process.env.HF_TOKEN || process.env.HUGGINGFACE_TOKEN) ? 'env' : 'settings';
         status.token.user = stored.user || null;
-        status.token.masked = token.length > 7 ? token.slice(0, 3) + '�?�' + token.slice(-4) : '�?��?��?�';
+        status.token.masked = token.length > 7 ? token.slice(0, 3) + '…' + token.slice(-4) : '•••';
     }
 
     const civitaiToken = configManager.getCivitaiToken();
@@ -1194,8 +1236,8 @@ async function getStatus() {
         status.civitaiToken.source = (process.env.CIVITAI_TOKEN || process.env.CIVITAI_API_KEY) ? 'env' : 'settings';
         status.civitaiToken.user = stored.user || null;
         status.civitaiToken.masked = civitaiToken.length > 7
-            ? civitaiToken.slice(0, 3) + '�?�' + civitaiToken.slice(-4)
-            : '�?��?��?�';
+            ? civitaiToken.slice(0, 3) + '…' + civitaiToken.slice(-4)
+            : '•••';
     }
 
     if (!(await comfyui.isAvailable())) return status;
@@ -1276,6 +1318,14 @@ async function getStatus() {
     // the comfyui-krea2edit node pack.
     status.ready.krea2Edit = has('krea2_unet') && has('krea2_clip') && has('krea2_vae')
         && has('krea2_identity_edit_lora') && nodeReady('krea2_edit');
+    // MiniMax H3 Image (text-to-image + editor): the configured diffusion
+    // model, text encoder and image VAE, plus the official conditioning node.
+    // The default model set uses the release MiniMaxH3ImageVAE, which ComfyUI
+    // added with MiniMaxH3ImageConditioning in v0.45.2; the older p-h3-image
+    // PH3ImageConditioning node alone cannot load that VAE.
+    status.ready.minimaxImage = has('minimax_image_unet') && has('minimax_image_clip') && has('minimax_image_vae')
+        && nodeReady('minimax_image_conditioning_official');
+    status.ready.minimaxImageEdit = status.ready.minimaxImage;
     const scailModelInstalled = has('scail2_unet');
     status.ready.characterSwapScail = scailModelInstalled && has('scail2_sam') &&
         has('wan_animate_text_encoder') && has('wan_animate_vae') && has('wan_animate_clip_vision') &&

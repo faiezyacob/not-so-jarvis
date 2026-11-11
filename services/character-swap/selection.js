@@ -288,6 +288,98 @@ function lostSpans(perFrame, fps) {
     return spans;
 }
 
+// Per-frame boxes for one stable track, used to outline the selected person in
+// the workspace and to find a frame they are actually visible in.
+function trackFrameBoxes(frames, trackId) {
+    const id = String(trackId || '');
+    const boxes = [];
+    (Array.isArray(frames) ? frames : []).forEach((entry) => {
+        const people = Array.isArray(entry && entry.people) ? entry.people : [];
+        const match = people.find((person) => person && person.trackId === id && person.bbox);
+        if (match && Number.isFinite(Number(entry.frame))) {
+            boxes.push({ frame: Number(entry.frame), bbox: match.bbox });
+        }
+    });
+    boxes.sort((a, b) => a.frame - b.frame);
+    return boxes;
+}
+
+// DWPose only reports joints, so its bbox starts at eye level and stops at the
+// wrists/ankles. Expand it into a display box that includes the top of the head
+// and a small margin, without changing the stored detection bbox.
+function displayBox(person, bbox, width, height) {
+    const body = Array.isArray(person && person.body) ? person.body : [];
+    const nose = body[0];
+    const neck = body[1];
+    let x = Number(bbox.x);
+    let y = Number(bbox.y);
+    let x2 = x + Number(bbox.width);
+    let y2 = y + Number(bbox.height);
+    if (nose && neck && Number(nose.c) > 0.05 && Number(neck.c) > 0.05) {
+        const unit = Math.max(4, Math.abs(Number(neck.y) - Number(nose.y)));
+        const headTop = Number(nose.y) - unit * 0.95;
+        const side = unit * 0.18;
+        y = Math.min(y, headTop);
+        x -= side;
+        x2 += side;
+    }
+    const padX = Math.max(2, (x2 - x) * 0.03);
+    const padY = Math.max(2, (y2 - y) * 0.02);
+    const maxW = Number(width) || x2;
+    const maxH = Number(height) || y2;
+    x = Math.max(0, x - padX);
+    y = Math.max(0, y - padY);
+    x2 = Math.min(maxW, x2 + padX);
+    y2 = Math.min(maxH, y2 + padY);
+    return { x, y, width: Math.max(1, x2 - x), height: Math.max(1, y2 - y) };
+}
+
+// Reject detections that cannot be a person. DWPose occasionally fires on a
+// face/mouth close-up and returns only a few keypoints, producing a 1-2px strip
+// or a box covering most of the frame. Those are not usable replacement targets
+// and must not be drawn or jumped to. Stored detection results are untouched.
+function reliableDetection(person, bbox, width, height) {
+    const body = Array.isArray(person && person.body) ? person.body : [];
+    const valid = body.filter((point) => point &&
+        Number(point.c) > 0.05 &&
+        Number.isFinite(Number(point.x)) &&
+        Number.isFinite(Number(point.y)));
+    if (valid.length < 5) return false;
+    const w = Number(bbox.width);
+    const h = Number(bbox.height);
+    if (!Number.isFinite(w) || !Number.isFinite(h)) return false;
+    const frameW = Number(width) || 0;
+    const frameH = Number(height) || 0;
+    if (h < Math.max(6, frameH * 0.012)) return false;
+    if (w < Math.max(6, frameW * 0.01)) return false;
+    if (frameW && frameH && w * h < frameW * frameH * 0.002) return false;
+    if (frameW && w > frameW * 0.85 && valid.length < 10) return false;
+    return true;
+}
+
+// Compact per-frame detection boxes for every track (keypoints stripped), so
+// the workspace can draw all detected people at once without shipping the full
+// DWPose payload to the browser.
+function frameBoxes(frames) {
+    const out = [];
+    (Array.isArray(frames) ? frames : []).forEach((entry) => {
+        const width = Number(entry && entry.width);
+        const height = Number(entry && entry.height);
+        const people = (Array.isArray(entry && entry.people) ? entry.people : [])
+            .filter((person) => person && person.trackId && person.bbox && reliableDetection(person, person.bbox, width, height))
+            .map((person) => ({
+                trackId: person.trackId,
+                bbox: person.bbox,
+                displayBbox: displayBox(person, person.bbox, width, height)
+            }));
+        if (people.length && Number.isFinite(Number(entry.frame))) {
+            out.push({ frame: Number(entry.frame), people });
+        }
+    });
+    out.sort((a, b) => a.frame - b.frame);
+    return out;
+}
+
 function summarize(frames, corrections, fps) {
     const tracked = trackPeople(frames);
     applyCorrections(frames, corrections);
@@ -465,6 +557,10 @@ module.exports = {
     applyCorrections,
     summarize,
     lostSpans,
+    trackFrameBoxes,
+    displayBox,
+    reliableDetection,
+    frameBoxes,
     buildGraph,
     detect,
     makeThumbnails,

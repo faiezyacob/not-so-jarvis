@@ -141,3 +141,73 @@ test('buildGraph asks DWPose for body+hand keypoints and saves them as JSON', ()
     assert.deepEqual(graph.save.inputs.pose_kps, ['dw', 1]);
     assert.equal(graph.save.inputs.filename_prefix, 'jarvis_cs/selection_test');
 });
+
+test('trackFrameBoxes returns only the requested track in frame order', () => {
+    const frames = [
+        { frame: 2, people: [{ trackId: '1', bbox: { x: 20, y: 10, width: 40, height: 90 } }, { trackId: '2', bbox: { x: 200, y: 10, width: 40, height: 90 } }] },
+        { frame: 0, people: [{ trackId: '2', bbox: { x: 200, y: 10, width: 40, height: 90 } }] },
+        { frame: 1, people: [{ trackId: '1', bbox: { x: 25, y: 12, width: 42, height: 92 } }] }
+    ];
+    const boxes = selection.trackFrameBoxes(frames, '1');
+    assert.deepEqual(boxes.map((item) => item.frame), [1, 2]);
+    assert.equal(boxes[0].bbox.x, 25);
+    assert.deepEqual(selection.trackFrameBoxes(frames, '3'), []);
+    assert.deepEqual(selection.trackFrameBoxes(null, '1'), []);
+});
+
+test('frameBoxes strips keypoints and expands the display box to include the head', () => {
+    const frames = [frameWith([body(200, 80, 200)], 0)];
+    frames[0].people[0].trackId = 'track_1';
+    const boxes = selection.frameBoxes(frames);
+    assert.equal(boxes.length, 1);
+    assert.equal(boxes[0].people[0].trackId, 'track_1');
+    assert.equal(boxes[0].people[0].body, undefined);
+    assert.ok(boxes[0].people[0].displayBbox.y < boxes[0].people[0].bbox.y);
+    assert.ok(boxes[0].people[0].displayBbox.height > boxes[0].people[0].bbox.height);
+    assert.ok(boxes[0].people[0].displayBbox.x >= 0);
+    assert.ok(boxes[0].people[0].displayBbox.y >= 0);
+    assert.deepEqual(selection.frameBoxes(null), []);
+});
+
+test('frameBoxes keeps separate boxes for two people in the same frame', () => {
+    const frames = [frameWith([body(150, 60, 200), body(500, 60, 200)], 0)];
+    frames[0].people[0].trackId = 'track_1';
+    frames[0].people[1].trackId = 'track_4';
+    const boxes = selection.frameBoxes(frames);
+    assert.equal(boxes.length, 1);
+    assert.equal(boxes[0].people.length, 2);
+    assert.deepEqual(boxes[0].people.map((person) => person.trackId), ['track_1', 'track_4']);
+    assert.notDeepEqual(boxes[0].people[0].displayBbox, boxes[0].people[1].displayBbox);
+});
+
+test('reliableDetection rejects degenerate close-up detections', () => {
+    const validBody = body(320, 80, 200);
+    assert.equal(selection.reliableDetection(
+        { body: validBody, bbox: bbox(validBody) },
+        bbox(validBody), 640, 360
+    ), true);
+    const thin = { body: [kp(300, 10), kp(20, 20), kp(620, 20)], bbox: { x: 20, y: 10, width: 600, height: 2 } };
+    assert.equal(selection.reliableDetection(thin, thin.bbox, 640, 360), false);
+    const wide = {
+        body: [kp(10, 20), kp(320, 20), kp(630, 20), kp(5, 200), kp(635, 200), kp(100, 300)],
+        bbox: { x: 5, y: 20, width: 630, height: 280 }
+    };
+    assert.equal(selection.reliableDetection(wide, wide.bbox, 640, 360), false);
+    const sparse = { body: [kp(100, 100), kp(110, 100), kp(120, 100)], bbox: { x: 100, y: 100, width: 100, height: 100 } };
+    assert.equal(selection.reliableDetection(sparse, sparse.bbox, 640, 360), false);
+});
+
+test('frameBoxes drops an unreliable detection but keeps a valid one in the same frame', () => {
+    const frames = [frameWith([body(200, 80, 200)], 0)];
+    frames[0].people[0].trackId = 'track_good';
+    frames[0].people.push({
+        body: [kp(300, 10), kp(20, 20), kp(620, 20)],
+        bbox: { x: 20, y: 10, width: 600, height: 2 },
+        score: 1,
+        trackId: 'track_bad'
+    });
+    const boxes = selection.frameBoxes(frames);
+    assert.equal(boxes.length, 1);
+    assert.equal(boxes[0].people.length, 1);
+    assert.equal(boxes[0].people[0].trackId, 'track_good');
+});

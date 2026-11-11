@@ -2670,6 +2670,11 @@ async function handleAPI(req, res, urlPath) {
                 return true;
             }
 
+            if (rest === '/selection/frames' && req.method === 'GET') {
+                json(res, 200, characterSwap.selectionFrames(projectId));
+                return true;
+            }
+
             const selectionThumb = rest.match(/^\/selection\/([^/]+)\/thumb$/);
             if (selectionThumb && req.method === 'GET') {
                 const track = (project.selection && project.selection.tracks || [])
@@ -8223,8 +8228,11 @@ async function handleImageGenerationStream(req, res, opts) {
         queueId = id;
         sseWrite(res, { queued: { position, queueId: id } });
     };
+    // The active text-to-image engine is surfaced in the live status so the user
+    // always sees which pipeline (Qwen / Krea 2 / MiniMax H3) is running.
+    const engineLabel = imageGenerator.imageModelLabel(imageGenerator.effectiveSettings().model);
     const onStart = () => {
-        sseWrite(res, { generating: 'Generating image...' });
+        sseWrite(res, { generating: 'Generating image with ' + engineLabel + '...' });
     };
 
     try {
@@ -8246,13 +8254,15 @@ async function handleImageGenerationStream(req, res, opts) {
 
         sseWrite(res, {
             generating: identity
-                ? 'Generating image of ' + identity.characterName + '...'
-                : (variations > 1 ? 'Generating ' + variations + ' images...' : 'Generating image...')
+                ? 'Generating image of ' + identity.characterName + ' with ' + engineLabel + '...'
+                : (variations > 1
+                    ? 'Generating ' + variations + ' images with ' + engineLabel + '...'
+                    : 'Generating image with ' + engineLabel + '...')
         });
 
         const results = [];
         for (let i = 0; i < variations; i++) {
-            if (i > 0) sseWrite(res, { generating: 'Generating image ' + (i + 1) + ' of ' + variations + '...' });
+            if (i > 0) sseWrite(res, { generating: 'Generating image ' + (i + 1) + ' of ' + variations + ' with ' + engineLabel + '...' });
             // Reference-guided generation: the approved base image is the edit
             // source and the selected identity references condition the result,
             // so the character's identity is preserved while the scene changes.
@@ -8511,8 +8521,11 @@ async function handleImageEditStream(req, res, opts) {
         queueId = id;
         sseWrite(res, { queued: { position, queueId: id } });
     };
+    // The selected editor (Qwen / Krea 2 / MiniMax H3) is surfaced in every
+    // status message so the user always sees which pipeline is running.
+    const editorLabel = imageGenerator.editEngineLabel(imageGenerator.effectiveSettings().editEngine);
     const onStart = () => {
-        sseWrite(res, { generating: 'Editing image...' });
+        sseWrite(res, { generating: 'Editing image with ' + editorLabel + '...' });
     };
 
     try {
@@ -8531,7 +8544,8 @@ async function handleImageEditStream(req, res, opts) {
             return;
         }
 
-        sseWrite(res, { generating: 'Editing image...' });
+        // Surface the selected editor (Qwen / Krea 2 / MiniMax H3) in the status.
+        sseWrite(res, { generating: 'Editing image with ' + editorLabel + '...' });
 
         const referencePaths = resolvedRefs.slice(1).map((s) => s.absPath);
         const promise = imageGenerator.editImage(source.absPath, instruction, {
@@ -8604,6 +8618,8 @@ function friendlyImageError(err) {
         case 'comfyui_unavailable':
             return 'ComfyUI is not running. Start ComfyUI, then try again.';
         case 'comfyui_missing_nodes':
+            return err.message;
+        case 'comfyui_version_unsupported':
             return err.message;
         case 'comfyui_krea2_clip_unsupported':
             return err.message;

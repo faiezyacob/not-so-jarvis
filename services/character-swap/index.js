@@ -98,7 +98,7 @@ function clearSelectionState(project) {
         // must not be restored onto whoever happens to reuse the id.
         person.lastSelectionId = null;
     });
-    for (const folder of ['selection', 'segmentation']) {
+    for (const folder of ['selection', 'segmentation', 'frames']) {
         try { fs.rmSync(path.join(projectDir(project.id), folder), { recursive: true, force: true }); } catch { /* next retry */ }
     }
     clearEngineCache(project);
@@ -582,9 +582,12 @@ function selectTracks(projectId, trackIds) {
         const tracks = (current.selection && current.selection.tracks) || [];
         const byId = new Map(tracks.map((track) => [track.id, track]));
         const isBlank = (person) => !(person.refs || []).length && !person.description && !person.subjectDescription;
+        // Work on a copy so a validation failure (e.g. the people limit) cannot
+        // leave the in-memory project with targets parked but nothing bound.
+        const people = JSON.parse(JSON.stringify(current.people || []));
         // Deselecting a target parks its record (and its character image) instead
         // of recycling it onto a different person in the clip.
-        (current.people || []).forEach((person) => {
+        people.forEach((person) => {
             if (person.selectionId && !valid.includes(person.selectionId)) {
                 person.lastSelectionId = person.selectionId;
                 person.selectionId = null;
@@ -594,22 +597,22 @@ function selectTracks(projectId, trackIds) {
         for (const id of valid) {
             const track = byId.get(id);
             if (!track) continue;
-            let person = (current.people || []).find((item) => item.selectionId === id);
+            let person = people.find((item) => item.selectionId === id);
             if (!person) {
-                person = (current.people || []).find((item) =>
+                person = people.find((item) =>
                     !item.selectionId && item.lastSelectionId === id);
             }
             if (!person) {
-                person = (current.people || []).find((item) => !item.selectionId && isBlank(item));
+                person = people.find((item) => !item.selectionId && isBlank(item));
             }
             if (!person) {
-                if (current.people.length >= characterState.MAX_PEOPLE) {
+                if (people.length >= characterState.MAX_PEOPLE) {
                     const err = new Error('Character Swap supports up to ' + characterState.MAX_PEOPLE + ' people per video. Deselect one first.');
                     err.status = 400;
                     throw err;
                 }
-                person = characterState.newPerson(current.people.length);
-                current.people.push(person);
+                person = characterState.newPerson(people.length);
+                people.push(person);
             }
             person.lastSelectionId = id;
             person.selectionId = id;
@@ -630,6 +633,7 @@ function selectTracks(projectId, trackIds) {
                 person.subjectSummary = '';
             }
         }
+        current.people = people;
         (current.segmentation || {}).hash = null;
         clearEngineCache(current);
         dropTakes(current);
@@ -708,6 +712,48 @@ async function applySelectionCorrection(projectId, correction) {
     return characterState.get(projectId);
 }
 
+// Compact per-frame detection boxes for every track. The workspace uses this
+// to outline all detected people on the canvas and to jump the timeline to a
+// frame where a selected person is actually visible.
+function selectionFrames(projectId) {
+    const project = characterState.requireProject(projectId);
+    const selectionState = project.selection || {};
+    const tracks = selectionState.tracks || [];
+    const width = Number(selectionState.width) || Number(project.part && project.part.width) || 0;
+    const height = Number(selectionState.height) || Number(project.part && project.part.height) || 0;
+    let frames = [];
+    const keypointsFile = selectionState.keypointsFile;
+    const file = keypointsFile ? abs(projectId, keypointsFile) : null;
+    if (file && fs.existsSync(file)) {
+        try {
+            const entries = JSON.parse(fs.readFileSync(file, 'utf8'));
+            frames = selection.frameBoxes(entries);
+        } catch {
+            frames = [];
+        }
+    }
+    if (!frames.length) {
+        frames = tracks
+            .filter((track) => track.bbox && Number.isFinite(Number(track.thumbFrame)))
+            .map((track) => ({ frame: Number(track.thumbFrame), people: [{ trackId: track.id, bbox: track.bbox }] }))
+            .sort((a, b) => a.frame - b.frame);
+    }
+    return {
+        width,
+        height,
+        fps: Number(selectionState.fps) || Number(project.part && project.part.fps) || media.FPS,
+        createdAt: selectionState.createdAt || null,
+        tracks: tracks.map((track) => ({
+            id: track.id,
+            label: track.label,
+            firstFrame: track.firstFrame,
+            lastFrame: track.lastFrame,
+            thumbFrame: track.thumbFrame
+        })),
+        frames
+    };
+}
+
 function needsSelection(project) {
     if (!project || project.engine !== 'scail2') return false;
     return !project.selection || project.selection.version !== selection.VERSION || !(project.selection.tracks || []).length;
@@ -738,7 +784,17 @@ async function sourceFrame(projectId, frame) {
     const partPath = abs(projectId, project.part.file);
     const index = clamp(frame, 0, Math.max(0, project.part.frames - 1), 0);
     const output = path.join(projectDir(projectId), 'frames', media.frameName(index));
-    if (!fs.existsSync(output)) await media.extractFrame(partPath, index, output);
+    let stale = !fs.existsSync(output);
+    if (!stale) {
+        // A re-trim replaces part.mp4; a cached frame from the previous clip
+        // would be drawn under detection boxes from the new clip.
+        try {
+            stale = fs.statSync(output).mtimeMs < fs.statSync(partPath).mtimeMs;
+        } catch {
+            stale = true;
+        }
+    }
+    if (stale) await media.extractFrame(partPath, index, output);
     return output;
 }
 
@@ -2324,6 +2380,7 @@ module.exports = {
     runSelection,
     selectTracks,
     applySelectionCorrection,
+    selectionFrames,
     needsSelection,
     needsSegmentation,
     maskSourceFor,

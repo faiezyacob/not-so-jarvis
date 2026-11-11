@@ -928,26 +928,38 @@ function snapToLatentGrid(pixels) {
     return Math.max(64, Math.round(pixels / grid) * grid);
 }
 
-// Map aspectRatio + imageSize to concrete Krea2 latent dimensions. Invalid
-// inputs fall back to the 4:5 / M defaults. In 'CUSTOM' size mode the user
-// pins exact pixel width/height; both edges are clamped to the supported range
-// and snapped to the latent grid, and the stored aspect ratio is kept for
-// metadata but no longer derives the dimensions.
+// Map aspectRatio + imageSize to concrete latent dimensions. Invalid inputs
+// fall back to the 4:5 / M defaults. In 'CUSTOM' size mode the user pins exact
+// pixel width/height; both edges are clamped to the supported range and snapped
+// to the latent grid, and the stored aspect ratio is kept for metadata but no
+// longer derives the dimensions.
+//
+// Krea 2 and Qwen Image 2.1 use the 0.75 / 1 / 1.25 / 1.75 MP S/M/L/XL tiers.
+// MiniMax H3 Image remaps the same S/M/L/XL values to its 4 / 6 / 10 / 16 MP
+// working range and allows a larger CUSTOM canvas; the Settings UI switches the
+// option labels and limits with the selected model.
 function resolveDimensions(settings) {
     const source = settings || {};
     const ratio = normalizeAspectRatio(source.aspectRatio) || '4:5';
     const size = normalizeImageSize(source.imageSize) || 'M';
+    const isMiniMax = normalizeImageModel(source.model) === 'minimax_h3_image';
+    const maxEdge = isMiniMax ? MINIMAX_MAX_EDGE : 4096;
     if (size === 'CUSTOM') {
         return {
-            width: snapToLatentGrid(clampToInt(source.width, 64, 4096, 1024)),
-            height: snapToLatentGrid(clampToInt(source.height, 64, 4096, 1024)),
+            width: snapToLatentGrid(clampToInt(source.width, 64, maxEdge, 1024)),
+            height: snapToLatentGrid(clampToInt(source.height, 64, maxEdge, 1024)),
             aspectRatio: ratio,
             imageSize: size
         };
     }
     const [ratioWidth, ratioHeight] = ratio.split(':').map(Number);
     const shape = Math.min(10, Math.max(0.1, (ratioWidth / ratioHeight) || 1));
-    const targetPixels = (IMAGE_MEGAPIXELS[size] || IMAGE_MEGAPIXELS.M) * 1e6;
+    const ladder = isMiniMax ? MINIMAX_IMAGE_MEGAPIXELS : IMAGE_MEGAPIXELS;
+    let megapixels = ladder[size] || ladder.M;
+    if (isMiniMax) {
+        megapixels = Math.min(MINIMAX_IMAGE_MAX_MEGAPIXELS, Math.max(MINIMAX_IMAGE_MIN_MEGAPIXELS, megapixels));
+    }
+    const targetPixels = megapixels * 1e6;
     const longEdge = Math.sqrt(targetPixels * shape);
     const shortEdge = Math.sqrt(targetPixels / shape);
     return {
@@ -979,9 +991,38 @@ function resolveDimensions(settings) {
 // The Krea2 slot keys (unet/clip/vae) keep their historical meaning; Qwen's
 // filenames live under qwen* keys so switching back and forth remembers both.
 
-const IMAGE_MODELS = ['krea2', 'qwen_image_2_1'];
+const IMAGE_MODELS = ['krea2', 'qwen_image_2_1', 'minimax_h3_image'];
 const DEFAULT_IMAGE_MODEL = 'qwen_image_2_1';
 const QWEN_IMAGE_CLIP_TYPE = 'qwen_image';
+// MiniMax H3 Image (Comfy-Org/MiniMax-H3-Image) is a single-checkpoint model
+// that does both text-to-image and instruction editing through the same
+// `MiniMaxH3ImageConditioning` node. Its text encoder is loaded as the
+// `minimax` CLIPLoader type. The official template samples at 6 steps, cfg 1,
+// euler/simple, and works best between ~4 MP and ~20 MP (around 16 MP).
+const MINIMAX_IMAGE_CLIP_TYPE = 'minimax';
+const DEFAULT_MINIMAX_STEPS = 6;
+const DEFAULT_MINIMAX_CFG = 1;
+const MINIMAX_IMAGE_SAMPLER = 'euler';
+const MINIMAX_IMAGE_SCHEDULER = 'simple';
+// The conditioning node's own schema differs between builds:
+//   - MiniMaxH3ImageConditioning: the official Comfy-Org template's node.
+//   - PH3ImageConditioning: the installed core node (its description requires
+//     ModelSamplingMiniMaxH3 at 1.0/1.0), same inputs/outputs.
+// JARVIS resolves whichever this ComfyUI build exposes at runtime.
+const MINIMAX_IMAGE_CONDITIONING_NODES = ['MiniMaxH3ImageConditioning', 'PH3ImageConditioning'];
+const DEFAULT_MINIMAX_CONDITIONING = 'MiniMaxH3ImageConditioning';
+const MINIMAX_SIGMA_SHIFT = 1;
+// MiniMax H3 Image's working range. The S/M/L/XL values are remapped to
+// 4 / 6 / 10 / 16 MP only while MiniMax H3 Image is the selected image model
+// (Qwen and Krea keep 0.75 / 1 / 1.25 / 1.75 MP); CUSTOM allows its 8192 px
+// edge. The Settings UI switches the Size labels and limits with the model.
+const MINIMAX_IMAGE_MIN_MEGAPIXELS = 4;
+const MINIMAX_IMAGE_MAX_MEGAPIXELS = 16;
+const MINIMAX_IMAGE_MEGAPIXELS = { S: 4, M: 6, L: 10, XL: 16 };
+const MINIMAX_MAX_EDGE = 8192;
+const MINIMAX_EDIT_MIN_MEGAPIXELS = 0.5;
+const MINIMAX_EDIT_MAX_MEGAPIXELS = 16;
+const DEFAULT_MINIMAX_EDIT_MEGAPIXELS = 4;
 // Qwen Image 2.1's official template samples with the bong_tangent scheduler,
 // ~24 steps and cfg 3 (raised above 1 so the negative prompt contributes). The
 // official docs note cfg 1 is the untouched path and higher CFG should be paired
@@ -1005,8 +1046,35 @@ function normalizeImageModel(value) {
         return 'qwen_image_2_1';
     }
     if (v === 'krea2' || v === 'krea_2' || v === 'krea') return 'krea2';
+    if (v === 'minimax' || v === 'minimax_h3' || v === 'minimax_h3_image' || v === 'minimax_image' ||
+        v === 'h3_image' || v === 'h3' || v === 'p_h3_image' || v === 'ph3_image') {
+        return 'minimax_h3_image';
+    }
     return null;
 }
+
+// User-facing engine names, used in the gallery/history metadata and the live
+// "Generating…" status so the active engine is always visible.
+const IMAGE_MODEL_LABELS = {
+    krea2: 'Krea2',
+    qwen_image_2_1: 'Qwen Image 2.1',
+    minimax_h3_image: 'MiniMax H3 Image'
+};
+
+function imageModelLabel(value) {
+    return IMAGE_MODEL_LABELS[normalizeImageModel(value)] || IMAGE_MODEL_LABELS[DEFAULT_IMAGE_MODEL];
+}
+
+const EDIT_ENGINE_LABELS = {
+    qwen: 'Qwen Image 2.1 Edit',
+    krea2: 'Krea 2 Edit',
+    minimax_h3: 'MiniMax H3 Image Edit'
+};
+
+function editEngineLabel(value) {
+    return EDIT_ENGINE_LABELS[normalizeEditEngine(value)] || EDIT_ENGINE_LABELS[DEFAULT_EDIT_ENGINE];
+}
+
 
 // --- Image-edit engine selection ----------------------------------------------
 // Editing an existing image can run one of two pipelines:
@@ -1018,7 +1086,7 @@ function normalizeImageModel(value) {
 //              reference-guided edit that preserves a subject's identity.
 // The choice is a global image setting (`editEngine`) and only affects edits;
 // text-to-image generation keeps its own `model` selection.
-const EDIT_ENGINES = ['qwen', 'krea2'];
+const EDIT_ENGINES = ['qwen', 'krea2', 'minimax_h3'];
 const DEFAULT_EDIT_ENGINE = 'qwen';
 const KREA2_CLIP_TYPE = 'krea2';
 const DEFAULT_KREA2_IDENTITY_EDIT_LORA = 'krea2_identity_edit_v1_2.safetensors';
@@ -1078,11 +1146,18 @@ function normalizeEditEngine(value) {
         v === 'krea_2_identity_edit' || v === 'identity') {
         return 'krea2';
     }
+    if (v === 'minimax' || v === 'minimax_h3' || v === 'minimax_h3_image' || v === 'minimax_image' ||
+        v === 'h3_image' || v === 'h3' || v === 'p_h3_image' || v === 'ph3_image' ||
+        v === 'minimax_edit' || v === 'minimax_h3_edit' || v === 'minimax_h3_image_edit' ||
+        v === 'minimax_image_edit' || v === 'p_h3_image_edit' || v === 'ph3_image_edit') {
+        return 'minimax_h3';
+    }
     return null;
 }
 
 const DEFAULT_SETTINGS = {
-    // Active text-to-image model: 'qwen_image_2_1' (default) or 'krea2'.
+    // Active text-to-image model: 'qwen_image_2_1' (default), 'krea2' or
+    // 'minimax_h3_image'.
     model: normalizeImageModel(process.env.JARVIS_IMAGE_MODEL) || DEFAULT_IMAGE_MODEL,
     unet: process.env.KREA2_UNET || 'krea2_turbo_fp8_scaled.safetensors',
     clip: process.env.KREA2_CLIP || 'Huihui-Qwen3-VL-4B-Instruct-abliterated-fp8_scaled.safetensors',
@@ -1093,6 +1168,14 @@ const DEFAULT_SETTINGS = {
     qwenUnet: process.env.QWEN_IMAGE_UNET || 'qwen_image_2.1_int8_convrot.safetensors',
     qwenClip: process.env.QWEN_IMAGE_CLIP || 'qwen3vl_8b_int8_convrot.safetensors',
     qwenVae: process.env.QWEN_IMAGE_VAE || 'qwen_image_2.1_vae_bf16.safetensors',
+    // MiniMax H3 Image slot (Comfy-Org/MiniMax-H3-Image). The diffusion model
+    // is a single checkpoint shared by text-to-image and editing; the text
+    // encoder uses the `minimax` CLIPLoader type and the VAE is the image VAE
+    // (not the H3 video VAE). The already-installed nvfp4 text encoder is the
+    // pragmatic default; the official int8 encoder can be selected instead.
+    minimaxUnet: process.env.MINIMAX_IMAGE_UNET || 'minimax_h3_image_pruned_int8_convrot.safetensors',
+    minimaxClip: process.env.MINIMAX_IMAGE_CLIP || 'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors',
+    minimaxVae: process.env.MINIMAX_IMAGE_VAE || 'minimax_h3_image_vae_fp16.safetensors',
     // Image-edit engine: 'qwen' (default, the Qwen Image 2.1 instruction editor)
     // or 'krea2' (the Krea 2 Identity Edit pipeline). Only affects edits of an
     // existing image; text-to-image generation reads `model` above. The Krea 2
@@ -1107,6 +1190,13 @@ const DEFAULT_SETTINGS = {
     // Krea 2 reads `steps`/`cfg`, Qwen reads `qwenSteps`/`qwenCfg`.
     qwenSteps: DEFAULT_QWEN_STEPS,
     qwenCfg: DEFAULT_QWEN_CFG,
+    // MiniMax H3 Image sampling is model-scoped like Qwen's: it reads its own
+    // step/cfg pair (the official template ships 6 steps / cfg 1). The edit
+    // pass also has a megapixel target for the template's two-step resize
+    // chain (scale total pixels → scale to multiple of 32).
+    minimaxSteps: DEFAULT_MINIMAX_STEPS,
+    minimaxCfg: DEFAULT_MINIMAX_CFG,
+    minimaxEditMegapixels: DEFAULT_MINIMAX_EDIT_MEGAPIXELS,
     // Both image pipelines can run under an accelerated attention backend. `auto`
     // resolves against ComfyUI's /object_info (Comfy Kitchen → SageAttention →
     // dense PyTorch) so a build without the patches silently stays on dense
@@ -1165,7 +1255,7 @@ const DEFAULT_SETTINGS = {
 
 // Fields the user may override through the settings panel / API. Kept
 // separate from DEFAULT_SETTINGS so we only persist explicit overrides.
-const CONFIGURABLE_KEYS = ['model', 'unet', 'clip', 'clipType', 'vae', 'qwenUnet', 'qwenClip', 'qwenVae', 'editEngine', 'krea2IdentityEditLora', 'krea2EditSteps', 'krea2EditCfg', 'aspectRatio', 'imageSize', 'width', 'height', 'steps', 'cfg', 'qwenSteps', 'qwenCfg', 'attentionBackend', 'seedMode', 'seed', 'variations', 'loras', 'loraTriggerWords',
+const CONFIGURABLE_KEYS = ['model', 'unet', 'clip', 'clipType', 'vae', 'qwenUnet', 'qwenClip', 'qwenVae', 'minimaxUnet', 'minimaxClip', 'minimaxVae', 'editEngine', 'krea2IdentityEditLora', 'krea2EditSteps', 'krea2EditCfg', 'aspectRatio', 'imageSize', 'width', 'height', 'steps', 'cfg', 'qwenSteps', 'qwenCfg', 'minimaxSteps', 'minimaxCfg', 'minimaxEditMegapixels', 'attentionBackend', 'seedMode', 'seed', 'variations', 'loras', 'loraTriggerWords',
     'upscaleEngine', 'upscaleMode', 'upscaleResolution', 'upscaleMultiplier', 'upscaleProfile', 'upscaleNoise', 'upscalePreScale',
     'seedvr2Dit', 'seedvr2Vae', 'seedvr2Attention'];
 
@@ -1198,12 +1288,21 @@ function getDefaults() {
 // text-to-image path resolves through here so the selected model actually runs.
 function resolveBaseModels(settings) {
     const source = settings || DEFAULT_SETTINGS;
-    if (normalizeImageModel(source.model) === 'qwen_image_2_1') {
+    const model = normalizeImageModel(source.model);
+    if (model === 'qwen_image_2_1') {
         return {
             unet: String(source.qwenUnet || DEFAULT_SETTINGS.qwenUnet).trim(),
             clip: String(source.qwenClip || DEFAULT_SETTINGS.qwenClip).trim(),
             clipType: QWEN_IMAGE_CLIP_TYPE,
             vae: String(source.qwenVae || DEFAULT_SETTINGS.qwenVae).trim()
+        };
+    }
+    if (model === 'minimax_h3_image') {
+        return {
+            unet: String(source.minimaxUnet || DEFAULT_SETTINGS.minimaxUnet).trim(),
+            clip: String(source.minimaxClip || DEFAULT_SETTINGS.minimaxClip).trim(),
+            clipType: MINIMAX_IMAGE_CLIP_TYPE,
+            vae: String(source.minimaxVae || DEFAULT_SETTINGS.minimaxVae).trim()
         };
     }
     return {
@@ -1302,17 +1401,20 @@ function sanitizeSettings(patch) {
             if (v) out[key] = v;
         } else if (key === 'width' || key === 'height') {
             const n = Math.round(Number(value));
-            if (Number.isFinite(n) && n > 0) out[key] = Math.max(64, Math.min(4096, n));
-        } else if (key === 'steps' || key === 'qwenSteps') {
+            if (Number.isFinite(n) && n > 0) out[key] = Math.max(64, Math.min(MINIMAX_MAX_EDGE, n));
+        } else if (key === 'steps' || key === 'qwenSteps' || key === 'minimaxSteps') {
             const n = Math.round(Number(value));
             if (Number.isFinite(n) && n > 0) out[key] = n;
+        } else if (key === 'minimaxEditMegapixels') {
+            const n = Number(value);
+            if (Number.isFinite(n)) out[key] = Math.max(MINIMAX_EDIT_MIN_MEGAPIXELS, Math.min(MINIMAX_EDIT_MAX_MEGAPIXELS, Math.round(n * 100) / 100));
         } else if (key === 'krea2EditSteps') {
             const n = Math.round(Number(value));
             if (Number.isFinite(n)) out[key] = Math.max(8, Math.min(12, n));
         } else if (key === 'krea2EditCfg') {
             const n = Number(value);
             if (Number.isFinite(n)) out[key] = Math.max(1, Math.min(5, n));
-        } else if (key === 'cfg' || key === 'qwenCfg') {
+        } else if (key === 'cfg' || key === 'qwenCfg' || key === 'minimaxCfg') {
             const n = Number(value);
             if (Number.isFinite(n) && n >= 0) out[key] = n;
         } else if (key === 'attentionBackend') {
@@ -1489,6 +1591,176 @@ function resolveQwenScheduler(info, requested) {
         return choices.includes(QWEN_T2I_SCHEDULER_FALLBACK) ? QWEN_T2I_SCHEDULER_FALLBACK : choices[0];
     }
     return wanted;
+}
+
+// --- MiniMax H3 Image ----------------------------------------------------------
+//
+// MiniMax H3 Image (Comfy-Org/MiniMax-H3-Image) is a single-checkpoint model
+// that does both text-to-image and instruction editing through one conditioning
+// node:
+//
+//   UNETLoader (int8) → CLIPLoader (type minimax) → VAELoader
+//   [MiniMaxH3SigmaShift 1.0/1.0 — only for the core PH3 node]
+//   MiniMaxH3ImageConditioning / PH3ImageConditioning
+//       → positive (CONDITIONING) + LATENT (the canvas itself)
+//   ConditioningZeroOut (negative)
+//   KSampler (euler / simple, 6 steps, cfg 1, denoise 1)
+//   VAEDecode → SaveImage
+//
+// The conditioning node owns the latent, so there is no EmptyLatentImage here.
+// The official template bypasses its optional prompt-enhancer chain; JARVIS
+// feeds the prompt-builder output straight into `prompt` (no second LLM).
+
+// Resolve which conditioning node class this ComfyUI build exposes. The
+// official Comfy-Org template ships `MiniMaxH3ImageConditioning`; the core node
+// in some builds (ComfyUI v0.44.x) is `PH3ImageConditioning` with identical
+// inputs/outputs. An explicit node may be pinned (tests/diagnostics).
+function resolveMiniMaxConditioningNode(info, requested) {
+    const wanted = String(requested || '').trim();
+    const candidates = wanted
+        ? [wanted].concat(MINIMAX_IMAGE_CONDITIONING_NODES.filter((name) => name !== wanted))
+        : MINIMAX_IMAGE_CONDITIONING_NODES.slice();
+    for (const name of candidates) {
+        if (info && info[name]) return name;
+    }
+    const error = new Error(
+        'ComfyUI is missing the MiniMax H3 Image conditioning node (' +
+        MINIMAX_IMAGE_CONDITIONING_NODES.join(' or ') + '). Update ComfyUI, then try again.'
+    );
+    error.code = 'comfyui_missing_nodes';
+    error.missingNodes = MINIMAX_IMAGE_CONDITIONING_NODES.slice();
+    throw error;
+}
+
+// The default MiniMax H3 Image model set uses the release image VAE (a 16-head
+// 2D ViT decoder). ComfyUI added `MiniMaxH3ImageVAE` together with the official
+// `MiniMaxH3ImageConditioning` node in v0.45.2; older builds only know the
+// p-h3-image `PH3ImageVAE`/`PH3ImageConditioning` stack and fail later with a
+// raw state_dict shape mismatch. Fail early with an actionable message unless
+// the user explicitly pinned the older node on purpose.
+function assertMiniMaxConditioningSupported(info, conditioningNode, requested) {
+    if (String(conditioningNode || '') !== 'PH3ImageConditioning') return;
+    if (info && info.MiniMaxH3ImageConditioning) return;
+    if (String(requested || '').trim()) return;
+    const error = new Error(
+        'MiniMax H3 Image needs ComfyUI v0.45.2 or newer: its image VAE uses the ' +
+        'MiniMaxH3ImageVAE decoder, but this build only exposes PH3ImageConditioning ' +
+        '(the older p-h3-image stack). Update ComfyUI, then try again.'
+    );
+    error.code = 'comfyui_version_unsupported';
+    error.missingNodes = ['MiniMaxH3ImageConditioning'];
+    throw error;
+}
+
+// The installed core PH3 node documents that the model needs
+// ModelSamplingMiniMaxH3 at 1.0/1.0; the newer official conditioning node
+// already ships that inside its own template, so no extra patch is inserted.
+function miniMaxNeedsSigmaShift(conditioningNode) {
+    return String(conditioningNode || '') === 'PH3ImageConditioning';
+}
+
+function applyMiniMaxSigmaShift(graph, modelNode, conditioningNode) {
+    if (!miniMaxNeedsSigmaShift(conditioningNode)) return null;
+    graph.sigma_shift = {
+        class_type: 'MiniMaxH3SigmaShift',
+        inputs: { model: [modelNode, 0], shift_video: MINIMAX_SIGMA_SHIFT, shift_audio: MINIMAX_SIGMA_SHIFT }
+    };
+    return 'sigma_shift';
+}
+
+// Fail with an actionable message when the selected MiniMax model files are not
+// in ComfyUI's folders, instead of a raw queue rejection. The Setup guide owns
+// the downloads; JARVIS never fetches these multi-GB files on its own.
+function assertMiniMaxImageModels(info, base) {
+    const checks = [
+        { label: 'diffusion model', folder: 'models/diffusion_models', node: 'UNETLoader', field: 'unet_name', value: base.unet },
+        { label: 'text encoder', folder: 'models/text_encoders', node: 'CLIPLoader', field: 'clip_name', value: base.clip },
+        { label: 'VAE', folder: 'models/vae', node: 'VAELoader', field: 'vae_name', value: base.vae }
+    ];
+    const missing = [];
+    for (const check of checks) {
+        if (!check.value) { missing.push(check); continue; }
+        const choices = objectInfoChoices(info, check.node, check.field);
+        if (Array.isArray(choices) && !choices.includes(check.value)) missing.push(check);
+    }
+    if (!missing.length) return;
+    const detail = missing
+        .map((m) => m.label + ' "' + (m.value || '(not set)') + '" (in ' + m.folder + ')')
+        .join(', ');
+    const error = new Error(
+        'MiniMax H3 Image is missing model file' + (missing.length > 1 ? 's' : '') + ': ' + detail +
+        '. Download them from Settings > Setup (or set the file names in Settings > Image), then try again.'
+    );
+    error.code = 'comfyui_missing_model';
+    error.missingModels = missing.map((m) => m.value);
+    throw error;
+}
+
+function buildMiniMaxH3ImageT2IGraph(prompt, options = {}) {
+    const settings = Object.assign({}, DEFAULT_SETTINGS, options.settings || {});
+    const base = {
+        unet: String(settings.minimaxUnet || DEFAULT_SETTINGS.minimaxUnet).trim(),
+        clip: String(settings.minimaxClip || DEFAULT_SETTINGS.minimaxClip).trim(),
+        vae: String(settings.minimaxVae || DEFAULT_SETTINGS.minimaxVae).trim()
+    };
+    const conditioningNode = String(options.conditioningNode || DEFAULT_MINIMAX_CONDITIONING).trim();
+    const seed = Number.isInteger(options.seed) && options.seed >= 0 ? options.seed : 0;
+    // MiniMax's 4–16 MP tiers may exceed the 4096 edge the Krea2/Qwen tiers
+    // use; its own ceiling applies here.
+    const width = clampToInt(options.width || settings.width, 64, MINIMAX_MAX_EDGE, settings.width);
+    const height = clampToInt(options.height || settings.height, 64, MINIMAX_MAX_EDGE, settings.height);
+    const steps = clampToInt(options.steps || settings.minimaxSteps, 1, 100, DEFAULT_MINIMAX_STEPS);
+    const cfg = Number.isFinite(Number(options.cfg))
+        ? Math.max(0, Number(options.cfg))
+        : (Number.isFinite(Number(settings.minimaxCfg)) ? Math.max(0, Number(settings.minimaxCfg)) : DEFAULT_MINIMAX_CFG);
+
+    const graph = {
+        unet: buildDiffusionLoaderNode(base.unet),
+        clip: { class_type: 'CLIPLoader', inputs: { clip_name: base.clip, type: MINIMAX_IMAGE_CLIP_TYPE, device: 'default' } },
+        vae: { class_type: 'VAELoader', inputs: { vae_name: base.vae } }
+    };
+
+    const stack = buildLoraChain(graph, settings.loras);
+    const attentionNode = applyImageAttentionPatch(graph, stack.model[0], settings.attentionBackend);
+    let samplerModel = attentionNode ? [attentionNode, 0] : stack.model;
+    const shifted = applyMiniMaxSigmaShift(graph, samplerModel[0], conditioningNode);
+    if (shifted) samplerModel = [shifted, 0];
+
+    graph.conditioning = {
+        class_type: conditioningNode,
+        inputs: {
+            clip: stack.clip,
+            vae: ['vae', 0],
+            prompt: String(prompt || ''),
+            width,
+            height
+        }
+    };
+
+    // The official template zeroes the positive conditioning for the negative
+    // branch (cfg 1 means it does not contribute anyway).
+    graph.negative = { class_type: 'ConditioningZeroOut', inputs: { conditioning: ['conditioning', 0] } };
+
+    graph.sampler = {
+        class_type: 'KSampler',
+        inputs: {
+            model: samplerModel,
+            positive: ['conditioning', 0],
+            negative: ['negative', 0],
+            latent_image: ['conditioning', 1],
+            seed,
+            steps,
+            cfg,
+            sampler_name: MINIMAX_IMAGE_SAMPLER,
+            scheduler: MINIMAX_IMAGE_SCHEDULER,
+            denoise: 1
+        }
+    };
+
+    graph.decoded = { class_type: 'VAEDecode', inputs: { samples: ['sampler', 0], vae: ['vae', 0] } };
+    graph.save = { class_type: 'SaveImage', inputs: { images: ['decoded', 0], filename_prefix: 'not-so-jarvis/gen' } };
+
+    return graph;
 }
 
 function buildKrea2T2IGraph(prompt, options = {}) {
@@ -2287,16 +2559,32 @@ async function generateImage(prompt, options = {}) {
         if (activeModel === 'qwen_image_2_1') {
             settings.qwenScheduler = resolveQwenScheduler(info, settings.qwenScheduler);
         }
+        let minimaxConditioningNode = null;
+        if (activeModel === 'minimax_h3_image') {
+            minimaxConditioningNode = resolveMiniMaxConditioningNode(info, settings.minimaxConditioningNode);
+            assertMiniMaxConditioningSupported(info, minimaxConditioningNode, settings.minimaxConditioningNode);
+            assertMiniMaxImageModels(info, resolveBaseModels(settings));
+        }
 
         const modelSettings = Object.assign({}, settings, resolveBaseModels(settings));
-        const graph = activeModel === 'qwen_image_2_1'
-            ? buildQwenImage21T2IGraph(finalPrompt, Object.assign({}, options, { seed, width, height, settings: modelSettings }))
-            : buildKrea2T2IGraph(finalPrompt, Object.assign({}, options, { seed, width, height, settings }));
+        let graph;
+        if (activeModel === 'qwen_image_2_1') {
+            graph = buildQwenImage21T2IGraph(finalPrompt, Object.assign({}, options, { seed, width, height, settings: modelSettings }));
+        } else if (activeModel === 'minimax_h3_image') {
+            graph = buildMiniMaxH3ImageT2IGraph(finalPrompt, Object.assign({}, options, {
+                seed, width, height, settings: modelSettings, conditioningNode: minimaxConditioningNode
+            }));
+        } else {
+            graph = buildKrea2T2IGraph(finalPrompt, Object.assign({}, options, { seed, width, height, settings }));
+        }
 
-        await validateGraphAgainstComfy(info, graph, activeModel === 'qwen_image_2_1' ? QWEN_IMAGE_CLIP_TYPE : 'krea2');
+        const expectedClipType = activeModel === 'qwen_image_2_1'
+            ? QWEN_IMAGE_CLIP_TYPE
+            : (activeModel === 'minimax_h3_image' ? MINIMAX_IMAGE_CLIP_TYPE : 'krea2');
+        await validateGraphAgainstComfy(info, graph, expectedClipType);
 
         const pid = await comfyui.queuePrompt(graph);
-        console.log('[image-generator] queued ' + (activeModel === 'qwen_image_2_1' ? 'Qwen Image 2.1' : 'Krea2') + ' workflow:', pid);
+        console.log('[image-generator] queued ' + imageModelLabel(activeModel) + ' workflow:', pid);
 
         const history = await comfyui.waitForPrompt(pid, {
             timeoutMs: options.timeoutMs,
@@ -2336,7 +2624,7 @@ async function generateImage(prompt, options = {}) {
             rawFilename: basename,
             conversationId: options.conversationId || null,
             prompt: finalPrompt,
-            model: activeModel === 'qwen_image_2_1' ? 'Qwen Image 2.1' : 'Krea2',
+            model: imageModelLabel(activeModel),
             loras: activeLoras,
             seed,
             width,
@@ -2613,6 +2901,147 @@ function buildQwenImage21EditGraph(instruction, loadName, options = {}) {
     return graph;
 }
 
+// --- MiniMax H3 Image edit -----------------------------------------------------
+//
+// The alternate editor (`editEngine: 'minimax_h3'`) mirrors the official
+// Comfy-Org image-edit template, with its optional prompt-enhancer chain
+// bypassed so JARVIS's instruction goes straight to the conditioning node:
+//
+//   UNETLoader → CLIPLoader (minimax) → VAELoader → LoRA/attention
+//   LoadImage (image_1..N)
+//   image_1 → ResizeImageMaskNode (scale total pixels, N MP)
+//           → ResizeImageMaskNode (scale to multiple 32) → images.image_1
+//   MiniMaxH3ImageConditioning / PH3ImageConditioning → positive + LATENT
+//   ConditioningZeroOut → KSampler (euler / simple, 6 steps, cfg 1)
+//   VAEDecode → SaveImage
+//
+// The template wires the conditioning canvas from GetImageSize of the resized
+// source, so a plain edit keeps the source's shape at the configured megapixel
+// budget. An explicit width/height (character scene generation) instead pins
+// the canvas and skips the resize chain — the model encodes the reference at
+// its own size and samples the requested output.
+function buildMiniMaxH3ImageEditGraph(instruction, loadName, options = {}) {
+    const settings = Object.assign({}, DEFAULT_SETTINGS, options.settings || {});
+    const base = {
+        unet: String(settings.minimaxUnet || DEFAULT_SETTINGS.minimaxUnet).trim(),
+        clip: String(settings.minimaxClip || DEFAULT_SETTINGS.minimaxClip).trim(),
+        vae: String(settings.minimaxVae || DEFAULT_SETTINGS.minimaxVae).trim()
+    };
+    const conditioningNode = String(options.conditioningNode || DEFAULT_MINIMAX_CONDITIONING).trim();
+    const loadNames = [loadName]
+        .concat(Array.isArray(options.referenceLoadNames) ? options.referenceLoadNames : [])
+        .map((name) => String(name || '').trim())
+        .filter(Boolean);
+    if (!loadNames.length) {
+        const error = new Error('MiniMax H3 Image Edit needs a source image.');
+        error.code = 'edit_source_missing';
+        throw error;
+    }
+
+    const seed = Number.isInteger(options.seed) && options.seed >= 0 ? options.seed : 0;
+    const steps = clampToInt(options.steps || settings.minimaxSteps, 1, 100, DEFAULT_MINIMAX_STEPS);
+    const cfg = Number.isFinite(Number(options.cfg))
+        ? Math.max(0, Number(options.cfg))
+        : (Number.isFinite(Number(settings.minimaxCfg)) ? Math.max(0, Number(settings.minimaxCfg)) : DEFAULT_MINIMAX_CFG);
+    const megapixels = clampToRange(
+        options.megapixels,
+        MINIMAX_EDIT_MIN_MEGAPIXELS,
+        MINIMAX_EDIT_MAX_MEGAPIXELS,
+        clampToRange(settings.minimaxEditMegapixels, MINIMAX_EDIT_MIN_MEGAPIXELS, MINIMAX_EDIT_MAX_MEGAPIXELS, DEFAULT_MINIMAX_EDIT_MEGAPIXELS)
+    );
+    const canvasWidth = clampToInt(options.width, 0, MINIMAX_MAX_EDGE, 0);
+    const canvasHeight = clampToInt(options.height, 0, MINIMAX_MAX_EDGE, 0);
+    const pinnedCanvas = canvasWidth > 0 && canvasHeight > 0;
+
+    const graph = {
+        unet: buildDiffusionLoaderNode(base.unet),
+        clip: { class_type: 'CLIPLoader', inputs: { clip_name: base.clip, type: MINIMAX_IMAGE_CLIP_TYPE, device: 'default' } },
+        vae: { class_type: 'VAELoader', inputs: { vae_name: base.vae } }
+    };
+
+    // One LoadImage per reference, wired into the conditioning node's flat
+    // dotted keys (the node accepts image_1..image_9, sorted numerically).
+    const imageInputs = {};
+    loadNames.forEach((name, index) => {
+        const nodeId = index === 0 ? 'load_image' : 'load_image_' + (index + 1);
+        graph[nodeId] = { class_type: 'LoadImage', inputs: { image: name } };
+        imageInputs['images.image_' + (index + 1)] = [nodeId, 0];
+    });
+
+    // The official template normalizes the edited source to a pixel budget and
+    // then to the latent grid; only image_1 goes through this chain.
+    let sourceImageLink = imageInputs['images.image_1'];
+    if (!pinnedCanvas) {
+        graph.resize_total = {
+            class_type: 'ResizeImageMaskNode',
+            inputs: {
+                input: imageInputs['images.image_1'],
+                scale_method: 'area',
+                resize_type: 'scale total pixels',
+                'resize_type.megapixels': megapixels
+            }
+        };
+        graph.resize_grid = {
+            class_type: 'ResizeImageMaskNode',
+            inputs: {
+                input: ['resize_total', 0],
+                scale_method: 'area',
+                resize_type: 'scale to multiple',
+                'resize_type.multiple': 32
+            }
+        };
+        sourceImageLink = ['resize_grid', 0];
+        imageInputs['images.image_1'] = sourceImageLink;
+    }
+
+    const stack = buildLoraChain(graph, settings.loras);
+    const attentionNode = applyImageAttentionPatch(graph, stack.model[0], settings.attentionBackend);
+    let samplerModel = attentionNode ? [attentionNode, 0] : stack.model;
+    const shifted = applyMiniMaxSigmaShift(graph, samplerModel[0], conditioningNode);
+    if (shifted) samplerModel = [shifted, 0];
+
+    const conditioningInputs = Object.assign({
+        clip: stack.clip,
+        vae: ['vae', 0],
+        prompt: String(instruction || '')
+    }, imageInputs);
+
+    if (pinnedCanvas) {
+        conditioningInputs.width = canvasWidth;
+        conditioningInputs.height = canvasHeight;
+    } else {
+        // Mirror the template: the conditioning canvas follows the resized
+        // source's actual pixel size.
+        graph.source_size = { class_type: 'GetImageSize', inputs: { image: sourceImageLink } };
+        conditioningInputs.width = ['source_size', 0];
+        conditioningInputs.height = ['source_size', 1];
+    }
+
+    graph.conditioning = { class_type: conditioningNode, inputs: conditioningInputs };
+    graph.negative = { class_type: 'ConditioningZeroOut', inputs: { conditioning: ['conditioning', 0] } };
+
+    graph.sampler = {
+        class_type: 'KSampler',
+        inputs: {
+            model: samplerModel,
+            positive: ['conditioning', 0],
+            negative: ['negative', 0],
+            latent_image: ['conditioning', 1],
+            seed,
+            steps,
+            cfg,
+            sampler_name: MINIMAX_IMAGE_SAMPLER,
+            scheduler: MINIMAX_IMAGE_SCHEDULER,
+            denoise: 1
+        }
+    };
+
+    graph.decoded = { class_type: 'VAEDecode', inputs: { samples: ['sampler', 0], vae: ['vae', 0] } };
+    graph.save = { class_type: 'SaveImage', inputs: { images: ['decoded', 0], filename_prefix: 'not-so-jarvis/edit' } };
+
+    return graph;
+}
+
 // --- Krea 2 Identity Edit ------------------------------------------------------
 //
 // The alternate image-edit pipeline, selected by `editEngine: 'krea2'`. It is a
@@ -2844,8 +3273,9 @@ async function editImage(sourceAbsPath, instruction, options = {}) {
         // to the global image settings (character scene generation). srcDims is
         // only a metadata fallback when the output dimensions can't be read.
         const srcDims = readImageDimensions(abs);
-        const canvasWidth = clampToInt(options.width, 0, 4096, 0);
-        const canvasHeight = clampToInt(options.height, 0, 4096, 0);
+        const editMaxEdge = editEngine === 'minimax_h3' ? MINIMAX_MAX_EDGE : 4096;
+        const canvasWidth = clampToInt(options.width, 0, editMaxEdge, 0);
+        const canvasHeight = clampToInt(options.height, 0, editMaxEdge, 0);
         const dims = {
             width: canvasWidth > 0 ? canvasWidth : (srcDims.width > 0 ? srcDims.width : settings.width),
             height: canvasHeight > 0 ? canvasHeight : (srcDims.height > 0 ? srcDims.height : settings.height)
@@ -2885,7 +3315,7 @@ async function editImage(sourceAbsPath, instruction, options = {}) {
         }
         // Optional mask (Qwen edit only): uploaded like any other LoadImage.
         let maskLoadName = null;
-        if (editEngine !== 'krea2' && options.maskPath && fs.existsSync(options.maskPath)) {
+        if (editEngine === 'qwen' && options.maskPath && fs.existsSync(options.maskPath)) {
             maskLoadName = await uploadSource(options.maskPath, referencePaths.length + 1);
         }
 
@@ -2900,6 +3330,18 @@ async function editImage(sourceAbsPath, instruction, options = {}) {
             if (normalizeImageAttentionBackend(requestedAttention) === 'auto') {
                 console.log('[image-generator] auto attention ->', settings.attentionBackend);
             }
+            // MiniMax H3 Image needs its own conditioning node + model files;
+            // resolve both against this build before constructing the graph.
+            let minimaxConditioningNode = null;
+            if (editEngine === 'minimax_h3') {
+                minimaxConditioningNode = resolveMiniMaxConditioningNode(info, settings.minimaxConditioningNode);
+                assertMiniMaxConditioningSupported(info, minimaxConditioningNode, settings.minimaxConditioningNode);
+                assertMiniMaxImageModels(info, {
+                    unet: String(settings.minimaxUnet || DEFAULT_SETTINGS.minimaxUnet).trim(),
+                    clip: String(settings.minimaxClip || DEFAULT_SETTINGS.minimaxClip).trim(),
+                    vae: String(settings.minimaxVae || DEFAULT_SETTINGS.minimaxVae).trim()
+                });
+            }
 
             const graph = editEngine === 'krea2'
                 ? buildKrea2IdentityEditGraph(finalInstruction, loadName, {
@@ -2911,23 +3353,35 @@ async function editImage(sourceAbsPath, instruction, options = {}) {
                     height: dims.height,
                     referenceLoadNames
                 })
-                : buildQwenImage21EditGraph(finalInstruction, loadName, {
-                    settings,
-                    seed,
-                    steps: options.steps,
-                    cfg: options.cfg,
-                    resolution: options.resolution,
-                    width: canvasWidth,
-                    height: canvasHeight,
-                    negativePrompt: options.negativePrompt,
-                    referenceLoadNames,
-                    maskLoadName
-                });
+                : editEngine === 'minimax_h3'
+                    ? buildMiniMaxH3ImageEditGraph(finalInstruction, loadName, {
+                        settings,
+                        seed,
+                        steps: options.steps,
+                        cfg: options.cfg,
+                        megapixels: options.megapixels,
+                        width: canvasWidth,
+                        height: canvasHeight,
+                        conditioningNode: minimaxConditioningNode,
+                        referenceLoadNames
+                    })
+                    : buildQwenImage21EditGraph(finalInstruction, loadName, {
+                        settings,
+                        seed,
+                        steps: options.steps,
+                        cfg: options.cfg,
+                        resolution: options.resolution,
+                        width: canvasWidth,
+                        height: canvasHeight,
+                        negativePrompt: options.negativePrompt,
+                        referenceLoadNames,
+                        maskLoadName
+                    });
 
             const clipType = editEngine === 'krea2'
                 ? String(settings.clipType || KREA2_CLIP_TYPE)
-                : QWEN_IMAGE_CLIP_TYPE;
-            usedModel = editEngine === 'krea2' ? 'Krea 2 Edit' : 'Qwen Image 2.1 Edit';
+                : (editEngine === 'minimax_h3' ? MINIMAX_IMAGE_CLIP_TYPE : QWEN_IMAGE_CLIP_TYPE);
+            usedModel = editEngineLabel(editEngine);
             await validateGraphAgainstComfy(info, graph, clipType);
 
             const pid = await comfyui.queuePrompt(graph);
@@ -2966,7 +3420,7 @@ async function editImage(sourceAbsPath, instruction, options = {}) {
             rawFilename: basename,
             conversationId: options.conversationId || null,
             prompt: finalInstruction,
-            model: usedModel || 'Qwen Image 2.1 Edit',
+            model: usedModel || editEngineLabel(editEngine),
             loras: activeLoras,
             width: width || dims.width,
             height: height || dims.height,
@@ -3029,6 +3483,20 @@ module.exports = {
     stripLoraTriggerWords,
     buildKrea2T2IGraph,
     buildQwenImage21T2IGraph,
+    buildMiniMaxH3ImageT2IGraph,
+    buildMiniMaxH3ImageEditGraph,
+    resolveMiniMaxConditioningNode,
+    assertMiniMaxConditioningSupported,
+    miniMaxNeedsSigmaShift,
+    applyMiniMaxSigmaShift,
+    assertMiniMaxImageModels,
+    MINIMAX_IMAGE_CLIP_TYPE,
+    MINIMAX_IMAGE_CONDITIONING_NODES,
+    MINIMAX_IMAGE_MEGAPIXELS,
+    MINIMAX_MAX_EDGE,
+    MINIMAX_EDIT_MAX_MEGAPIXELS,
+    imageModelLabel,
+    editEngineLabel,
     buildLoraChain,
     normalizeImageModel,
     resolveBaseModels,

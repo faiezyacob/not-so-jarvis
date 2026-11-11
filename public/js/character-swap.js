@@ -29,6 +29,11 @@ const CharacterSwapUI = (() => {
     let detectionSelection = new Set();
     let detectionProjectId = null;
     let bindingSelection = false;
+    let highlightRequest = 0;
+    let detectionOverlay = null;
+    let detectionOverlayKey = '';
+    let detectionOverlayPromise = null;
+    const DETECTION_PALETTE = ['#6CFF9A', '#5FC8FF', '#FFB56B', '#FF8FD0', '#C8A6FF', '#FFE066', '#7DF0D0', '#FF9B8A'];
 
     const $ = (id) => document.getElementById(id);
 
@@ -558,9 +563,12 @@ const CharacterSwapUI = (() => {
             return;
         }
         tracks.forEach((track) => {
+            const owner = (project.people || []).find((person) => person.selectionId === track.id);
             const card = document.createElement('button');
             card.type = 'button';
-            card.className = 'character-swap-detection-card' + (detectionSelection.has(track.id) ? ' active' : '');
+            card.className = 'character-swap-detection-card' +
+                (detectionSelection.has(track.id) ? ' active' : '') +
+                (owner && owner.id === selectedPersonId ? ' focused' : '');
             if (track.thumbUrl) {
                 const img = document.createElement('img');
                 img.src = track.thumbUrl;
@@ -573,7 +581,6 @@ const CharacterSwapUI = (() => {
             const meta = document.createElement('small');
             const bits = [track.frames + ' frames'];
             if (track.lostSpans && track.lostSpans.length) bits.push(track.lostSpans.length + ' gap' + (track.lostSpans.length === 1 ? '' : 's'));
-            const owner = (project.people || []).find((person) => person.selectionId === track.id);
             if (owner) bits.push('→ ' + owner.label);
             meta.textContent = bits.join(' · ');
             card.appendChild(meta);
@@ -581,15 +588,19 @@ const CharacterSwapUI = (() => {
                 ? 'Click to replace with this person only (Shift-click adds another target, up to three). Remove a target with the x on its person card.'
                 : '';
             card.addEventListener('click', (event) => {
-                if (bindingSelection) return;
                 if (engine === 'scail2' || engine === 'h3') {
                     const owner = (project.people || []).find((person) => person.selectionId === track.id);
                     if (owner) {
+                        // Focusing an already-bound person is local and must stay
+                        // responsive even while a background describe/bind is
+                        // still running.
                         selectedPersonId = owner.id;
                         renderAll();
+                        focusPerson(owner, { jump: true });
                         setStatus(owner.label + ' is focused. Add its character image below.', 'ok');
                         return;
                     }
+                    if (bindingSelection) return;
                     // A plain click targets exactly one person. This prevents a
                     // previously clicked target from staying bound and turning a
                     // single-character request into two replacement passes.
@@ -598,6 +609,7 @@ const CharacterSwapUI = (() => {
                     applySelectionTask(track.id);
                     return;
                 }
+                if (bindingSelection) return;
                 if (detectionSelection.has(track.id)) {
                     detectionSelection.delete(track.id);
                 } else {
@@ -644,6 +656,7 @@ const CharacterSwapUI = (() => {
                 || targets[targets.length - 1];
             if (focus) selectedPersonId = focus.id;
             setProject(data);
+            if (focus) focusPerson(selectedPerson(), { jump: true });
             if (engine === 'scail2' || engine === 'h3') {
                 const missing = targets.filter((person) => !(person.refs || []).length);
                 setStatus(targets.length > 1
@@ -706,19 +719,60 @@ const CharacterSwapUI = (() => {
         }
     }
 
+    function selectionSignature() {
+        if (!project) return '';
+        const selection = project.selection;
+        return [project.id, selection ? (selection.createdAt || '') : '',
+            selection ? (selection.corrections || []).length : 0,
+            selection ? (selection.version || '') : ''].join(':');
+    }
+
     function setProject(next) {
+        // Ignore an async response that lost the race against newer state.
+        if (next && project && next.id === project.id) {
+            const previousTime = Date.parse(project.updatedAt) || 0;
+            const nextTime = Date.parse(next.updatedAt) || 0;
+            if (previousTime && nextTime && nextTime < previousTime) return;
+        }
+        const previousProjectId = project ? project.id : null;
+        const previousSelected = project ? selectedPerson() : null;
         project = next;
         if (!project) {
             selectedPersonId = null;
+            detectionOverlay = null;
+            detectionOverlayKey = '';
+            detectionOverlayPromise = null;
+            highlightRequest += 1;
             return;
         }
         engine = project.engine || 'scail2';
+        const signature = selectionSignature();
+        if (signature !== detectionOverlayKey) {
+            detectionOverlay = null;
+            detectionOverlayKey = signature;
+            detectionOverlayPromise = null;
+            highlightRequest += 1;
+        }
         if (!project.people.some((person) => person.id === selectedPersonId)) {
-            selectedPersonId = project.people[0] ? project.people[0].id : null;
+            const sameProject = Boolean(previousProjectId && previousProjectId === project.id);
+            // Person records can be recreated by a new detection/auto-people
+            // pass. Keep the same subject selected by its stable track id, then
+            // by its label, instead of silently snapping back to people[0].
+            const byTrack = sameProject && previousSelected && previousSelected.selectionId
+                ? project.people.find((person) => person.selectionId === previousSelected.selectionId)
+                : null;
+            const byLabel = sameProject && previousSelected && previousSelected.label
+                ? project.people.find((person) => person.label === previousSelected.label)
+                : null;
+            const preserved = byTrack || byLabel || project.people[0];
+            selectedPersonId = preserved ? preserved.id : null;
         }
         frame = Math.max(0, Math.min(frames() - 1, frame));
         renderAll();
         applyEngineUI();
+        if (project.selection && (project.selection.tracks || []).length) {
+            ensureDetectionOverlay().then(() => drawHighlight()).catch(() => {});
+        }
         if (taskDepth > 0) lockTaskControls();
         if (project.status === 'failed' && project.error) setStatus(project.error, 'error');
         else if (project.status === 'tracking') setStatus(project.activity || 'Tracking the selected people…');
@@ -965,12 +1019,20 @@ const CharacterSwapUI = (() => {
             ? trimEnd
             : (project ? Math.min(trimClipDuration(), trimStart + TRIM_MAX_SECONDS) : 0);
         updateTrimMeta();
-        $('csTimeline').max = String(frames() - 1);
-        $('csTimeline').value = String(frame);
-        $('csFrameLabel').textContent = 'Frame ' + frame + ' / ' + (frames() - 1);
-        $('csStageTitle').textContent = project ? (project.title || 'Character Swap') : 'No clip loaded';
+        const lastFrame = Math.max(0, frames() - 1);
+        const timeline = $('csTimeline');
+        timeline.max = String(lastFrame);
+        timeline.value = String(frame);
+        timeline.style.setProperty('--cs-progress', (lastFrame ? (frame / lastFrame) * 100 : 0) + '%');
+        $('csFrameLabel').textContent = 'Frame ' + frame + ' / ' + lastFrame;
+        $('csFrameLabel').hidden = !project;
+        $('csStageTitle').textContent = project ? (project.title || 'Character Swap') : 'Preview';
         $('csStageEmpty').hidden = Boolean(project);
         $('csCanvasWrap').hidden = !project;
+        const transport = $('csTransport');
+        if (transport) transport.hidden = !project;
+        const fullscreen = $('csFullscreen');
+        if (fullscreen) fullscreen.disabled = !project;
     }
 
     function personButton(person) {
@@ -1006,8 +1068,9 @@ const CharacterSwapUI = (() => {
         button.appendChild(text);
         button.addEventListener('click', () => {
             selectedPersonId = person.id;
-            if (project && project.engine === 'scail2') frame = 0;
+            if (project && project.engine === 'scail2' && !person.selectionId) frame = 0;
             renderAll();
+            focusPerson(person, { jump: true });
         });
         return button;
     }
@@ -1177,12 +1240,14 @@ const CharacterSwapUI = (() => {
         host.replaceChildren();
         const person = selectedPerson();
         if (!person) return;
+        const caption = String(person.subjectSummary || '').trim();
         if (!person.description) {
-            host.textContent = 'No description yet. Describe after adding references.';
+            host.textContent = caption || 'No description yet. Describe after adding references.';
             return;
         }
         const d = person.description;
         const lines = [
+            ['Auto caption', caption],
             ['Identity', d.identitySummary],
             ['Face', d.face],
             ['Hair', d.hair],
@@ -1592,6 +1657,7 @@ const CharacterSwapUI = (() => {
         img.onload = () => {
             syncCanvasSize();
             drawMask();
+            drawHighlight();
         };
         img.src = url;
         const person = selectedPerson();
@@ -1599,6 +1665,7 @@ const CharacterSwapUI = (() => {
             maskImage = new Image();
             maskImage.onload = () => drawMask();
             maskImage.src = maskUrl(person.id, frame);
+            drawHighlight();
             return;
         }
         const anchor = person && (person.anchors || []).find((item) => item.frame === frame);
@@ -1608,10 +1675,12 @@ const CharacterSwapUI = (() => {
             maskImage.src = anchor.anchorMaskUrl ||
                 ('/api/character-swap/projects/' + encodeURIComponent(project.id) +
                     '/person/' + encodeURIComponent(person.id) + '/anchors/' + Number(anchor.frame) + '/mask');
+            drawHighlight();
             return;
         }
         maskImage = null;
         drawMask();
+        drawHighlight();
     }
 
     function syncCanvasSize() {
@@ -1620,38 +1689,451 @@ const CharacterSwapUI = (() => {
         const height = img.naturalHeight || (project && project.part && project.part.height) || 720;
         const mask = $('csMaskCanvas');
         const draw = $('csDrawCanvas');
-        if (mask.width !== width || mask.height !== height) {
-            mask.width = width;
-            mask.height = height;
-        }
-        if (draw.width !== width || draw.height !== height) {
-            draw.width = width;
-            draw.height = height;
-        }
+        const highlight = $('csHighlightCanvas');
+        [mask, highlight, draw].forEach((canvas) => {
+            if (!canvas) return;
+            if (canvas.width !== width || canvas.height !== height) {
+                canvas.width = width;
+                canvas.height = height;
+            }
+        });
         layoutCanvases();
     }
 
-    function layoutCanvases() {
+    // The displayed image content rect inside the canvas wrap. Mirrors
+    // object-fit: contain exactly, including the wrap border, so the overlay
+    // canvases always sit on the image (never on the letterbox).
+    function canvasView() {
         const wrap = $('csCanvasWrap');
         const img = $('csFrameImage');
-        if (!wrap || !img) return;
-        const rect = wrap.getBoundingClientRect();
-        const width = img.naturalWidth || (project && project.part && project.part.width) || 1280;
-        const height = img.naturalHeight || (project && project.part && project.part.height) || 720;
-        if (!rect.width || !rect.height || !width || !height) return;
-        const scale = Math.min(rect.width / width, rect.height / height);
-        const shownWidth = Math.max(1, width * scale);
-        const shownHeight = Math.max(1, height * scale);
-        const left = Math.max(0, (rect.width - shownWidth) / 2);
-        const top = Math.max(0, (rect.height - shownHeight) / 2);
-        [$('csMaskCanvas'), $('csDrawCanvas')].forEach((canvas) => {
-            canvas.style.left = left + 'px';
-            canvas.style.top = top + 'px';
-            canvas.style.width = shownWidth + 'px';
-            canvas.style.height = shownHeight + 'px';
+        if (!wrap || !img) return null;
+        const naturalWidth = img.naturalWidth || (project && project.part && project.part.width) || 0;
+        const naturalHeight = img.naturalHeight || (project && project.part && project.part.height) || 0;
+        if (!naturalWidth || !naturalHeight) return null;
+        const wrapRect = wrap.getBoundingClientRect();
+        const imgRect = img.getBoundingClientRect();
+        const boxWidth = Math.max(1, imgRect.width || img.clientWidth || 0);
+        const boxHeight = Math.max(1, imgRect.height || img.clientHeight || 0);
+        const objectFit = (window.getComputedStyle ? window.getComputedStyle(img).objectFit : '') || 'contain';
+        const cover = objectFit === 'cover';
+        const scale = cover
+            ? Math.max(boxWidth / naturalWidth, boxHeight / naturalHeight)
+            : Math.min(boxWidth / naturalWidth, boxHeight / naturalHeight);
+        if (!Number.isFinite(scale) || scale <= 0) return null;
+        const shownWidth = Math.max(1, naturalWidth * scale);
+        const shownHeight = Math.max(1, naturalHeight * scale);
+        // Absolute offsets are relative to the wrap's padding box, not its
+        // border box, so subtract the border before centering.
+        const paddingLeft = wrapRect.left + (wrap.clientLeft || 0);
+        const paddingTop = wrapRect.top + (wrap.clientTop || 0);
+        const left = cover
+            ? (imgRect.left - paddingLeft) - (shownWidth - boxWidth) / 2
+            : (imgRect.left - paddingLeft) + (boxWidth - shownWidth) / 2;
+        const top = cover
+            ? (imgRect.top - paddingTop) - (shownHeight - boxHeight) / 2
+            : (imgRect.top - paddingTop) + (boxHeight - shownHeight) / 2;
+        return { naturalWidth, naturalHeight, scale, shownWidth, shownHeight, left, top };
+    }
+
+    function layoutCanvases() {
+        const view = canvasView();
+        if (!view) return;
+        [$('csMaskCanvas'), $('csHighlightCanvas'), $('csDrawCanvas')].forEach((canvas) => {
+            if (!canvas) return;
+            canvas.style.left = view.left + 'px';
+            canvas.style.top = view.top + 'px';
+            canvas.style.width = view.shownWidth + 'px';
+            canvas.style.height = view.shownHeight + 'px';
             canvas.style.right = 'auto';
             canvas.style.bottom = 'auto';
         });
+    }
+
+    function detectionTrackMeta(trackId) {
+        if (!detectionOverlay) return null;
+        return (detectionOverlay.tracks || []).find((track) => track.id === trackId) || null;
+    }
+
+    function detectionIndex(trackId) {
+        if (!detectionOverlay) return 0;
+        return Math.max(0, (detectionOverlay.tracks || []).findIndex((track) => track.id === trackId));
+    }
+
+    async function ensureDetectionOverlay() {
+        if (!project) return null;
+        const signature = selectionSignature();
+        if (detectionOverlay && detectionOverlay.key === signature) return detectionOverlay;
+        if (detectionOverlayPromise && detectionOverlayPromise.key === signature) return detectionOverlayPromise.promise;
+        if (!project.selection || !(project.selection.tracks || []).length) {
+            detectionOverlay = null;
+            detectionOverlayKey = signature;
+            return null;
+        }
+        const projectId = project.id;
+        const promise = api('/api/character-swap/projects/' + encodeURIComponent(projectId) + '/selection/frames')
+            .then((data) => {
+                if (!project || project.id !== projectId || selectionSignature() !== signature) return null;
+                const byFrame = new Map();
+                (Array.isArray(data.frames) ? data.frames : []).forEach((entry) => {
+                    const index = Number(entry && entry.frame);
+                    const people = (Array.isArray(entry && entry.people) ? entry.people : [])
+                        .filter((person) => person && person.trackId && person.bbox);
+                    if (!Number.isFinite(index) || !people.length) return;
+                    byFrame.set(index, people);
+                });
+                const byTrack = new Map();
+                byFrame.forEach((people, index) => {
+                    people.forEach((person) => {
+                        if (!byTrack.has(person.trackId)) byTrack.set(person.trackId, []);
+                        byTrack.get(person.trackId).push({ frame: index, bbox: person.bbox });
+                    });
+                });
+                byTrack.forEach((list) => list.sort((a, b) => a.frame - b.frame));
+                detectionOverlay = {
+                    key: signature,
+                    width: Number(data.width) || (project.part && project.part.width) || 0,
+                    height: Number(data.height) || (project.part && project.part.height) || 0,
+                    tracks: Array.isArray(data.tracks) ? data.tracks : [],
+                    byFrame,
+                    byTrack
+                };
+                return detectionOverlay;
+            })
+            .catch(() => null)
+            .finally(() => {
+                if (detectionOverlayPromise && detectionOverlayPromise.key === signature) detectionOverlayPromise = null;
+            });
+        detectionOverlayPromise = { key: signature, promise };
+        return promise;
+    }
+
+    function detectionEntries() {
+        if (!detectionOverlay) return [];
+        return detectionOverlay.byFrame.get(frame) || [];
+    }
+
+    // The canvas must mirror the PEOPLE list exactly. Only tracks bound to a
+    // person record are "active"; unbound DWPose tracks (and leftovers from an
+    // earlier detection) must never get a box, whichever engine is selected.
+    function visibleTrackIds() {
+        if (!project) return new Set();
+        const tracks = new Set(((project.selection && project.selection.tracks) || []).map((track) => track.id));
+        const bound = new Set();
+        (project.people || []).forEach((person) => {
+            if (person.selectionId && tracks.has(person.selectionId)) bound.add(person.selectionId);
+        });
+        return bound;
+    }
+
+    function visibleDetectionEntries() {
+        const allowed = visibleTrackIds();
+        return detectionEntries().filter((entry) => allowed.has(entry.trackId));
+    }
+
+    function nearestTrackFrame(trackId, target) {
+        if (!detectionOverlay) return null;
+        const list = detectionOverlay.byTrack.get(trackId) || [];
+        if (!list.length) return null;
+        return list.reduce((best, item) => {
+            const distance = Math.abs(Number(item.frame) - target);
+            return distance < Math.abs(Number(best.frame) - target) ? item : best;
+        }, list[0]).frame;
+    }
+
+    // Focuses a person and, when requested, jumps the timeline to the closest
+    // frame they actually appear in.
+    async function focusPerson(person, options = {}) {
+        const token = ++highlightRequest;
+        if (!person || !person.selectionId || !project) {
+            drawHighlight();
+            return;
+        }
+        const projectId = project.id;
+        await ensureDetectionOverlay();
+        if (token !== highlightRequest) return;
+        if (!project || project.id !== projectId || selectedPersonId !== person.id) {
+            if (token === highlightRequest) drawHighlight();
+            return;
+        }
+        if (!visibleTrackIds().has(person.selectionId)) {
+            drawHighlight();
+            return;
+        }
+        const list = detectionOverlay ? (detectionOverlay.byTrack.get(person.selectionId) || []) : [];
+        if (options.jump && detectionOverlay && !list.length) {
+            setStatus((person.label || 'Selected person') + ' has no reliable detection in this clip.', 'error');
+            drawHighlight();
+            return;
+        }
+        if (options.jump && list.length && !list.some((item) => item.frame === frame)) {
+            const target = Number(nearestTrackFrame(person.selectionId, frame));
+            if (Number.isFinite(target) && target !== frame) {
+                frame = Math.max(0, Math.min(frames() - 1, target));
+                renderSource();
+                seekVideoToFrame();
+                loadFrame();
+                setStatus((person.label || 'Selected person') + ' is visible at frame ' + frame + '.', 'ok');
+                return;
+            }
+        }
+        drawHighlight();
+    }
+
+    function roundRectPath(ctx, x, y, width, height, radius) {
+        const r = Math.max(0, Math.min(radius, Math.min(width, height) / 2));
+        ctx.beginPath();
+        ctx.moveTo(x + r, y);
+        ctx.lineTo(x + width - r, y);
+        ctx.quadraticCurveTo(x + width, y, x + width, y + r);
+        ctx.lineTo(x + width, y + height - r);
+        ctx.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
+        ctx.lineTo(x + r, y + height);
+        ctx.quadraticCurveTo(x, y + height, x, y + height - r);
+        ctx.lineTo(x, y + r);
+        ctx.quadraticCurveTo(x, y, x + r, y);
+        ctx.closePath();
+    }
+
+    function boxToCanvas(box) {
+        const canvas = $('csHighlightCanvas');
+        const sourceWidth = (detectionOverlay && detectionOverlay.width) || (canvas && canvas.width) || 1;
+        const sourceHeight = (detectionOverlay && detectionOverlay.height) || (canvas && canvas.height) || 1;
+        const scaleX = (canvas ? canvas.width : sourceWidth) / sourceWidth;
+        const scaleY = (canvas ? canvas.height : sourceHeight) / sourceHeight;
+        return {
+            x: Number(box.x) * scaleX,
+            y: Number(box.y) * scaleY,
+            width: Number(box.width) * scaleX,
+            height: Number(box.height) * scaleY
+        };
+    }
+
+    function personCaption(person) {
+        if (!person) return '';
+        const text = person.subjectSummary
+            || (person.description && person.description.identitySummary)
+            || person.identitySummary
+            || '';
+        return String(text).trim();
+    }
+
+    function wrapCanvasText(ctx, text, maxWidth, maxLines) {
+        if (!text) return [];
+        const words = String(text).split(/\s+/);
+        const lines = [];
+        let line = '';
+        for (const word of words) {
+            const candidate = line ? line + ' ' + word : word;
+            if (ctx.measureText(candidate).width <= maxWidth) {
+                line = candidate;
+                continue;
+            }
+            if (line) lines.push(line);
+            line = word;
+            if (lines.length >= maxLines) break;
+        }
+        if (line && lines.length < maxLines) lines.push(line);
+        if (lines.length >= maxLines) {
+            let last = lines[maxLines - 1];
+            while (last.length > 1 && ctx.measureText(last + '…').width > maxWidth) last = last.slice(0, -1);
+            lines[maxLines - 1] = last + '…';
+        }
+        return lines;
+    }
+
+    function drawDetectionBox(ctx, canvas, box, style) {
+        const rect = boxToCanvas(box);
+        const x = Math.max(0, Math.min(canvas.width, rect.x));
+        const y = Math.max(0, Math.min(canvas.height, rect.y));
+        const width = Math.max(1, Math.min(canvas.width - x, rect.width));
+        const height = Math.max(1, Math.min(canvas.height - y, rect.height));
+        if (width < 2 || height < 2) return;
+        const rgb = tintRgb(style.tint);
+        const lineWidth = style.selected
+            ? Math.max(3, Math.round(canvas.width / 280))
+            : Math.max(2, Math.round(canvas.width / 460));
+        const stroke = 'rgba(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ',' + (style.selected ? '0.98' : '0.72') + ')';
+        const fill = 'rgba(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ',' + (style.selected ? '0.17' : '0.06') + ')';
+        ctx.save();
+        ctx.lineWidth = lineWidth;
+        ctx.strokeStyle = stroke;
+        ctx.fillStyle = fill;
+        ctx.setLineDash(style.selected ? [] : [lineWidth * 2, lineWidth * 2]);
+        roundRectPath(ctx, x, y, width, height, Math.max(5, lineWidth * 2));
+        ctx.fill();
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        const fontSize = Math.max(12, Math.round(canvas.width / (style.selected ? 52 : 62)));
+        const captionFontSize = Math.max(10, Math.round(fontSize * 0.74));
+        const padding = Math.max(5, Math.round(fontSize * 0.42));
+        ctx.font = (style.selected ? '700 ' : '600 ') + fontSize + 'px system-ui, -apple-system, "Segoe UI", sans-serif';
+        ctx.textBaseline = 'middle';
+        const label = style.label || 'Person';
+        const labelWidth = ctx.measureText(label).width;
+        let captionLines = [];
+        if (style.selected && style.caption) {
+            const maxWidth = Math.min(canvas.width * 0.6, Math.max(width * 1.4, canvas.width * 0.32));
+            ctx.font = '500 ' + captionFontSize + 'px system-ui, -apple-system, "Segoe UI", sans-serif';
+            captionLines = wrapCanvasText(ctx, style.caption, maxWidth, 2);
+        }
+        let captionWidth = 0;
+        if (captionLines.length) {
+            ctx.font = '500 ' + captionFontSize + 'px system-ui, -apple-system, "Segoe UI", sans-serif';
+            captionWidth = Math.max(...captionLines.map((line) => ctx.measureText(line).width));
+        }
+        const chipWidth = Math.max(labelWidth, captionWidth) + padding * 2;
+        const chipHeight = fontSize + padding * 1.4 +
+            (captionLines.length ? captionLines.length * captionFontSize * 1.32 + padding * 0.5 : 0);
+        const chipX = Math.max(0, Math.min(canvas.width - chipWidth, x));
+        let chipY = y - chipHeight - lineWidth * 2;
+        if (chipY < 0) chipY = Math.min(canvas.height - chipHeight, y + lineWidth * 2);
+        chipY = Math.max(0, chipY);
+        ctx.fillStyle = style.selected ? 'rgba(9,12,16,0.9)' : 'rgba(9,12,16,0.72)';
+        roundRectPath(ctx, chipX, chipY, chipWidth, chipHeight, Math.min(8, chipHeight / 3));
+        ctx.fill();
+        if (style.selected) {
+            ctx.strokeStyle = stroke;
+            ctx.lineWidth = Math.max(1, lineWidth / 2);
+            roundRectPath(ctx, chipX, chipY, chipWidth, chipHeight, Math.min(8, chipHeight / 3));
+            ctx.stroke();
+        }
+        ctx.fillStyle = stroke;
+        ctx.font = (style.selected ? '700 ' : '600 ') + fontSize + 'px system-ui, -apple-system, "Segoe UI", sans-serif';
+        const textY = chipY + padding * 0.7 + fontSize / 2;
+        ctx.fillText(label, chipX + padding, textY);
+        if (captionLines.length) {
+            ctx.fillStyle = 'rgba(232,238,244,0.86)';
+            ctx.font = '500 ' + captionFontSize + 'px system-ui, -apple-system, "Segoe UI", sans-serif';
+            captionLines.forEach((line, index) => {
+                ctx.fillText(line, chipX + padding,
+                    textY + fontSize * 0.72 + padding * 0.4 + index * captionFontSize * 1.3);
+            });
+        }
+        ctx.restore();
+    }
+
+    function debugEnabled() {
+        try { return localStorage.getItem('jarvis-character-swap-debug') === '1'; } catch { return false; }
+    }
+
+    function drawDebugOverlay(ctx, canvas) {
+        const view = canvasView();
+        const detectionWidth = (detectionOverlay && detectionOverlay.width) || canvas.width || 1;
+        const detectionHeight = (detectionOverlay && detectionOverlay.height) || canvas.height || 1;
+        const scaleX = canvas.width / detectionWidth;
+        const scaleY = canvas.height / detectionHeight;
+        const lines = [
+            'frame ' + frame,
+            'detection ' + detectionWidth + '×' + detectionHeight + ' → canvas ' + canvas.width + '×' + canvas.height,
+            'scale x' + scaleX.toFixed(3) + ' y' + scaleY.toFixed(3),
+            view
+                ? 'display ' + Math.round(view.shownWidth) + '×' + Math.round(view.shownHeight) +
+                    ' @ ' + view.left.toFixed(1) + ',' + view.top.toFixed(1) + ' dpr ' + (window.devicePixelRatio || 1)
+                : 'display n/a'
+        ];
+        const fontSize = Math.max(11, Math.round(canvas.width / 70));
+        ctx.save();
+        ctx.font = '500 ' + fontSize + 'px monospace';
+        ctx.textBaseline = 'top';
+        const pad = Math.round(fontSize * 0.5);
+        const width = Math.max(...lines.map((line) => ctx.measureText(line).width)) + pad * 2;
+        const height = lines.length * fontSize * 1.35 + pad * 2;
+        ctx.fillStyle = 'rgba(0,0,0,0.72)';
+        ctx.fillRect(0, 0, width, height);
+        ctx.fillStyle = '#9df5b6';
+        lines.forEach((line, index) => ctx.fillText(line, pad, pad + index * fontSize * 1.35));
+        ctx.restore();
+        visibleDetectionEntries().forEach((entry) => {
+            const rect = boxToCanvas(entry.displayBbox || entry.bbox);
+            console.debug('[character-swap] detection', entry.trackId, 'source', entry.bbox,
+                'display', entry.displayBbox, 'canvas', rect);
+        });
+    }
+
+    function drawHighlight() {
+        const canvas = $('csHighlightCanvas');
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        if (!project || !detectionOverlay) {
+            updateHighlightPointer(false);
+            return;
+        }
+        const entries = visibleDetectionEntries();
+        if (!entries.length) {
+            updateHighlightPointer(false);
+            return;
+        }
+        const selected = selectedPerson();
+        const selectedTrackId = selected && selected.selectionId;
+        const ordered = entries.slice().sort((a, b) => {
+            if (a.trackId === selectedTrackId) return 1;
+            if (b.trackId === selectedTrackId) return -1;
+            return 0;
+        });
+        ordered.forEach((entry) => {
+            const owner = (project.people || []).find((person) => person.selectionId === entry.trackId);
+            const index = detectionIndex(entry.trackId);
+            const meta = detectionTrackMeta(entry.trackId);
+            const selectedEntry = entry.trackId === selectedTrackId;
+            drawDetectionBox(ctx, canvas, entry.displayBbox || entry.bbox, {
+                tint: (owner && owner.tint) || DETECTION_PALETTE[index % DETECTION_PALETTE.length],
+                label: (owner && owner.label) || (meta && meta.label) || ('Person ' + (index + 1)),
+                selected: selectedEntry,
+                caption: selectedEntry && owner ? personCaption(owner) : ''
+            });
+        });
+        if (debugEnabled()) drawDebugOverlay(ctx, canvas);
+        updateHighlightPointer(true);
+    }
+
+    function updateHighlightPointer(hasBoxes) {
+        const canvas = $('csHighlightCanvas');
+        if (!canvas) return;
+        const interactive = Boolean(hasBoxes) && Boolean(project) && !featuresFor(project.engine).maskSection;
+        canvas.style.pointerEvents = interactive ? 'auto' : 'none';
+        canvas.style.cursor = interactive ? 'pointer' : '';
+    }
+
+    function detectionFromEvent(event) {
+        if (!detectionOverlay) return null;
+        const canvas = $('csHighlightCanvas');
+        if (!canvas) return null;
+        const rect = canvas.getBoundingClientRect();
+        if (!rect.width || !rect.height) return null;
+        const px = (event.clientX - rect.left) * canvas.width / rect.width;
+        const py = (event.clientY - rect.top) * canvas.height / rect.height;
+        let hit = null;
+        visibleDetectionEntries().forEach((entry) => {
+            const box = boxToCanvas(entry.displayBbox || entry.bbox);
+            if (px < box.x || py < box.y || px > box.x + box.width || py > box.y + box.height) return;
+            const area = box.width * box.height;
+            if (!hit || area < hit.area) hit = { entry, area };
+        });
+        return hit ? hit.entry : null;
+    }
+
+    async function onHighlightClick(event) {
+        if (!project || featuresFor(project.engine).maskSection) return;
+        const detection = detectionFromEvent(event);
+        if (!detection) return;
+        const owner = (project.people || []).find((person) => person.selectionId === detection.trackId);
+        if (owner) {
+            selectedPersonId = owner.id;
+            renderAll();
+            focusPerson(owner, { jump: false });
+            return;
+        }
+        detectionSelection.clear();
+        detectionSelection.add(detection.trackId);
+        await applySelectionTask(detection.trackId);
+    }
+
+    function clearHighlightCanvas() {
+        const canvas = $('csHighlightCanvas');
+        if (!canvas) return;
+        canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
     }
 
     function tintRgb(hex) {
@@ -1718,6 +2200,10 @@ const CharacterSwapUI = (() => {
         frame = 0;
         detectionSelection = new Set();
         detectionProjectId = null;
+        detectionOverlay = null;
+        detectionOverlayKey = '';
+        detectionOverlayPromise = null;
+        highlightRequest += 1;
         if (maskImage) maskImage.onload = null;
         maskImage = null;
         maskOverlay = null;
@@ -1737,6 +2223,7 @@ const CharacterSwapUI = (() => {
         }
         const maskCanvas = $('csMaskCanvas');
         if (maskCanvas) maskCanvas.getContext('2d').clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+        clearHighlightCanvas();
         clearDrawing();
         ['csVideoFile', 'csRefFiles'].forEach((id) => {
             const input = $(id);
@@ -2261,6 +2748,23 @@ const CharacterSwapUI = (() => {
             multiple: false,
             onPick: (entries) => createFromGeneratedTask(entries[0])
         }));
+        if ($('csEmptyUpload')) $('csEmptyUpload').addEventListener('click', () => $('csVideoFile').click());
+        if ($('csEmptyGenerated')) $('csEmptyGenerated').addEventListener('click', () => openMediaPicker({
+            kind: 'video',
+            multiple: false,
+            onPick: (entries) => createFromGeneratedTask(entries[0])
+        }));
+        if ($('csFullscreen')) $('csFullscreen').addEventListener('click', () => {
+            const viewport = $('csViewport');
+            if (!viewport) return;
+            if (document.fullscreenElement) {
+                if (document.exitFullscreen) document.exitFullscreen().catch(() => {});
+                return;
+            }
+            if (typeof viewport.requestFullscreen === 'function') {
+                viewport.requestFullscreen().catch(() => {});
+            }
+        });
         $('csMediaClose').addEventListener('click', closeMediaPicker);
         $('csMediaPicker').addEventListener('click', (event) => {
             if (event.target === $('csMediaPicker')) closeMediaPicker();
@@ -2430,6 +2934,8 @@ const CharacterSwapUI = (() => {
             $('csWanPrompt').addEventListener('input', updateFlow);
         }
         const draw = $('csDrawCanvas');
+        const highlight = $('csHighlightCanvas');
+        if (highlight) highlight.addEventListener('click', onHighlightClick);
         draw.addEventListener('pointerdown', async (event) => {
             if (!project || !selectedPerson()) return;
             if (!featuresFor(project.engine).maskSection) return;
@@ -2515,7 +3021,18 @@ const CharacterSwapUI = (() => {
         if (prefs && (prefs.engine === 'scail2' || prefs.engine === 'h3')) engine = prefs.engine;
         setTool('select');
         loadEngines();
-        window.addEventListener('resize', layoutCanvases);
+        window.addEventListener('resize', () => {
+            layoutCanvases();
+            drawHighlight();
+        });
+        if (typeof ResizeObserver !== 'undefined') {
+            const observer = new ResizeObserver(() => {
+                layoutCanvases();
+                drawHighlight();
+            });
+            if ($('csCanvasWrap')) observer.observe($('csCanvasWrap'));
+            if ($('csFrameImage')) observer.observe($('csFrameImage'));
+        }
         window.addEventListener('jarvis-generated-deleted', () => {
             if (project && $('characterSwapOverlay') && !$('characterSwapOverlay').hidden) refresh();
         });

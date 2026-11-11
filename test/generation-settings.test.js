@@ -109,7 +109,8 @@ test('resolveDimensions: L is the 1.25MP tier and XL is the 1.75MP tier', () => 
 
 test('sanitizeSettings: custom imageSize + width/height are validated and clamped', () => {
     assert.deepEqual(imageGenerator.sanitizeSettings({ imageSize: 'custom' }), { imageSize: 'CUSTOM' });
-    assert.deepEqual(imageGenerator.sanitizeSettings({ width: 5000, height: 10 }), { width: 4096, height: 64 });
+    assert.deepEqual(imageGenerator.sanitizeSettings({ width: 5000, height: 10 }), { width: 5000, height: 64 });
+    assert.deepEqual(imageGenerator.sanitizeSettings({ width: 99999, height: 10 }), { width: 8192, height: 64 });
     assert.deepEqual(imageGenerator.sanitizeSettings({ width: 'abc' }), {});
 });
 
@@ -536,4 +537,223 @@ test('resolveQwenScheduler: bong_tangent when supported, simple as the fallback'
 test('sanitizeSettings: attentionBackend is normalized', () => {
     assert.deepEqual(imageGenerator.sanitizeSettings({ attentionBackend: 'SageAttention' }), { attentionBackend: 'sageattention' });
     assert.deepEqual(imageGenerator.sanitizeSettings({ attentionBackend: 'bogus' }), { attentionBackend: 'auto' });
+});
+
+// --- MiniMax H3 Image ----------------------------------------------------------
+
+const MINIMAX_INFO = {
+    UNETLoader: { input: { required: { unet_name: [['m.safetensors']] } } },
+    CLIPLoader: { input: { required: { clip_name: [['c.safetensors']] } } },
+    VAELoader: { input: { required: { vae_name: [['v.safetensors']] } } }
+};
+
+test('normalizeImageModel: MiniMax aliases map to minimax_h3_image', () => {
+    for (const alias of ['minimax', 'minimax_h3', 'minimax_h3_image', 'minimax_image', 'h3_image', 'h3', 'p_h3_image', 'ph3_image', 'MiniMax H3 Image']) {
+        assert.equal(imageGenerator.normalizeImageModel(alias), 'minimax_h3_image', alias);
+    }
+    assert.deepEqual(imageGenerator.IMAGE_MODELS, ['krea2', 'qwen_image_2_1', 'minimax_h3_image']);
+});
+
+test('normalizeEditEngine: MiniMax aliases map to minimax_h3', () => {
+    for (const alias of ['minimax', 'minimax_h3', 'minimax_h3_image', 'minimax_edit', 'minimax_h3_edit', 'MiniMax H3 Image Edit']) {
+        assert.equal(imageGenerator.normalizeEditEngine(alias), 'minimax_h3', alias);
+    }
+    assert.deepEqual(imageGenerator.EDIT_ENGINES, ['qwen', 'krea2', 'minimax_h3']);
+});
+
+test('sanitizeSettings: MiniMax model, sampling and edit megapixels are validated', () => {
+    assert.deepEqual(imageGenerator.sanitizeSettings({ model: 'MiniMax H3 Image' }), { model: 'minimax_h3_image' });
+    assert.deepEqual(imageGenerator.sanitizeSettings({ editEngine: 'minimax_h3' }), { editEngine: 'minimax_h3' });
+    assert.deepEqual(imageGenerator.sanitizeSettings({ minimaxSteps: 6.4 }), { minimaxSteps: 6 });
+    assert.deepEqual(imageGenerator.sanitizeSettings({ minimaxCfg: 0 }), { minimaxCfg: 0 });
+    assert.deepEqual(imageGenerator.sanitizeSettings({ minimaxCfg: -1 }), {});
+    assert.deepEqual(imageGenerator.sanitizeSettings({ minimaxEditMegapixels: 99 }), { minimaxEditMegapixels: 16 });
+    assert.deepEqual(imageGenerator.sanitizeSettings({ minimaxEditMegapixels: 0.1 }), { minimaxEditMegapixels: 0.5 });
+    // The custom canvas ceiling accepts MiniMax's larger canvases; Qwen/Krea
+    // still clamp to 4096 in resolveDimensions.
+    assert.deepEqual(imageGenerator.sanitizeSettings({ width: 99999 }), { width: imageGenerator.MINIMAX_MAX_EDGE });
+});
+
+test('resolveBaseModels: MiniMax uses its own model slots and the minimax clip type', () => {
+    const defaults = imageGenerator.getDefaults();
+    const base = imageGenerator.resolveBaseModels(Object.assign({}, defaults, { model: 'minimax_h3_image' }));
+    assert.equal(base.unet, defaults.minimaxUnet);
+    assert.equal(base.clip, defaults.minimaxClip);
+    assert.equal(base.vae, defaults.minimaxVae);
+    assert.equal(base.clipType, 'minimax');
+});
+
+test('resolveDimensions: MiniMax tiers are 4/6/10/16 MP and CUSTOM allows 8192', () => {
+    assert.deepEqual(imageGenerator.MINIMAX_IMAGE_MEGAPIXELS, { S: 4, M: 6, L: 10, XL: 16 });
+    const s = imageGenerator.resolveDimensions({ model: 'minimax_h3_image', imageSize: 'S', aspectRatio: '1:1' });
+    const xl = imageGenerator.resolveDimensions({ model: 'minimax_h3_image', imageSize: 'XL', aspectRatio: '1:1' });
+    assert.equal(s.width, 2016);
+    assert.equal(s.height, 2016);
+    assert.equal(xl.width, 4000);
+    assert.equal(xl.height, 4000);
+
+    const custom = imageGenerator.resolveDimensions({ model: 'minimax_h3_image', imageSize: 'CUSTOM', width: 99999, height: 1 });
+    assert.equal(custom.width, 8192);
+    assert.equal(custom.height, 64);
+
+    // Qwen/Krea keep their own smaller tiers and 4096 ceiling.
+    const qwenS = imageGenerator.resolveDimensions({ model: 'qwen_image_2_1', imageSize: 'S', aspectRatio: '1:1' });
+    const kreaXl = imageGenerator.resolveDimensions({ model: 'krea2', imageSize: 'XL', aspectRatio: '1:1' });
+    assert.equal(qwenS.width, 864);
+    assert.equal(kreaXl.width, 1312);
+    const qwenCustom = imageGenerator.resolveDimensions({ model: 'qwen_image_2_1', imageSize: 'CUSTOM', width: 99999, height: 1 });
+    assert.equal(qwenCustom.width, 4096);
+});
+
+test('resolveMiniMaxConditioningNode: prefers the official node, accepts the core PH3 node, else throws', () => {
+    const both = { MiniMaxH3ImageConditioning: {}, PH3ImageConditioning: {} };
+    assert.equal(imageGenerator.resolveMiniMaxConditioningNode(both), 'MiniMaxH3ImageConditioning');
+    assert.equal(imageGenerator.resolveMiniMaxConditioningNode({ PH3ImageConditioning: {} }), 'PH3ImageConditioning');
+    assert.throws(
+        () => imageGenerator.resolveMiniMaxConditioningNode({}),
+        (err) => err.code === 'comfyui_missing_nodes'
+    );
+});
+
+test('miniMaxNeedsSigmaShift: only the core PH3 conditioning node needs the 1.0 sigma shift', () => {
+    assert.equal(imageGenerator.miniMaxNeedsSigmaShift('PH3ImageConditioning'), true);
+    assert.equal(imageGenerator.miniMaxNeedsSigmaShift('MiniMaxH3ImageConditioning'), false);
+});
+
+test('assertMiniMaxConditioningSupported: the release VAE requires ComfyUI v0.45.2+ unless PH3 is pinned', () => {
+    assert.doesNotThrow(() => imageGenerator.assertMiniMaxConditioningSupported(
+        { MiniMaxH3ImageConditioning: {}, PH3ImageConditioning: {} }, 'PH3ImageConditioning', ''
+    ));
+    assert.doesNotThrow(() => imageGenerator.assertMiniMaxConditioningSupported(
+        { MiniMaxH3ImageConditioning: {} }, 'MiniMaxH3ImageConditioning', ''
+    ));
+    assert.throws(
+        () => imageGenerator.assertMiniMaxConditioningSupported({ PH3ImageConditioning: {} }, 'PH3ImageConditioning', ''),
+        (err) => err.code === 'comfyui_version_unsupported' && /v0\.45\.2/.test(err.message)
+    );
+    // An explicit diagnostic pin is still allowed on an older build.
+    assert.doesNotThrow(() => imageGenerator.assertMiniMaxConditioningSupported(
+        { PH3ImageConditioning: {} }, 'PH3ImageConditioning', 'PH3ImageConditioning'
+    ));
+});
+
+test('buildMiniMaxH3ImageT2IGraph: official node path has no sigma shift and uses the conditioning latent', () => {
+    const settings = Object.assign({}, imageGenerator.getDefaults(), {
+        model: 'minimax_h3_image',
+        minimaxUnet: 'm.safetensors',
+        minimaxClip: 'c.safetensors',
+        minimaxVae: 'v.safetensors'
+    });
+    const graph = imageGenerator.buildMiniMaxH3ImageT2IGraph('a red fox', {
+        seed: 7, settings, width: 2048, height: 2048, conditioningNode: 'MiniMaxH3ImageConditioning'
+    });
+
+    assert.equal(graph.unet.inputs.unet_name, 'm.safetensors');
+    assert.equal(graph.clip.inputs.type, 'minimax');
+    assert.equal(graph.vae.inputs.vae_name, 'v.safetensors');
+    assert.equal(graph.conditioning.class_type, 'MiniMaxH3ImageConditioning');
+    assert.equal(graph.conditioning.inputs.prompt, 'a red fox');
+    assert.equal(graph.conditioning.inputs.width, 2048);
+    assert.equal(graph.conditioning.inputs.height, 2048);
+    assert.equal(graph.sigma_shift, undefined);
+    assert.deepEqual(graph.sampler.inputs.model, ['unet', 0]);
+    assert.deepEqual(graph.sampler.inputs.latent_image, ['conditioning', 1]);
+    assert.equal(graph.sampler.inputs.steps, 6);
+    assert.equal(graph.sampler.inputs.cfg, 1);
+    assert.equal(graph.sampler.inputs.sampler_name, 'euler');
+    assert.equal(graph.sampler.inputs.scheduler, 'simple');
+    assert.equal(graph.negative.class_type, 'ConditioningZeroOut');
+});
+
+test('buildMiniMaxH3ImageT2IGraph: core PH3 node inserts MiniMaxH3SigmaShift at 1.0', () => {
+    const settings = Object.assign({}, imageGenerator.getDefaults(), {
+        model: 'minimax_h3_image',
+        minimaxSteps: 9,
+        minimaxCfg: 1.5
+    });
+    const graph = imageGenerator.buildMiniMaxH3ImageT2IGraph('x', {
+        seed: 1, settings, width: 1024, height: 1024, conditioningNode: 'PH3ImageConditioning'
+    });
+    assert.equal(graph.sigma_shift.class_type, 'MiniMaxH3SigmaShift');
+    assert.equal(graph.sigma_shift.inputs.shift_video, 1);
+    assert.equal(graph.sigma_shift.inputs.shift_audio, 1);
+    assert.deepEqual(graph.sigma_shift.inputs.model, ['unet', 0]);
+    assert.deepEqual(graph.sampler.inputs.model, ['sigma_shift', 0]);
+    assert.equal(graph.sampler.inputs.steps, 9);
+    assert.equal(graph.sampler.inputs.cfg, 1.5);
+});
+
+test('buildMiniMaxH3ImageEditGraph: default path resizes image_1 to the megapixel budget and grid', () => {
+    const settings = Object.assign({}, imageGenerator.getDefaults(), {
+        minimaxUnet: 'm.safetensors',
+        minimaxClip: 'c.safetensors',
+        minimaxVae: 'v.safetensors',
+        minimaxEditMegapixels: 4
+    });
+    const graph = imageGenerator.buildMiniMaxH3ImageEditGraph('make it sunset', 'jarvis_edit_source.png', {
+        seed: 3, settings, conditioningNode: 'MiniMaxH3ImageConditioning'
+    });
+
+    assert.equal(graph.load_image.class_type, 'LoadImage');
+    assert.equal(graph.resize_total.class_type, 'ResizeImageMaskNode');
+    assert.equal(graph.resize_total.inputs['resize_type.megapixels'], 4);
+    assert.equal(graph.resize_grid.inputs['resize_type.multiple'], 32);
+    assert.deepEqual(graph.resize_grid.inputs.input, ['resize_total', 0]);
+    assert.deepEqual(graph.conditioning.inputs['images.image_1'], ['resize_grid', 0]);
+    assert.deepEqual(graph.conditioning.inputs.width, ['source_size', 0]);
+    assert.deepEqual(graph.conditioning.inputs.height, ['source_size', 1]);
+    assert.deepEqual(graph.sampler.inputs.latent_image, ['conditioning', 1]);
+    assert.equal(graph.conditioning.inputs.prompt, 'make it sunset');
+});
+
+test('buildMiniMaxH3ImageEditGraph: a pinned canvas skips the resize chain and wires extra references', () => {
+    const settings = Object.assign({}, imageGenerator.getDefaults(), {
+        minimaxUnet: 'm.safetensors',
+        minimaxClip: 'c.safetensors',
+        minimaxVae: 'v.safetensors'
+    });
+    const graph = imageGenerator.buildMiniMaxH3ImageEditGraph('hold the bag', 'edit_1.png', {
+        seed: 3,
+        settings,
+        width: 1536,
+        height: 2048,
+        conditioningNode: 'PH3ImageConditioning',
+        referenceLoadNames: ['edit_2.png']
+    });
+
+    assert.equal(graph.resize_total, undefined);
+    assert.equal(graph.resize_grid, undefined);
+    assert.equal(graph.conditioning.inputs.width, 1536);
+    assert.equal(graph.conditioning.inputs.height, 2048);
+    assert.deepEqual(graph.conditioning.inputs['images.image_1'], ['load_image', 0]);
+    assert.equal(graph.load_image_2.inputs.image, 'edit_2.png');
+    assert.deepEqual(graph.conditioning.inputs['images.image_2'], ['load_image_2', 0]);
+    assert.ok(graph.sigma_shift);
+    assert.deepEqual(graph.sampler.inputs.model, ['sigma_shift', 0]);
+});
+
+test('buildMiniMaxH3ImageEditGraph: a missing source throws edit_source_missing', () => {
+    assert.throws(
+        () => imageGenerator.buildMiniMaxH3ImageEditGraph('x', '', { settings: imageGenerator.getDefaults() }),
+        (err) => err.code === 'edit_source_missing'
+    );
+});
+
+test('assertMiniMaxImageModels: reports the missing model file with an actionable message', () => {
+    assert.doesNotThrow(() => imageGenerator.assertMiniMaxImageModels(MINIMAX_INFO, {
+        unet: 'm.safetensors', clip: 'c.safetensors', vae: 'v.safetensors'
+    }));
+    assert.throws(
+        () => imageGenerator.assertMiniMaxImageModels(MINIMAX_INFO, {
+            unet: 'missing.safetensors', clip: 'c.safetensors', vae: 'v.safetensors'
+        }),
+        (err) => err.code === 'comfyui_missing_model' && /diffusion model/.test(err.message)
+    );
+});
+
+test('imageModelLabel / editEngineLabel: MiniMax has a readable label', () => {
+    assert.equal(imageGenerator.imageModelLabel('minimax_h3_image'), 'MiniMax H3 Image');
+    assert.equal(imageGenerator.editEngineLabel('minimax_h3'), 'MiniMax H3 Image Edit');
+    assert.equal(imageGenerator.imageModelLabel('qwen_image_2_1'), 'Qwen Image 2.1');
+    assert.equal(imageGenerator.editEngineLabel('krea2'), 'Krea 2 Edit');
 });

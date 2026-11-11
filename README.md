@@ -34,7 +34,7 @@ Everything runs from a single chat surface — there are no separate tools or da
 
 ### Image generation
 
-- **Text-to-image** via Qwen Image 2.1 (default) or Krea2 on a local ComfyUI instance — the chat LLM acts as a "visual director" that enriches your prompt before the workflow runs
+- **Text-to-image** via Qwen Image 2.1 (default), Krea2 or MiniMax H3 Image on a local ComfyUI instance — the chat LLM acts as a "visual director" that enriches your prompt before the workflow runs
 - **LoRA stack** — attach multiple LoRAs with per-LoRA strength, on/off toggle, and automatic trigger words
 - **Image upscaling** — SeedVR2 (tiled diffusion) or Ultimate SD, with a before/after compare viewer
 
@@ -55,7 +55,7 @@ Everything runs from a single chat surface — there are no separate tools or da
 
 - **Instruction editing** with Qwen Image 2.1 — attach a photo (or say *"edit this image"*) and describe the change; JARVIS re-stages, recolors, adds, or removes objects while preserving the rest
 - **Multi-reference editing** — attach several images and address each by position (*"make image 1 hold image 2 at image 3"*)
-- **Selectable edit engine** — Settings > Image > IMAGE EDIT chooses between the default Qwen Image Edit and **Krea 2 Identity Edit**, a reference-guided edit that preserves a subject's identity (needs the Krea 2 models, the Identity Edit LoRA and the `comfyui-krea2edit` node pack from Setup)
+- **Selectable edit engine** — Settings > Image > IMAGE EDIT chooses between the default Qwen Image Edit, **Krea 2 Identity Edit** (a reference-guided edit that preserves a subject's identity; needs the Krea 2 models, the Identity Edit LoRA and the `comfyui-krea2edit` node pack from Setup) and **MiniMax H3 Image Edit** (a reference-guided instruction editor that shares the MiniMax H3 Image models)
 - Edited files carry an `_edit_` marker and keep the source untouched
 
 <table align="center">
@@ -189,6 +189,8 @@ Green indicators mean each capability (image, video, upscale, edit) is ready to 
 
 To use the **Krea 2 Identity Edit** engine, the guide's IMAGE list also carries the **Krea 2 Identity Edit LoRA** (~1.7 GB) and its **comfyui-krea2edit** node pack. Selecting that engine under **Settings > Image > IMAGE EDIT** installs both automatically the first time (or use the one-click **Install Krea 2 edit components** button there / the Setup rows); restart ComfyUI once the node pack finishes cloning.
 
+**MiniMax H3 Image** (text-to-image and the alternate image editor) is optional and much larger: the int8 diffusion model is ~21 GB, its image VAE ~1.1 GB, and the default NVFP4 text encoder (~15.7 GB) is the same file the H3 video stack already uses. Setup lists all of them under IMAGE, but they are **never downloaded automatically** — select them in Settings > Setup only when you want that engine. It needs **ComfyUI v0.45.2 or newer**: that release adds `MiniMaxH3ImageConditioning` and the `MiniMaxH3ImageVAE` decoder the release image VAE uses. v0.44.2 only knows the older `p-h3-image` stack and fails on that VAE, so JARVIS reports an actionable version error instead. With 16 GB VRAM ComfyUI offloads the model block by block, so generation is slower than Qwen/Krea.
+
 ## How it works
 
 ### Intent routing
@@ -212,13 +214,13 @@ Chat has no tools, so live machine state is injected as system context when rele
 
 1. Detect the image intent (two-level: regex signal → structured LLM classifier).
 2. Enrich the prompt with the chat LLM as a visual director.
-3. Build the text-to-image graph (Qwen Image 2.1 by default, or Krea2).
+3. Build the text-to-image graph (Qwen Image 2.1 by default, Krea2, or MiniMax H3 Image).
 4. Submit to ComfyUI and wait, relaying step progress over SSE.
 5. Download the output to `data/generated/` and show it inline.
 
 ### Image edit
 
-Attach a photo and describe a change (*"remove the car"*), or say *"edit this image, make it night"* to edit the last generated image. JARVIS resolves the source (a fresh upload wins, otherwise the latest generated image), builds the active image-edit graph, and shows the result inline. The engine is chosen in Settings > Image > IMAGE EDIT: the default **Qwen Image Edit** (native instruction editing) or **Krea 2 Identity Edit** (reference-guided identity preservation). With Qwen, multiple `@` references are wired in as `image 1` … `image N`, so a single instruction can address each by position; the Krea 2 engine fuses at most one extra reference. Edited files carry an `_edit_` marker. Only explicit edit requests run the edit path — vague tweaks like *"change her dress"* are treated as full re-generations.
+Attach a photo and describe a change (*"remove the car"*), or say *"edit this image, make it night"* to edit the last generated image. JARVIS resolves the source (a fresh upload wins, otherwise the latest generated image), builds the active image-edit graph, and shows the result inline. The engine is chosen in Settings > Image > IMAGE EDIT: the default **Qwen Image Edit** (native instruction editing), **Krea 2 Identity Edit** (reference-guided identity preservation) or **MiniMax H3 Image Edit** (reference-guided instruction editing on the MiniMax H3 Image models). With Qwen, multiple `@` references are wired in as `image 1` … `image N`, so a single instruction can address each by position; the Krea 2 engine fuses at most one extra reference, while MiniMax accepts several. Edited files carry an `_edit_` marker. Only explicit edit requests run the edit path — vague tweaks like *"change her dress"* are treated as full re-generations.
 
 ### Video generation
 

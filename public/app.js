@@ -372,12 +372,12 @@ function renderSetupModels(data) {
             const needsCivitai = m.requiresToken === 'civitai' &&
                 !(data.civitaiToken && data.civitaiToken.configured);
             const sub = escHtml(m.filename || '(no file configured)') +
-                ' A� ' + escHtml(m.sizeLabel || '�?"') +
-                (m.repo ? ' A� <a href="' + escHtml(m.repoUrl || ('https://huggingface.co/' + m.repo)) + '" target="_blank" rel="noreferrer">' + escHtml(m.repo) + '</a>' : '') +
-                (m.required ? '' : ' A� optional') +
+                ' · ' + escHtml(m.sizeLabel || '—') +
+                (m.repo ? ' · <a href="' + escHtml(m.repoUrl || ('https://huggingface.co/' + m.repo)) + '" target="_blank" rel="noreferrer">' + escHtml(m.repo) + '</a>' : '') +
+                (m.required ? '' : ' · optional') +
                 (m.note ? '<br>' + escHtml(m.note) : '') +
                 (needsCivitai ? '<br><span class="setup-warn">Add a Civitai API key above to download this file.</span>' : '') +
-                (!m.installed && !m.url && m.filename && !m.note ? '<br><span class="setup-warn">Unknown source for this filename �?" place it in ComfyUI models/' + escHtml(m.dest) + '/ by hand.</span>' : '');
+                (!m.installed && !m.url && m.filename && !m.note ? '<br><span class="setup-warn">Unknown source for this filename — place it in ComfyUI models/' + escHtml(m.dest) + '/ by hand.</span>' : '');
             const btn = m.installed
                 ? ''
                 : (m.url ? '<button class="settings-browse-btn setup-row-btn" type="button" data-setup-download="' + escHtml(m.id) + '"' +
@@ -589,7 +589,7 @@ function renderSetupStatus(data) {
 
     const tok = (data && data.token) || {};
     setSetupStatus('setupHfStatus', tok.configured
-        ? 'Saved (' + tok.source + (tok.user ? ' as ' + tok.user : '') + ', ' + (tok.masked || '�?��?��?�') + ').'
+        ? 'Saved (' + tok.source + (tok.user ? ' as ' + tok.user : '') + ', ' + (tok.masked || '•••') + ').'
         : 'No token saved.', false);
 
     const civitai = (data && data.civitaiToken) || {};
@@ -951,19 +951,33 @@ const IMAGE_GEN_FIELDS = [
 ];
 
 // Per-model setting keys for the shared UNET/CLIP/VAE inputs. Krea2 keeps the
-// historical keys; Qwen Image 2.1 stores its own so switching back and forth
-// remembers both sets of filenames.
+// historical keys; Qwen Image 2.1 and MiniMax H3 Image store their own so
+// switching back and forth remembers every set of filenames.
 const IMAGE_MODEL_BASE_KEYS = {
     krea2: { unet: 'unet', clip: 'clip', vae: 'vae' },
-    qwen_image_2_1: { unet: 'qwenUnet', clip: 'qwenClip', vae: 'qwenVae' }
+    qwen_image_2_1: { unet: 'qwenUnet', clip: 'qwenClip', vae: 'qwenVae' },
+    minimax_h3_image: { unet: 'minimaxUnet', clip: 'minimaxClip', vae: 'minimaxVae' }
 };
 
-// Per-model sampling keys for the shared Steps / CFG inputs. Krea 2 and Qwen
-// Image 2.1 have their own calibrated defaults, so each model remembers its own
-// values (mirroring the base-model filenames above).
+// Per-model sampling keys for the shared Steps / CFG inputs. Krea 2, Qwen
+// Image 2.1 and MiniMax H3 Image have their own calibrated defaults, so each
+// model remembers its own values (mirroring the base-model filenames above).
 const IMAGE_MODEL_SAMPLING_KEYS = {
     krea2: { steps: 'steps', cfg: 'cfg' },
-    qwen_image_2_1: { steps: 'qwenSteps', cfg: 'qwenCfg' }
+    qwen_image_2_1: { steps: 'qwenSteps', cfg: 'qwenCfg' },
+    minimax_h3_image: { steps: 'minimaxSteps', cfg: 'minimaxCfg' }
+};
+
+// MiniMax H3 Image's 4/6/10/16 MP size ladder and larger custom canvas apply
+// only while it is selected; Qwen Image 2.1 and Krea 2 keep the historical
+// 0.75/1/1.25/1.75 MP tiers and 4096 px limit.
+const IMAGE_CUSTOM_MAX_EDGE = 8192;
+const IMAGE_DEFAULT_MAX_EDGE = 4096;
+const imageMaxEdgeFor = (model) => (model === 'minimax_h3_image' ? IMAGE_CUSTOM_MAX_EDGE : IMAGE_DEFAULT_MAX_EDGE);
+
+const IMAGE_SIZE_LABELS = {
+    default: { S: '0.75MP', M: '1MP', L: '1.25MP', XL: '1.75MP' },
+    minimax: { S: '4MP', M: '6MP', L: '10MP', XL: '16MP' }
 };
 
 const LORA_STRENGTH_MIN = 0;
@@ -1243,15 +1257,68 @@ function initImageGenSettings() {
 
     // --- Image model selector -------------------------------------------------
     // Switching models swaps which stored filenames the BASE MODELS inputs show
-    // (Krea2: unet/clip/vae, Qwen: qwenUnet/qwenClip/qwenVae) and remembers each
-    // set. The choice itself is persisted under `model`.
+    // (Krea2: unet/clip/vae, Qwen: qwenUnet/qwenClip/qwenVae, MiniMax:
+    // minimaxUnet/minimaxClip/minimaxVae) and remembers each set. The choice
+    // itself is persisted under `model`.
     const modelSelect = document.getElementById('imageModel');
+    const modelStatusEl = document.getElementById('imageModelStatus');
     let baseModelData = { settings: {}, defaults: {}, choices: {} };
 
     const stepsInput = document.getElementById('imageSteps');
     const cfgInput = document.getElementById('imageCfg');
     const samplingKeyFor = (kind) =>
         (IMAGE_MODEL_SAMPLING_KEYS[activeModel] || IMAGE_MODEL_SAMPLING_KEYS.krea2)[kind];
+
+    const syncSizeUi = () => {
+        const isMiniMax = activeModel === 'minimax_h3_image';
+        const labels = isMiniMax ? IMAGE_SIZE_LABELS.minimax : IMAGE_SIZE_LABELS.default;
+        const sizeEl = document.getElementById('imageSize');
+        if (sizeEl) {
+            ['S', 'M', 'L', 'XL'].forEach((value) => {
+                const opt = sizeEl.querySelector('option[value="' + value + '"]');
+                if (opt) opt.textContent = value + ' (' + labels[value] + ')';
+            });
+        }
+        const max = String(imageMaxEdgeFor(activeModel));
+        ['imageWidth', 'imageHeight'].forEach((id) => {
+            const input = document.getElementById(id);
+            if (input) input.max = max;
+        });
+        const hint = document.getElementById('imageCustomHint');
+        if (hint) {
+            hint.textContent = 'Custom dimensions are snapped to multiples of 32 and override the aspect ratio. ' +
+                (isMiniMax ? 'MiniMax H3 Image accepts up to 8192 px per side.' : 'Qwen and Krea accept up to 4096 px per side.');
+        }
+    };
+
+    // MiniMax H3 Image models are multi-GB and deliberately never download
+    // automatically, so the panel only reports readiness and points at Setup.
+    const refreshModelReadiness = async () => {
+        if (!modelStatusEl) return;
+        if (!modelSelect || modelSelect.value !== 'minimax_h3_image') {
+            modelStatusEl.style.display = 'none';
+            return;
+        }
+        modelStatusEl.style.display = '';
+        modelStatusEl.classList.remove('settings-save-status--error');
+        modelStatusEl.textContent = 'Checking MiniMax H3 Image models…';
+        try {
+            const res = await fetch('/api/setup/status');
+            const data = await res.json().catch(() => ({}));
+            if (data && data.ready && data.ready.minimaxImage) {
+                modelStatusEl.textContent = 'MiniMax H3 Image models ready.';
+            } else if (data && data.comfyAvailable === false) {
+                modelStatusEl.textContent = 'ComfyUI offline — start it to verify the MiniMax H3 Image models.';
+                modelStatusEl.classList.add('settings-save-status--error');
+            } else {
+                modelStatusEl.textContent = 'MiniMax H3 Image models missing — download them from Settings > Setup.';
+                modelStatusEl.classList.add('settings-save-status--error');
+            }
+        } catch {
+            modelStatusEl.textContent = 'Could not check MiniMax H3 Image models.';
+            modelStatusEl.classList.add('settings-save-status--error');
+        }
+    };
 
     const paintBaseFields = () => {
         const { settings, defaults, choices } = baseModelData;
@@ -1289,6 +1356,9 @@ function initImageGenSettings() {
         };
         paintSampling(stepsInput, 'steps');
         paintSampling(cfgInput, 'cfg');
+
+        syncSizeUi();
+        refreshModelReadiness();
     };
 
     if (modelSelect) {
@@ -1368,14 +1438,28 @@ function initImageGenSettings() {
     if (seedModeSelect) seedModeSelect.addEventListener('change', () => { syncSeedDisabled(); persistValue('seedMode', seedModeSelect.value, seedModeSelect.value); });
     if (seedInput) seedInput.addEventListener('change', () => persistValue('seed', Math.max(0, Math.floor(Number(seedInput.value) || 0)), seedInput.value));
 
-    // Image edit engine: Qwen Image Edit (default) or Krea 2 Identity Edit.
-    // Applies to every edit of an existing image, including character/scene
-    // reference edits. The Krea 2 engine needs its node pack + Identity Edit
-    // LoRA installed, so its readiness is checked and surfaced here (with a
-    // one-click install) instead of only failing at edit time.
+    // Image edit engine: Qwen Image Edit (default), Krea 2 Identity Edit or
+    // MiniMax H3 Image Edit. Applies to every edit of an existing image,
+    // including character/scene reference edits. Krea 2 needs its node pack +
+    // Identity Edit LoRA (one-click install); MiniMax shares the MiniMax H3
+    // Image models and is never downloaded automatically, so it only reports
+    // readiness and points at Settings > Setup.
     const editEngineSelect = document.getElementById('imageEditEngine');
     const editEngineStatusEl = document.getElementById('imageEditEngineStatus');
     const editEngineInstallBtn = document.getElementById('imageEditEngineInstall');
+    const editMegapixelsField = document.getElementById('imageEditMegapixelsField');
+    const editMegapixelsInput = document.getElementById('imageEditMegapixels');
+
+    const syncEditMegapixels = () => {
+        if (!editMegapixelsField) return;
+        editMegapixelsField.style.display = (editEngineSelect && editEngineSelect.value === 'minimax_h3') ? '' : 'none';
+    };
+
+    const EDIT_ENGINE_LABELS = {
+        qwen: 'Qwen Image Edit',
+        krea2: 'Krea 2 Identity Edit',
+        minimax_h3: 'MiniMax H3 Image Edit'
+    };
 
     const scheduleEditEngineRecheck = (delay) => {
         if (!editEngineStatusEl) return;
@@ -1388,7 +1472,8 @@ function initImageGenSettings() {
 
     const refreshEditEngineReadiness = async () => {
         if (!editEngineStatusEl) return;
-        if (!editEngineSelect || editEngineSelect.value !== 'krea2') {
+        const engine = editEngineSelect ? editEngineSelect.value : 'qwen';
+        if (engine !== 'krea2' && engine !== 'minimax_h3') {
             editEngineStatusEl.style.display = 'none';
             if (editEngineInstallBtn) editEngineInstallBtn.style.display = 'none';
             return;
@@ -1396,6 +1481,28 @@ function initImageGenSettings() {
         editEngineStatusEl.style.display = '';
         editEngineStatusEl.classList.remove('settings-save-status--error');
         if (editEngineInstallBtn) editEngineInstallBtn.style.display = 'none';
+
+        if (engine === 'minimax_h3') {
+            editEngineStatusEl.textContent = 'Checking MiniMax H3 Image models…';
+            try {
+                const res = await fetch('/api/setup/status');
+                const data = await res.json().catch(() => ({}));
+                if (data && data.ready && data.ready.minimaxImageEdit) {
+                    editEngineStatusEl.textContent = 'MiniMax H3 Image edit components ready.';
+                } else if (data && data.comfyAvailable === false) {
+                    editEngineStatusEl.textContent = 'ComfyUI offline — start it to verify the MiniMax H3 Image models.';
+                    editEngineStatusEl.classList.add('settings-save-status--error');
+                } else {
+                    editEngineStatusEl.textContent = 'MiniMax H3 Image edit components missing — download the MiniMax H3 Image model set from Settings > Setup.';
+                    editEngineStatusEl.classList.add('settings-save-status--error');
+                }
+            } catch {
+                editEngineStatusEl.textContent = 'Could not check MiniMax H3 Image components.';
+                editEngineStatusEl.classList.add('settings-save-status--error');
+            }
+            return;
+        }
+
         try {
             const res = await fetch('/api/setup/status');
             const data = await res.json().catch(() => ({}));
@@ -1427,11 +1534,12 @@ function initImageGenSettings() {
             persistValue(
                 'editEngine',
                 editEngineSelect.value,
-                editEngineSelect.value === 'krea2' ? 'Krea 2 Identity Edit' : 'Qwen Image Edit'
+                EDIT_ENGINE_LABELS[editEngineSelect.value] || editEngineSelect.value
             );
             // The settings POST triggers the first-enable auto-install; give it a
             // moment, then reflect its state.
             scheduleEditEngineRecheck(1500);
+            syncEditMegapixels();
         });
     }
     if (editEngineInstallBtn) {
@@ -1445,11 +1553,19 @@ function initImageGenSettings() {
             scheduleEditEngineRecheck(1200);
         });
     }
+    if (editMegapixelsInput) {
+        editMegapixelsInput.addEventListener('change', () => {
+            const value = Math.max(0.5, Math.min(16, Math.round((Number(editMegapixelsInput.value) || 4) * 10) / 10));
+            editMegapixelsInput.value = value;
+            persistValue('minimaxEditMegapixels', value, value + ' MP');
+        });
+    }
 
     // Custom width/height (only shown when Size = Custom). Values are clamped
-    // to the supported range; the server snaps them to multiples of 32.
+    // to the active model's supported range; the server snaps them to
+    // multiples of 32.
     const persistDimension = (key, input) => {
-        const value = Math.max(64, Math.min(4096, Math.round(Number(input.value) || 0)));
+        const value = Math.max(64, Math.min(imageMaxEdgeFor(activeModel), Math.round(Number(input.value) || 0)));
         input.value = value;
         persistValue(key, value, String(value));
     };
@@ -1546,6 +1662,12 @@ function initImageGenSettings() {
             if (editEngineSelect) {
                 editEngineSelect.value = settings.editEngine || defaults.editEngine || 'qwen';
             }
+            if (editMegapixelsInput) {
+                editMegapixelsInput.value = (settings.minimaxEditMegapixels !== undefined && settings.minimaxEditMegapixels !== null)
+                    ? settings.minimaxEditMegapixels
+                    : (defaults.minimaxEditMegapixels || 4);
+            }
+            syncEditMegapixels();
             refreshEditEngineReadiness();
 
             // Restore the attention backend (auto by default).

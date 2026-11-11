@@ -437,3 +437,31 @@ test('deleting a take removes its generated files, and a gallery delete removes 
     assert.equal(removed, 1);
     assert.equal(characterState.get(project.id).takes.length, 0);
 });
+
+test('selection: a rejected target change never parks the existing targets', () => {
+    const characterSwap = require('../services/character-swap');
+    const project = characterState.createProject({ sessionId: 's-atomic', filename: 'clip.mp4' });
+    characterState.update(project.id, (current) => {
+        current.selection.tracks = [1, 2, 3, 4].map((n) => ({
+            id: 'track_' + n,
+            label: 'Person ' + n,
+            firstFrame: 0,
+            lastFrame: 20,
+            bbox: { x: 20 * n, y: 10, width: 40, height: 80 }
+        }));
+        current.people = [0, 1, 2].map((index) => {
+            const person = index === 0 ? current.people[0] : characterState.newPerson(index);
+            person.selectionId = 'track_' + (index + 1);
+            person.lastSelectionId = person.selectionId;
+            person.refs = [{ id: 'r' + index, file: 'front-' + index + '.png', role: 'front' }];
+            return person;
+        });
+    });
+    assert.throws(
+        () => characterSwap.selectTracks(project.id, ['track_4']),
+        /up to 3 people/
+    );
+    const after = characterState.get(project.id);
+    assert.deepEqual(after.people.map((person) => person.selectionId), ['track_1', 'track_2', 'track_3']);
+    characterState.remove(project.id);
+});
