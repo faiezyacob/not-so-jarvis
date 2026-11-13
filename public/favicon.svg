@@ -1,7 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" role="img" aria-labelledby="nsjTitle">
     <title id="nsjTitle">Not-So-Jarvis</title>
-    <g fill="none" stroke="#6CFF9A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="12" cy="12" r="8.5"/>
-        <path d="M11.5 7 H15 V14 A3 3 0 0 1 9 14"/>
-    </g>
+    <circle cx="12" cy="12" r="10.5" fill="#b8342a"/>
+    <circle cx="12" cy="12" r="7.5" fill="none" stroke="#f2ede3" stroke-width="1.4"/>
+    <circle cx="12" cy="12" r="2.4" fill="#f2ede3"/>
 </svg>

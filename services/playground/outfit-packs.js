@@ -101,7 +101,9 @@ const OUTFIT_PACKS = [
                 piece('an open plaid flannel shirt', 1.5),
                 piece('a cropped light denim jacket', 1.5),
                 piece('a quilted olive vest', 1),
-                piece('a relaxed navy cardigan', 1.2)
+                piece('a relaxed navy cardigan', 1.2),
+                piece('a simple navy wool coat', 1.2),
+                piece('a lightweight quilted jacket', 1.2)
             ],
             footwear: [
                 piece('clean white sneakers', 3),
@@ -112,7 +114,8 @@ const OUTFIT_PACKS = [
                 piece('brown leather sandals', 1.5),
                 piece('simple flats', 1.5),
                 piece('retro running sneakers', 1.2),
-                piece('brown casual ankle boots', 1)
+                piece('brown casual ankle boots', 1),
+                piece('simple leather loafers', 1.2)
             ],
             accessories: [
                 piece('a small beige crossbody bag', 2),
@@ -122,7 +125,8 @@ const OUTFIT_PACKS = [
                 piece('a woven belt', 1.5),
                 piece('a simple wristwatch', 1),
                 piece('a patterned cotton scarf', 1),
-                piece('small hoop earrings', 1)
+                piece('small hoop earrings', 1),
+                piece('a soft knit scarf', 1)
             ]
         },
         palette: ['white', 'grey', 'navy', 'black', 'light blue', 'beige'],
@@ -132,7 +136,17 @@ const OUTFIT_PACKS = [
             'versatile pieces',
             'avoid formal tailoring',
             'avoid excessive accessories'
-        ]
+        ],
+        environmentAffinity: {
+            preferred: ['street', 'cafe', 'mall', 'park', 'living_room', 'kitchen'],
+            compatible: ['office', 'gym', 'restaurant', 'bedroom', 'balcony', 'market', 'transit', 'museum', 'library'],
+            avoid: ['wedding'],
+            tags: ['casual', 'relaxed', 'everyday', 'indoor', 'outdoor'],
+            fallbacks: [
+                'a relaxed neighbourhood street with leafy trees and low buildings',
+                'a sunny café terrace with a couple of small tables'
+            ]
+        }
     },
     {
         id: 'lounge-home',
@@ -192,6 +206,7 @@ const OUTFIT_PACKS = [
                 piece('a fleecy cream robe', 1.5),
                 piece('a soft zip-front fleece', 1.2),
                 piece('a long brushed-knit cardigan', 1),
+                piece('a chunky cable-knit cardigan', 1.2),
                 piece('a lightweight satin robe with a soft tie belt', 1.2, { genders: ['woman'] }),
                 piece('a soft cropped cardigan worn open over a camisole', 1, { genders: ['woman'] }),
                 piece('a relaxed wrap cardigan in muted rose', 1)
@@ -203,7 +218,8 @@ const OUTFIT_PACKS = [
                 piece('quilted slippers', 1.5),
                 piece('fuzzy slide slippers', 1),
                 piece('soft satin house slippers', 1.2, { genders: ['woman'] }),
-                piece('soft knit ballet slippers', 1)
+                piece('soft knit ballet slippers', 1),
+                piece('a pair of soft cashmere socks', 1.2)
             ],
             accessories: [
                 piece('a simple scrunchie', 2),
@@ -223,7 +239,17 @@ const OUTFIT_PACKS = [
             'minimal accessories',
             'avoid formal clothing',
             'avoid elaborate styling'
-        ]
+        ],
+        environmentAffinity: {
+            preferred: ['bedroom', 'living_room', 'kitchen', 'sleeping', 'bathroom', 'balcony'],
+            compatible: ['study', 'hotel'],
+            avoid: ['office', 'wedding', 'gym', 'hiking', 'party', 'rooftop', 'market', 'street', 'mall', 'beach', 'resort'],
+            tags: ['indoor', 'private', 'relaxed', 'home', 'cosy', 'comfort'],
+            fallbacks: [
+                'a cosy living room with a soft throw and warm lamp light',
+                'a quiet bedroom with rumpled linen sheets and morning light'
+            ]
+        }
     },
     {
         id: 'soft-feminine-casual',
@@ -272,7 +298,9 @@ const OUTFIT_PACKS = [
                 piece('a light knit cardigan', 1.5),
                 piece('a pale-pink bolero', 1),
                 piece('a cropped boucle jacket', 1),
-                piece('a lightweight floral kimono', 1)
+                piece('a lightweight floral kimono', 1),
+                piece('a soft camel wool coat', 1.2),
+                piece('a lightweight quilted jacket', 1)
             ],
             footwear: [
                 piece('simple ballet flats', 3),
@@ -280,7 +308,9 @@ const OUTFIT_PACKS = [
                 piece('white flats', 2),
                 piece('blush low heels', 1.5),
                 piece('cream Mary Jane shoes', 1.2),
-                piece('delicate ankle-strap sandals', 1)
+                piece('delicate ankle-strap sandals', 1),
+                piece('white minimalist sneakers', 1.5),
+                piece('brown ankle boots', 1.2)
             ],
             accessories: [
                 piece('a delicate necklace', 2),
@@ -289,7 +319,8 @@ const OUTFIT_PACKS = [
                 piece('a thin pearl bracelet', 1.5),
                 piece('a light silk hair ribbon', 1.5),
                 piece('a small floral hair clip', 1),
-                piece('a slim pendant necklace', 1.2)
+                piece('a slim pendant necklace', 1.2),
+                piece('a soft knit scarf', 1.2)
             ]
         },
         palette: ['cream', 'blush', 'soft pink', 'light blue', 'beige', 'white', 'muted green'],
@@ -299,7 +330,17 @@ const OUTFIT_PACKS = [
             'simple coordinated pieces',
             'understated accessories',
             'avoid excessive ornamentation'
-        ]
+        ],
+        environmentAffinity: {
+            preferred: ['cafe', 'park', 'mall', 'living_room', 'bedroom', 'balcony'],
+            compatible: ['street', 'restaurant', 'office', 'museum', 'library', 'hotel'],
+            avoid: ['gym', 'hiking', 'wedding', 'party'],
+            tags: ['casual', 'feminine', 'soft', 'social', 'temperate'],
+            fallbacks: [
+                'a sunlit café with pale wood tables and fresh flowers',
+                'a quiet garden path with soft afternoon light'
+            ]
+        }
     },
     {
         id: 'casual-streetwear',
@@ -331,7 +372,8 @@ const OUTFIT_PACKS = [
                 piece('wide-leg black jeans', 1.5),
                 piece('stone cargo trousers', 1.5),
                 piece('relaxed carpenter jeans', 1.2),
-                piece('nylon track pants', 1)
+                piece('nylon track pants', 1),
+                piece('insulated cargo pants', 1.2)
             ],
             dresses: [
                 piece('a relaxed black T-shirt dress', 1.5),
@@ -344,7 +386,9 @@ const OUTFIT_PACKS = [
                 piece('a denim jacket', 1.5),
                 piece('a black workwear overshirt', 1.5),
                 piece('a cropped puffer vest', 1),
-                piece('a heavyweight varsity jacket', 1)
+                piece('a heavyweight varsity jacket', 1),
+                piece('a heavy parka with a faux-fur hood', 1.2),
+                piece('a waterproof shell jacket', 1)
             ],
             footwear: [
                 piece('chunky white sneakers', 3),
@@ -352,7 +396,8 @@ const OUTFIT_PACKS = [
                 piece('high-top sneakers', 2),
                 piece('chunky skate shoes', 1.5),
                 piece('black-and-white retro sneakers', 1.5),
-                piece('utility hiking sneakers', 1)
+                piece('utility hiking sneakers', 1),
+                piece('weatherproof combat boots', 1.2)
             ],
             accessories: [
                 piece('a black crossbody bag', 2),
@@ -373,7 +418,17 @@ const OUTFIT_PACKS = [
             'contemporary silhouettes',
             'avoid formal pieces',
             'avoid overly elegant styling'
-        ]
+        ],
+        environmentAffinity: {
+            preferred: ['street', 'mall', 'market', 'bar', 'party', 'park'],
+            compatible: ['gym', 'cafe', 'transit', 'rooftop', 'studio'],
+            avoid: ['wedding', 'bathroom', 'sleeping', 'bedroom', 'living_room', 'kitchen'],
+            tags: ['urban', 'outdoor', 'casual', 'streetwear', 'evening'],
+            fallbacks: [
+                'a graffiti-covered city alley with evening light',
+                'a busy concrete plaza with street lamps and low buildings'
+            ]
+        }
     },
     {
         id: 'vacation-summer',
@@ -398,7 +453,9 @@ const OUTFIT_PACKS = [
                 piece('a pale-yellow halter top', 1.5, { genders: ['woman'] }),
                 piece('a breezy embroidered blouse', 1.2),
                 piece('a lightweight crochet tank', 1.2),
-                piece('a terracotta linen vest', 1)
+                piece('a terracotta linen vest', 1),
+                piece('a silky evening camisole', 1.2, { genders: ['woman'] }),
+                piece('a crisp linen blouse', 1.2, { genders: ['woman'] })
             ],
             bottoms: [
                 piece('linen shorts', 3),
@@ -421,14 +478,16 @@ const OUTFIT_PACKS = [
                 piece('a tropical-print wrap dress', 1.5),
                 piece('a gauzy coral midi dress', 1.5),
                 piece('a breezy white maxi dress', 1.5),
-                piece('a printed cotton halter dress', 1, { genders: ['woman'] })
+                piece('a printed cotton halter dress', 1, { genders: ['woman'] }),
+                piece('a bias-cut linen slip dress', 1.5, { genders: ['woman'] })
             ],
             layers: [
                 piece('a light linen overshirt', 1.5),
                 piece('a thin white cardigan', 1),
                 piece('a white crochet cover-up', 1.5, { genders: ['woman'] }),
                 piece('a lightweight cotton beach shirt', 1.5),
-                piece('a gauzy striped kimono', 1)
+                piece('a gauzy striped kimono', 1),
+                piece('a lightweight linen blazer', 1.5)
             ],
             footwear: [
                 piece('simple sandals', 3),
@@ -436,7 +495,9 @@ const OUTFIT_PACKS = [
                 piece('white canvas slip-ons', 2),
                 piece('espadrilles', 1.5),
                 piece('woven slide sandals', 1.5),
-                piece('water-friendly sandals', 1)
+                piece('water-friendly sandals', 1),
+                piece('strappy leather sandals', 1.2),
+                piece('woven espadrille wedges', 1, { genders: ['woman'] })
             ],
             accessories: [
                 piece('a canvas tote', 2.5),
@@ -446,7 +507,8 @@ const OUTFIT_PACKS = [
                 piece('a woven sun hat', 1.5),
                 piece('a raffia shoulder bag', 1.5),
                 piece('a colorful woven bracelet', 1),
-                piece('a printed headscarf', 1)
+                piece('a printed headscarf', 1),
+                piece('a small woven clutch', 1.2)
             ]
         },
         palette: ['white', 'cream', 'sand', 'pale blue', 'sage', 'warm neutrals'],
@@ -457,7 +519,17 @@ const OUTFIT_PACKS = [
             'relaxed proportions',
             'avoid heavy layers',
             'avoid winter clothing'
-        ]
+        ],
+        environmentAffinity: {
+            preferred: ['beach', 'resort', 'park', 'balcony', 'hotel', 'market'],
+            compatible: ['cafe', 'street', 'mall', 'restaurant', 'rooftop'],
+            avoid: ['office', 'gym', 'wedding', 'sleeping', 'bathroom', 'library', 'study'],
+            tags: ['warm', 'outdoor', 'summer', 'vacation', 'relaxed'],
+            fallbacks: [
+                'a sunlit beach with turquoise water and a wooden boardwalk',
+                'a tropical resort terrace with palms and white linen loungers'
+            ]
+        }
     },
     {
         id: 'gym-activewear',
@@ -503,7 +575,9 @@ const OUTFIT_PACKS = [
                 piece('fitted charcoal bike shorts', 1.2, { genders: ['woman'] }),
                 piece('high-rise seamless training tights', 1.2),
                 piece('lightweight running shorts with a fitted liner', 1),
-                piece('a coordinated performance legging', 1, { genders: ['woman'] })
+                piece('a coordinated performance legging', 1, { genders: ['woman'] }),
+                piece('thermal running tights', 1.2),
+                piece('relaxed recovery joggers', 1.5)
             ],
             dresses: [
                 piece('a fitted athletic set', 1.5),
@@ -519,14 +593,18 @@ const OUTFIT_PACKS = [
                 piece('a lightweight track jacket', 1.5),
                 piece('a fitted performance hoodie', 1.2),
                 piece('a cropped zip-front training jacket', 1, { genders: ['woman'] }),
-                piece('a lightweight mesh-panel running layer', 0.8, { genders: ['woman'] })
+                piece('a lightweight mesh-panel running layer', 0.8, { genders: ['woman'] }),
+                piece('a lightweight windbreaker', 1.5),
+                piece('a warm-up fleece', 1.2),
+                piece('a waterproof running shell', 1)
             ],
             footwear: [
                 piece('white running shoes', 3),
                 piece('grey trainers', 2.5),
                 piece('black training sneakers', 2),
                 piece('lightweight running shoes', 2),
-                piece('cross-training shoes', 1.5)
+                piece('cross-training shoes', 1.5),
+                piece('trail running shoes', 1.5)
             ],
             accessories: [
                 piece('a fitness watch', 1.5),
@@ -536,7 +614,8 @@ const OUTFIT_PACKS = [
                 piece('a pair of sport sunglasses', 0.8),
                 piece('a slim performance hairband', 1.2, { genders: ['woman'] }),
                 piece('a minimal fitness tracker', 1.2),
-                piece('a pair of small stud earrings', 0.5, { genders: ['woman'] })
+                piece('a pair of small stud earrings', 0.5, { genders: ['woman'] }),
+                piece('a lightweight running belt', 1)
             ]
         },
         palette: ['black', 'grey', 'white', 'navy', 'muted athletic colors'],
@@ -546,7 +625,17 @@ const OUTFIT_PACKS = [
             'practical footwear',
             'avoid unnecessary accessories',
             'avoid formal clothing'
-        ]
+        ],
+        environmentAffinity: {
+            preferred: ['gym', 'park', 'street'],
+            compatible: ['beach', 'resort', 'balcony', 'hiking', 'mall', 'transit'],
+            avoid: ['bedroom', 'living_room', 'kitchen', 'bathroom', 'sleeping', 'restaurant', 'office', 'wedding', 'party', 'museum', 'library', 'study', 'hotel', 'rooftop'],
+            tags: ['active', 'athletic', 'outdoor', 'exercise', 'sport'],
+            fallbacks: [
+                'a bright modern gym with mirrored walls and rubber flooring',
+                'an outdoor running track beside a park at sunrise'
+            ]
+        }
     },
     {
         id: 'casual-smart',
@@ -569,7 +658,9 @@ const OUTFIT_PACKS = [
                 piece('a white short-sleeve popover shirt', 1.5),
                 piece('a fine-gauge knit polo', 1.5),
                 piece('a striped oxford shirt', 1.2),
-                piece('a soft drape-neck blouse', 1)
+                piece('a soft drape-neck blouse', 1),
+                piece('a fine merino roll-neck', 1.5),
+                piece('a silk-shell camisole', 1, { genders: ['woman'] })
             ],
             bottoms: [
                 piece('beige chinos', 3),
@@ -581,7 +672,8 @@ const OUTFIT_PACKS = [
                 piece('grey tailored shorts', 1.5),
                 piece('stone pleated trousers', 1.5),
                 piece('a navy pleated midi skirt', 1.2),
-                piece('straight-leg dark chinos', 1.5)
+                piece('straight-leg dark chinos', 1.5),
+                piece('dark straight-leg jeans', 1.5)
             ],
             dresses: [
                 piece('a simple cream shirt dress', 2),
@@ -592,7 +684,9 @@ const OUTFIT_PACKS = [
                 piece('a navy knit cardigan', 1.5),
                 piece('a structured blazer', 1),
                 piece('a lightweight trench coat', 1.2),
-                piece('a fine-gauge sweater vest', 1.2)
+                piece('a fine-gauge sweater vest', 1.2),
+                piece('a camel wool overcoat', 1.5),
+                piece('a navy quilted vest', 1)
             ],
             footwear: [
                 piece('clean white minimalist sneakers', 2.5),
@@ -600,14 +694,16 @@ const OUTFIT_PACKS = [
                 piece('simple leather loafers', 2),
                 piece('black suede slip-ons', 1.5),
                 piece('brown leather derbies', 1.2),
-                piece('low-profile leather sneakers', 1.5)
+                piece('low-profile leather sneakers', 1.5),
+                piece('tan leather Chelsea boots', 1.2)
             ],
             accessories: [
                 piece('a leather watch', 2),
                 piece('a small structured bag', 1.5),
                 piece('a slim leather belt', 1.5),
                 piece('a silk neck scarf', 1),
-                piece('small geometric earrings', 1)
+                piece('small geometric earrings', 1),
+                piece('a leather crossbody satchel', 1.2)
             ]
         },
         palette: ['navy', 'white', 'cream', 'beige', 'charcoal', 'brown', 'muted blue'],
@@ -618,7 +714,17 @@ const OUTFIT_PACKS = [
             'understated accessories',
             'avoid full formalwear',
             'avoid excessive streetwear elements'
-        ]
+        ],
+        environmentAffinity: {
+            preferred: ['office', 'cafe', 'restaurant', 'studio', 'museum', 'library', 'mall'],
+            compatible: ['street', 'hotel', 'transit', 'study', 'wedding', 'rooftop'],
+            avoid: ['beach', 'resort', 'gym', 'hiking', 'sleeping', 'bathroom', 'bedroom', 'party'],
+            tags: ['smart', 'polished', 'professional', 'indoor', 'social'],
+            fallbacks: [
+                'a bright modern office with glass walls and a long table',
+                'a calm café with marble tables and warm pendant lights'
+            ]
+        }
     },
     {
         id: 'casual-night-out',
@@ -659,7 +765,8 @@ const OUTFIT_PACKS = [
                 piece('a dark denim midi skirt', 1),
                 piece('a high-waisted satin skirt with a side slit', 1.2, { genders: ['woman'] }),
                 piece('tailored high-waisted shorts', 1),
-                piece('a fitted velvet mini skirt', 1, { genders: ['woman'] })
+                piece('a fitted velvet mini skirt', 1, { genders: ['woman'] }),
+                piece('a leather-look midi skirt', 1, { genders: ['woman'] })
             ],
             dresses: [
                 piece('a simple black dress', 3),
@@ -669,7 +776,8 @@ const OUTFIT_PACKS = [
                 piece('a draped satin midi dress', 1.5, { genders: ['woman'] }),
                 piece('a one-shoulder fitted midi dress', 1.2, { genders: ['woman'] }),
                 piece('a black wrap-front evening dress', 1.2, { genders: ['woman'] }),
-                piece('a deep-red velvet cocktail dress', 1, { genders: ['woman'] })
+                piece('a deep-red velvet cocktail dress', 1, { genders: ['woman'] }),
+                piece('a velvet wrap dress', 1.2, { genders: ['woman'] })
             ],
             layers: [
                 piece('a lightweight black jacket', 2),
@@ -697,7 +805,8 @@ const OUTFIT_PACKS = [
                 piece('a slim metallic belt', 1),
                 piece('a small shoulder bag', 1.2),
                 piece('a fine layered gold necklace', 1.2, { genders: ['woman'] }),
-                piece('a velvet choker with a small pendant', 0.8, { genders: ['woman'] })
+                piece('a velvet choker with a small pendant', 0.8, { genders: ['woman'] }),
+                piece('a metallic box clutch', 1.2)
             ]
         },
         palette: ['black', 'charcoal', 'dark denim', 'cream', 'burgundy', 'deep navy', 'muted metallic accents'],
@@ -707,7 +816,17 @@ const OUTFIT_PACKS = [
             'understated accessories',
             'polished but not formal',
             'avoid excessive glamour unless requested'
-        ]
+        ],
+        environmentAffinity: {
+            preferred: ['bar', 'party', 'restaurant', 'date_night', 'rooftop', 'hotel'],
+            compatible: ['street', 'cafe', 'studio', 'museum'],
+            avoid: ['bedroom', 'sleeping', 'bathroom', 'gym', 'hiking', 'beach', 'resort', 'office', 'kitchen', 'library', 'study'],
+            tags: ['evening', 'social', 'fashionable', 'night'],
+            fallbacks: [
+                'a warmly lit cocktail bar with velvet seating',
+                'a city rooftop at dusk with string lights and a skyline'
+            ]
+        }
     },
     {
         id: 'minimalist-neutral',
@@ -730,7 +849,9 @@ const OUTFIT_PACKS = [
                 piece('a white sleeveless turtleneck', 1.5),
                 piece('a taupe fine-knit polo', 1.2),
                 piece('a black ribbed long-sleeve top', 1.5),
-                piece('a crisp ivory poplin shirt', 1.2)
+                piece('a crisp ivory poplin shirt', 1.2),
+                piece('a lightweight linen shirt', 1.5),
+                piece('a simple black tank top', 1.2)
             ],
             bottoms: [
                 piece('black straight-leg trousers', 3),
@@ -741,7 +862,8 @@ const OUTFIT_PACKS = [
                 piece('a charcoal column skirt', 1.5),
                 piece('black pleated wide-leg trousers', 1.5),
                 piece('a taupe midi skirt', 1.2),
-                piece('cream straight-leg jeans', 1.2)
+                piece('cream straight-leg jeans', 1.2),
+                piece('sand linen trousers', 1.5)
             ],
             dresses: [
                 piece('a simple black slip dress', 2),
@@ -755,21 +877,25 @@ const OUTFIT_PACKS = [
                 piece('a cream knit cardigan', 2),
                 piece('a grey wool coat', 1.5),
                 piece('a camel tailored coat', 1.5),
-                piece('a clean-lined overshirt jacket', 1.2)
+                piece('a clean-lined overshirt jacket', 1.2),
+                piece('a relaxed linen overshirt', 1.2)
             ],
             footwear: [
                 piece('minimalist white sneakers', 3),
                 piece('simple black flats', 2.5),
                 piece('clean black boots', 2),
                 piece('taupe leather loafers', 1.5),
-                piece('minimalist leather sandals', 1)
+                piece('minimalist leather sandals', 1),
+                piece('minimalist leather slides', 1.2),
+                piece('simple canvas sneakers', 1.5)
             ],
             accessories: [
                 piece('a simple leather belt', 2),
                 piece('an understated tote', 1.5),
                 piece('a slim silver watch', 1.2),
                 piece('a structured leather crossbody bag', 1),
-                piece('small matte hoop earrings', 1)
+                piece('small matte hoop earrings', 1),
+                piece('a fine silver necklace', 1)
             ]
         },
         palette: ['black', 'white', 'cream', 'beige', 'taupe', 'grey', 'charcoal'],
@@ -781,7 +907,17 @@ const OUTFIT_PACKS = [
             'no loud graphics',
             'avoid excessive accessories',
             'avoid visually complicated outfits'
-        ]
+        ],
+        environmentAffinity: {
+            preferred: ['studio', 'cafe', 'office', 'street', 'mall', 'museum', 'library'],
+            compatible: ['living_room', 'restaurant', 'park', 'hotel', 'transit', 'balcony'],
+            avoid: ['party', 'wedding', 'beach', 'resort', 'gym', 'hiking'],
+            tags: ['neutral', 'minimal', 'clean', 'indoor', 'temperate'],
+            fallbacks: [
+                'a minimal white room with a single window and soft daylight',
+                'a quiet concrete courtyard with clean geometric lines'
+            ]
+        }
     },
     {
         id: 'edgy-alternative',
@@ -803,7 +939,8 @@ const OUTFIT_PACKS = [
                 piece('a charcoal distressed tee', 1.5),
                 piece('a black mesh long-sleeve top', 1.2),
                 piece('a faded band tee', 1.5),
-                piece('a dark red sleeveless top', 1)
+                piece('a dark red sleeveless top', 1),
+                piece('a fitted black tank top', 2)
             ],
             bottoms: [
                 piece('black skinny jeans', 3),
@@ -815,7 +952,8 @@ const OUTFIT_PACKS = [
                 piece('distressed black jeans', 1.5),
                 piece('black coated denim trousers', 1.5),
                 piece('a charcoal cargo skirt', 1, { genders: ['woman'] }),
-                piece('dark grey carpenter pants', 1.2)
+                piece('dark grey carpenter pants', 1.2),
+                piece('frayed black denim shorts', 1.5)
             ],
             dresses: [
                 piece('a black leather dress', 1.5),
@@ -828,14 +966,17 @@ const OUTFIT_PACKS = [
                 piece('a dark washed denim jacket', 1.5),
                 piece('a black oversized blazer', 1.2),
                 piece('a distressed military jacket', 1),
-                piece('a cropped biker jacket', 1.5)
+                piece('a cropped biker jacket', 1.5),
+                piece('a long black wool coat', 1.5),
+                piece('a hooded black rain shell', 1)
             ],
             footwear: [
                 piece('black combat boots', 3),
                 piece('chunky black sneakers', 2.5),
                 piece('black platform boots', 2),
                 piece('lace-up creeper shoes', 1),
-                piece('black western ankle boots', 1.2)
+                piece('black western ankle boots', 1.2),
+                piece('heavy platform sneakers', 1.2)
             ],
             accessories: [
                 piece('a studded belt', 2),
@@ -844,7 +985,8 @@ const OUTFIT_PACKS = [
                 piece('a chain-strap shoulder bag', 1.5),
                 piece('a silver signet ring', 1),
                 piece('a black hardware belt', 1.2),
-                piece('a dark beanie', 1)
+                piece('a dark beanie', 1),
+                piece('layered silver rings', 1)
             ]
         },
         palette: ['black', 'charcoal', 'dark grey', 'deep burgundy', 'dark olive', 'washed denim', 'muted metallic accents'],
@@ -855,7 +997,17 @@ const OUTFIT_PACKS = [
             'expressive but wearable',
             'avoid turning every outfit into a costume',
             'avoid excessive accessories'
-        ]
+        ],
+        environmentAffinity: {
+            preferred: ['bar', 'street', 'party', 'mall', 'studio'],
+            compatible: ['cafe', 'park', 'transit', 'bedroom', 'living_room', 'rooftop', 'market'],
+            avoid: ['office', 'wedding', 'beach', 'resort', 'library', 'museum', 'study'],
+            tags: ['evening', 'urban', 'edgy', 'alternative', 'outdoor'],
+            fallbacks: [
+                'a dim underground club with exposed brick and neon light',
+                'a rain-darkened city street under a streetlamp'
+            ]
+        }
     },
     {
         id: 'glam-boudoir',
@@ -889,7 +1041,8 @@ const OUTFIT_PACKS = [
                 piece('sheer black hosiery', 1.5, { genders: ['woman'] }),
                 piece('a burgundy velvet pencil skirt', 1.2, { genders: ['woman'] }),
                 piece('black tailored wide-leg trousers', 1.2),
-                piece('a satin split-front skirt', 1, { genders: ['woman'] })
+                piece('a satin split-front skirt', 1, { genders: ['woman'] }),
+                piece('a black lace-trim midi skirt', 1, { genders: ['woman'] })
             ],
             dresses: [
                 piece('a black satin slip dress with a thigh slit', 3, { genders: ['woman'] }),
@@ -899,14 +1052,16 @@ const OUTFIT_PACKS = [
                 piece('a champagne silk slip dress', 1.5, { genders: ['woman'] }),
                 piece('a backless emerald satin dress', 1.5, { genders: ['woman'] }),
                 piece('a black velvet midi dress', 1.5, { genders: ['woman'] }),
-                piece('a deep-burgundy cowl-neck dress', 1.2, { genders: ['woman'] })
+                piece('a deep-burgundy cowl-neck dress', 1.2, { genders: ['woman'] }),
+                piece('a black satin bias-cut gown', 1.5, { genders: ['woman'] })
             ],
             layers: [
                 piece('a black silk robe', 2, { genders: ['woman'] }),
                 piece('a sheer black lace kimono', 1.5, { genders: ['woman'] }),
                 piece('a cropped black leather jacket', 1.5),
                 piece('a velvet evening blazer', 1, { genders: ['woman'] }),
-                piece('a long satin robe', 1, { genders: ['woman'] })
+                piece('a long satin robe', 1, { genders: ['woman'] }),
+                piece('a champagne satin robe', 1.5, { genders: ['woman'] })
             ],
             footwear: [
                 piece('black stiletto heels', 3),
@@ -914,7 +1069,9 @@ const OUTFIT_PACKS = [
                 piece('black ankle-strap heels', 2),
                 piece('black over-the-knee boots', 1.5),
                 piece('pointed-toe black pumps', 1.5),
-                piece('velvet platform sandals', 1, { genders: ['woman'] })
+                piece('velvet platform sandals', 1, { genders: ['woman'] }),
+                piece('black satin mules', 1.2, { genders: ['woman'] }),
+                piece('strappy metallic sandals', 1, { genders: ['woman'] })
             ],
             accessories: [
                 piece('a delicate lace choker', 2),
@@ -923,7 +1080,8 @@ const OUTFIT_PACKS = [
                 piece('a deep-red satin eye mask', 1, { genders: ['woman'] }),
                 piece('a delicate layered pendant', 1.2),
                 piece('a velvet hair ribbon', 1, { genders: ['woman'] }),
-                piece('a slim crystal bracelet', 1, { genders: ['woman'] })
+                piece('a slim crystal bracelet', 1, { genders: ['woman'] }),
+                piece('a crystal hair clip', 1, { genders: ['woman'] })
             ]
         },
         palette: ['black', 'deep red', 'burgundy', 'champagne', 'emerald', 'charcoal', 'muted gold'],
@@ -934,7 +1092,17 @@ const OUTFIT_PACKS = [
             'after-dark glamour',
             'still elegant, not costume-like',
             'adult characters only'
-        ]
+        ],
+        environmentAffinity: {
+            preferred: ['bedroom', 'hotel', 'bar', 'party', 'studio', 'date_night'],
+            compatible: ['living_room', 'restaurant', 'rooftop', 'balcony'],
+            avoid: ['gym', 'hiking', 'office', 'beach', 'resort', 'street', 'mall', 'park', 'kitchen', 'market', 'transit', 'museum', 'library', 'study', 'wedding'],
+            tags: ['evening', 'indoor', 'private', 'glamorous', 'sultry'],
+            fallbacks: [
+                'a dim hotel suite with champagne silk and low lamplight',
+                'a plush bedroom with satin sheets and a warm bedside lamp'
+            ]
+        }
     },
     {
         id: 'confident-seductive',
@@ -962,7 +1130,8 @@ const OUTFIT_PACKS = [
                 piece('a soft cowl-neck knit top', 1.2, { genders: ['woman'] }),
                 piece('a refined wrap-front blouse', 1.2, { genders: ['woman'] }),
                 piece('a fitted fine-knit polo', 1.2),
-                piece('a sleek sleeveless mock-neck top', 1)
+                piece('a sleek sleeveless mock-neck top', 1),
+                piece('a sleek fitted turtleneck', 1.2)
             ],
             bottoms: [
                 piece('fitted high-waisted trousers', 3),
@@ -996,7 +1165,8 @@ const OUTFIT_PACKS = [
                 piece('an oversized blazer worn over a fitted outfit', 1.5),
                 piece('a fitted leather jacket', 1.5),
                 piece('a cropped soft-knit cardigan', 1.2, { genders: ['woman'] }),
-                piece('a lightweight draped evening jacket', 1)
+                piece('a lightweight draped evening jacket', 1),
+                piece('a long tailored wool coat', 1.5)
             ],
             footwear: [
                 piece('ankle boots', 3),
@@ -1005,7 +1175,8 @@ const OUTFIT_PACKS = [
                 piece('pointed-toe pumps', 2),
                 piece('sleek flats', 2),
                 piece('slim ankle-strap heels', 1.2, { genders: ['woman'] }),
-                piece('polished leather loafers', 1.2)
+                piece('polished leather loafers', 1.2),
+                piece('knee-high leather boots', 1.2, { genders: ['woman'] })
             ],
             accessories: [
                 piece('a delicate necklace', 2.5),
@@ -1015,7 +1186,8 @@ const OUTFIT_PACKS = [
                 piece('sunglasses', 1.5),
                 piece('a slim metallic belt', 1.2),
                 piece('a delicate layered necklace', 1.2, { genders: ['woman'] }),
-                piece('a small pair of drop earrings', 1.2, { genders: ['woman'] })
+                piece('a small pair of drop earrings', 1.2, { genders: ['woman'] }),
+                piece('a structured leather shoulder bag', 1.2)
             ]
         },
         palette: ['black', 'cream', 'champagne', 'burgundy', 'deep navy', 'camel', 'muted gold'],
@@ -1026,7 +1198,17 @@ const OUTFIT_PACKS = [
             'tailored and polished',
             'adult characters only',
             'avoid costume-like or overdone styling'
-        ]
+        ],
+        environmentAffinity: {
+            preferred: ['date_night', 'restaurant', 'bar', 'party', 'studio', 'hotel', 'rooftop'],
+            compatible: ['street', 'cafe', 'mall', 'office', 'museum', 'balcony'],
+            avoid: ['gym', 'hiking', 'sleeping', 'bathroom', 'beach', 'resort', 'library', 'study'],
+            tags: ['evening', 'social', 'fashionable', 'confident', 'polished'],
+            fallbacks: [
+                'a stylish restaurant with low candlelight and dark wood',
+                'a city rooftop bar with glass railings at dusk'
+            ]
+        }
     }
 ];
 
@@ -1086,6 +1268,36 @@ function normalizePackId(value) {
     return PACK_BY_ID[key] ? key : '';
 }
 
+// Normalize a multi-pack wardrobe selection (array, or a comma-separated
+// string). Unknown ids are dropped and duplicates collapsed; `custom` is a
+// complete-outfit mode and is handled separately, never part of the pack set.
+function normalizePackIds(value) {
+    const raw = Array.isArray(value)
+        ? value
+        : (typeof value === 'string' ? value.split(',') : []);
+    const out = [];
+    for (const item of raw) {
+        const id = normalizePackId(item);
+        if (!id || id === CUSTOM_PACK_ID || out.includes(id)) continue;
+        out.push(id);
+    }
+    return out;
+}
+
+// Choose ONE pack from a multi-pack selection for a single concept. A lone
+// selection is used as-is; several are randomized, avoiding the previously
+// active pack when possible so re-rolls actually vary the wardrobe.
+function pickFromPackIds(ids, rng = Math.random, options = {}) {
+    const list = normalizePackIds(ids);
+    if (!list.length) return '';
+    if (list.length === 1) return list[0];
+    const avoid = normalizePackId(options.avoidPackId);
+    const pool = avoid && list.includes(avoid) ? list.filter((id) => id !== avoid) : list;
+    const raw = Number(typeof rng === 'function' ? rng() : Math.random());
+    const index = Number.isFinite(raw) ? Math.floor(((raw % 1) + 1) % 1 * pool.length) : 0;
+    return pool[Math.min(index, pool.length - 1)] || list[0];
+}
+
 function getPack(id) {
     const key = normalizePackId(id);
     return key && key !== CUSTOM_PACK_ID ? PACK_BY_ID[key] : null;
@@ -1101,14 +1313,149 @@ function packLabel(id) {
     return pack ? pack.label : '';
 }
 
-// Compact catalog for the API/UI (no large wardrobe pools).
+// --- Environment affinity -----------------------------------------------------
+//
+// A wardrobe personality only makes sense in certain places: activewear belongs
+// in a gym or on a run, loungewear at home, evening glamour in a bar or hotel
+// suite. Each pack declares the environment contexts it suits (preferred, then
+// compatible), the contexts it clearly does not, a few supporting tags, and
+// concrete fallback environments for themes whose own pool has nothing suitable.
+// This is metadata and selection only; the final outfit still composes through
+// the same wardrobe space.
+
+function environmentAffinity(packId) {
+    const pack = getPack(packId);
+    return pack && pack.environmentAffinity ? pack.environmentAffinity : null;
+}
+
+function affinityContexts(affinity, key) {
+    return affinity && Array.isArray(affinity[key]) ? affinity[key] : [];
+}
+
+// Score how well an environment suits a pack. `0` means neutral/unknown, a
+// positive score means compatible (preferred outranks compatible), and a
+// negative score means the pack is clearly out of place there.
+function scoreEnvironment(packId, environment, context = {}) {
+    const affinity = environmentAffinity(packId);
+    const ctx = outfitContext.classifyEnvironment(environment, context.activity || context.scene);
+    const result = {
+        score: 0,
+        context: ctx ? ctx.id : '',
+        label: ctx ? ctx.label : '',
+        tags: ctx ? ctx.tags.slice() : [],
+        compatible: false,
+        avoided: false
+    };
+    if (!affinity || !ctx) return result;
+    if (affinityContexts(affinity, 'avoid').includes(ctx.id)) {
+        result.score = -10;
+        result.avoided = true;
+        return result;
+    }
+    if (affinityContexts(affinity, 'preferred').includes(ctx.id)) result.score += 6;
+    else if (affinityContexts(affinity, 'compatible').includes(ctx.id)) result.score += 3;
+    const tags = affinityContexts(affinity, 'tags');
+    for (const tag of ctx.tags) {
+        if (tags.includes(tag)) result.score += 0.75;
+    }
+    result.compatible = result.score >= 1;
+    return result;
+}
+
+// Human labels for the environments a pack is designed for (UI metadata).
+function bestFor(packId, limit = 4) {
+    const affinity = environmentAffinity(packId);
+    if (!affinity) return [];
+    const labels = [];
+    for (const id of affinityContexts(affinity, 'preferred')) {
+        const ctx = outfitContext.CONTEXT_CATALOG[id];
+        const label = ctx && ctx.label;
+        if (label && !labels.includes(label)) labels.push(label);
+        if (labels.length >= limit) break;
+    }
+    return labels;
+}
+
+function pickWeighted(list, rng, weightOf) {
+    const entries = Array.isArray(list) ? list.filter(Boolean) : [];
+    if (!entries.length) return null;
+    const weights = entries.map((entry) => Math.max(Number(weightOf(entry)) || 0.0001, 0.0001));
+    const total = weights.reduce((sum, weight) => sum + weight, 0);
+    const raw = typeof rng === 'function' ? Number(rng()) : Math.random();
+    const base = Number.isFinite(raw) ? ((raw % 1) + 1) % 1 : 0;
+    let target = base * total;
+    for (let i = 0; i < entries.length; i++) {
+        target -= weights[i];
+        if (target < 0) return entries[i];
+    }
+    return entries[entries.length - 1];
+}
+
+function uniqueStrings(list) {
+    const seen = new Set();
+    const out = [];
+    for (const value of Array.isArray(list) ? list : []) {
+        const text = String(value || '').trim();
+        if (!text || seen.has(text)) continue;
+        seen.add(text);
+        out.push(text);
+    }
+    return out;
+}
+
+// Choose the most pack-appropriate environment from a theme's candidate pool.
+// Positive matches are preferred (preferred > compatible > tag overlap), the
+// current environment is avoided on a re-roll when possible, and when the pool
+// has nothing suitable the pack supplies one of its own concrete environments
+// instead of forcing an unrelated scene.
+function selectEnvironment(packId, candidates, options = {}) {
+    const rng = typeof options.rng === 'function' ? options.rng : Math.random;
+    const pool = uniqueStrings(candidates);
+    const avoid = String(options.avoid || '').trim();
+    const scored = pool.map((value) => Object.assign(
+        { value },
+        scoreEnvironment(packId, value, options)
+    ));
+    const usable = scored.filter((entry) => !entry.avoided && entry.value !== avoid);
+    const fallbackUsable = usable.length ? usable : scored.filter((entry) => !entry.avoided);
+    const eligible = fallbackUsable.filter((entry) => entry.compatible);
+    if (eligible.length) {
+        const max = Math.max.apply(null, eligible.map((entry) => entry.score));
+        const top = eligible.filter((entry) => entry.score >= max - 1.5);
+        const chosen = pickWeighted(top, rng, (entry) => entry.score);
+        return {
+            value: chosen.value,
+            score: chosen.score,
+            context: chosen.context,
+            source: 'theme'
+        };
+    }
+    const affinity = environmentAffinity(packId);
+    const fallbacks = uniqueStrings(affinity && affinity.fallbacks)
+        .filter((value) => value !== avoid);
+    if (fallbacks.length) {
+        const value = fallbacks[Math.floor(Math.max(0, Number(rng()) || 0) * fallbacks.length) % fallbacks.length];
+        return { value, score: 6, context: '', source: 'pack' };
+    }
+    const neutral = fallbackUsable.length ? fallbackUsable : scored;
+    if (neutral.length) {
+        const chosen = neutral[Math.floor(Math.max(0, Number(rng()) || 0) * neutral.length) % neutral.length];
+        return { value: chosen.value, score: chosen.score, context: chosen.context, source: 'theme' };
+    }
+    return { value: '', score: 0, context: '', source: '' };
+}
+
 function listPacks() {
     return OUTFIT_PACKS.map((pack) => ({
         id: pack.id,
         label: pack.label,
         description: pack.description,
         personality: pack.personality || '',
-        palette: (pack.palette || []).slice()
+        palette: (pack.palette || []).slice(),
+        // Where this wardrobe personality belongs, so the selector can show the
+        // environment relationship instead of presenting packs as free-floating
+        // clothing styles.
+        bestFor: bestFor(pack.id, 4)
     }));
 }
 
@@ -1300,12 +1647,18 @@ module.exports = {
     getPack,
     packLabel,
     normalizePackId,
+    normalizePackIds,
+    pickFromPackIds,
     isCustomPack,
     detectOutfitPackFromText,
     contextModifiers,
     contextForOptions,
     toSystem,
     composeFromPack,
+    environmentAffinity,
+    scoreEnvironment,
+    selectEnvironment,
+    bestFor,
     // The central environment/outfit compatibility layer this module composes
     // through. Re-exported so callers have one import site for outfit work.
     resolveOutfitForEnvironment: outfitContext.resolveOutfitForEnvironment,

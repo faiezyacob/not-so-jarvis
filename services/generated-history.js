@@ -200,6 +200,7 @@ function publicMeta(entry) {
         seed: Number.isFinite(Number(entry.seed)) ? Number(entry.seed) : null,
         loras: Array.isArray(entry.loras) ? entry.loras : [],
         upscale: entry.upscale || null,
+        edit: entry.edit || null,
         video: entry.video || null
     };
 }
@@ -261,6 +262,7 @@ function add(meta) {
         seed: Number.isFinite(Number(meta.seed)) ? Number(meta.seed) : null,
         loras: Array.isArray(meta.loras) ? meta.loras : [],
         upscale: meta.upscale || null,
+        edit: meta.edit || null,
         video: meta.video || null,
         // Internal media (character identity references) is excluded from the
         // public gallery and the activity feed but still tracked for cleanup.

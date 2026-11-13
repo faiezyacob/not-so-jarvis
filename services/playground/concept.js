@@ -10,11 +10,12 @@
    Copyright (c) 2026 not-so-jarvis.
    ============================================ */
 
-const { getTheme, pickScenario, pickAspectRatio, outfitSignature } = require('./themes');
+const { getTheme, pickScenario, pickAspectRatio, outfitSignature, resolveCategory } = require('./themes');
 const identityGen = require('./character');
 const outfitPacks = require('./outfit-packs');
 const activities = require('./activities');
 const faceActions = require('./face-actions');
+const scenePosture = require('./scene-posture');
 const sceneLibrary = require('../scene-library');
 
 // Lockable attribute groups. Each group maps to the concept/character field it
@@ -86,6 +87,16 @@ function sceneLine(concept) {
 }
 
 function finalize(concept, theme) {
+    const posture = scenePosture.resolve({
+        environment: concept.environment,
+        activity: concept.activity,
+        userPrompt: concept.userPrompt
+    });
+    concept.postureId = posture.id;
+    concept.postureLabel = posture.label;
+    concept.postureStance = posture.stance;
+    concept.postureDescription = posture.phrase;
+    concept.postureSource = posture.source;
     concept.scene = sceneLine(concept);
     concept.title = titleFor(concept, theme);
     concept.description = describe(concept, theme);
@@ -205,8 +216,43 @@ function applyScene(concept, scene, source, mode) {
 
 // Resolve the concept's Scene from a raw selection: an explicit library scene
 // id, "auto" (recommended by the resolved Activity), "random", or nothing.
+// When an Outfit Pack is active, automatic picks are additionally ranked by the
+// pack's environment affinity so a scene and its clothing belong together.
+function sceneEnvironmentText(scene) {
+    const context = sceneLibrary.buildSceneContext(scene);
+    return [
+        context.summary,
+        context.description,
+        context.prompt,
+        (context.tags || []).join(' '),
+        (context.atmosphere || []).join(' ')
+    ].filter(Boolean).join(' ');
+}
+
+function rankScenesForPack(packId, scenes, options = {}) {
+    const list_ = Array.isArray(scenes) ? scenes.filter(Boolean) : [];
+    if (!packId) return list_;
+    const avoid = new Set(Array.isArray(options.avoidSceneIds) ? options.avoidSceneIds : []);
+    const scored = list_.map((scene) => {
+        const verdict = outfitPacks.scoreEnvironment(packId, sceneEnvironmentText(scene));
+        return { scene, score: verdict.score, compatible: verdict.compatible, avoided: verdict.avoided };
+    }).filter((entry) => entry.compatible && !entry.avoided && !avoid.has(entry.scene.id));
+    if (!scored.length) return [];
+    const max = Math.max.apply(null, scored.map((entry) => entry.score));
+    return scored.filter((entry) => entry.score >= max - 1.5).map((entry) => entry.scene);
+}
+
+function pickSceneForPack(packId, scenes, rng, avoidSceneIds) {
+    const ranked = rankScenesForPack(packId, scenes, { avoidSceneIds });
+    if (!ranked.length) return null;
+    const roll = Number(typeof rng === 'function' ? rng() : Math.random());
+    const index = Number.isFinite(roll) ? Math.floor(((roll % 1) + 1) % 1 * ranked.length) : 0;
+    return ranked[Math.min(index, ranked.length - 1)];
+}
+
 function resolveConceptScene(concept, options = {}) {
     if (!concept) return concept;
+    const packId = String(options.packId || '');
     if (options.skip) {
         // A locked environment or a user prompt owns the scene: only record the
         // existing shared scene id when it is still valid.
@@ -221,9 +267,18 @@ function resolveConceptScene(concept, options = {}) {
         if (scene) return applyScene(concept, scene, 'explicit', 'explicit');
     }
     if (selection === 'auto' || selection === 'random') {
-        const picked = selection === 'random'
-            ? sceneLibrary.selectRandomScene({ rng })
-            : sceneLibrary.selectSceneForActivity(concept.activityId, { rng, avoidSceneIds: options.avoidSceneIds });
+        let picked = null;
+        if (packId) {
+            const pool = selection === 'random'
+                ? sceneLibrary.list()
+                : sceneLibrary.recommendForActivity(concept.activityId, { limit: 16 });
+            picked = pickSceneForPack(packId, pool, rng, options.avoidSceneIds);
+        }
+        if (!picked) {
+            picked = selection === 'random'
+                ? sceneLibrary.selectRandomScene({ rng })
+                : sceneLibrary.selectSceneForActivity(concept.activityId, { rng, avoidSceneIds: options.avoidSceneIds });
+        }
         if (picked) return applyScene(concept, picked, selection === 'random' ? 'random' : 'recommended', selection);
     }
     return clearSceneFields(concept);
@@ -427,23 +482,149 @@ function applyOutfitPack(concept, options = {}) {
     return concept;
 }
 
-// Resolve which pack (if any) a concept should use. Explicit selection wins,
-// then the character preset's wardrobe personality, then context wording.
-function resolveOutfitPack(input = {}, character) {
-    let packId = outfitPacks.normalizePackId(input.outfitPack);
+// Resolve the concept's wardrobe. Explicit selection wins (a single pack, a
+// multi-pack set, or custom), then the character preset's wardrobe, then
+// context wording. A multi-pack set produces ONE active pack per concept while
+// remembering the whole selection, so later re-rolls can vary between them.
+function resolveOutfitPack(input = {}, character, options = {}) {
+    const hasList = Array.isArray(input.outfitPacks);
+    const hasSingle = typeof input.outfitPack === 'string';
+    let packIds = hasList ? outfitPacks.normalizePackIds(input.outfitPacks) : [];
+    let custom = hasList
+        ? input.outfitPacks.some((value) => outfitPacks.normalizePackId(value) === outfitPacks.CUSTOM_PACK_ID)
+        : false;
     let customText = String(input.outfitPackCustom || input.customOutfit || '').trim();
-    if (!packId && character) {
+
+    if (hasSingle) {
+        const single = outfitPacks.normalizePackId(input.outfitPack);
+        if (single === outfitPacks.CUSTOM_PACK_ID) custom = true;
+        else if (!hasList && single) packIds = [single];
+    }
+
+    // The character's saved wardrobe only applies when the caller supplied no
+    // wardrobe selection at all; an explicit empty selection means "Theme decides".
+    const explicitSelection = hasList || hasSingle;
+    if (!explicitSelection && character) {
         const characterPack = outfitPacks.normalizePackId(character.outfitPack);
-        if (characterPack) {
-            packId = characterPack;
-            customText = String(character.outfitPackCustom || '').trim();
+        if (characterPack === outfitPacks.CUSTOM_PACK_ID) {
+            custom = true;
+            customText = String(character.outfitPackCustom || '').trim() || customText;
+        } else if (characterPack) {
+            packIds = [characterPack];
         }
     }
-    if (!packId && input.contextText) {
+    if (!explicitSelection && !packIds.length && !custom && input.contextText) {
         const detected = outfitPacks.detectOutfitPackFromText(input.contextText);
-        if (detected) packId = detected;
+        if (detected) packIds = [detected];
     }
-    return { packId, customText };
+
+    // Custom clothing is a complete outfit: it is exclusive and an empty custom
+    // field is ignored rather than blanking the wardrobe.
+    if (custom && !customText) custom = false;
+    if (custom) packIds = [];
+
+    let packId = custom ? outfitPacks.CUSTOM_PACK_ID : '';
+    if (!custom && packIds.length) {
+        const forced = outfitPacks.normalizePackId(options.forcePackId);
+        packId = forced && packIds.includes(forced)
+            ? forced
+            : outfitPacks.pickFromPackIds(packIds, options.rng || input.rng, {
+                avoidPackId: options.avoidPackId
+            });
+    }
+    return { packId, customText: custom ? customText : '', packIds, custom };
+}
+
+// The environment candidates the current theme/subcategory offers. Used when a
+// pack change needs a scene that actually belongs with the clothing.
+function environmentPoolFor(theme, categoryRef) {
+    const category = theme ? resolveCategory(theme, categoryRef) : null;
+    if (category && Array.isArray(category.environments) && category.environments.length) {
+        return category.environments.slice();
+    }
+    return theme && Array.isArray(theme.environments) ? theme.environments.slice() : [];
+}
+
+function categoryEnvironmentScore(theme, category, packId) {
+    const pool = category && Array.isArray(category.environments) && category.environments.length
+        ? category.environments
+        : (theme && Array.isArray(theme.environments) ? theme.environments : []);
+    let best = -Infinity;
+    let compatible = 0;
+    for (const environment of pool) {
+        const verdict = outfitPacks.scoreEnvironment(packId, environment);
+        if (verdict.score > best) best = verdict.score;
+        if (verdict.compatible) compatible += 1;
+    }
+    // A subcategory with several suitable places is a better fit than one with a
+    // single lucky environment, so a lounge outfit picks Bedroom / Home over a
+    // story category that merely happens to include a bedroom.
+    return best + compatible * 0.75;
+}
+
+function categoryEnvironmentCompatible(theme, category, packId) {
+    return categoryEnvironmentScore(theme, category, packId) >= 1;
+}
+
+// Pick a theme subcategory whose own environments suit the active pack. Used
+// when the current subcategory offers nowhere the wardrobe belongs (e.g. a
+// gym outfit inside the "Bedroom / Home" category).
+function selectCategoryForPack(theme, packId, options = {}) {
+    const categories = theme && Array.isArray(theme.categories) ? theme.categories.filter(Boolean) : [];
+    if (!categories.length) return '';
+    const rng = rngOf(options.rng);
+    const avoid = String(options.avoid || '').trim();
+    const scored = categories.map((category) => ({
+        category,
+        score: categoryEnvironmentScore(theme, category, packId),
+        compatible: categoryEnvironmentCompatible(theme, category, packId)
+    })).filter((entry) => entry.compatible && entry.category.id !== avoid);
+    const pool = scored.length
+        ? scored
+        : categories.filter((category) => category.id !== avoid)
+            .map((category) => ({ category, score: categoryEnvironmentScore(theme, category, packId) }));
+    if (!pool.length) return '';
+    const max = Math.max.apply(null, pool.map((entry) => entry.score));
+    const top = pool.filter((entry) => entry.score >= max - 0.5);
+    const roll = Number(rng());
+    const index = Number.isFinite(roll) ? Math.floor(((roll % 1) + 1) % 1 * top.length) : 0;
+    return top[Math.min(index, top.length - 1)].category.id;
+}
+
+// Keep an already-open concept coherent when its wardrobe personality changes.
+// Only a recognised environment that the pack clearly does not belong in is
+// replaced; abstract/unknown scenes, an explicit shared Scene, a locked
+// environment and a user prompt are all left alone.
+function ensurePackEnvironment(concept, theme, packId, options = {}) {
+    if (!concept || !packId || packId === outfitPacks.CUSTOM_PACK_ID) return concept;
+    if (options.protect || concept.userPrompt) return concept;
+    if (concept.sceneMode === 'explicit' || concept.sceneId) return concept;
+    const current = String(concept.environment || '').trim();
+    if (!current) return concept;
+    const verdict = outfitPacks.scoreEnvironment(packId, current, { activity: concept.activity });
+    if (!verdict.context || verdict.compatible) return concept;
+    const pool = Array.isArray(options.pool) && options.pool.length
+        ? options.pool
+        : environmentPoolFor(theme, concept.categoryId);
+    const picked = outfitPacks.selectEnvironment(packId, pool, { rng: options.rng, avoid: current });
+    if (!picked || !picked.value || picked.value === current) return concept;
+    concept.environment = picked.value;
+    concept.sceneId = '';
+    concept.sceneName = '';
+    concept.sceneContext = null;
+    concept.sceneReference = '';
+    concept.sceneSource = '';
+    concept.sceneMode = 'none';
+    if (options.reResolveActivity && (concept.activityMode === 'auto' || concept.activityMode === 'random')) {
+        resolveConceptActivity(concept, {
+            selection: concept.activityMode,
+            rng: options.rng,
+            themeId: theme && theme.id,
+            character: options.character,
+            avoidActivityIds: options.avoidActivityIds
+        });
+    }
+    return finalize(concept, theme);
 }
 
 // Assemble a fresh concept from a theme + character + locks. Randomization
@@ -462,9 +643,45 @@ function assembleConcept(input = {}) {
     // Independent character controls (appearance/age/gender). `random` in every
     // field reproduces the general random-character behaviour.
     const profile = identityGen.normalizeProfile(input.profile);
-    const scenario = pickScenario(theme, rng, input.category, {
+    // Resolve the wardrobe before drawing the scenario so the scene is drawn
+    // from places that outfit actually belongs in. An explicit shared Scene, a
+    // locked environment or a user prompt owns the scene instead. A multi-pack
+    // selection picks one active pack here while keeping the whole selection.
+    const hasExplicitWardrobe = typeof input.outfitPack === 'string'
+        || Array.isArray(input.outfitPacks)
+        || Boolean(input.outfitPackCustom);
+    const packCharacter = (userPrompt && !hasExplicitWardrobe) ? null : character;
+    const resolvedPack = resolveOutfitPack(input, packCharacter, {
+        rng,
+        avoidPackId: previous && previous.outfitPack,
+        forcePackId: input.activePackId
+    });
+    const sceneSelectionValue = String(input.sceneId || input.sceneSelection || '').trim();
+    const fixedScene = Boolean(sceneSelectionValue) && !['auto', 'random', 'none'].includes(sceneSelectionValue);
+    const lockedEnvironment = Boolean(locks.environment && previous && previous.environment);
+    const explicitScene = Boolean(userPrompt || lockedEnvironment || fixedScene);
+    const environmentPack = (!explicitScene && resolvedPack.packId && resolvedPack.packId !== outfitPacks.CUSTOM_PACK_ID)
+        ? resolvedPack.packId
+        : '';
+    const pickEnvironment = environmentPack
+        ? (pool) => outfitPacks.selectEnvironment(environmentPack, pool, {
+            rng,
+            avoid: previous && previous.environment ? previous.environment : ''
+        }).value
+        : undefined;
+    // A category-driven theme (Lifestyle & Candid) picks the subcategory that
+    // actually offers somewhere the pack belongs, instead of drawing a
+    // subcategory whose scene would contradict the clothing.
+    const categorySelection = input.category || (environmentPack
+        ? selectCategoryForPack(theme, environmentPack, {
+            rng,
+            avoid: previous && previous.categoryId ? previous.categoryId : ''
+        })
+        : '');
+    const scenario = pickScenario(theme, rng, categorySelection, {
         avoidOutfitSignatures: input.avoidOutfitSignatures,
-        previousOutfitArchetype: input.previousOutfitArchetype
+        previousOutfitArchetype: input.previousOutfitArchetype,
+        pickEnvironment
     });
 
     const concept = {
@@ -499,7 +716,10 @@ function assembleConcept(input = {}) {
         outfitSilhouette: scenario.outfitSilhouette || '',
         // The Outfit Pack (wardrobe personality) that produced the clothing, the
         // composed pieces, and the user-defined outfit when the pack is Custom.
+        // `outfitPacks` is the full multi-select wardrobe; `outfitPack` is the
+        // one active pack this concept actually used.
         outfitPack: '',
+        outfitPacks: [],
         outfitPackLabel: '',
         outfitPackCustom: '',
         outfitComponents: null,
@@ -508,6 +728,14 @@ function assembleConcept(input = {}) {
         outfitResolution: null,
         environment: scenario.environment || '',
         activity: scenario.activity || '',
+        // The resolved body position for the scene (see scene-posture.js):
+        // what the character is physically doing with their body so the action,
+        // the place and the posture stay coherent.
+        postureId: '',
+        postureLabel: '',
+        postureStance: '',
+        postureDescription: '',
+        postureSource: '',
         // Structured Activity Library resolution: the activity id/label, its
         // action palette and composition/camera hints, and whether it was
         // selected from the library or merely matched from the theme scenario.
@@ -584,8 +812,11 @@ function assembleConcept(input = {}) {
     } else if (mode === 'random_character') {
         // `freshIdentity` is set on a brand-new Surprise so "Random new
         // character" always casts a new person; a re-roll ("Surprise Me Again")
-        // keeps the current one while the identity lock is set.
-        const keepIdentity = !input.freshIdentity && previous && locks.identity && previous.subject;
+        // keeps the current one while the identity lock is set. A wardrobe-led
+        // scene change passes `preserveIdentity` so a pack switch never casts a
+        // new person behind the user's back.
+        const keepIdentity = !input.freshIdentity && previous
+            && (locks.identity || input.preserveIdentity) && previous.subject;
         if (keepIdentity) {
             concept.subject = previous.subject;
             concept.appearance = previous.appearance || '';
@@ -673,15 +904,15 @@ function assembleConcept(input = {}) {
         selection: input.sceneId || input.sceneSelection,
         rng,
         avoidSceneIds: input.avoidSceneIds,
+        // A random/auto scene respects the active wardrobe personality.
+        packId: environmentPack,
         skip: Boolean(locks.environment || userPrompt)
     });
 
-    // Outfit Pack: compose the specific outfit from the selected pack's wardrobe
+    // Outfit Pack: compose the specific outfit from the active pack's wardrobe
     // space. A locked outfit wins, so only the pack metadata is recorded then.
     // With a user prompt the character's saved wardrobe is not auto-applied —
     // the prompt owns the clothing unless the user explicitly chose a pack.
-    const packCharacter = (userPrompt && !input.outfitPack && !input.outfitPackCustom) ? null : character;
-    const resolvedPack = resolveOutfitPack(input, packCharacter);
     if (resolvedPack.packId) {
         const context = input.contextText ? outfitPacks.contextModifiers(input.contextText) : null;
         // The user's own prompt is the scene authority when present; otherwise
@@ -700,10 +931,14 @@ function assembleConcept(input = {}) {
             activity: userPrompt ? '' : concept.activity,
             debug: input.debug
         });
+        concept.outfitPacks = resolvedPack.custom ? [] : resolvedPack.packIds.slice();
     } else if (concept.activitySource === 'library' && concept.outfit && !locks.outfit && !userPrompt) {
         // No pack drove the clothing: still let the selected activity adapt the
         // theme-drawn outfit through the central resolver (footwear, comfort).
+        concept.outfitPacks = [];
         adaptConceptOutfitToActivity(concept, rng);
+    } else {
+        concept.outfitPacks = [];
     }
 
     // Face Action: an explicit user instruction wins; a locked expression is
@@ -910,6 +1145,7 @@ function applyChanges(concept, changes) {
         next.outfitSilhouette = '';
         next.outfitComponents = null;
         next.outfitPack = outfitPacks.CUSTOM_PACK_ID;
+        next.outfitPacks = [];
         next.outfitPackLabel = outfitPacks.CUSTOM_PACK_LABEL;
         next.outfitPackCustom = next.outfit;
     }
@@ -1215,6 +1451,18 @@ function conceptToDirection(concept) {
         lines.push('Group character separation: the specified character is the single featured lead and must match the character identity/reference; include the requested friends as separate people, not copies of the lead or of one another. Give each friend clearly different facial features, hairstyle and hair color, and body build. Dress every friend in an individualized outfit with a distinct color palette; do not copy the lead character\'s outfit or reuse the same outfit across friends. Keep each person visually distinct and recognizable.');
     }
     if (c.environment) lines.push('Environment: ' + c.environment + '.');
+    const posture = c.postureDescription
+        ? { phrase: c.postureDescription, source: c.postureSource }
+        : scenePosture.resolve({
+            environment: c.environment,
+            activity: c.activity,
+            userPrompt: c.userPrompt
+        });
+    // A user prompt owns the scene. When it names no stance, leave the pose to
+    // the prompt rather than imposing a generic default on it.
+    const postureApplies = posture.phrase && (!c.userPrompt || posture.source !== 'default');
+    const postureLine = postureApplies ? scenePosture.formatDirection(posture, c.name) : '';
+    if (postureLine) lines.push(postureLine);
     if (c.category) lines.push('Social-media category: ' + c.category + '.');
     if (c.lighting) lines.push('Lighting: ' + c.lighting + '.');
     if (c.techniqueLabel) lines.push('Primary experimental technique: ' + c.techniqueLabel + '.');
@@ -1312,6 +1560,10 @@ module.exports = {
     rerollIdentityPart,
     REROLLABLE_FIELDS,
     resolveOutfitPack,
+    environmentPoolFor,
+    categoryEnvironmentCompatible,
+    selectCategoryForPack,
+    ensurePackEnvironment,
     interpretContextMessage,
     detectChanges,
     conceptToDirection,

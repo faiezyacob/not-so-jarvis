@@ -13,6 +13,7 @@ const CreatorStudioUI = (() => {
     let characters = [];
     let session = null;
     let generationPending = false;
+    let lastGenerateAt = 0;
     let progressPercent = 0;
     let progressConversationId = null;
     let recentSuggestions = [];
@@ -567,6 +568,7 @@ const CreatorStudioUI = (() => {
     async function requestSuggestions() {
         const panel = $('creatorSuggestionPanel');
         const trigger = $('creatorSuggestionButton');
+        const triggerLabel = $('creatorSuggestionLabel');
         const more = $('creatorSuggestionMore');
         const message = $('creatorSuggestionMessage');
         const list = $('creatorSuggestionList');
@@ -577,7 +579,7 @@ const CreatorStudioUI = (() => {
         trigger.setAttribute('aria-expanded', 'true');
         trigger.disabled = true;
         more.disabled = true;
-        trigger.textContent = '✨ Thinking…';
+        if (triggerLabel) triggerLabel.textContent = 'Thinking…';
         message.textContent = 'Finding ideas for these settings…';
         message.hidden = false;
         list.replaceChildren();
@@ -607,7 +609,7 @@ const CreatorStudioUI = (() => {
         } finally {
             trigger.disabled = false;
             more.disabled = false;
-            trigger.textContent = '✨ AI Suggestion';
+            if (triggerLabel) triggerLabel.textContent = 'Suggest';
         }
     }
 
@@ -673,6 +675,7 @@ const CreatorStudioUI = (() => {
         lastSceneCustomValue = null;
         overlay.hidden = false;
         requestAnimationFrame(() => overlay.classList.add('open'));
+        if (window.StudioShell) window.StudioShell.open(overlay, { initial: '#creatorCharacterSelect' });
         setStatus('');
         loadOptions().then(refreshSession).catch((error) => setStatus(error.message));
         if (pollTimer) clearInterval(pollTimer);
@@ -686,12 +689,15 @@ const CreatorStudioUI = (() => {
         const overlay = $('creatorStudioOverlay');
         closeSuggestions();
         overlay.classList.remove('open');
+        if (window.StudioShell) window.StudioShell.close();
         setTimeout(() => { overlay.hidden = true; }, 180);
         if (pollTimer) clearInterval(pollTimer);
         pollTimer = null;
     }
 
     async function generate() {
+        if (Date.now() - lastGenerateAt < 1500) return;
+        lastGenerateAt = Date.now();
         try {
             const characterId = $('creatorCharacterSelect').value;
             const character = characters.find((item) => item.id === characterId);

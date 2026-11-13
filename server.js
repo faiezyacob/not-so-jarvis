@@ -75,6 +75,7 @@ const providers = require('./server/providers');
 const models = require('./server/models');
 const providerManager = require('./server/provider-manager');
 const imageGenerator = require('./services/image-generator');
+const imageProviders = require('./services/image-providers');
 const videoGenerator = require('./services/video-generator');
 const faceRefine = require('./services/face-refine');
 const frameInterp = require('./services/frame-interp');
@@ -101,6 +102,7 @@ const director = require('./services/director/director');
 const longVideoDirector = require('./services/long-video/director');
 const playground = require('./services/playground/playground');
 const playgroundToday = require('./services/playground/today');
+const scenePosture = require('./services/playground/scene-posture');
 const ugcStudio = require('./services/ugc/studio');
 const ugcProducts = require('./services/ugc/products');
 const sceneLibrary = require('./services/scene-library');
@@ -674,7 +676,12 @@ async function handleAPI(req, res, urlPath) {
             const defaults = imageGenerator.getDefaults();
             const choices = await imageGenerator.getModelChoices();
             const comfyAvailable = choices !== null;
-            json(res, 200, { settings, defaults, choices, comfyAvailable });
+            json(res, 200, {
+                settings, defaults, choices, comfyAvailable,
+                // Provider capabilities are declared once on the server so the
+                // UI never hard-codes workflow details.
+                providers: imageProviders.imageProvidersJson()
+            });
         } catch (err) {
             json(res, 500, { error: err.message });
         }
@@ -6492,6 +6499,9 @@ function resolveIdentityConditioning(characters, scenePrompt, options = {}) {
         activity: options.activity,
         seed: options.seed,
         outfitPack: options.outfitPack,
+        // The resolved body position for the scene (Playground only): the
+        // identity edit instruction places the body instead of improvising it.
+        posture: options.posture,
         defaults: options.defaults,
         continuity: options.continuity,
         previousClothing: options.previousClothing,
@@ -6531,9 +6541,18 @@ function resolveIdentityConditioning(characters, scenePrompt, options = {}) {
 // saved @Character, so Playground never falls back to text-only character
 // generation. The multi-panel sheet is deliberately not part of this path.
 function resolvePlaygroundIdentityConditioning(session, scenePrompt) {
+    const idea = session && session.concept ? session.concept : {};
+    const resolvedPosture = scenePosture.resolve({
+        environment: idea.environment,
+        activity: idea.activity,
+        userPrompt: idea.userPrompt
+    });
+    // A user prompt owns the scene; a generic standing default must not be
+    // imposed on a pose the prompt already describes.
+    const posture = idea.userPrompt && resolvedPosture.source === 'default' ? null : resolvedPosture;
     const savedCharacter = playground.identityCharacterSource(session, null);
     if (savedCharacter) {
-        const saved = resolveIdentityConditioning(savedCharacter, scenePrompt);
+        const saved = resolveIdentityConditioning(savedCharacter, scenePrompt, { posture });
         if (saved) return saved;
     }
 
@@ -6544,7 +6563,7 @@ function resolvePlaygroundIdentityConditioning(session, scenePrompt) {
         name: session.concept && session.concept.name,
         identity: session.concept && session.concept.identity
     };
-    const conditioning = characterIdentity.buildStandaloneConditioning(character, portrait, scenePrompt);
+    const conditioning = characterIdentity.buildStandaloneConditioning(character, portrait, scenePrompt, { posture });
     if (!conditioning) return null;
     const sourceAbs = path.join(GENERATED_DIR, path.basename(conditioning.sourceFilename));
     if (!fs.existsSync(sourceAbs)) return null;
@@ -7083,6 +7102,7 @@ async function handlePlaygroundAction(req, res, ctx, action, rawMessage) {
                 locks: action.locks,
                 profile: action.profile,
                 outfitPack: action.outfitPack,
+                outfitPacks: action.outfitPacks,
                 outfitPackCustom: action.outfitPackCustom,
                 // The shared Activity Library selection ("", "auto", "random" or id).
                 activity: action.activity,
@@ -7318,6 +7338,7 @@ async function handlePlaygroundAction(req, res, ctx, action, rawMessage) {
             }
             // An explicit pack selection from the popover wins over interpretation.
             if (action.outfitPack !== undefined) payload.outfitPack = action.outfitPack;
+            if (action.outfitPacks !== undefined) payload.outfitPacks = action.outfitPacks;
             if (action.outfitPackCustom !== undefined) payload.outfitPackCustom = action.outfitPackCustom;
             if (action.activity !== undefined) payload.activity = action.activity;
             if (action.faceAction !== undefined) payload.faceAction = action.faceAction;
@@ -8283,6 +8304,11 @@ async function handleImageGenerationStream(req, res, opts) {
                 : imageGenerator.generateImage(imagePrompt, {
                     provider, model, conversationId, onQueued, onStart,
                     seed: baseSeed + i,
+                    // MOSS's optional enhancer reference is a user-uploaded
+                    // image (or a generated one) resolved inside data/.
+                    enhancerReferencePath: genSettings.model === 'moss' && genSettings.mossPromptEnhancer !== false
+                        ? resolveMediaAbsPath(path.basename(String(genSettings.mossEnhancerReference || '')))
+                        : null,
                     // The Director opening frame is internal media: it lives on
                     // the approval card, never in the public gallery.
                     hidden: Boolean(opts.director),
@@ -8646,6 +8672,8 @@ function friendlyImageError(err) {
         case 'edit_source_missing':
             return err.message;
         case 'krea2_identity_edit_lora_missing':
+            return err.message;
+        case 'moss_edit_lora_missing':
             return err.message;
         case 'upscale_source_missing':
             return 'The image to upscale could not be found on disk. It may have been deleted.';

@@ -645,7 +645,9 @@ function buildSceneInstruction(characters, scenePrompt, options = {}) {
         const pkg = characterPresets.getIdentityPackage(list[0].id);
         const faceAction = buildFaceActionSection(list, options.rawPrompt);
         const sceneDirection = faceAction ? faceActions.stripFaceActionText(scene) : scene;
-        const base = characterIdentity.buildSceneEditInstruction(pkg, sceneDirection, list[0].name || 'the character');
+        const base = characterIdentity.buildSceneEditInstruction(pkg, sceneDirection, list[0].name || 'the character', {
+            posture: options.posture
+        });
         const withFaceAction = faceAction ? base + ' ' + faceAction.section : base;
         // Creative defaults are additive: identity wording is untouched, the
         // resolved clothing/style only fill what the user left unspecified.
@@ -695,6 +697,9 @@ function buildConditioning(characters, scenePrompt, options = {}) {
         seed: options.seed,
         outfitPack: options.outfitPack,
         gender: options.gender,
+        // The resolved body position (scene-posture.js) so the editor places the
+        // body in the scene instead of copying the portrait's pose.
+        posture: options.posture,
         defaults: options.defaults,
         // Continuity: preserve the previous automatic clothing/style on a
         // follow-up unless the user asks to change them.

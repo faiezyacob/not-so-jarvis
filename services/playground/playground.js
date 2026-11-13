@@ -229,9 +229,13 @@ function buildCard(session, character) {
         // selected (or session-created) character, so the card can show the
         // approval gate and a "View Identity" entry point.
         identity: identitySummary(session, character),
-        // The active Outfit Pack (wardrobe personality) and any custom outfit, so
-        // the Surprise Me popover can reflect the open concept's wardrobe.
+        // The active Outfit Pack (wardrobe personality) and the full multi-select
+        // wardrobe, so the Surprise Me popover can reflect the open concept's
+        // selection and toggle packs off again.
         outfitPack: concept.outfitPack || '',
+        outfitPacks: Array.isArray(concept.outfitPacks)
+            ? concept.outfitPacks.slice()
+            : (concept.outfitPack && concept.outfitPack !== 'custom' ? [concept.outfitPack] : []),
         outfitPackLabel: concept.outfitPackLabel || '',
         outfitPackCustom: concept.outfitPackCustom || '',
         // The resolved Activity Library selection (id + UI mode) so the popover
@@ -275,6 +279,9 @@ function buildCard(session, character) {
             category: concept.category || '',
             outfit: concept.outfit || '',
             outfitPack: concept.outfitPack || '',
+            outfitPacks: Array.isArray(concept.outfitPacks)
+                ? concept.outfitPacks.slice()
+                : (concept.outfitPack && concept.outfitPack !== 'custom' ? [concept.outfitPack] : []),
             outfitPackLabel: concept.outfitPackLabel || '',
             outfitPackCustom: concept.outfitPackCustom || '',
             environment: concept.environment || '',
@@ -371,8 +378,10 @@ function start(input = {}) {
         // A new Surprise with "Random new character" always casts a new person.
         freshIdentity: mode === 'random_character',
         // The Outfit Pack is a character attribute; it composes the specific
-        // outfit from the pack's wardrobe space.
+        // outfit from the pack's wardrobe space. A multi-pack selection is
+        // remembered and one of them is used for this concept.
         outfitPack: input.outfitPack,
+        outfitPacks: input.outfitPacks,
         outfitPackCustom: input.outfitPackCustom,
         contextText: input.contextText,
         // The Activity Library selection ("", "auto", "random" or an id).
@@ -403,6 +412,7 @@ function start(input = {}) {
         characterId: character ? character.id : null,
         characterProfile: profile,
         outfitPack: concept.outfitPack || '',
+        outfitPacks: Array.isArray(concept.outfitPacks) ? concept.outfitPacks.slice() : [],
         outfitPackCustom: concept.outfitPackCustom || '',
         activity: activitySelection,
         sceneSelection,
@@ -491,9 +501,10 @@ function again(session, options = {}) {
         locks: rerollLocks,
         previous,
         profile,
-        // The pack persists across "Surprise Me Again" (it is a wardrobe
-        // personality) and recomposes a new specific outfit from it.
+        // The pack selection persists across "Surprise Me Again" (it is a
+        // wardrobe personality set) and recomposes a new specific outfit from it.
         outfitPack: session.outfitPack,
+        outfitPacks: session.outfitPacks,
         outfitPackCustom: session.outfitPackCustom,
         contextText: options.contextText,
         // An explicit/auto Activity Library selection persists across the
@@ -534,6 +545,7 @@ function again(session, options = {}) {
     session.revision = (Number(session.revision) || 1) + 1;
     session.composition = createCompositionSnapshot(session);
     session.outfitPack = concept.outfitPack || '';
+    session.outfitPacks = Array.isArray(concept.outfitPacks) ? concept.outfitPacks.slice() : [];
     session.outfitPackCustom = concept.outfitPackCustom || '';
     rememberIdentity(session, concept);
     rememberOutfit(session, concept);
@@ -585,21 +597,59 @@ function modify(session, action = {}) {
     }
     delete changes.themeId;
 
-    // Outfit Pack changes arrive either from the popover (`action.outfitPack`)
-    // or from typed context ("make the outfit suitable for the gym"). A new pack
-    // is a true replacement: a complete outfit is composed from the new pack's
-    // wardrobe, never appended to the previous clothing.
-    const explicitPack = Object.prototype.hasOwnProperty.call(action, 'outfitPack') ? action.outfitPack : undefined;
-    const changePack = Object.prototype.hasOwnProperty.call(changes, 'outfitPack') ? changes.outfitPack : undefined;
+    // Outfit Pack changes arrive either from the popover (a multi-select
+    // `outfitPacks` array or the legacy single `outfitPack`) or from typed
+    // context. The full selection is remembered; one pack is active for this
+    // concept, randomized when several are selected.
+    const hasOwn = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
+    const explicitPack = hasOwn(action, 'outfitPack') ? action.outfitPack : undefined;
+    const changePack = hasOwn(changes, 'outfitPack') ? changes.outfitPack : undefined;
+    const explicitPackList = hasOwn(action, 'outfitPacks') ? action.outfitPacks : undefined;
+    const changePackList = hasOwn(changes, 'outfitPacks') ? changes.outfitPacks : undefined;
     const explicitCustom = action.outfitPackCustom;
     const changeCustom = changes.outfitPackCustom;
     delete changes.outfitPack;
+    delete changes.outfitPacks;
     delete changes.outfitPackCustom;
-    const packProvided = explicitPack !== undefined || changePack !== undefined;
-    const requestedPack = String(explicitPack !== undefined ? explicitPack : (changePack !== undefined ? changePack : '')).trim();
+    const packProvided = explicitPack !== undefined || changePack !== undefined
+        || explicitPackList !== undefined || changePackList !== undefined;
+    const requestedList = explicitPackList !== undefined ? explicitPackList : changePackList;
+    const requestedSingle = explicitPack !== undefined ? explicitPack : changePack;
+    let requestedPacks = [];
+    let requestedCustomFlag = false;
+    if (requestedList !== undefined) {
+        requestedCustomFlag = (Array.isArray(requestedList) ? requestedList : [])
+            .some((value) => outfitPacks.normalizePackId(value) === outfitPacks.CUSTOM_PACK_ID)
+            || outfitPacks.normalizePackId(requestedSingle) === outfitPacks.CUSTOM_PACK_ID;
+        requestedPacks = outfitPacks.normalizePackIds(requestedList);
+    } else if (requestedSingle !== undefined) {
+        const single = outfitPacks.normalizePackId(requestedSingle);
+        requestedCustomFlag = single === outfitPacks.CUSTOM_PACK_ID;
+        if (single && single !== outfitPacks.CUSTOM_PACK_ID) requestedPacks = [single];
+    }
     const requestedCustom = String(explicitCustom || changeCustom || '').trim();
-    const effectivePack = packProvided ? requestedPack : (session.outfitPack || '');
-    const effectiveCustom = packProvided ? requestedCustom : (session.outfitPackCustom || '');
+    const sessionPacks = outfitPacks.normalizePackIds(
+        Array.isArray(session.outfitPacks) && session.outfitPacks.length
+            ? session.outfitPacks
+            : (session.outfitPack && session.outfitPack !== 'custom' ? [session.outfitPack] : [])
+    );
+    let effectivePacks = packProvided ? requestedPacks : sessionPacks;
+    const effectiveCustomFlag = packProvided
+        ? Boolean(requestedCustomFlag && requestedCustom)
+        : Boolean(session.outfitPackCustom && session.outfitPack === 'custom');
+    const effectiveCustom = packProvided
+        ? (requestedCustomFlag ? requestedCustom : '')
+        : (effectiveCustomFlag ? (session.outfitPackCustom || '') : '');
+    const sessionActivePack = session.concept && session.concept.outfitPack;
+    let effectivePack = effectiveCustomFlag
+        ? outfitPacks.CUSTOM_PACK_ID
+        : (packProvided
+            ? outfitPacks.pickFromPackIds(effectivePacks, action.rng, { avoidPackId: sessionActivePack })
+            : (sessionActivePack && (sessionActivePack === outfitPacks.CUSTOM_PACK_ID
+                || effectivePacks.includes(sessionActivePack))
+                ? sessionActivePack
+                : (effectivePacks[0] || '')));
+    if (effectiveCustomFlag) effectivePacks = [];
 
     // Explicit character-control changes merge onto the session's profile. A
     // changed profile invalidates the current identity (the person no longer
@@ -613,6 +663,24 @@ function modify(session, action = {}) {
 
     const theme = themes.getTheme(session.themeId);
     const character = resolveCharacter(session.characterId);
+    // A wardrobe change on a category-driven theme may need a subcategory that
+    // actually contains a suitable environment. This only runs when the current
+    // subcategory has nowhere the new pack belongs; an explicit category, scene,
+    // lock or user prompt always wins.
+    if (!category && packProvided && effectivePack && !outfitPacks.isCustomPack(effectivePack)
+        && theme && Array.isArray(theme.categories) && theme.categories.length
+        && !(session.concept && session.concept.userPrompt)
+        && !locks.environment) {
+        const currentCategory = themes.resolveCategory(theme, session.concept && session.concept.categoryId);
+        if (!conceptEngine.categoryEnvironmentCompatible(theme, currentCategory, effectivePack)) {
+            const next = conceptEngine.selectCategoryForPack(theme, effectivePack, {
+                rng: action.rng,
+                avoid: session.concept && session.concept.categoryId
+            });
+            if (next) category = next;
+        }
+    }
+    const packCategoryReroll = Boolean(category) && !String(action.category || changes.category || '').trim();
     // Activity changes arrive either from the popover (`action.activity`) or
     // from a typed follow-up resolved by the Activity Library (`changes`).
     const activityProvided = Object.prototype.hasOwnProperty.call(action, 'activity');
@@ -626,6 +694,10 @@ function modify(session, action = {}) {
     // surgical change to the current concept only.
     const fieldReroll = String(action.rerollField || '').trim().toLowerCase();
     const reroll = Boolean(action.reroll || category || themeChanged || profileChanged);
+    // A re-roll with several wardrobes selected varies the active pack too.
+    if (reroll && !packProvided && !effectiveCustomFlag && effectivePacks.length > 1) {
+        effectivePack = outfitPacks.pickFromPackIds(effectivePacks, action.rng, { avoidPackId: sessionActivePack });
+    }
     let concept;
     if (reroll) {
         concept = conceptEngine.assembleConcept({
@@ -637,6 +709,8 @@ function modify(session, action = {}) {
             category,
             profile: requestedProfile,
             freshIdentity: profileChanged,
+            // A pack-led subcategory change keeps the same person.
+            preserveIdentity: packCategoryReroll,
             avoidSignatures: Array.isArray(session.identitySignatures) ? session.identitySignatures : [],
             avoidOutfitSignatures: Array.isArray(session.outfitSignatures) ? session.outfitSignatures : [],
             // A popover activity selection persists; otherwise the session's.
@@ -645,6 +719,12 @@ function modify(session, action = {}) {
             // A popover Scene selection persists; otherwise the session's.
             sceneId: Object.prototype.hasOwnProperty.call(action, 'sceneId')
                 ? action.sceneId : session.sceneSelection,
+            // The wardrobe selection (one or several packs) travels with the
+            // re-roll; one active pack is chosen for this concept.
+            outfitPack: effectivePack,
+            outfitPacks: effectivePacks,
+            outfitPackCustom: effectiveCustom,
+            activePackId: effectivePack,
             faceAction: faceActionProvided ? faceActionValue
                 : (session.concept && session.concept.userPrompt && session.faceAction === 'auto'
                     && !session.faceActionComponents ? undefined : (session.faceAction || 'auto')),
@@ -675,7 +755,11 @@ function modify(session, action = {}) {
     // (not a library selection) owns the scene wording, so the previous shared
     // Scene id is cleared to keep them in sync.
     if (Object.prototype.hasOwnProperty.call(action, 'sceneId')) {
-        concept = conceptEngine.resolveConceptScene(concept, { selection: action.sceneId, rng: action.rng });
+        concept = conceptEngine.resolveConceptScene(concept, {
+            selection: action.sceneId,
+            rng: action.rng,
+            packId: effectivePack || concept.outfitPack || ''
+        });
         session.sceneSelection = String(action.sceneId || '');
     } else if (changes && changes.environment) {
         conceptEngine.clearSceneFields(concept);
@@ -690,6 +774,23 @@ function modify(session, action = {}) {
         });
     } else if (faceActionProvided && faceActionValue.trim().toLowerCase() === 'none') {
         conceptEngine.clearFaceActionFields(concept);
+    }
+    // Keep the scene coherent with a newly chosen wardrobe personality. Only a
+    // recognised environment the pack clearly does not belong in is replaced;
+    // an explicit scene/environment change, a lock and a user prompt all win.
+    const explicitEnvironment = Boolean(
+        (changes && changes.environment)
+        || Object.prototype.hasOwnProperty.call(action, 'sceneId')
+        || locks.environment
+        || concept.userPrompt
+    );
+    if (effectivePack && packProvided && !explicitEnvironment) {
+        concept = conceptEngine.ensurePackEnvironment(concept, theme, effectivePack, {
+            rng: action.rng,
+            character,
+            avoidActivityIds,
+            reResolveActivity: true
+        });
     }
     // Recompose only when the pack actually changed or the scenario was
     // re-rolled — a scene-only tweak keeps the exact outfit (applyChanges).
@@ -716,11 +817,14 @@ function modify(session, action = {}) {
             debug: action.debug
         });
     } else if (packProvided && !effectivePack) {
-        // The pack was explicitly cleared; keep the clothing but drop the metadata.
+        // The pack selection was explicitly cleared; keep the clothing but drop
+        // the metadata.
         concept.outfitPack = '';
+        concept.outfitPacks = [];
         concept.outfitPackLabel = '';
         concept.outfitPackCustom = '';
     }
+    if (packProvided) concept.outfitPacks = effectiveCustomFlag ? [] : effectivePacks.slice();
     // Let a changed activity adapt the clothing (footwear, comfort, accessories)
     // through the central resolver without recomposing a new look. A pack
     // recomposition above already accounted for the activity, so this is a
@@ -752,6 +856,9 @@ function modify(session, action = {}) {
             identityUpdated = concept.identity.signature !== beforeSignature;
         }
     }
+    // Re-finalize once every edit has landed so the derived scene, title,
+    // description and body position can never describe the previous values.
+    if (concept) concept = conceptEngine.finalize(concept, theme);
     rememberOutfit(session, concept);
     rememberActivity(session, concept);
     rememberFaceAction(session, concept);
@@ -760,6 +867,7 @@ function modify(session, action = {}) {
         ? characterGen.normalizeProfile(concept.characterProfile || requestedProfile)
         : requestedProfile;
     session.outfitPack = concept.outfitPack || '';
+    session.outfitPacks = Array.isArray(concept.outfitPacks) ? concept.outfitPacks.slice() : [];
     session.outfitPackCustom = concept.outfitPackCustom || '';
     if (faceActionProvided) session.faceAction = faceActionValue.trim() || 'auto';
     else if (changes.faceAction || changes.faceActionComponents) session.faceAction = concept.faceActionId || 'auto';
@@ -967,6 +1075,7 @@ function createScene(concept, theme) {
         faceActionDescription: c.faceActionDescription || '',
         faceActionComponents: c.faceActionComponents || null,
         environment: c.environment || '', outfit: c.outfit || '', outfitPack: c.outfitPack || '',
+        outfitPacks: Array.isArray(c.outfitPacks) ? c.outfitPacks.slice() : [],
         lighting: c.lighting || '', camera: c.camera || '', composition: c.composition || '', mood: c.mood || '',
         style: c.style || '', technique: c.technique || '', texture: c.texture || '', aspectRatio: c.aspectRatio || '',
         customDirection: c.customDirection || '', userPrompt: c.userPrompt || '',
@@ -1089,7 +1198,13 @@ function normalizeAction(value) {
             out.identityTraits = value.identityTraits.filter((item) => item && typeof item === 'object')
                 .map((item) => ({ part: String(item.part || ''), value: String(item.value === undefined ? '' : item.value) }));
         }
-        // Outfit Pack selection (a pack id, or `custom` with a text override).
+        // Outfit Pack selection: a multi-pack array (the popover's toggles), a
+        // single pack id, or `custom` with a text override.
+        if (Array.isArray(value.outfitPacks)) {
+            out.outfitPacks = value.outfitPacks.map((id) => String(id || '')).filter(Boolean);
+        } else if (typeof value.outfitPacks === 'string') {
+            out.outfitPacks = value.outfitPacks.split(',').map((id) => id.trim()).filter(Boolean);
+        }
         if (typeof value.outfitPack === 'string') out.outfitPack = value.outfitPack;
         if (typeof value.outfitPackCustom === 'string') out.outfitPackCustom = value.outfitPackCustom;
         else if (typeof value.customOutfit === 'string') out.outfitPackCustom = value.customOutfit;

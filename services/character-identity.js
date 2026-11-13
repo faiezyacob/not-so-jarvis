@@ -685,7 +685,7 @@ function selectIdentityReference(value) {
     };
 }
 
-function buildStandaloneConditioning(character, baseImage, scenePrompt) {
+function buildStandaloneConditioning(character, baseImage, scenePrompt, options = {}) {
     const image = baseImage && typeof baseImage === 'object' ? baseImage : {};
     const filename = String(image.filename || (image.url ? basenameOf(image.url) : '')).trim();
     if (!filename) return null;
@@ -699,7 +699,8 @@ function buildStandaloneConditioning(character, baseImage, scenePrompt) {
         sourceFilename: filename,
         references: [],
         instruction: buildSceneEditInstruction(pkg, scenePrompt, source.name || 'the character', {
-            gender: source.identity && source.identity.gender
+            gender: source.identity && source.identity.gender,
+            posture: options.posture
         }),
         constraints: buildIdentityConstraints(pkg),
         characterName: source.name || 'the character'
@@ -790,7 +791,25 @@ function buildSkinContinuitySection(value, label) {
 // editor: image 1 is the approved base portrait and the output is a NEW
 // standalone scene image. Identity details come from structured metadata; the
 // multi-panel sheet is never a generation reference.
-function buildSceneEditInstruction(value, scenePrompt, name) {
+function bodyPositionPhrase(posture) {
+    if (!posture) return '';
+    if (typeof posture === 'string') return posture.trim();
+    return String(posture.phrase || posture.description || '').trim();
+}
+
+// The one positive body-position section: the scene owns where the body is, and
+// the weight must be supported by the ground or the furniture. It replaces the
+// portrait's pose instead of letting the editor improvise one.
+function buildBodyPositionSection(posture, label) {
+    const phrase = bodyPositionPhrase(posture);
+    if (!phrase) return '';
+    return 'BODY POSITION: ' + (label || 'the character') + ' is ' + phrase + '. ' +
+        'Place the body physically in the scene with its weight supported by the ground or the furniture: ' +
+        'feet planted or resting, the seat carrying the body when seated, no floating limbs and no perching ' +
+        'on the edge of a seat.';
+}
+
+function buildSceneEditInstruction(value, scenePrompt, name, options = {}) {
     const pkg = normalizePackage(value);
     const metadata = pkg.identityMetadata || {};
     const summaryText = summary(metadata);
@@ -807,10 +826,12 @@ function buildSceneEditInstruction(value, scenePrompt, name) {
         'Do not copy its panel layout, camera angles, framing, background, pose, lighting, composition, text, ' +
         'borders or labels into the new image. Unless the user explicitly asks for a character sheet or ' +
         'turnaround, the output is a single conventional frame.';
-    const scene = 'SCENE (change only this): ' + String(scenePrompt || '').trim();
+    const sceneText = String(scenePrompt || '').trim();
+    const body = buildBodyPositionSection(options.posture, label);
+    const scene = 'SCENE (change only this): ' + sceneText;
     const dont = 'DO NOT: redesign the character, change facial structure, change the hairstyle unnecessarily, ' +
         'or introduce new accessories unless the scene explicitly asks for them.';
-    return identity + ' ' + skinContinuity + ' ' + output + ' ' + scene + ' ' + dont;
+    return identity + ' ' + skinContinuity + ' ' + output + (body ? ' ' + body : '') + ' ' + scene + ' ' + dont;
 }
 
 // The structured context one character contributes to downstream generation.
@@ -973,6 +994,7 @@ module.exports = {
     buildIdentityConstraints,
     buildSkinContinuitySection,
     buildSceneEditInstruction,
+    buildBodyPositionSection,
     buildCharacterContextEntry,
     // UI
     buildCard,

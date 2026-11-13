@@ -171,32 +171,98 @@ const CONTEXT_CATALOG = {
         allowedFootwear: ['heels', 'formal', 'flats', 'trainers'],
         removeOuterwear: 'none',
         formality: 'neutral'
+    },
+    hotel: {
+        label: 'Hotel',
+        tags: ['indoor', 'private', 'social', 'polished', 'warm'],
+        allowedFootwear: ['barefoot', 'slippers', 'flats', 'heels', 'formal', 'sandals', 'trainers'],
+        removeOuterwear: 'none',
+        formality: 'smart'
+    },
+    rooftop: {
+        label: 'Rooftop',
+        tags: ['outdoor', 'social', 'urban', 'evening', 'fashionable'],
+        allowedFootwear: ['heels', 'boots', 'sandals', 'flats', 'formal'],
+        removeOuterwear: 'none',
+        formality: 'evening'
+    },
+    transit: {
+        label: 'Transit',
+        tags: ['indoor', 'public', 'walking', 'travel', 'casual'],
+        allowedFootwear: ['trainers', 'flats', 'boots', 'sandals'],
+        removeOuterwear: 'none',
+        formality: 'casual'
+    },
+    market: {
+        label: 'Market',
+        tags: ['outdoor', 'public', 'walking', 'casual', 'streetwear-friendly'],
+        allowedFootwear: ['trainers', 'flats', 'sandals', 'boots'],
+        removeOuterwear: 'none',
+        formality: 'casual'
+    },
+    museum: {
+        label: 'Museum',
+        tags: ['indoor', 'public', 'culture', 'quiet', 'smart'],
+        allowedFootwear: ['flats', 'formal', 'heels', 'boots', 'trainers'],
+        removeOuterwear: 'none',
+        formality: 'smart'
+    },
+    library: {
+        label: 'Library',
+        tags: ['indoor', 'public', 'quiet', 'study'],
+        allowedFootwear: ['flats', 'trainers', 'boots'],
+        removeOuterwear: 'none',
+        formality: 'casual'
+    },
+    balcony: {
+        label: 'Balcony',
+        tags: ['outdoor', 'private', 'relaxed', 'home', 'barefoot-friendly'],
+        allowedFootwear: ['barefoot', 'slippers', 'socks', 'flats'],
+        removeOuterwear: 'none',
+        formality: 'relaxed'
+    },
+    study: {
+        label: 'Study',
+        tags: ['indoor', 'private', 'quiet', 'study', 'home'],
+        allowedFootwear: ['flats', 'trainers', 'slippers', 'socks'],
+        removeOuterwear: 'heavy',
+        minimizeAccessories: true,
+        formality: 'casual'
     }
 };
 
 // Ordered environment hints. Specific places come before broad ones so a
 // keyword never collapses onto a generic context by accident.
 const ENVIRONMENT_HINTS = [
-    { id: 'bedroom', re: /\b(?:bedroom|in bed|on (?:the|her|his) bed|lying on bed|bedroom mirror|sitting on the bed)\b/i },
+    { id: 'bedroom', re: /\b(?:bedroom|bedchamber|in bed|on (?:the|her|his) bed|lying on bed|bedroom mirror|sitting on the bed|dressing table|vanity table)\b/i },
     { id: 'sleeping', re: /\b(?:sleeping|asleep|taking a nap|napping|just woke|waking up)\b/i },
-    { id: 'bathroom', re: /\b(?:bathroom|shower|bathtub|at the vanity|bathroom mirror)\b/i },
-    { id: 'living_room', re: /\b(?:living room|lounge room|lounge|on the sofa|on the couch|sofa|couch)\b/i },
-    { id: 'kitchen', re: /\b(?:kitchen|cooking|at the stove|making coffee)\b/i },
-    { id: 'cafe', re: /\b(?:caf[eé]|coffee shop|coffeehouse|coffee house|bakery|brunch)\b/i },
-    { id: 'restaurant', re: /\b(?:restaurant|bistro|dining room|dinner table)\b/i },
-    { id: 'bar', re: /\b(?:bar|pub|cocktail lounge|nightclub|night club|clubbing)\b/i },
-    { id: 'office', re: /\b(?:office|workplace|cubicle|boardroom|meeting room|at work|at the office)\b/i },
-    { id: 'gym', re: /\b(?:gym|workout|work[- ]out|fitness|training|weight room|exercise)\b/i },
-    { id: 'hiking', re: /\b(?:hiking|trail|trek|backpacking|mountain|ridge)\b/i },
-    { id: 'beach', re: /\b(?:beach|shore|seaside|coastline|lagoon|poolside|by the pool)\b/i },
-    { id: 'mall', re: /\b(?:mall|shopping cent(?:er|re)|shopping|boutique|department store)\b/i },
-    { id: 'street', re: /\b(?:street|sidewalk|crosswalk|downtown|city street|urban|plaza)\b/i },
-    { id: 'park', re: /\b(?:park|garden|meadow|field)\b/i },
-    { id: 'party', re: /\b(?:party|celebration|festival|rave)\b/i },
+    { id: 'bathroom', re: /\b(?:bathroom|shower|bathtub|bathhouse|at the vanity|bathroom mirror|washroom)\b/i },
+    { id: 'hotel', re: /\b(?:hotel (?:room|suite|lobby|corridor)|hotel|room service)\b/i },
+    { id: 'studio', re: /\b(?:backstage|photo studio|photography studio|sound ?stage|cyclorama)\b/i },
+    { id: 'living_room', re: /\b(?:living room|lounge room|on the sofa|on the couch|sofa|couch|apartment|flat|living space|lodge lounge|fireplace|crackling fire)\b/i },
+    { id: 'kitchen', re: /\b(?:kitchen|cooking|at the stove|making coffee|breakfast counter)\b/i },
+    { id: 'cafe', re: /\b(?:caf[eé]|coffee shop|coffeehouse|coffee house|bakery|brunch|diner|terrace table)\b/i },
+    { id: 'restaurant', re: /\b(?:restaurant|bistro|dining room|dinner table|banquet|feast|great hall|dining hall|long tables)\b/i },
+    { id: 'bar', re: /\b(?:bar|pub|cocktail lounge|nightclub|night club|clubbing|underground club|club interior)\b/i },
+    { id: 'library', re: /\b(?:library|reading room|bookshop|bookstore|book aisle|study room)\b/i },
+    { id: 'study', re: /\b(?:study|home office|home study|writing desk|desk by the window)\b/i },
+    { id: 'office', re: /\b(?:office|workplace|cubicle|boardroom|meeting room|at work|at the office|co-?working)\b/i },
+    { id: 'museum', re: /\b(?:museum|gallery|exhibition|white gallery)\b/i },
+    { id: 'market', re: /\b(?:market square|street market|farmers market|night market|bazaar|market stall)\b/i },
+    { id: 'gym', re: /\b(?:gym|workout|work[- ]out|fitness studio|fitness pavilion|weight room|exercise|training yard|home gym)\b/i },
+    { id: 'hiking', re: /\b(?:hiking|trail|trek|backpacking|mountain|ridge|coastal cliff|cliff path|forest|woods|woodland|camp(?:site|ground)?)\b/i },
+    { id: 'beach', re: /\b(?:beach|shore|seaside|coastline|coast|lagoon|poolside|by the pool|pier|dock|harbou?r|boardwalk|waterfront)\b/i },
+    { id: 'mall', re: /\b(?:mall|shopping cent(?:er|re)|shopping|boutique|department store|fitting[- ]?room|fitting suite|convenience store)\b/i },
+    { id: 'transit', re: /\b(?:train|subway|metro|bus|tram|station|platform|airport|terminal|departure gate|in transit|commuting|car interior|in the car|backseat)\b/i },
+    { id: 'rooftop', re: /\b(?:rooftop|roof terrace|roof deck)\b/i },
+    { id: 'balcony', re: /\b(?:balcony|terrace|veranda|porch)\b/i },
+    { id: 'street', re: /\b(?:street|sidewalk|crosswalk|downtown|city street|urban|plaza|alley|boulevard|road|rural road|parking|underpass|tunnel|storefront)\b/i },
+    { id: 'park', re: /\b(?:park|garden|meadow|field|wildflower|blossom|cherry|orchard|clearing)\b/i },
+    { id: 'party', re: /\b(?:party|celebration|festival|rave|gala|night out)\b/i },
     { id: 'date_night', re: /\b(?:date night|on a date|romantic dinner)\b/i },
-    { id: 'wedding', re: /\b(?:wedding|ceremony|gala|black tie)\b/i },
+    { id: 'wedding', re: /\b(?:wedding|ceremony|black tie)\b/i },
     { id: 'resort', re: /\b(?:resort|vacation|holiday|tropical|island)\b/i },
-    { id: 'studio', re: /\b(?:studio|backdrop|seamless backdrop)\b/i }
+    { id: 'studio', re: /\b(?:studio|backdrop|seamless backdrop|cyclorama|photo set|editorial set|backstage)\b/i }
 ];
 
 // Activity cues that change what an environment means. "Getting ready for a

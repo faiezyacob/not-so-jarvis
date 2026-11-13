@@ -871,6 +871,7 @@ const CharacterSwapUI = (() => {
             target = $('csRender');
         }
         el.textContent = text;
+        markStep(text);
         ['csDetect', 'csSelectionApply', 'csTools', 'csTrack', 'csAddRefs', 'csDescribe', 'csGenerateView', 'csGenerateSheet', 'csWanPrompt', 'csBuildScene', 'csRender'].forEach((id) => {
             const button = $(id);
             if (button) button.classList.remove('is-next');
@@ -2978,12 +2979,52 @@ const CharacterSwapUI = (() => {
             clearDrawing();
         });
         $('characterSwapClose').addEventListener('click', () => {
-            $('characterSwapOverlay').hidden = true;
+            closeWorkspace();
+        });
+    }
+
+    function closeWorkspace() {
+        $('characterSwapOverlay').hidden = true;
+        if (window.StudioShell) window.StudioShell.close();
+    }
+
+    // The five numbered sections are a sequence, so they get a step rail:
+    // one press scrolls the workspace to that part of the flow.
+    function bindSteps() {
+        const nav = $('csSteps');
+        if (!nav) return;
+        nav.addEventListener('click', (event) => {
+            const button = event.target.closest('[data-cs-step]');
+            if (!button) return;
+            const section = $(button.dataset.csStep);
+            if (!section) return;
+            section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            const first = section.nextElementSibling;
+            const control = first && first.querySelector
+                ? first.querySelector('input, select, textarea, button:not(:disabled)')
+                : null;
+            if (control) control.focus({ preventScroll: true });
+        });
+    }
+
+    function markStep(text) {
+        const nav = $('csSteps');
+        if (!nav) return;
+        const match = /step\s*([1-5])/i.exec(text || '');
+        const ready = /^ready/i.test(text || '');
+        const index = ready ? 5 : (match ? Number(match[1]) : 0);
+        nav.querySelectorAll('[data-cs-step]').forEach((button, position) => {
+            if (position + 1 === index) {
+                button.setAttribute('aria-current', 'step');
+            } else {
+                button.removeAttribute('aria-current');
+            }
         });
     }
 
     async function open() {
         $('characterSwapOverlay').hidden = false;
+        if (window.StudioShell) window.StudioShell.open($('characterSwapOverlay'));
         await loadEngines();
         try {
             const data = await api('/api/character-swap/projects');
@@ -2999,6 +3040,7 @@ const CharacterSwapUI = (() => {
 
     async function openWithVideo(filename, url) {
         $('characterSwapOverlay').hidden = false;
+        if (window.StudioShell) window.StudioShell.open($('characterSwapOverlay'));
         await loadEngines();
         try {
             setStatus('Importing this clip into Character Swap…');
@@ -3015,6 +3057,7 @@ const CharacterSwapUI = (() => {
     function init() {
         if (!$('characterSwapOverlay')) return;
         bind();
+        bindSteps();
         const button = $('chatCharacterSwap');
         if (button) button.addEventListener('click', open);
         const prefs = loadPreferences();
@@ -3044,7 +3087,7 @@ const CharacterSwapUI = (() => {
                 return;
             }
             if (!$('characterSwapOverlay').hidden) {
-                $('characterSwapOverlay').hidden = true;
+                closeWorkspace();
             }
         });
     }

@@ -280,6 +280,41 @@ const KNOWN_FILES = {
         repo: 'Comfy-Org/MiniMax-H3-Image',
         hfPath: 'vae/minimax_h3_image_vae_fp16.safetensors',
         approxMB: 1114
+    },
+    'moss_image_sft_int8_convrot.safetensors': {
+        repo: 'Comfy-Org/MOSS-Image',
+        hfPath: 'diffusion_models/moss_image_sft_int8_convrot.safetensors',
+        approxMB: 5163
+    },
+    'moss_image_sft_bf16.safetensors': {
+        repo: 'Comfy-Org/MOSS-Image',
+        hfPath: 'diffusion_models/moss_image_sft_bf16.safetensors',
+        approxMB: 9694
+    },
+    'qwen3.5_9b_w4a8_gptq.safetensors': {
+        repo: 'Comfy-Org/MOSS-Image',
+        hfPath: 'text_encoders/qwen3.5_9b_w4a8_gptq.safetensors',
+        approxMB: 7003
+    },
+    'qwen3.5_9b_int8_convrot.safetensors': {
+        repo: 'Comfy-Org/MOSS-Image',
+        hfPath: 'text_encoders/qwen3.5_9b_int8_convrot.safetensors',
+        approxMB: 9297
+    },
+    'flux2-vae_small.safetensors': {
+        repo: 'Comfy-Org/MOSS-Image',
+        hfPath: 'vae/flux2-vae_small.safetensors',
+        approxMB: 238
+    },
+    'flux2-vae.safetensors': {
+        repo: 'Comfy-Org/MOSS-Image',
+        hfPath: 'vae/flux2-vae.safetensors',
+        approxMB: 321
+    },
+    'moss_image_edit_lora_rank_64_bf16.safetensors': {
+        repo: 'Comfy-Org/MOSS-Image',
+        hfPath: 'loras/moss_image_edit_lora_rank_64_bf16.safetensors',
+        approxMB: 284
     }
 };
 
@@ -329,6 +364,10 @@ const MODEL_CATALOG = [
     { id: 'minimax_image_vae', group: 'image', label: 'MiniMax H3 Image VAE (fp16)', required: false, dest: 'vae', file: { settings: 'image', key: 'minimaxVae' }, minBytes: 500 * 1024 ** 2, note: 'Needed only when MiniMax H3 Image is selected. The p-h3-image VAE (about 1.1 GB), separate from the H3 video VAEs.' },
     { id: 'minimax_image_clip', group: 'image', label: 'MiniMax H3 Image text encoder (configured file)', required: false, dest: 'text_encoders', file: { settings: 'image', key: 'minimaxClip' }, minBytes: 5 * 1024 ** 3, note: 'Needed only when MiniMax H3 Image is selected. The default is the Qwen3-VL 32B NVFP4 encoder already used by the H3 video stack; the official image template uses the int8 variant below. Either works.' },
     { id: 'minimax_image_clip_int8', group: 'image', label: 'MiniMax H3 Image text encoder (int8 convrot, ~27 GB, optional alternate)', required: false, dest: 'text_encoders', file: 'qwen3vl_32b_minimax_h3_int8_convrot.safetensors', minBytes: 15 * 1024 ** 3, note: 'The official Comfy-Org/MiniMax-H3-Image text encoder. Set Settings > Image > BASE MODELS > CLIP to this filename to use it instead of the NVFP4 encoder.' },
+    { id: 'moss_image_unet', group: 'image', label: 'MOSS-Image UNET (SFT int8 convrot, ~5.2 GB)', required: false, dest: 'diffusion_models', file: { settings: 'image', key: 'mossUnet' }, minBytes: 3 * 1024 ** 3, note: 'Needed only when MOSS-Image is selected as the image model or editor. The instruction-tuned SFT checkpoint from Comfy-Org/MOSS-Image. The bf16 variant runs in the same graph but needs about twice the VRAM.' },
+    { id: 'moss_image_clip', group: 'image', label: 'MOSS-Image text encoder (Qwen3.5 9B w4a8 GPTQ, ~7 GB)', required: false, dest: 'text_encoders', file: { settings: 'image', key: 'mossClip' }, minBytes: 3 * 1024 ** 3, note: 'Needed only when MOSS-Image is selected. One copy serves text-to-image, the prompt enhancer and editing; load it with CLIPLoader type moss_image.' },
+    { id: 'moss_image_vae', group: 'image', label: 'MOSS-Image VAE (FLUX.2 small)', required: false, dest: 'vae', file: { settings: 'image', key: 'mossVae' }, minBytes: 100 * 1024 ** 2, note: 'Needed only when MOSS-Image is selected. The FLUX.2 small VAE from Comfy-Org/MOSS-Image.' },
+    { id: 'moss_image_edit_lora', group: 'image', label: 'MOSS-Image Edit LoRA (rank 64 bf16, ~284 MB)', required: false, dest: 'loras', file: { settings: 'image', key: 'mossEditLora' }, minBytes: 150 * 1024 ** 2, note: 'Needed only for the MOSS-Image Edit engine (Settings > Image > IMAGE EDIT). The official instruction-edit adapter, applied model-only at strength 1.0; it is never used by text-to-image.' },
     { id: 'h3_unet', group: 'video', label: 'H3 UNET (FL2VA, text- and image-to-video)', required: true, dest: 'diffusion_models', file: { settings: 'video', key: 'h3Unet' }, minBytes: 5 * 1024 ** 3 },
     { id: 'h3_ref_unet', group: 'video', label: 'H3 UNET (Ref2VA, reference-to-video / character replacement)', required: false, dest: 'diffusion_models', file: 'minimax_h3_ref2va_pruned_int8_convrot.safetensors', minBytes: 5 * 1024 ** 3, note: 'Needed only for @video reference-based character replacement. Same Comfy-Org/MiniMax-H3 repo as the FL2VA model. The reference-to-video node itself ships with ComfyUI.' },
     { id: 'h3_clip', group: 'video', label: 'H3 CLIP (Qwen3-VL 32B NVFP4)', required: true, dest: 'text_encoders', file: { settings: 'video', key: 'h3Clip' }, minBytes: 5 * 1024 ** 3 },
@@ -382,6 +421,18 @@ const NODE_CATALOG = [
         nodes: ['MiniMaxH3ImageConditioning'],
         repo: null, dir: null,
         note: 'Needed for the default MiniMax H3 Image model set. Ships with ComfyUI v0.45.2+, together with the MiniMaxH3ImageVAE decoder the release image VAE requires. If this node is missing, update ComfyUI.'
+    },
+    {
+        id: 'moss_t2i_nodes', label: 'MOSS-Image text-to-image nodes (built into ComfyUI)', required: false,
+        nodes: ['EmptyFlux2LatentImage', 'TextGenerate'],
+        repo: null, dir: null,
+        note: 'EmptyFlux2LatentImage and the TextGenerate prompt enhancer ship with current ComfyUI. If the enhancer node is missing JARVIS sends the raw prompt; if the latent node is missing, update ComfyUI.'
+    },
+    {
+        id: 'moss_edit_nodes', label: 'MOSS-Image Edit nodes (built into ComfyUI, 0.43.0+)', required: false,
+        nodes: ['TextEncodeMOSSImageEdit', 'ImageScaleToTotalPixels', 'SkipLayerGuidanceDiTSimple'],
+        repo: null, dir: null,
+        note: 'The core "Text Encode MOSS-Image Edit" node ships with ComfyUI v0.43.0+, together with the edit-scale and skip-layer-guidance nodes the official editing template uses. If it is missing, update ComfyUI; generic text-encoding nodes are not a substitute.'
     },
     {
         id: 'krea2_edit', label: 'Krea 2 Identity Edit (comfyui-krea2edit)', required: false,
@@ -1216,7 +1267,7 @@ async function getStatus() {
         civitaiToken: { configured: false, source: null, user: null, masked: null },
         models: [],
         nodes: [],
-        ready: { image: false, qwenImage: false, minimaxImage: false, video: false, upscale: false, edit: false, minimaxImageEdit: false, characterSwapScail: false, characterSwapH3Recast: false },
+        ready: { image: false, qwenImage: false, minimaxImage: false, mossImage: false, mossImageEdit: false, video: false, upscale: false, edit: false, minimaxImageEdit: false, characterSwapScail: false, characterSwapH3Recast: false },
         job: jobState()
     };
 
@@ -1326,6 +1377,14 @@ async function getStatus() {
     status.ready.minimaxImage = has('minimax_image_unet') && has('minimax_image_clip') && has('minimax_image_vae')
         && nodeReady('minimax_image_conditioning_official');
     status.ready.minimaxImageEdit = status.ready.minimaxImage;
+    // MOSS-Image (text-to-image + editor): the configured diffusion model,
+    // shared text encoder and FLUX.2 VAE. Text-to-image additionally needs the
+    // core FLUX.2 latent node; the editor adds the dedicated edit LoRA and the
+    // 0.43.0+ MOSS edit text-encoding nodes.
+    status.ready.mossImage = has('moss_image_unet') && has('moss_image_clip') &&
+        has('moss_image_vae') && nodeReady('moss_t2i_nodes');
+    status.ready.mossImageEdit = status.ready.mossImage && has('moss_image_edit_lora') &&
+        nodeReady('moss_edit_nodes');
     const scailModelInstalled = has('scail2_unet');
     status.ready.characterSwapScail = scailModelInstalled && has('scail2_sam') &&
         has('wan_animate_text_encoder') && has('wan_animate_vae') && has('wan_animate_clip_vision') &&

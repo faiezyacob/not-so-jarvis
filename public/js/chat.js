@@ -1417,37 +1417,13 @@ const Chat = (() => {
         resolveAssistantName();
 
         if (!messages || messages.length === 0) {
-            const empty = document.createElement('div');
-            empty.className = 'chat-empty';
-            const title = document.createElement('h2');
-            title.textContent = 'What would you like to work on?';
-            const hint = document.createElement('p');
-            hint.textContent = 'Chat naturally, ask about your system, or create something.';
-            const suggestions = document.createElement('div');
-            suggestions.className = 'chat-starters';
-            [
-                'What can you help me with?',
-                'How is my GPU doing?',
-                'Generate an image of a tiny cabin in a snowy forest'
-            ].forEach((text) => {
-                const button = document.createElement('button');
-                button.type = 'button';
-                button.className = 'chat-starter';
-                button.textContent = text;
-                button.addEventListener('click', () => {
-                    chatInput.value = text;
-                    autoGrowInput();
-                    chatInput.focus();
-                });
-                suggestions.appendChild(button);
-            });
-            empty.appendChild(title);
-            empty.appendChild(hint);
-            empty.appendChild(suggestions);
-            chatMessagesEl.appendChild(empty);
+            // The empty state lives in the document (one static block under the
+            // log) so it can carry the product's own starters without being
+            // rebuilt on every render.
+            chatMessagesEl.innerHTML = '';
         } else {
             messages.forEach((m) => {
-                addMessageDom(m.role, m.content, m.id);
+                addMessageDom(m.role, m.content, m.id, m.createdAt);
             });
         }
 
@@ -1482,10 +1458,25 @@ const Chat = (() => {
         chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
     }
 
-    function addMessageDom(role, content, messageId) {
+    // Format a message timestamp for the day sheet's left gutter.
+    function formatMessageTime(ts) {
+        if (!ts) return '';
+        const d = new Date(ts);
+        if (Number.isNaN(d.getTime())) return '';
+        return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+    }
+
+    function addMessageDom(role, content, messageId, createdAt) {
         const el = document.createElement('div');
         el.className = 'message message--' + (role === 'assistant' ? 'ai' : 'user');
         if (messageId) el.dataset.messageId = messageId;
+
+        // The day sheet reads as a log: every entry carries the time it was
+        // written in the sheet's left gutter.
+        const timeEl = document.createElement('div');
+        timeEl.className = 'message-time';
+        timeEl.textContent = formatMessageTime(createdAt);
+        el.appendChild(timeEl);
 
         const head = document.createElement('div');
         head.className = 'message-head';
@@ -1787,7 +1778,7 @@ const Chat = (() => {
         }
         const userText = parts.join('\n\n');
 
-        if (Conversations.currentId() === conversationId) addMessageDom('user', userText);
+        if (Conversations.currentId() === conversationId) addMessageDom('user', userText, null, Date.now());
         if (!override) {
             chatInput.value = '';
             autoGrowInput();

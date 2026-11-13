@@ -956,16 +956,18 @@ const IMAGE_GEN_FIELDS = [
 const IMAGE_MODEL_BASE_KEYS = {
     krea2: { unet: 'unet', clip: 'clip', vae: 'vae' },
     qwen_image_2_1: { unet: 'qwenUnet', clip: 'qwenClip', vae: 'qwenVae' },
-    minimax_h3_image: { unet: 'minimaxUnet', clip: 'minimaxClip', vae: 'minimaxVae' }
+    minimax_h3_image: { unet: 'minimaxUnet', clip: 'minimaxClip', vae: 'minimaxVae' },
+    moss: { unet: 'mossUnet', clip: 'mossClip', vae: 'mossVae' }
 };
 
 // Per-model sampling keys for the shared Steps / CFG inputs. Krea 2, Qwen
-// Image 2.1 and MiniMax H3 Image have their own calibrated defaults, so each
-// model remembers its own values (mirroring the base-model filenames above).
+// Image 2.1, MiniMax H3 Image and MOSS-Image have their own calibrated
+// defaults, so each model remembers its own values.
 const IMAGE_MODEL_SAMPLING_KEYS = {
     krea2: { steps: 'steps', cfg: 'cfg' },
     qwen_image_2_1: { steps: 'qwenSteps', cfg: 'qwenCfg' },
-    minimax_h3_image: { steps: 'minimaxSteps', cfg: 'minimaxCfg' }
+    minimax_h3_image: { steps: 'minimaxSteps', cfg: 'minimaxCfg' },
+    moss: { steps: 'mossSteps', cfg: 'mossCfg' }
 };
 
 // MiniMax H3 Image's 4/6/10/16 MP size ladder and larger custom canvas apply
@@ -1287,37 +1289,45 @@ function initImageGenSettings() {
         const hint = document.getElementById('imageCustomHint');
         if (hint) {
             hint.textContent = 'Custom dimensions are snapped to multiples of 32 and override the aspect ratio. ' +
-                (isMiniMax ? 'MiniMax H3 Image accepts up to 8192 px per side.' : 'Qwen and Krea accept up to 4096 px per side.');
+                (isMiniMax ? 'MiniMax H3 Image accepts up to 8192 px per side.' : 'Qwen, Krea and MOSS accept up to 4096 px per side. MOSS also requires multiples of 16, which the 32 px grid satisfies.');
         }
     };
 
-    // MiniMax H3 Image models are multi-GB and deliberately never download
+    // MOSS-Image models are multi-GB and deliberately never download
     // automatically, so the panel only reports readiness and points at Setup.
     const refreshModelReadiness = async () => {
         if (!modelStatusEl) return;
-        if (!modelSelect || modelSelect.value !== 'minimax_h3_image') {
+        const model = modelSelect ? modelSelect.value : '';
+        if (model !== 'minimax_h3_image' && model !== 'moss') {
             modelStatusEl.style.display = 'none';
             return;
         }
+        const label = model === 'moss' ? 'MOSS-Image' : 'MiniMax H3 Image';
+        const readyKey = model === 'moss' ? 'mossImage' : 'minimaxImage';
         modelStatusEl.style.display = '';
         modelStatusEl.classList.remove('settings-save-status--error');
-        modelStatusEl.textContent = 'Checking MiniMax H3 Image models…';
+        modelStatusEl.textContent = 'Checking ' + label + ' models…';
         try {
             const res = await fetch('/api/setup/status');
             const data = await res.json().catch(() => ({}));
-            if (data && data.ready && data.ready.minimaxImage) {
-                modelStatusEl.textContent = 'MiniMax H3 Image models ready.';
+            if (data && data.ready && data.ready[readyKey]) {
+                modelStatusEl.textContent = label + ' models ready.';
             } else if (data && data.comfyAvailable === false) {
-                modelStatusEl.textContent = 'ComfyUI offline — start it to verify the MiniMax H3 Image models.';
+                modelStatusEl.textContent = 'ComfyUI offline — start it to verify the ' + label + ' models.';
                 modelStatusEl.classList.add('settings-save-status--error');
             } else {
-                modelStatusEl.textContent = 'MiniMax H3 Image models missing — download them from Settings > Setup.';
+                modelStatusEl.textContent = label + ' models missing — download them from Settings > Setup.';
                 modelStatusEl.classList.add('settings-save-status--error');
             }
         } catch {
-            modelStatusEl.textContent = 'Could not check MiniMax H3 Image models.';
+            modelStatusEl.textContent = 'Could not check ' + label + ' models.';
             modelStatusEl.classList.add('settings-save-status--error');
         }
+    };
+
+    const mossGenerationFields = document.getElementById('mossGenerationFields');
+    const syncMossGenerationFields = () => {
+        if (mossGenerationFields) mossGenerationFields.style.display = activeModel === 'moss' ? '' : 'none';
     };
 
     const paintBaseFields = () => {
@@ -1358,6 +1368,7 @@ function initImageGenSettings() {
         paintSampling(cfgInput, 'cfg');
 
         syncSizeUi();
+        syncMossGenerationFields();
         refreshModelReadiness();
     };
 
@@ -1449,16 +1460,23 @@ function initImageGenSettings() {
     const editEngineInstallBtn = document.getElementById('imageEditEngineInstall');
     const editMegapixelsField = document.getElementById('imageEditMegapixelsField');
     const editMegapixelsInput = document.getElementById('imageEditMegapixels');
+    const mossEditMegapixelsField = document.getElementById('mossEditMegapixelsField');
+    const mossEditMegapixelsInput = document.getElementById('mossEditMegapixels');
 
     const syncEditMegapixels = () => {
-        if (!editMegapixelsField) return;
-        editMegapixelsField.style.display = (editEngineSelect && editEngineSelect.value === 'minimax_h3') ? '' : 'none';
+        if (editMegapixelsField) {
+            editMegapixelsField.style.display = (editEngineSelect && editEngineSelect.value === 'minimax_h3') ? '' : 'none';
+        }
+        if (mossEditMegapixelsField) {
+            mossEditMegapixelsField.style.display = (editEngineSelect && editEngineSelect.value === 'moss') ? '' : 'none';
+        }
     };
 
     const EDIT_ENGINE_LABELS = {
         qwen: 'Qwen Image Edit',
         krea2: 'Krea 2 Identity Edit',
-        minimax_h3: 'MiniMax H3 Image Edit'
+        minimax_h3: 'MiniMax H3 Image Edit',
+        moss: 'MOSS-Image Edit'
     };
 
     const scheduleEditEngineRecheck = (delay) => {
@@ -1473,7 +1491,7 @@ function initImageGenSettings() {
     const refreshEditEngineReadiness = async () => {
         if (!editEngineStatusEl) return;
         const engine = editEngineSelect ? editEngineSelect.value : 'qwen';
-        if (engine !== 'krea2' && engine !== 'minimax_h3') {
+        if (engine !== 'krea2' && engine !== 'minimax_h3' && engine !== 'moss') {
             editEngineStatusEl.style.display = 'none';
             if (editEngineInstallBtn) editEngineInstallBtn.style.display = 'none';
             return;
@@ -1481,6 +1499,27 @@ function initImageGenSettings() {
         editEngineStatusEl.style.display = '';
         editEngineStatusEl.classList.remove('settings-save-status--error');
         if (editEngineInstallBtn) editEngineInstallBtn.style.display = 'none';
+
+        if (engine === 'moss') {
+            editEngineStatusEl.textContent = 'Checking MOSS-Image Edit components…';
+            try {
+                const res = await fetch('/api/setup/status');
+                const data = await res.json().catch(() => ({}));
+                if (data && data.ready && data.ready.mossImageEdit) {
+                    editEngineStatusEl.textContent = 'MOSS-Image Edit components ready.';
+                } else if (data && data.comfyAvailable === false) {
+                    editEngineStatusEl.textContent = 'ComfyUI offline — start it to verify the MOSS-Image models.';
+                    editEngineStatusEl.classList.add('settings-save-status--error');
+                } else {
+                    editEngineStatusEl.textContent = 'MOSS-Image Edit components missing — download the MOSS-Image model set and edit LoRA from Settings > Setup (ComfyUI 0.43.0+ required).';
+                    editEngineStatusEl.classList.add('settings-save-status--error');
+                }
+            } catch {
+                editEngineStatusEl.textContent = 'Could not check MOSS-Image Edit components.';
+                editEngineStatusEl.classList.add('settings-save-status--error');
+            }
+            return;
+        }
 
         if (engine === 'minimax_h3') {
             editEngineStatusEl.textContent = 'Checking MiniMax H3 Image models…';
@@ -1558,6 +1597,95 @@ function initImageGenSettings() {
             const value = Math.max(0.5, Math.min(16, Math.round((Number(editMegapixelsInput.value) || 4) * 10) / 10));
             editMegapixelsInput.value = value;
             persistValue('minimaxEditMegapixels', value, value + ' MP');
+        });
+    }
+    if (mossEditMegapixelsInput) {
+        mossEditMegapixelsInput.addEventListener('change', () => {
+            const value = Math.max(0.25, Math.min(4, Math.round((Number(mossEditMegapixelsInput.value) || 1) * 100) / 100));
+            mossEditMegapixelsInput.value = value;
+            persistValue('mossEditMegapixels', value, value + ' MP');
+        });
+    }
+
+    // --- MOSS-Image text-to-image options ------------------------------------
+    // The prompt enhancer toggle, recommended negative line and the optional
+    // reference image read only by the enhancer. The reference is uploaded
+    // through the existing /api/uploads store and persisted by filename; a
+    // stale filename is simply ignored at generation time.
+    const mossEnhancerToggle = document.getElementById('mossPromptEnhancer');
+    const mossNegativeInput = document.getElementById('mossNegativePrompt');
+    const mossSamplerInput = document.getElementById('mossSampler');
+    const mossSchedulerInput = document.getElementById('mossScheduler');
+    const mossEnhancerFile = document.getElementById('mossEnhancerReferenceFile');
+    const mossEnhancerClear = document.getElementById('mossEnhancerReferenceClear');
+    const mossEnhancerStatus = document.getElementById('mossEnhancerReferenceStatus');
+    const paintMossEnhancerReference = (name) => {
+        const hasReference = Boolean(name);
+        if (mossEnhancerClear) mossEnhancerClear.style.display = hasReference ? '' : 'none';
+        if (mossEnhancerStatus) {
+            mossEnhancerStatus.textContent = hasReference
+                ? 'Enhancer reference: ' + name
+                : 'No reference image. An optional image the prompt enhancer may read; MOSS itself does not use it.';
+        }
+    };
+    if (mossEnhancerToggle) {
+        mossEnhancerToggle.addEventListener('change', () => {
+            persistValue('mossPromptEnhancer', mossEnhancerToggle.checked, mossEnhancerToggle.checked ? 'prompt enhancer on' : 'prompt enhancer off');
+        });
+    }
+    if (mossNegativeInput) {
+        mossNegativeInput.addEventListener('change', () => {
+            const value = mossNegativeInput.value.trim();
+            persistValue('mossNegativePrompt', value, 'negative prompt');
+        });
+    }
+    if (mossSamplerInput) {
+        mossSamplerInput.addEventListener('change', () => {
+            const value = mossSamplerInput.value.trim();
+            if (value) persistValue('mossSampler', value, value);
+        });
+    }
+    if (mossSchedulerInput) {
+        mossSchedulerInput.addEventListener('change', () => {
+            const value = mossSchedulerInput.value.trim();
+            if (value) persistValue('mossScheduler', value, value);
+        });
+    }
+    if (mossEnhancerFile) {
+        mossEnhancerFile.addEventListener('change', async () => {
+            const file = mossEnhancerFile.files && mossEnhancerFile.files[0];
+            if (!file) return;
+            setStatus('Uploading enhancer reference…');
+            try {
+                const dataUrl = await new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onload = () => resolve(String(reader.result || ''));
+                    reader.onerror = () => reject(reader.error || new Error('read failed'));
+                    reader.readAsDataURL(file);
+                });
+                const base64 = dataUrl.split(',')[1] || '';
+                const res = await fetch('/api/uploads', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ filename: file.name, mime: file.type, data: base64 })
+                });
+                const uploaded = await res.json().catch(() => ({}));
+                if (!res.ok || !uploaded.filename) {
+                    throw new Error(uploaded.error || 'upload failed');
+                }
+                await persistValue('mossEnhancerReference', uploaded.filename, 'enhancer reference');
+                paintMossEnhancerReference(uploaded.filename);
+            } catch (err) {
+                setStatus('Enhancer reference upload failed: ' + (err && err.message ? err.message : 'error'), true);
+            } finally {
+                mossEnhancerFile.value = '';
+            }
+        });
+    }
+    if (mossEnhancerClear) {
+        mossEnhancerClear.addEventListener('click', async () => {
+            await persistValue('mossEnhancerReference', '', 'enhancer reference cleared');
+            paintMossEnhancerReference('');
         });
     }
 
@@ -1667,6 +1795,29 @@ function initImageGenSettings() {
                     ? settings.minimaxEditMegapixels
                     : (defaults.minimaxEditMegapixels || 4);
             }
+            if (mossEditMegapixelsInput) {
+                mossEditMegapixelsInput.value = (settings.mossEditMegapixels !== undefined && settings.mossEditMegapixels !== null)
+                    ? settings.mossEditMegapixels
+                    : (defaults.mossEditMegapixels || 1);
+            }
+            if (mossEnhancerToggle) {
+                const enabled = settings.mossPromptEnhancer !== undefined && settings.mossPromptEnhancer !== null
+                    ? settings.mossPromptEnhancer
+                    : (defaults.mossPromptEnhancer !== false);
+                mossEnhancerToggle.checked = enabled !== false;
+            }
+            if (mossNegativeInput) {
+                mossNegativeInput.value = settings.mossNegativePrompt !== undefined && settings.mossNegativePrompt !== null
+                    ? settings.mossNegativePrompt
+                    : (defaults.mossNegativePrompt || '');
+            }
+            if (mossSamplerInput) {
+                mossSamplerInput.value = settings.mossSampler || defaults.mossSampler || 'er_sde';
+            }
+            if (mossSchedulerInput) {
+                mossSchedulerInput.value = settings.mossScheduler || defaults.mossScheduler || 'simple';
+            }
+            paintMossEnhancerReference(settings.mossEnhancerReference || '');
             syncEditMegapixels();
             refreshEditEngineReadiness();
 
@@ -3629,10 +3780,21 @@ function resizeCanvas(canvas) {
 
 // --- Chart Drawing ---
 
+// Charts ink themselves from the live theme tokens, so the same draw call
+// works on paper and on the night ground.
+function chartInk() {
+    const styles = getComputedStyle(document.documentElement);
+    return {
+        rgb: (styles.getPropertyValue('--ink-rgb') || '26, 26, 24').trim(),
+        stampRgb: (styles.getPropertyValue('--stamp-rgb') || '184, 52, 42').trim()
+    };
+}
+
 function drawChart(key) {
     const canvas = canvasElements[key];
     const ctx = canvasContexts[key];
     const history = systemStats[key].history;
+    const ink = chartInk();
 
     const rect = canvas.getBoundingClientRect();
     const w = rect.width;
@@ -3645,7 +3807,7 @@ function drawChart(key) {
     ctx.clearRect(0, 0, w, h);
 
     // Faint grid
-    ctx.strokeStyle = 'rgba(108, 255, 154, 0.04)';
+    ctx.strokeStyle = 'rgba(' + ink.rgb + ', 0.10)';
     ctx.lineWidth = 0.5;
     for (let y = 0; y <= 4; y++) {
         const yPos = padding.top + (plotH / 4) * y;
@@ -3655,7 +3817,28 @@ function drawChart(key) {
         ctx.stroke();
     }
 
-    if (history.length < 2) return;
+    if (history.length < 2) {
+        // A single reading still has to be legible: mark its level rather than
+        // showing an empty grid.
+        if (history.length === 1) {
+            const y = padding.top + plotH - (history[0] / 100) * plotH;
+            // Fill from the baseline so a single reading has a magnitude, not
+            // just a level: 35% and 95% must not look the same.
+            ctx.fillStyle = 'rgba(' + ink.rgb + ', 0.10)';
+            ctx.fillRect(padding.left, y, w - padding.right - padding.left, padding.top + plotH - y);
+            ctx.strokeStyle = 'rgba(' + ink.rgb + ', 0.75)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(padding.left, y);
+            ctx.lineTo(w - padding.right, y);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.arc(w - padding.right - 1, y, 2.5, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(' + ink.stampRgb + ', 0.9)';
+            ctx.fill();
+        }
+        return;
+    }
 
     // Draw filled area under the line
     ctx.beginPath();
@@ -3679,8 +3862,8 @@ function drawChart(key) {
     ctx.closePath();
 
     const gradient = ctx.createLinearGradient(0, padding.top, 0, padding.top + plotH);
-    gradient.addColorStop(0, 'rgba(108, 255, 154, 0.12)');
-    gradient.addColorStop(1, 'rgba(108, 255, 154, 0.01)');
+    gradient.addColorStop(0, 'rgba(' + ink.rgb + ', 0.16)');
+    gradient.addColorStop(1, 'rgba(' + ink.rgb + ', 0.01)');
     ctx.fillStyle = gradient;
     ctx.fill();
 
@@ -3699,21 +3882,16 @@ function drawChart(key) {
         }
     }
 
-    ctx.strokeStyle = 'rgba(108, 255, 154, 0.7)';
+    ctx.strokeStyle = 'rgba(' + ink.rgb + ', 0.85)';
     ctx.lineWidth = 1.5;
     ctx.stroke();
 
-    // Glow on the line
-    ctx.strokeStyle = 'rgba(108, 255, 154, 0.2)';
-    ctx.lineWidth = 4;
-    ctx.stroke();
-
-    // Current value dot
+    // The current reading is the only thing that earns the stamp colour.
     const lastX = padding.left + ((history.length - 1) / (HISTORY_LENGTH - 1)) * plotW;
     const lastY = padding.top + plotH - (history[history.length - 1] / 100) * plotH;
     ctx.beginPath();
     ctx.arc(lastX, lastY, 2.5, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(108, 255, 154, 0.9)';
+    ctx.fillStyle = 'rgba(' + ink.stampRgb + ', 0.9)';
     ctx.fill();
 }
 

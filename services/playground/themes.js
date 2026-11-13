@@ -23,7 +23,13 @@ const THEMES = [
             'a stark white cyclorama with a single hard key light',
             'an editorial set with draped fabric and sculptural props',
             'a quiet marble hallway with tall windows',
-            'a rooftop against a soft overcast sky'
+            'a rooftop against a soft overcast sky',
+            'a sunlit private fitting suite with a garment rack and a full-length mirror',
+            'a backstage dressing area lined with warm mirror bulbs',
+            'a sleek hotel suite with floor-to-ceiling windows and a low sofa',
+            'a modern glass-walled office lounge with a long marble table',
+            'a clean private gym studio with pale wood floors and mirrors',
+            'a quiet café with marble tables and brass pendant lights'
         ],
         activities: [
             'holding a poised three-quarter pose',
@@ -71,7 +77,13 @@ const THEMES = [
             'a neon-lit night market alley',
             'a fog-wrapped mountain ridge at dawn',
             'a turquoise lagoon with a wooden pier',
-            'an ancient stone street in a Mediterranean old town'
+            'an ancient stone street in a Mediterranean old town',
+            'a boutique hotel room with linen curtains and a low bed',
+            'a rooftop bar overlooking the old town at dusk',
+            'a sunlit café terrace on a cobbled square',
+            'a modern co-working lounge in the city',
+            'a mountain lodge lounge with a stone fireplace',
+            'an open-air fitness pavilion beside the beach'
         ],
         activities: [
             'pausing to take in a vast panorama',
@@ -119,7 +131,13 @@ const THEMES = [
             'a dim apartment lit only by a flickering television',
             'a deserted rural road stretching to the horizon',
             'a crowded station platform in the last light',
-            'a foggy pier with a single lamp'
+            'a foggy pier with a single lamp',
+            'a dim hotel suite with city lights bleeding through the blinds',
+            'an empty late-night diner with rain on the windows',
+            'a rain-streaked office after hours',
+            'a basement gym lit by a single hanging bulb',
+            'a backstage dressing room lined with mirror bulbs',
+            'a crowded nightclub with shafts of coloured light'
         ],
         activities: [
             'turning to look at something just out of frame',
@@ -167,7 +185,13 @@ const THEMES = [
             'a ruined marble temple reclaimed by vines',
             'a snowbound village beneath an aurora',
             'a floating island above a sea of clouds',
-            'an alchemist\u2019s workshop crowded with glowing jars'
+            'an alchemist\u2019s workshop crowded with glowing jars',
+            'a candlelit stone hall with long banquet tables',
+            'a bustling market square in a medieval town',
+            'a traveller\u2019s camp at the edge of a dark forest',
+            'a moonlit bedchamber with heavy tapestries',
+            'a training yard with racks of practice weapons',
+            'a grand marble bathhouse lit by hanging lanterns'
         ],
         activities: [
             'channeling a spell between cupped hands',
@@ -215,7 +239,15 @@ const THEMES = [
             'a field of wildflowers in high summer',
             'a street of amber autumn leaves',
             'a cherry-blossom path in full bloom',
-            'a cosy interior with a crackling fireplace'
+            'a cosy interior with a crackling fireplace',
+            'a ski-lodge lounge with a roaring stone fireplace',
+            'a sunny city café terrace with string lights',
+            'a candlelit holiday dinner table',
+            'a snowy town street with glowing shop windows',
+            'a spring garden party under blossoming trees',
+            'a summer beach boardwalk in the late afternoon',
+            'a cosy home gym corner with a skylight',
+            'a quiet study with a desk and an autumn window'
         ],
         activities: [
             'catching snowflakes with an upturned face',
@@ -290,7 +322,13 @@ const THEMES = [
             'a set surrounded by translucent plastic sheets',
             'a minimal outdoor landscape with strong geometric forms',
             'a studio with coloured gels crossing the frame',
-            'a smoke-filled room with a single beam of light'
+            'a smoke-filled room with a single beam of light',
+            'a white gallery room with polished concrete floors',
+            'a mirror-lined dressing room with warm bulbs',
+            'a dark club interior washed in coloured light',
+            'a clean gym studio with mirrored walls',
+            'a hotel corridor with repeating doors and warm lamps',
+            'a rooftop bar with glass railings and city lights'
         ],
         activities: [
             'moving quickly across the frame during a long exposure',
@@ -628,7 +666,11 @@ const THEMES = [
             'a lived-in living room with linen and houseplants',
             'a neighbourhood café beside a rain-speckled window',
             'a balcony overlooking quiet rooftops in soft daylight',
-            'a bookshop aisle between tall wooden shelves'
+            'a bookshop aisle between tall wooden shelves',
+            'a rooftop bar at dusk with string lights',
+            'a bright home office with a desk and window light',
+            'a hotel room with crisp white linen',
+            'a quiet library aisle'
         ],
         activities: [
             'laughing mid-conversation',
@@ -1062,8 +1104,14 @@ const THEMES = [
                 id: 'night-out',
                 label: 'Night Out',
                 outfitTags: ['evening'],
-                environments: ['a restaurant table', 'a city street at night', 'a bar', 'a car interior'],
-                activities: ['waiting for food', 'laughing with friends', 'posing before going out'],
+                // Place-level settings whose activities all work in every listed
+                // place, so the body position and the scene cannot contradict
+                // each other (a table is a surface, not a location).
+                environments: ['a restaurant', 'a candlelit restaurant table', 'a bar', 'a rooftop bar'],
+                activities: ['posing for a quick photo', 'having a drink', 'laughing', 'checking the phone', 'talking to someone off-camera'],
+                lighting: ['low evening light', 'soft ambient evening light', 'moody low evening lighting', 'dim practical evening lighting'],
+                moods: ['confident', 'relaxed', 'playful', 'glamorous'],
+                styles: ['natural low-light phone photography', 'candid evening lifestyle photography', 'soft evening lifestyle imagery'],
                 cameras: ['a handheld phone photo with slightly imperfect framing', 'a quick phone snapshot', "an arm's-length front-facing selfie"],
                 compositions: ['a candid moment caught mid-activity', 'a spontaneous expression', 'casual framing, slightly off-center']
             },
@@ -1154,6 +1202,18 @@ function pick(list, rng) {
     if (!arr.length) return '';
     const index = Math.floor(rng() * arr.length) % arr.length;
     return arr[index];
+}
+
+// An optional caller-supplied environment picker. The Concept engine uses it to
+// keep the scene compatible with an active Outfit Pack without making the theme
+// catalog depend on the wardrobe catalog. Without one, selection is unchanged.
+function pickEnvironmentFrom(pool, options, rng) {
+    const list = Array.isArray(pool) ? pool.filter(Boolean) : [];
+    if (typeof (options && options.pickEnvironment) === 'function') {
+        const picked = options.pickEnvironment(list, rng);
+        if (picked) return picked;
+    }
+    return pick(list, rng);
 }
 
 // Resolve a subcategory by id or label ("gym-fitness" / "Gym / Fitness").
@@ -1568,10 +1628,13 @@ function pickScenario(theme, rng = Math.random, categoryRef = '', options = {}) 
             if (Array.isArray(category[key]) && category[key].length) return pick(category[key], rng);
             return pick(theme[key], rng);
         };
+        const environmentPool = Array.isArray(category.environments) && category.environments.length
+            ? category.environments
+            : theme.environments;
         const scenario = {
             category: category.label,
             categoryId: category.id,
-            environment: pickFrom('environments'),
+            environment: pickEnvironmentFrom(environmentPool, options, rng),
             activity: pickFrom('activities'),
             outfit: '',
             lighting: pickFrom('lighting'),
@@ -1611,10 +1674,17 @@ function pickScenario(theme, rng = Math.random, categoryRef = '', options = {}) 
             const local = Array.isArray(technique[key]) ? technique[key].filter(Boolean) : [];
             return pick(local.length ? local : theme[key], rng);
         };
+        const techniqueEnvironments = Array.isArray(technique.environments)
+            ? technique.environments.filter(Boolean)
+            : [];
         const scenario = {
             technique: technique.id || '',
             techniqueLabel: technique.label || '',
-            environment: fromTechnique('environments'),
+            environment: pickEnvironmentFrom(
+                techniqueEnvironments.length ? techniqueEnvironments : theme.environments,
+                options,
+                rng
+            ),
             activity: fromTechnique('activities'),
             lighting: fromTechnique('lighting'),
             camera: fromTechnique('cameras'),
@@ -1632,7 +1702,7 @@ function pickScenario(theme, rng = Math.random, categoryRef = '', options = {}) 
         return Object.assign({}, scene);
     }
     const scenario = {
-        environment: pick(theme.environments, rng),
+        environment: pickEnvironmentFrom(theme.environments, options, rng),
         activity: pick(theme.activities, rng),
         lighting: pick(theme.lighting, rng),
         camera: pick(theme.cameras, rng),

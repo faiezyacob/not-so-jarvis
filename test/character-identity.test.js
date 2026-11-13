@@ -329,6 +329,21 @@ test('the scene edit instruction separates identity from changeable scene', () =
     assert.ok(!/tank top|bedroom/i.test(identityPart), 'the identity clause must not carry the scene');
 });
 
+test('a resolved scene posture is stated as a positive body position', () => {
+    const pkg = identity.normalizePackage(makeCharacter());
+    const instruction = identity.buildSceneEditInstruction(pkg, 'posing at a restaurant table', 'Maya', {
+        posture: {
+            label: 'Seated at the table',
+            stance: 'sitting',
+            phrase: 'seated squarely on the seat of the chair at the table with the back resting against the backrest and both feet flat on the floor'
+        }
+    });
+    assert.match(instruction, /BODY POSITION: Maya is seated squarely/);
+    assert.match(instruction, /both feet flat on the floor/);
+    assert.match(instruction, /no perching on the edge of a seat/);
+    assert.doesNotMatch(instruction, /undefined|null/);
+});
+
 test('the scene edit instruction keeps skin tone continuous across the body', () => {
     const pkg = identity.normalizePackage(makeCharacter());
     const instruction = identity.buildSceneEditInstruction(pkg, 'a bedroom mirror selfie in a white tank top', 'Maya');

@@ -173,6 +173,21 @@ test('an explicit user time of day wins over the theme default lighting', () => 
     assert.doesNotMatch(out, /daylight/i);
 });
 
+test('a Night Out category label is never rewritten as lighting', () => {
+    const out = lifestylePrompt.normalizeLifestylePrompt(
+        'Social-media category: Night Out. Lighting: low evening light. Neutral, true-to-life colour and ' +
+        'white balance with natural skin tones and no warm, golden or amber cast.',
+        { identity: NEUTRAL, scene: { environment: 'a restaurant', lighting: 'low evening light' } }
+    );
+    assert.match(out, /Social-media category: Night Out\./);
+    assert.doesNotMatch(out, /lightOut/);
+    // The colour exclusion collapses to one grammatical clause, not a dangling
+    // list connector.
+    assert.doesNotMatch(out, /golden or\./i);
+    assert.match(out, /no colour cast/i);
+    assert.match(out, /no global yellow or orange/i);
+});
+
 test('isLifestyleTheme scopes the normalization to Lifestyle & Candid only', () => {
     assert.equal(lifestylePrompt.isLifestyleTheme('lifestyle-candid'), true);
     assert.equal(lifestylePrompt.isLifestyleTheme('cinematic-storytelling'), false);

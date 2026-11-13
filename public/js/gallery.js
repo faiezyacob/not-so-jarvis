@@ -106,7 +106,9 @@
                 });
                 cell.appendChild(thumb);
             }
-            if (img.upscale && img.upscale.source) cell.appendChild(makeCompareBadge('generated-compare-badge'));
+            if ((img.upscale && img.upscale.source) || (img.edit && img.edit.source)) {
+                cell.appendChild(makeCompareBadge('generated-compare-badge'));
+            }
             cell.appendChild(makeDeleteButton(img, cell, widgetImages));
             gridEl.appendChild(cell);
             count += 1;
@@ -244,12 +246,30 @@
         return null;
     }
 
+    // Resolve the { original, edited } pair for an edited image. Edits record
+    // `edit.source` (the source basename) in generated-history; both files stay
+    // in the gallery, so the preview can offer the same before/after viewer.
+    function editCompareTargetFor(img, images) {
+        if (!img || !img.edit || !img.edit.source) return null;
+        const list = images || [];
+        const originalMeta = list.find((x) =>
+            lastSegment(x.file) === lastSegment(img.edit.source)) || null;
+        if (!originalMeta || originalMeta.id === img.id) return null;
+        return {
+            mode: 'edit',
+            original: originalMeta.url,
+            upscaled: img.url,
+            originalMeta,
+            upscaledMeta: img
+        };
+    }
+
     // Badge shown on tiles that have an upscaled version.
     function makeCompareBadge(className) {
         const badge = document.createElement('span');
         badge.className = className;
         badge.textContent = '\u21c4';
-        badge.title = 'Has an upscaled version \u2014 compare in preview';
+        badge.title = 'Has a before/after pair \u2014 compare in preview';
         return badge;
     }
 
@@ -616,6 +636,7 @@
         const original = pair.original;
         const upscaled = pair.upscaled;
         const sameSource = lastSegment(original) === lastSegment(upscaled);
+        const isEdit = pair.mode === 'edit';
 
         const overlay = document.createElement('div');
         overlay.className = 'modal-overlay gallery-overlay compare-overlay open';
@@ -630,10 +651,10 @@
         heading.className = 'compare-heading';
         const title = document.createElement('div');
         title.className = 'compare-title';
-        title.textContent = 'DETAIL COMPARISON';
+        title.textContent = isEdit ? 'BEFORE / AFTER' : 'DETAIL COMPARISON';
         const dims = document.createElement('div');
         dims.className = 'compare-dims';
-        dims.textContent = 'Original \u2194 Upscaled';
+        dims.textContent = isEdit ? 'Original \u2194 Edited' : 'Original \u2194 Upscaled';
         heading.appendChild(title);
         heading.appendChild(dims);
         header.appendChild(heading);
@@ -689,7 +710,7 @@
         tagOriginal.textContent = 'Original';
         const tagUpscaled = document.createElement('span');
         tagUpscaled.className = 'compare-tag compare-tag--b';
-        tagUpscaled.textContent = 'Upscaled';
+        tagUpscaled.textContent = isEdit ? 'Edited' : 'Upscaled';
 
         stage.appendChild(tagOriginal);
         stage.appendChild(tagUpscaled);
@@ -1459,7 +1480,9 @@
     }
 
     function openPreview(img) {
-        const compare = compareTargetFor(img, widgetImages);
+        const upscaleCompare = compareTargetFor(img, widgetImages);
+        const editCompare = upscaleCompare ? null : editCompareTargetFor(img, widgetImages);
+        const compare = upscaleCompare || editCompare;
         const video = isVideo(img);
 
         const { container, body, closeBtn } = buildModalShell(video ? 'GENERATED VIDEO' : 'GENERATED IMAGE');
@@ -1517,8 +1540,11 @@
         meta.innerHTML =
             '<div class="gallery-preview-row"><span class="gallery-preview-label">Model</span><span class="gallery-preview-value">' + escapeHtml(img.model || 'Krea2') + '</span></div>' +
             '<div class="gallery-preview-row"><span class="gallery-preview-label">Resolution</span><span class="gallery-preview-value" data-resolution-value>' + escapeHtml(formatResolution(img)) + '</span></div>' +
-            '<div class="gallery-preview-row"><span class="gallery-preview-label">Duration</span><span class="gallery-preview-value">' + escapeHtml(formatGenerationDuration({ generationMs: totalGenerationMs(img, compare) })) + '</span></div>';
-        if (compare) {
+            '<div class="gallery-preview-row"><span class="gallery-preview-label">Duration</span><span class="gallery-preview-value">' + escapeHtml(formatGenerationDuration({ generationMs: totalGenerationMs(img, upscaleCompare) })) + '</span></div>';
+        if (compare && compare.mode === 'edit') {
+            const label = formatResolution(compare.originalMeta) + ' \u2192 ' + formatResolution(compare.upscaledMeta);
+            meta.innerHTML += '<div class="gallery-preview-row"><span class="gallery-preview-label">Edit</span><span class="gallery-preview-value">' + escapeHtml(label) + '</span></div>';
+        } else if (compare) {
             const originalMeta = img.upscale ? compare.originalMeta : img;
             const upscaledMeta = img.upscale ? img : compare.upscaledMeta;
             const label = video
@@ -1694,7 +1720,7 @@
                 cell.textContent = 'IMG';
             }));
         }
-        if (img.upscale && img.upscale.source) cell.appendChild(makeCompareBadge('gallery-compare-badge'));
+        if ((img.upscale && img.upscale.source) || (img.edit && img.edit.source)) cell.appendChild(makeCompareBadge('gallery-compare-badge'));
         cell.appendChild(makeDeleteButton(img, cell, images, onDeleted));
         return cell;
     }

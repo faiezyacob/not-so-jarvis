@@ -1183,10 +1183,9 @@ const UGCUI = (() => {
         if (!overlay) return;
         overlay.hidden = false;
         requestAnimationFrame(() => overlay.classList.add('open'));
+        if (window.StudioShell) window.StudioShell.open(overlay, { initial: '#ugcProductSelect' });
         const status = document.getElementById('ugcStudioStatus');
         if (status) status.textContent = '';
-        const brief = document.getElementById('ugcStudioBrief');
-        if (brief) setTimeout(() => brief.focus(), 30);
         const conversationId = (typeof Conversations !== 'undefined' && Conversations.currentId)
             ? Conversations.currentId() : '';
         fetchState(conversationId).then((data) => {
@@ -1200,6 +1199,7 @@ const UGCUI = (() => {
         const overlay = document.getElementById('ugcStudioOverlay');
         if (!overlay) return;
         overlay.classList.remove('open');
+        if (window.StudioShell) window.StudioShell.close();
         setTimeout(() => { overlay.hidden = true; }, 180);
     }
 

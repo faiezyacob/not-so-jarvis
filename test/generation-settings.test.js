@@ -551,14 +551,14 @@ test('normalizeImageModel: MiniMax aliases map to minimax_h3_image', () => {
     for (const alias of ['minimax', 'minimax_h3', 'minimax_h3_image', 'minimax_image', 'h3_image', 'h3', 'p_h3_image', 'ph3_image', 'MiniMax H3 Image']) {
         assert.equal(imageGenerator.normalizeImageModel(alias), 'minimax_h3_image', alias);
     }
-    assert.deepEqual(imageGenerator.IMAGE_MODELS, ['krea2', 'qwen_image_2_1', 'minimax_h3_image']);
+    assert.deepEqual(imageGenerator.IMAGE_MODELS, ['krea2', 'qwen_image_2_1', 'minimax_h3_image', 'moss']);
 });
 
 test('normalizeEditEngine: MiniMax aliases map to minimax_h3', () => {
     for (const alias of ['minimax', 'minimax_h3', 'minimax_h3_image', 'minimax_edit', 'minimax_h3_edit', 'MiniMax H3 Image Edit']) {
         assert.equal(imageGenerator.normalizeEditEngine(alias), 'minimax_h3', alias);
     }
-    assert.deepEqual(imageGenerator.EDIT_ENGINES, ['qwen', 'krea2', 'minimax_h3']);
+    assert.deepEqual(imageGenerator.EDIT_ENGINES, ['qwen', 'krea2', 'minimax_h3', 'moss']);
 });
 
 test('sanitizeSettings: MiniMax model, sampling and edit megapixels are validated', () => {

@@ -411,7 +411,11 @@ const PlaygroundUI = (() => {
                     : (c.subject || 'No character'))),
             detailRow('Appearance', c.appearanceCategoryLabel),
             detailRow('Category', c.category),
-            detailRow('Outfit pack', c.outfitPackLabel),
+            detailRow('Outfit pack', c.outfitPackLabel
+                ? c.outfitPackLabel + (Array.isArray(c.outfitPacks) && c.outfitPacks.length > 1
+                    ? ' (randomized from ' + c.outfitPacks.length + ' selected)'
+                    : '')
+                : ''),
             buildDetailRow('Outfit', c.outfit, {
                 rerollField: outfitRerollable ? 'outfit' : '',
                 editField: EDITABLE_FIELDS.includes('outfit') ? 'outfit' : '',
@@ -700,9 +704,11 @@ const PlaygroundUI = (() => {
     let outfitPacksEl = null;
     let outfitCustomEl = null;
     let outfitPackCache = null;
-    // '', a pack id, or 'custom' — an Outfit Pack is a replaceable character
-    // attribute, so the popover tracks it alongside the character controls.
-    let outfitPackChoice = '';
+    // The wardrobe selection: one or more Outfit Pack ids, or the exclusive
+    // `custom` complete-outfit mode. Several selected packs are randomized per
+    // concept by the server.
+    let outfitPackChoices = [];
+    let outfitCustomActive = false;
     let outfitCustomText = '';
     // The Activity Library selector: '', 'auto', 'random' or an activity id.
     let activitySelect = null;
@@ -1050,12 +1056,19 @@ const PlaygroundUI = (() => {
         return preset ? preset.label : value;
     }
 
-    function outfitCard(id, label, description, palette) {
+    function outfitChoiceActive(id) {
+        if (!id) return outfitPackChoices.length === 0 && !outfitCustomActive;
+        if (id === 'custom') return outfitCustomActive;
+        return outfitPackChoices.includes(id);
+    }
+
+    function outfitCard(id, label, description, palette, bestFor) {
         const card = document.createElement('button');
         card.type = 'button';
         card.className = 'playground-outfit-card';
         card.setAttribute('data-pack', id);
-        if (id === outfitPackChoice) card.classList.add('playground-outfit-card--active');
+        card.setAttribute('aria-pressed', outfitChoiceActive(id) ? 'true' : 'false');
+        if (outfitChoiceActive(id)) card.classList.add('playground-outfit-card--active');
 
         const name = document.createElement('span');
         name.className = 'playground-outfit-name';
@@ -1067,6 +1080,12 @@ const PlaygroundUI = (() => {
             desc.className = 'playground-outfit-desc';
             desc.textContent = description;
             card.appendChild(desc);
+        }
+        if (Array.isArray(bestFor) && bestFor.length) {
+            const where = document.createElement('span');
+            where.className = 'playground-outfit-where';
+            where.textContent = 'Best in ' + bestFor.join(' \u00b7 ');
+            card.appendChild(where);
         }
         if (Array.isArray(palette) && palette.length) {
             const dots = document.createElement('span');
@@ -1083,7 +1102,7 @@ const PlaygroundUI = (() => {
 
         card.addEventListener('click', (e) => {
             e.stopPropagation();
-            setOutfitPack(id);
+            toggleOutfitPack(id);
         });
         return card;
     }
@@ -1100,39 +1119,65 @@ const PlaygroundUI = (() => {
             heading.className = 'playground-outfit-group';
             heading.textContent = group.label;
             outfitPacksEl.appendChild(heading);
-            packs.forEach((pack) => outfitPacksEl.appendChild(outfitCard(pack.id, pack.label, pack.description, pack.palette)));
+            packs.forEach((pack) => outfitPacksEl.appendChild(
+                outfitCard(pack.id, pack.label, pack.description, pack.palette, pack.bestFor)));
         });
         (outfitPackCache || [])
             .filter((pack) => !OUTFIT_PACK_GROUPS.some((group) => group.ids.includes(pack.id)))
-            .forEach((pack) => outfitPacksEl.appendChild(outfitCard(pack.id, pack.label, pack.description, pack.palette)));
+            .forEach((pack) => outfitPacksEl.appendChild(
+                outfitCard(pack.id, pack.label, pack.description, pack.palette, pack.bestFor)));
         outfitPacksEl.appendChild(outfitCard('custom', 'Custom', 'Describe the exact outfit yourself.', []));
         syncOutfitCustom();
         updateSummary();
     }
 
-    function setOutfitPack(id) {
-        outfitPackChoice = id || '';
-        popoverDirty = true;
-        if (outfitPacksEl) {
-            outfitPacksEl.querySelectorAll('.playground-outfit-card').forEach((el) => {
-                el.classList.toggle('playground-outfit-card--active', el.getAttribute('data-pack') === outfitPackChoice);
-            });
+    function renderOutfitPackActiveStates() {
+        if (!outfitPacksEl) return;
+        outfitPacksEl.querySelectorAll('.playground-outfit-card').forEach((el) => {
+            const id = el.getAttribute('data-pack') || '';
+            const active = outfitChoiceActive(id);
+            el.classList.toggle('playground-outfit-card--active', active);
+            el.setAttribute('aria-pressed', active ? 'true' : 'false');
+        });
+    }
+
+    // Clicking an unselected pack adds it; clicking a selected pack removes it.
+    // Several packs are randomized per concept. "Theme decides" clears the
+    // selection, and Custom is exclusive (it is one complete outfit).
+    function toggleOutfitPack(id) {
+        const value = String(id || '');
+        if (!value) {
+            outfitPackChoices = [];
+            outfitCustomActive = false;
+        } else if (value === 'custom') {
+            outfitCustomActive = !outfitCustomActive;
+            if (outfitCustomActive) outfitPackChoices = [];
+        } else {
+            outfitCustomActive = false;
+            const index = outfitPackChoices.indexOf(value);
+            if (index >= 0) outfitPackChoices.splice(index, 1);
+            else outfitPackChoices.push(value);
         }
+        popoverDirty = true;
+        renderOutfitPackActiveStates();
         syncOutfitCustom();
         updateSummary();
     }
 
     function syncOutfitCustom() {
         if (!outfitCustomEl) return;
-        const custom = outfitPackChoice === 'custom';
-        outfitCustomEl.hidden = !custom;
-        if (custom && !outfitCustomEl.value && outfitCustomText) outfitCustomEl.value = outfitCustomText;
+        outfitCustomEl.hidden = !outfitCustomActive;
+        if (outfitCustomActive && !outfitCustomEl.value && outfitCustomText) {
+            outfitCustomEl.value = outfitCustomText;
+        }
     }
 
     function selectedOutfit() {
-        const custom = outfitPackChoice === 'custom';
+        const custom = outfitCustomActive;
+        const packs = custom ? [] : outfitPackChoices.slice();
         return {
-            outfitPack: outfitPackChoice || '',
+            outfitPack: custom ? 'custom' : (packs.length === 1 ? packs[0] : ''),
+            outfitPacks: packs,
             outfitPackCustom: custom && outfitCustomEl ? String(outfitCustomEl.value || '').trim() : ''
         };
     }
@@ -1411,10 +1456,20 @@ const PlaygroundUI = (() => {
             if (ageSelect) ageSelect.value = concept.characterProfile.age;
             if (genderSelect) genderSelect.value = concept.characterProfile.gender;
         }
-        // Reflect the active Outfit Pack so a pinned wardrobe is visible and
-        // clearable before the next Surprise.
-        outfitPackChoice = concept.outfitPack || '';
-        outfitCustomText = concept.outfitPackCustom || '';
+        // Reflect the active wardrobe selection so pinned packs are visible,
+        // toggleable, and clearable before the next Surprise.
+        const activePacks = Array.isArray(concept.outfitPacks)
+            ? concept.outfitPacks
+            : (concept.concept && Array.isArray(concept.concept.outfitPacks) ? concept.concept.outfitPacks : []);
+        outfitPackChoices = activePacks.map((id) => String(id || '')).filter(Boolean);
+        outfitCustomActive = concept.outfitPack === 'custom'
+            || Boolean(concept.concept && concept.concept.outfitPack === 'custom');
+        if (outfitCustomActive) outfitPackChoices = [];
+        else if (!outfitPackChoices.length && concept.outfitPack && concept.outfitPack !== 'custom') {
+            outfitPackChoices = [concept.outfitPack];
+        }
+        outfitCustomText = concept.outfitPackCustom
+            || (concept.concept && concept.concept.outfitPackCustom) || '';
         if (outfitCustomEl) outfitCustomEl.value = outfitCustomText;
         renderOutfitPacks();
         // Reflect the active Activity Library selection so a pinned/auto
@@ -1522,12 +1577,15 @@ const PlaygroundUI = (() => {
     }
 
     function wardrobeSummaryLabel() {
-        if (outfitPackChoice === 'custom') return 'Custom outfit';
-        if (outfitPackChoice) {
-            const pack = (outfitPackCache || []).find((p) => p.id === outfitPackChoice);
-            return pack ? pack.label : outfitPackChoice;
-        }
-        return 'Theme decides';
+        if (outfitCustomActive) return 'Custom outfit';
+        if (!outfitPackChoices.length) return 'Theme decides';
+        const labels = outfitPackChoices.map((id) => {
+            const pack = (outfitPackCache || []).find((p) => p.id === id);
+            return pack ? pack.label : id;
+        });
+        if (labels.length === 1) return labels[0];
+        if (labels.length === 2) return labels[0] + ' + ' + labels[1];
+        return labels.length + ' wardrobes (randomized)';
     }
 
     // A compact one-line summary of the current choices, shown above the
@@ -1572,6 +1630,7 @@ const PlaygroundUI = (() => {
             locks,
             profile,
             outfitPack: outfit.outfitPack,
+            outfitPacks: outfit.outfitPacks,
             outfitPackCustom: outfit.outfitPackCustom,
             activity,
             sceneId,

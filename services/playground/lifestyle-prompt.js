@@ -45,6 +45,21 @@ const GLOBAL_GRADE_RE = new RegExp(
     'gi'
 );
 
+// A complete exclusion list ("no warm, golden or amber cast"). It is collapsed
+// to one grammatical clause before the individual grade phrases are removed,
+// so a leftover list connector can never be left dangling.
+const NO_COLOR_CAST_RE = new RegExp(
+    '\\bno\\s+(?:(?:warm|golden|amber|orange|yellow)\\b(?:\\s*,\\s*|\\s+(?:or|and)\\s+)?)+' +
+    '\\s*(?:colou?r\\s+)?(?:cast|tint|grade|grading|wash)\\b',
+    'gi'
+);
+
+// A labelled descriptor segment is not a lighting sentence even when it uses a
+// lighting word ("Social-media category: Night Out"). Only the SCENE/lighting
+// wording is reconciled; labels and identity/action/wardrobe rows are left
+// exactly as written.
+const NON_LIGHTING_LABEL_RE = /^\s*(?:character|facial appearance|hair and physical appearance|facial expression|user prompt|outfit|outfit pack|requested custom outfit|character activity|activity actions|activity composition|activity camera|group character separation|social-media category|primary experimental technique|texture or material element|camera and composition|mood|visual style|suggested aspect ratio|additional direction)\s*:/i;
+
 // Identity restatement / lock vocabulary. Used to find the identity block(s)
 // the enhancer may have repeated.
 const IDENTITY_LOCK_RE = new RegExp(
@@ -100,11 +115,14 @@ function tidy(text) {
 // without tinting the whole image.
 function stripGlobalColorGrade(text) {
     let out = String(text || '');
+    out = out.replace(NO_COLOR_CAST_RE, 'no colour cast');
     out = out.replace(GLOBAL_GRADE_RE, '');
     out = out.replace(/\bsepia(?:\s+tone)?\b/gi, '');
     // Remove connectors left dangling when a grade phrase is deleted, then tidy
     // the punctuation the deletion exposed.
     out = out.replace(/\b(?:with|in|under|using|and|that|which)\s+a?\s*(?=[,.;]|$)/gi, '');
+    out = out.replace(/\b(?:and|or)\s*([,.;:])/gi, '$1');
+    out = out.replace(/(?:,\s*)+(?:and|or)\s*([.;])/gi, '$1');
     out = out.replace(/\s{2,}/g, ' ');
     out = out.replace(/\s+([,.;:])/g, '$1');
     out = out.replace(/,\s*\./g, '.');
@@ -327,7 +345,8 @@ function normalizeLifestylePrompt(prompt, options = {}) {
     const kept = [];
     let hasLighting = false;
     for (const segment of segments) {
-        if (LIGHTING_RE.test(segment)) {
+        const labelled = NON_LIGHTING_LABEL_RE.test(segment);
+        if (!labelled && LIGHTING_RE.test(segment)) {
             const tod = segmentTimeOfDay(segment);
             if (lightingConflicts(tod, sceneCtx)) {
                 // Rewrite the offending wording in place, so a sentence that

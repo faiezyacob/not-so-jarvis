@@ -6,6 +6,21 @@
     <title>NOT-SO-JARVIS — Local AI Assistant</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <link rel="stylesheet" href="style.css">
+    <script>
+        // Resolve the light/dark ground before first paint so the shell never
+        // flashes the wrong paper. Stored choice wins; otherwise the OS decides.
+        (function () {
+            try {
+                var stored = localStorage.getItem('jarvis-theme');
+                var theme = stored === 'light' || stored === 'dark'
+                    ? stored
+                    : (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+                document.documentElement.setAttribute('data-theme', theme);
+            } catch (e) {
+                document.documentElement.setAttribute('data-theme', 'light');
+            }
+        })();
+    </script>
 </head>
 <body>
 
@@ -19,6 +34,15 @@
             <button class="studio-trigger" id="ugcStudioOpen" type="button" title="Open UGC Studio">UGC STUDIO</button>
             <button class="studio-trigger" id="creatorStudioOpen" type="button" title="Open Creator Studio">CREATOR STUDIO</button>
             <button class="studio-trigger" id="chatCharacterSwap" type="button" title="Open Character Swap">CHARACTER SWAP</button>
+            <button class="theme-toggle" id="themeToggle" type="button" aria-label="Switch between light and dark" title="Light / dark">
+                <svg class="theme-icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"></path>
+                </svg>
+                <svg class="theme-icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="12" cy="12" r="4"></circle>
+                    <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path>
+                </svg>
+            </button>
             <button class="settings-btn" id="settingsBtn" aria-label="Settings">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <circle cx="12" cy="12" r="3"></circle>
@@ -321,7 +345,7 @@
 
                     <!-- Image -->
                     <div class="settings-panel" data-panel="image">
-                        <div class="settings-card" data-search="image model engine krea2 qwen image 2.1 minimax h3 image">
+                        <div class="settings-card" data-search="image model engine krea2 qwen image 2.1 minimax h3 image moss">
                             <div class="settings-card-title">IMAGE MODEL</div>
                             <div class="settings-card-sub">Choose which text-to-image pipeline the BASE MODELS below feed.</div>
                             <div class="settings-field">
@@ -330,12 +354,43 @@
                                     <option value="qwen_image_2_1">Qwen Image 2.1</option>
                                     <option value="krea2">Krea 2 Turbo</option>
                                     <option value="minimax_h3_image">MiniMax H3 Image</option>
+                                    <option value="moss">MOSS-Image</option>
                                 </select>
-                                <span class="settings-hint">UNET = diffusion model, CLIP = text encoder, VAE = VAE. Switching models remembers each model's filenames. MiniMax H3 Image uses 4/6/10/16 MP for S/M/L/XL; Qwen and Krea use 0.75/1/1.25/1.75 MP.</span>
+                                <span class="settings-hint">UNET = diffusion model, CLIP = text encoder, VAE = VAE. Switching models remembers each model's filenames. MiniMax H3 Image uses 4/6/10/16 MP for S/M/L/XL; Qwen, Krea and MOSS-Image use 0.75/1/1.25/1.75 MP.</span>
                                 <span class="settings-save-status" id="imageModelStatus"></span>
                             </div>
+                            <div id="mossGenerationFields" style="display:none;">
+                                <div class="settings-field">
+                                    <label class="settings-toggle">
+                                        <span class="settings-toggle-label">MOSS prompt enhancer</span>
+                                        <input type="checkbox" id="mossPromptEnhancer" checked>
+                                    </label>
+                                    <span class="settings-hint">The official MOSS-Image text-to-image template rewrites a short request into a full caption on MOSS's own text encoder before sampling. Turn it off to send the prompt exactly as written.</span>
+                                </div>
+                                <div class="settings-field-row">
+                                    <div class="settings-field">
+                                        <label class="settings-field-label" for="mossSampler">Sampler</label>
+                                        <input type="text" class="settings-input" id="mossSampler" placeholder="er_sde" autocomplete="off">
+                                    </div>
+                                    <div class="settings-field">
+                                        <label class="settings-field-label" for="mossScheduler">Scheduler</label>
+                                        <input type="text" class="settings-input" id="mossScheduler" placeholder="simple" autocomplete="off">
+                                    </div>
+                                </div>
+                                <div class="settings-field">
+                                    <label class="settings-field-label" for="mossNegativePrompt">Negative prompt</label>
+                                    <input type="text" class="settings-input" id="mossNegativePrompt" autocomplete="off">
+                                    <span class="settings-hint">Recommended: nsfw, worst quality, bad anatomy, watermark, jpeg artifact.</span>
+                                </div>
+                                <div class="settings-field">
+                                    <label class="settings-field-label" for="mossEnhancerReferenceFile">Enhancer reference (optional)</label>
+                                    <input type="file" class="settings-input" id="mossEnhancerReferenceFile" accept="image/*">
+                                    <span class="settings-hint" id="mossEnhancerReferenceStatus">No reference image. An optional image the prompt enhancer may read; MOSS itself does not use it.</span>
+                                    <button class="settings-browse-btn" id="mossEnhancerReferenceClear" type="button" style="display:none;">Clear reference</button>
+                                </div>
+                            </div>
                         </div>
-                        <div class="settings-card" data-search="image edit engine qwen krea2 minimax h3 image identity instruction reference">
+                        <div class="settings-card" data-search="image edit engine qwen krea2 minimax h3 image moss identity instruction reference">
                             <div class="settings-card-title">IMAGE EDIT</div>
                             <div class="settings-card-sub">Which pipeline edits an existing image (and character/scene references).</div>
                             <div class="settings-field">
@@ -344,12 +399,18 @@
                                     <option value="qwen">Qwen Image Edit</option>
                                     <option value="krea2">Krea 2 Identity Edit</option>
                                     <option value="minimax_h3">MiniMax H3 Image Edit</option>
+                                    <option value="moss">MOSS-Image Edit</option>
                                 </select>
-                                <span class="settings-hint">Qwen Image Edit (default) is a native instruction editor that accepts several reference images addressed by position. Krea 2 Identity Edit is a reference-guided edit that preserves a subject's identity — it needs the Krea 2 base models, the Identity Edit LoRA and the comfyui-krea2edit node pack (Setup), and it uses at most one extra reference image. MiniMax H3 Image Edit is a reference-guided instruction editor that shares the MiniMax H3 Image models; it keeps the source composition at a configurable megapixel budget.</span>
+                                <span class="settings-hint">Qwen Image Edit (default) is a native instruction editor that accepts several reference images addressed by position. Krea 2 Identity Edit is a reference-guided edit that preserves a subject's identity — it needs the Krea 2 base models, the Identity Edit LoRA and the comfyui-krea2edit node pack (Setup), and it uses at most one extra reference image. MiniMax H3 Image Edit is a reference-guided instruction editor that shares the MiniMax H3 Image models; it keeps the source composition at a configurable megapixel budget. MOSS-Image Edit uses the dedicated edit LoRA and ComfyUI's MOSS-Image Edit text encoders (ComfyUI 0.43.0+); describe only the change and keep the source aspect ratio.</span>
                                 <div class="settings-field" id="imageEditMegapixelsField" style="display:none;">
                                     <label class="settings-field-label" for="imageEditMegapixels">MiniMax edit megapixels</label>
                                     <input type="number" class="settings-input" id="imageEditMegapixels" min="0.5" max="16" step="0.5" value="4">
                                     <span class="settings-hint">Pixel budget the MiniMax editor resizes the source to (0.5–16 MP). Lower is faster and safer on 16 GB VRAM.</span>
+                                </div>
+                                <div class="settings-field" id="mossEditMegapixelsField" style="display:none;">
+                                    <label class="settings-field-label" for="mossEditMegapixels">MOSS edit megapixels</label>
+                                    <input type="number" class="settings-input" id="mossEditMegapixels" min="0.25" max="4" step="0.25" value="1">
+                                    <span class="settings-hint">Pixel budget the MOSS editor scales the source to (0.25–4 MP, default 1). The output keeps the source aspect ratio and a 16 px grid.</span>
                                 </div>
                                 <span class="settings-save-status" id="imageEditEngineStatus"></span>
                                 <button class="settings-browse-btn" id="imageEditEngineInstall" type="button" style="display:none;">Install Krea 2 edit components</button>
@@ -1053,12 +1114,11 @@
             </div>
 
     <div class="ugc-studio-overlay" id="ugcStudioOverlay" hidden>
-        <section class="ugc-studio" role="dialog" aria-modal="true" aria-labelledby="ugcStudioTitle">
+        <section class="ugc-studio" role="dialog" aria-modal="true" aria-labelledby="ugcStudioTitle" tabindex="-1">
             <header class="creator-studio-header">
                 <div>
-                    <div class="creator-studio-kicker">NOT-SO-JARVIS · CONTENT TOOLS</div>
-                    <h1 id="ugcStudioTitle">UGC STUDIO</h1>
-                    <p>Set the product, creator and direction, then build the script, scene frames and final video in one step.</p>
+                    <h1 id="ugcStudioTitle">UGC Studio</h1>
+                    <p>Set the product, the creator and the direction. One press writes the script, builds the opening frame and renders the video.</p>
                 </div>
                 <button class="creator-studio-close" id="ugcStudioClose" type="button" aria-label="Close UGC Studio" title="Close UGC Studio">×</button>
             </header>
@@ -1067,7 +1127,7 @@
                     <div class="creator-studio-section-label">PRODUCT</div>
                     <div class="creator-studio-row">
                         <div class="creator-studio-field creator-studio-field--wide">
-                            <span>Product</span>
+                            <span>Saved product</span>
                             <div class="ugc-product-control">
                                 <select id="ugcProductSelect"></select>
                                 <button class="ugc-product-delete" id="ugcProductDelete" type="button" title="Delete saved product" aria-label="Delete saved product" hidden>
@@ -1118,7 +1178,7 @@
 
                     <div class="creator-studio-section-label">BRIEF</div>
                     <label class="creator-studio-field">
-                        <span>Creative direction</span>
+                        <span>Creative brief</span>
                         <textarea id="ugcStudioBrief" rows="3" maxlength="1200" placeholder="A relaxed TikTok unboxing for my handmade skincare brand..."></textarea>
                         <small>Optional. Describes the idea; the fields above stay authoritative.</small>
                     </label>
@@ -1127,36 +1187,40 @@
                         <label class="creator-studio-field"><span>Platform</span><select id="ugcPlatform"></select></label>
                         <label class="creator-studio-field"><span>Tone</span><input id="ugcTone" type="text" maxlength="200" placeholder="natural, upbeat"></label>
                     </div>
-                    <div class="creator-studio-row">
-                        <label class="creator-studio-field"><span>Target audience</span><input id="ugcAudience" type="text" maxlength="300" placeholder="Optional"></label>
-                        <label class="creator-studio-field"><span>Key message</span><input id="ugcKeyMessage" type="text" maxlength="400" placeholder="Optional"></label>
-                    </div>
-                    <div class="creator-studio-row">
-                        <label class="creator-studio-field"><span>Call to action</span><input id="ugcCta" type="text" maxlength="300" placeholder="Optional"></label>
-                        <label class="creator-studio-field"><span>Additional instructions</span><input id="ugcExtra" type="text" maxlength="800" placeholder="Optional"></label>
-                    </div>
+                    <details class="ugc-brief-more">
+                        <summary>Optional brief detail</summary>
+                        <div class="creator-studio-row">
+                            <label class="creator-studio-field"><span>Target audience</span><input id="ugcAudience" type="text" maxlength="300" placeholder="Optional"></label>
+                            <label class="creator-studio-field"><span>Key message</span><input id="ugcKeyMessage" type="text" maxlength="400" placeholder="Optional"></label>
+                        </div>
+                        <div class="creator-studio-row">
+                            <label class="creator-studio-field"><span>Call to action</span><input id="ugcCta" type="text" maxlength="300" placeholder="Optional"></label>
+                            <label class="creator-studio-field"><span>Additional instructions</span><input id="ugcExtra" type="text" maxlength="800" placeholder="Optional"></label>
+                        </div>
+                    </details>
 
                     <div class="ugc-studio-current" id="ugcStudioCurrent" hidden>
                         <div class="creator-studio-section-label">CURRENT PROJECT</div>
                         <div class="ugc-studio-current-copy" id="ugcStudioCurrentCopy"></div>
                         <button class="creator-studio-new-session" id="ugcStudioReturn" type="button">Return to project</button>
                     </div>
-                    <div class="creator-studio-actions">
-                        <button class="creator-studio-generate" id="ugcStudioStart" type="button">Create UGC video</button>
-                        <span class="creator-studio-status" id="ugcStudioStatus" aria-live="polite"></span>
-                    </div>
                 </div>
             </div>
+            <footer class="studio-commit">
+                <div class="studio-commit-row">
+                    <button class="studio-commit-btn" id="ugcStudioStart" type="button">Create UGC video</button>
+                    <span class="studio-commit-status" id="ugcStudioStatus" aria-live="polite"></span>
+                </div>
+            </footer>
         </section>
     </div>
 
     <div class="creator-studio-overlay" id="creatorStudioOverlay" hidden>
-        <section class="creator-studio" role="dialog" aria-modal="true" aria-labelledby="creatorStudioTitle">
+        <section class="creator-studio" role="dialog" aria-modal="true" aria-labelledby="creatorStudioTitle" tabindex="-1">
             <header class="creator-studio-header">
                 <div>
-                    <div class="creator-studio-kicker">NOT-SO-JARVIS · CREATOR TOOLS</div>
-                    <h1 id="creatorStudioTitle">CREATOR STUDIO</h1>
-                    <p>What does your creator want to say today?</p>
+                    <h1 id="creatorStudioTitle">Creator Studio</h1>
+                    <p>A saved Character holds her identity, wardrobe and voice across every video in this session. Choose what she says; the rest is direction.</p>
                 </div>
                 <button class="creator-studio-close" id="creatorStudioClose" type="button" aria-label="Close Creator Studio; generation will continue" title="Close window — generation will continue">×</button>
             </header>
@@ -1182,7 +1246,7 @@
 
                     <div class="creator-studio-section-label">CONTENT</div>
                     <label class="creator-studio-field">
-                        <span>Content</span>
+                        <span>Format</span>
                         <select id="creatorContentType"></select>
                     </label>
                     <div class="creator-studio-content-idea">
@@ -1197,16 +1261,19 @@
                             <small>Visual direction only; this will not be spoken. Add only details you want shown.</small>
                         </label>
                         <div class="creator-suggestion-anchor">
-                            <button class="creator-suggestion-trigger" id="creatorSuggestionButton" type="button" aria-expanded="false" aria-controls="creatorSuggestionPanel">✨ AI Suggestion</button>
+                            <button class="creator-suggestion-trigger" id="creatorSuggestionButton" type="button" aria-expanded="false" aria-controls="creatorSuggestionPanel">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 4l1.6 4.4L17 10l-4.4 1.6L11 16l-1.6-4.4L5 10l4.4-1.6z"/><path d="M18 15l.8 2.2L21 18l-2.2.8L18 21l-.8-2.2L15 18l2.2-.8z"/></svg>
+                                <span id="creatorSuggestionLabel">Suggest</span>
+                            </button>
                             <section class="creator-suggestion-panel" id="creatorSuggestionPanel" aria-label="Creator Studio content suggestions" aria-live="polite" hidden>
                                 <div class="creator-suggestion-header">
-                                    <div class="creator-suggestion-heading">✨ AI SUGGESTION</div>
-                                    <button class="creator-suggestion-close" id="creatorSuggestionClose" type="button" aria-label="Dismiss AI suggestions" title="Dismiss">×</button>
+                                    <div class="creator-suggestion-heading">Suggestions</div>
+                                    <button class="creator-suggestion-close" id="creatorSuggestionClose" type="button" aria-label="Dismiss suggestions" title="Dismiss">×</button>
                                 </div>
                                 <div class="creator-suggestion-based" id="creatorSuggestionBased" hidden></div>
                                 <div class="creator-suggestion-message" id="creatorSuggestionMessage" hidden></div>
                                 <div class="creator-suggestion-list" id="creatorSuggestionList"></div>
-                                <button class="creator-suggestion-more" id="creatorSuggestionMore" type="button" hidden>↻ More suggestions</button>
+                                <button class="creator-suggestion-more" id="creatorSuggestionMore" type="button" hidden>More suggestions</button>
                             </section>
                         </div>
                     </div>
@@ -1248,16 +1315,6 @@
                             <label class="creator-studio-field"><span>Voice emotion</span><input id="creatorVoiceEmotion" type="text" value="warm"></label>
                         </div>
                     </details>
-                    <div class="creator-studio-actions">
-                        <button class="creator-studio-generate" id="creatorGenerate" type="button">Generate talking video</button>
-                        <span class="creator-studio-status" id="creatorStudioStatus" aria-live="polite"></span>
-                    </div>
-                    <div class="creator-studio-progress" id="creatorStudioProgress" hidden>
-                        <div class="creator-studio-progress-track" role="progressbar" id="creatorStudioProgressBar" aria-label="Creator Studio generation progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-                            <span id="creatorStudioProgressFill"></span>
-                        </div>
-                        <span class="creator-studio-progress-label" id="creatorStudioProgressLabel" aria-live="polite"></span>
-                    </div>
                 </div>
                 <aside class="creator-studio-session">
                     <div class="creator-studio-session-head">
@@ -1280,13 +1337,25 @@
                     <div class="creator-studio-session-note">The selected Character stays consistent across the session. Each video can vary its script, expression, gestures and framing.</div>
                 </aside>
             </div>
+            <footer class="studio-commit">
+                <div class="creator-studio-progress" id="creatorStudioProgress" hidden>
+                    <div class="creator-studio-progress-track" role="progressbar" id="creatorStudioProgressBar" aria-label="Creator Studio generation progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                        <span id="creatorStudioProgressFill"></span>
+                    </div>
+                    <span class="creator-studio-progress-label" id="creatorStudioProgressLabel" aria-live="polite"></span>
+                </div>
+                <div class="studio-commit-row">
+                    <button class="studio-commit-btn" id="creatorGenerate" type="button">Generate talking video</button>
+                    <span class="studio-commit-status" id="creatorStudioStatus" aria-live="polite"></span>
+                </div>
+            </footer>
         </section>
     </div>
 
     <main class="main">
         <aside class="conversations-panel" id="conversationsPanel">
             <div class="conv-panel-header">
-                <span class="conv-panel-title" id="convHeaderTitle">CONVERSATIONS</span>
+                <span class="conv-panel-title" id="convHeaderTitle">Rolls</span>
                 <button class="conv-new-btn" id="newConversationBtn" aria-label="New conversation">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
                         <line x1="12" y1="5" x2="12" y2="19"></line>
@@ -1299,6 +1368,32 @@
 
         <section class="chat-area">
             <div class="ugc-bar" id="ugcBar" hidden></div>
+            <header class="day-sheet" id="daySheet">
+                <div class="day-sheet-top">
+                    <div class="day-sheet-id">
+                        <h1 class="day-sheet-title" id="daySheetTitle">New roll</h1>
+                        <p class="day-sheet-sub" id="daySheetSub">No frames yet</p>
+                    </div>
+                    <div class="day-sheet-stamp" id="daySheetStamp">Open</div>
+                </div>
+                <dl class="day-sheet-fields">
+                    <div class="day-field"><dt>Model</dt><dd id="dayFieldModel">&mdash;</dd></div>
+                    <div class="day-field"><dt>Queue</dt><dd id="dayFieldQueue">0</dd></div>
+                    <div class="day-field"><dt>Elapsed</dt><dd id="dayFieldElapsed">&mdash;</dd></div>
+                    <div class="day-field"><dt>Frames</dt><dd id="dayFieldFrames">0</dd></div>
+                </dl>
+            </header>
+            <div class="chat-empty" id="chatEmpty">
+                <p class="chat-empty-title">No roll open</p>
+                <p class="chat-empty-note">Write the first turn. A chat answer, an image, an edit, a video, a character — it all starts here and stays in the same log.</p>
+                <p class="chat-empty-label">Start with</p>
+                <ul class="chat-empty-starters">
+                    <li><button type="button" class="chat-empty-starter">generate image: a young woman in a neon-lit Tokyo street</button></li>
+                    <li><button type="button" class="chat-empty-starter">write me a prompt for a cinematic portrait</button></li>
+                    <li><button type="button" class="chat-empty-starter">upscale this video to 4K</button></li>
+                    <li><button type="button" class="chat-empty-starter">start comfyui</button></li>
+                </ul>
+            </div>
             <div class="chat-messages" id="chatMessages">
                 <!-- Messages injected by JS -->
             </div>
@@ -1340,7 +1435,7 @@
                 <div class="playground-popup-body">
                     <section class="playground-section playground-today" id="playgroundTodaySection">
                         <div class="playground-today-head">
-                            <h3 class="playground-section-title">Today's Playground</h3>
+                            <h2 class="playground-section-title">Today's Playground</h2>
                             <button class="playground-today-refresh" id="playgroundTodayRefresh" type="button" title="Generate fresh ideas for today">
                                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                     <polyline points="23 4 23 10 17 10"></polyline>
@@ -1409,7 +1504,7 @@
                             autocomplete="off"
                             hidden
                         >
-                        <p class="playground-section-hint">&ldquo;Theme decides&rdquo; picks clothing to suit the selected scene.</p>
+                        <p class="playground-section-hint">&ldquo;Theme decides&rdquo; picks clothing to suit the selected scene. Select several wardrobe packs to randomize between them; click a selected pack again to remove it.</p>
                     </section>
 
                     <section class="playground-section">
@@ -1726,12 +1821,11 @@
     </div>
 
     <div class="character-swap-overlay" id="characterSwapOverlay" hidden>
-        <section class="character-swap" role="dialog" aria-modal="true" aria-labelledby="characterSwapTitle">
+        <section class="character-swap" role="dialog" aria-modal="true" aria-labelledby="characterSwapTitle" tabindex="-1">
             <header class="character-swap-header">
                 <div>
-                    <div class="creator-studio-kicker">NOT-SO-JARVIS · VIDEO CHARACTER REPLACEMENT</div>
-                    <h1 id="characterSwapTitle">CHARACTER SWAP</h1>
-                    <p>SCAIL-2 replaces the selected person with official replacement-mode conditioning. H3 Recast swaps up to three people in one pass using a scene reference and the BFS Character Swap LoRA.</p>
+                    <h1 id="characterSwapTitle">Character Swap</h1>
+                    <p>Replace a person in an existing clip. The clip keeps its motion, scene and audio; a character image supplies the new identity.</p>
                 </div>
                 <div class="character-swap-header-actions">
                     <button class="character-swap-btn character-swap-btn--ghost" id="csStartOver" type="button" title="Discard this workspace and start a new character swap">Start over</button>
@@ -1745,17 +1839,25 @@
                         <div class="character-swap-engine-options" id="csEngineOptions">
                             <button class="character-swap-engine-btn active" type="button" data-cs-engine="scail2">
                                 <strong>SCAIL-2</strong>
-                                <span>Official replacement mode</span>
+                                <span>Replacement mode</span>
                             </button>
                             <button class="character-swap-engine-btn" type="button" data-cs-engine="h3">
                                 <strong>H3 Recast</strong>
-                                <span>BFS Character Swap LoRA</span>
+                                <span>One-pass BFS swap</span>
                             </button>
                         </div>
                         <div class="character-swap-engine-note" id="csEngineNote"></div>
                         <div class="character-swap-engine-warning" id="csEngineWarning" hidden></div>
                     </div>
-                    <div class="character-swap-section" id="csSourceTitle">1 · SOURCE</div>
+                    <nav class="cs-steps" id="csSteps" aria-label="Character Swap steps">
+                        <button class="cs-step" type="button" data-cs-step="csSourceTitle"><b>01</b><span>Source</span></button>
+                        <button class="cs-step" type="button" data-cs-step="csPeopleTitle"><b>02</b><span>People</span></button>
+                        <button class="cs-step" type="button" data-cs-step="csMaskTitle"><b>03</b><span>Track</span></button>
+                        <button class="cs-step" type="button" data-cs-step="csCharacterTitle"><b>04</b><span>Character</span></button>
+                        <button class="cs-step" type="button" data-cs-step="csGenerateTitle"><b>05</b><span>Render</span></button>
+                    </nav>
+                    <div class="character-swap-sidebar-scroll" id="csSidebarScroll">
+                    <div class="character-swap-section" id="csSourceTitle">SOURCE</div>
                     <input type="file" id="csVideoFile" accept="video/mp4,video/webm,video/quicktime" hidden>
                     <div class="character-swap-row">
                         <button class="character-swap-btn character-swap-btn--primary" id="csChooseVideo" type="button">Upload video</button>
@@ -1782,7 +1884,7 @@
                     </div>
 
                     <div id="csPeopleSection">
-                    <div class="character-swap-section" id="csPeopleTitle">2 · PEOPLE</div>
+                    <div class="character-swap-section" id="csPeopleTitle">PEOPLE</div>
                     <div class="character-swap-detection" id="csDetection" hidden>
                         <div class="character-swap-row">
                             <button class="character-swap-btn character-swap-btn--primary" id="csDetect" type="button">Detect people</button>
@@ -1800,7 +1902,7 @@
                     </div>
 
                     <div id="csMaskSection">
-                    <div class="character-swap-section" id="csMaskTitle">3 · TRACK &amp; MASK</div>
+                    <div class="character-swap-section" id="csMaskTitle">TRACK &amp; MASK</div>
                     <div class="character-swap-tools" id="csTools">
                         <button class="character-swap-tool active" data-cs-tool="select" type="button">Select</button>
                         <button class="character-swap-tool" data-cs-tool="brush" type="button">Brush</button>
@@ -1830,7 +1932,7 @@
                     <div class="character-swap-hint" id="csMaskHint">Select: click the person (Shift-click excludes background). The tint is SAM's current mask — if it covers the scene, add exclude points. Track follows it through the clip. Brush/Eraser fix the tracked mask on the current frame. Keep Grow small (8–16); large growth paints a generated halo around the subject.</div>
                     </div>
 
-                    <div class="character-swap-section" id="csCharacterTitle">4 · CHARACTER</div>
+                    <div class="character-swap-section" id="csCharacterTitle">CHARACTER</div>
                     <input type="file" id="csRefFiles" accept="image/png,image/jpeg,image/webp" multiple hidden>
                     <div class="character-swap-row">
                         <button class="character-swap-btn" id="csAddRefs" type="button">Upload images</button>
@@ -1852,7 +1954,7 @@
                     <div class="character-swap-refs" id="csRefs"></div>
                     <div class="character-swap-description" id="csDescription"></div>
 
-                    <div class="character-swap-section" id="csGenerateTitle">5 · GENERATE</div>
+                    <div class="character-swap-section" id="csGenerateTitle">GENERATE</div>
                     <div class="character-swap-row">
                         <label>Takes
                             <select id="csTakeCount">
@@ -1948,8 +2050,11 @@
                         <div class="character-swap-hint">SCAIL-2 uses the official INT8 convrot checkpoint. SAM 3.1 finds the described person on every frame, so a crossing cannot move the mask to the other person. Leave the description blank to use the selected person's appearance automatically; add clothing or hair when two people look alike. Reference label is the SAM 3.1 word for the uploaded character image (default human).</div>
                         <div class="character-swap-hint">SCAIL-2 replaces only the selected person. The original background, other people, camera motion and audio are preserved, and the produced video is described as a positive prompt rather than an instruction.</div>
                     </div>
-                    <button class="character-swap-btn character-swap-btn--render" id="csRender" type="button">Render</button>
-                    <div class="character-swap-status" id="csStatus" aria-live="polite"></div>
+                    </div>
+                    <div class="character-swap-sidebar-foot">
+                        <button class="character-swap-btn character-swap-btn--render" id="csRender" type="button">Render</button>
+                        <div class="character-swap-status" id="csStatus" aria-live="polite"></div>
+                    </div>
                 </aside>
 
                 <main class="character-swap-stage">
@@ -2034,9 +2139,9 @@
     </div>
 
     <div class="modal-overlay" id="companionOverlay">
-        <div class="modal companion-modal" role="dialog" aria-modal="true" aria-labelledby="companionModalTitle">
+        <div class="modal companion-modal" role="dialog" aria-modal="true" aria-labelledby="companionModalTitle" tabindex="-1">
             <div class="modal-header" id="companionModalHeader">
-                <span class="modal-title" id="companionModalTitle">COMPANIONS</span>
+                <span class="modal-title" id="companionModalTitle">Companions</span>
                 <button class="identity-modal-close" id="companionClose" type="button" aria-label="Close" title="Close">&times;</button>
             </div>
             <div class="companion-layout">
@@ -2048,6 +2153,7 @@
                     <div class="companion-detail-head">
                         <span class="companion-detail-name" id="companionCharacterName">Companion</span>
                     </div>
+                    <nav class="companion-nav" id="companionNav" aria-label="Companion sections" hidden></nav>
                     <div class="companion-detail" id="companionDetail"></div>
                 </div>
             </div>
@@ -2056,6 +2162,7 @@
 
     <script src="js/db.js"></script>
     <script src="js/dialog.js"></script>
+    <script src="js/studio-shell.js"></script>
     <script src="js/markdown.js"></script>
     <script src="js/video-player.js"></script>
     <script src="js/hardware-compat.js"></script>
@@ -2077,6 +2184,8 @@
     <script src="js/character-swap.js"></script>
     <script src="js/asset-actions.js"></script>
     <script src="js/agent.js"></script>
+    <script src="js/theme.js"></script>
+    <script src="js/day-sheet.js"></script>
     <script src="js/chat.js"></script>
     <script src="js/voice-input.js"></script>
     <script src="js/voice-output.js"></script>

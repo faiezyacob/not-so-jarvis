@@ -349,6 +349,231 @@ test('the pack label reaches the creative direction', () => {
     assert.ok(direction.includes('Outfit:'));
 });
 
+// --- Environment affinity ------------------------------------------------------
+
+test('environment classification understands the richer place vocabulary', () => {
+    const cases = [
+        ['a boutique hotel room with linen curtains', 'hotel'],
+        ['a rooftop bar overlooking the old town', 'bar'],
+        ['a crowded station platform in the last light', 'transit'],
+        ['a bustling market square in a medieval town', 'market'],
+        ['a white gallery room with polished concrete floors', 'museum'],
+        ['a bookshop aisle between tall wooden shelves', 'library'],
+        ['a balcony overlooking quiet rooftops', 'balcony'],
+        ['a quiet study with a desk and an autumn window', 'study'],
+        ['a sleek hotel suite with floor-to-ceiling windows', 'hotel'],
+        ['a sunlit private fitting suite with a garment rack', 'mall'],
+        ['a graffiti-covered city alley with evening light', 'street'],
+        ['a foggy pier with a single lamp', 'beach']
+    ];
+    for (const [text, expected] of cases) {
+        const ctx = outfitContext.classifyEnvironment(text);
+        assert.ok(ctx, 'did not classify: ' + text);
+        assert.equal(ctx.id, expected, text + ' -> ' + ctx.id);
+    }
+});
+
+test('every pack declares the environments its wardrobe belongs in', () => {
+    for (const pack of outfitPacks.OUTFIT_PACKS) {
+        const affinity = outfitPacks.environmentAffinity(pack.id);
+        assert.ok(affinity, pack.id + ' needs an environment affinity');
+        assert.ok(Array.isArray(affinity.preferred) && affinity.preferred.length,
+            pack.id + ' needs at least one preferred environment');
+        for (const key of ['preferred', 'compatible', 'avoid']) {
+            for (const id of affinity[key] || []) {
+                assert.ok(outfitContext.CONTEXT_CATALOG[id], pack.id + ' references an unknown context: ' + id);
+            }
+        }
+        assert.ok(!affinity.preferred.some((id) => (affinity.avoid || []).includes(id)),
+            pack.id + ' both prefers and avoids the same environment');
+        assert.ok(Array.isArray(affinity.tags) && affinity.tags.length, pack.id + ' needs affinity tags');
+        assert.ok(Array.isArray(affinity.fallbacks) && affinity.fallbacks.length,
+            pack.id + ' needs a fallback environment for themes without a suitable scene');
+    }
+});
+
+test('selectEnvironment keeps an outfit in a place it belongs', () => {
+    const gymPool = ['a cosy bedroom', 'a city street', 'a bright modern gym with mirrored walls'];
+    const gym = outfitPacks.selectEnvironment('gym-activewear', gymPool, { rng: first });
+    assert.equal(gym.source, 'theme');
+    assert.ok(/gym|street/.test(gym.value), 'unexpected gym scene: ' + gym.value);
+
+    const glamPool = ['a bright modern gym with mirrored walls', 'a dim hotel suite with champagne silk', 'a city street after rain'];
+    const glam = outfitPacks.selectEnvironment('glam-boudoir', glamPool, { rng: first });
+    assert.equal(glam.value, 'a dim hotel suite with champagne silk');
+});
+
+test('a pack supplies its own environment when the theme has nothing suitable', () => {
+    const picked = outfitPacks.selectEnvironment('gym-activewear', ['a cosy bedroom', 'a quiet office'], { rng: first });
+    assert.equal(picked.source, 'pack');
+    assert.ok(/gym|running track/i.test(picked.value), 'expected an athletic fallback: ' + picked.value);
+});
+
+test('an active pack drives the concept environment instead of a random mismatch', () => {
+    const cases = [
+        ['fashion-editorial', 'gym-activewear'],
+        ['cinematic-storytelling', 'glam-boudoir'],
+        ['lifestyle-candid', 'vacation-summer'],
+        ['travel-adventure', 'casual-smart'],
+        ['seasonal-concepts', 'edgy-alternative'],
+        ['fantasy-character-worlds', 'lounge-home']
+    ];
+    for (const [themeId, packId] of cases) {
+        for (let seed = 1; seed <= 24; seed++) {
+            const built = concept.assembleConcept({
+                theme: themes.getTheme(themeId), mode: 'none', outfitPack: packId,
+                rng: characterGen.createRng(seed * 7919)
+            });
+            const verdict = outfitPacks.scoreEnvironment(packId, built.environment);
+            assert.ok(!verdict.avoided, themeId + ' + ' + packId + ' chose an avoided place: ' + built.environment);
+            if (verdict.context) {
+                assert.ok(verdict.compatible,
+                    themeId + ' + ' + packId + ' chose an incompatible place: ' + built.environment);
+            }
+        }
+    }
+});
+
+test('switching to a pack moves a Lifestyle subcategory that cannot host it', () => {
+    const id = conversationId('pack-scene-switch');
+    const session = playground.start({
+        conversationId: id, themeId: 'lifestyle-candid', mode: 'none',
+        category: 'gym-fitness', outfitPack: 'gym-activewear', rng: characterGen.createRng(3)
+    });
+    const before = session.concept;
+    assert.equal(before.categoryId, 'gym-fitness');
+    playground.modify(session, { outfitPack: 'lounge-home', rng: characterGen.createRng(4) });
+    const after = session.concept;
+    assert.equal(after.outfitPack, 'lounge-home');
+    assert.notEqual(after.categoryId, 'gym-fitness', 'the gym subcategory cannot host loungewear');
+    const verdict = outfitPacks.scoreEnvironment('lounge-home', after.environment);
+    assert.ok(!verdict.avoided && verdict.compatible,
+        'loungewear landed in ' + after.environment);
+    // Identity is still untouched by a wardrobe change.
+    assert.equal(after.identitySignature, before.identitySignature);
+    assert.equal(after.subject, before.subject);
+});
+
+test('an explicit environment or a locked environment is never overridden by a pack', () => {
+    const id = conversationId('explicit-environment');
+    const session = playground.start({
+        conversationId: id, themeId: 'lifestyle-candid', mode: 'none',
+        category: 'gym-fitness', outfitPack: 'gym-activewear', rng: characterGen.createRng(5)
+    });
+    playground.modify(session, { changes: { environment: 'a sunny beach' }, rng: first });
+    assert.equal(session.concept.environment, 'a sunny beach');
+
+    const locked = concept.assembleConcept({
+        theme: themes.getTheme('lifestyle-candid'), mode: 'none', outfitPack: 'gym-activewear',
+        locks: { environment: true }, previous: { environment: 'a cosy bedroom' }, rng: first
+    });
+    assert.equal(locked.environment, 'a cosy bedroom');
+});
+
+test('the pack catalog exposes where each wardrobe personality belongs', () => {
+    for (const pack of outfitPacks.listPacks()) {
+        assert.ok(Array.isArray(pack.bestFor) && pack.bestFor.length, pack.id + ' needs bestFor labels');
+        for (const label of pack.bestFor) assert.equal(typeof label, 'string');
+    }
+    const gym = outfitPacks.listPacks().find((pack) => pack.id === 'gym-activewear');
+    assert.ok(gym.bestFor.includes('Gym'));
+});
+
+// --- Multi-pack wardrobes -----------------------------------------------------
+
+test('multi-pack selection normalizes and randomizes one active pack', () => {
+    assert.deepEqual(
+        outfitPacks.normalizePackIds(['casual-everyday', 'casual-everyday', 'custom', 'nope', 'vacation-summer']),
+        ['casual-everyday', 'vacation-summer']
+    );
+    assert.equal(outfitPacks.normalizePackIds('casual-everyday,vacation-summer')[1], 'vacation-summer');
+    assert.equal(
+        outfitPacks.pickFromPackIds(['casual-everyday', 'vacation-summer'], characterGen.createRng(1), {
+            avoidPackId: 'casual-everyday'
+        }),
+        'vacation-summer'
+    );
+
+    const theme = themes.getTheme('lifestyle-candid');
+    const seen = new Set();
+    for (let seed = 1; seed <= 40; seed++) {
+        const built = concept.assembleConcept({
+            theme, mode: 'none',
+            outfitPacks: ['casual-everyday', 'casual-streetwear', 'vacation-summer'],
+            rng: characterGen.createRng(seed * 7919)
+        });
+        assert.ok(['casual-everyday', 'casual-streetwear', 'vacation-summer'].includes(built.outfitPack),
+            'unexpected active pack: ' + built.outfitPack);
+        assert.deepEqual(built.outfitPacks, ['casual-everyday', 'casual-streetwear', 'vacation-summer']);
+        seen.add(built.outfitPack);
+    }
+    assert.equal(seen.size, 3, 'the selection should actually vary across concepts');
+});
+
+test('Surprise Me Again randomizes among the selected wardrobes', () => {
+    const id = conversationId('multi-pack-again');
+    const session = playground.start({
+        conversationId: id, themeId: 'lifestyle-candid', mode: 'none',
+        outfitPacks: ['casual-everyday', 'vacation-summer'], rng: first
+    });
+    assert.deepEqual(session.outfitPacks, ['casual-everyday', 'vacation-summer']);
+    const seen = new Set([session.concept.outfitPack]);
+    for (let i = 0; i < 12; i++) {
+        playground.again(session, { rng: characterGen.createRng(100 + i) });
+        assert.deepEqual(session.outfitPacks, ['casual-everyday', 'vacation-summer']);
+        seen.add(session.concept.outfitPack);
+    }
+    assert.ok(seen.size >= 2, 'a multi-pack wardrobe should produce both looks');
+    assert.ok(!seen.has('') && !seen.has('custom'));
+});
+
+test('a multi-pack selection can be narrowed, cleared, or replaced by Custom', () => {
+    const id = conversationId('multi-pack-modify');
+    const session = playground.start({
+        conversationId: id, themeId: 'lifestyle-candid', mode: 'none',
+        outfitPacks: ['casual-everyday', 'vacation-summer'], rng: first
+    });
+    const outfit = session.concept.outfit;
+
+    playground.modify(session, { outfitPacks: ['casual-everyday'], rng: first });
+    assert.equal(session.concept.outfitPack, 'casual-everyday');
+    assert.deepEqual(session.concept.outfitPacks, ['casual-everyday']);
+
+    playground.modify(session, { outfitPacks: [], rng: first });
+    assert.equal(session.concept.outfitPack, '');
+    assert.deepEqual(session.concept.outfitPacks, []);
+    assert.equal(session.concept.outfitPackLabel, '');
+    assert.ok(session.concept.outfit, 'clearing the wardrobe selection keeps the current clothing');
+
+    playground.modify(session, {
+        outfitPacks: ['casual-everyday', 'vacation-summer'],
+        outfitPack: 'custom',
+        outfitPackCustom: 'a bright yellow raincoat and green boots',
+        rng: first
+    });
+    assert.equal(session.concept.outfitPack, 'custom');
+    assert.deepEqual(session.concept.outfitPacks, [], 'custom is a complete outfit, not a pack set');
+    assert.equal(session.concept.outfitPackCustom, 'a bright yellow raincoat and green boots');
+    assert.ok(outfit);
+});
+
+test('the concept card and action payload carry the multi-pack selection', () => {
+    const id = conversationId('multi-pack-card');
+    const session = playground.start({
+        conversationId: id, themeId: 'lifestyle-candid', mode: 'none',
+        outfitPacks: ['casual-everyday', 'vacation-summer'], rng: first
+    });
+    const card = playground.buildCard(session);
+    assert.deepEqual(card.outfitPacks, ['casual-everyday', 'vacation-summer']);
+    assert.deepEqual(card.concept.outfitPacks, ['casual-everyday', 'vacation-summer']);
+
+    const action = playground.normalizeAction({
+        type: 'modify',
+        outfitPacks: ['casual-everyday', 'vacation-summer']
+    });
+    assert.deepEqual(action.outfitPacks, ['casual-everyday', 'vacation-summer']);
+});
+
 // --- Scene-aware outfit compatibility ----------------------------------------
 
 const SCENE_THEME_IDS = Object.keys(themes.SCENE_OUTFIT_STYLES);

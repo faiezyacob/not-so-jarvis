@@ -1665,6 +1665,20 @@ test('a scene change preserves the character and its identity signature', () => 
     assert.equal(session.concept.subject, subject);
 });
 
+test('a scene change refreshes the derived scene, description and body position', () => {
+    const id = conversationId('scene-posture');
+    const session = playground.start({
+        conversationId: id, themeId: 'lifestyle-candid', mode: 'none', category: 'night-out',
+        rng: characterGen.createRng(53)
+    });
+    assert.ok(['sitting', 'standing'].includes(session.concept.postureStance));
+    playground.modify(session, { changes: { environment: 'a bar', activity: 'posing for a quick photo' }, rng: first });
+    assert.equal(session.concept.postureStance, 'standing');
+    assert.match(session.concept.postureDescription, /beside the bar/i);
+    assert.match(session.concept.scene, /a bar/);
+    assert.match(session.concept.description, /in a bar/);
+});
+
 test('a face re-roll through the service regenerates only the face', () => {
     const id = conversationId('face-reroll');
     const session = playground.start({

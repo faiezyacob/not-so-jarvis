@@ -39,7 +39,7 @@ const OutfitPackUI = (() => {
         return '#c9c4bd';
     }
 
-    function card(id, label, description, palette, active) {
+    function card(id, label, description, palette, active, bestFor) {
         const el = document.createElement('button');
         el.type = 'button';
         el.className = 'outfit-pack-card';
@@ -56,6 +56,14 @@ const OutfitPackUI = (() => {
             desc.className = 'outfit-pack-desc';
             desc.textContent = description;
             el.appendChild(desc);
+        }
+        // Where the wardrobe personality belongs, so the selector shows the
+        // outfit/environment relationship instead of a free-floating style.
+        if (Array.isArray(bestFor) && bestFor.length) {
+            const where = document.createElement('span');
+            where.className = 'outfit-pack-where';
+            where.textContent = 'Best in ' + bestFor.join(' \u00b7 ');
+            el.appendChild(where);
         }
         if (Array.isArray(palette) && palette.length) {
             const dots = document.createElement('span');
@@ -106,12 +114,12 @@ const OutfitPackUI = (() => {
             heading.textContent = group.label;
             container.appendChild(heading);
             groupPacks.forEach((pack) => container.appendChild(
-                card(pack.id, pack.label, pack.description, pack.palette, pack.id === selected)));
+                card(pack.id, pack.label, pack.description, pack.palette, pack.id === selected, pack.bestFor)));
         });
         packs
             .filter((pack) => !GROUPS.some((group) => group.ids.includes(pack.id)))
             .forEach((pack) => container.appendChild(
-                card(pack.id, pack.label, pack.description, pack.palette, pack.id === selected)));
+                card(pack.id, pack.label, pack.description, pack.palette, pack.id === selected, pack.bestFor)));
 
         const customLabel = options.customLabel || 'Custom';
         const customDescription = options.customDescription || 'Describe the exact outfit yourself.';

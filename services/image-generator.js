@@ -14,6 +14,7 @@ const comfyui = require('./comfyui');
 const configManager = require('../server/config-manager');
 const generatedHistory = require('./generated-history');
 const generationQueue = require('./generation-queue');
+const imageProviders = require('./image-providers');
 
 const GENERATED_DIR = path.join(__dirname, '..', 'data', 'generated');
 
@@ -991,7 +992,7 @@ function resolveDimensions(settings) {
 // The Krea2 slot keys (unet/clip/vae) keep their historical meaning; Qwen's
 // filenames live under qwen* keys so switching back and forth remembers both.
 
-const IMAGE_MODELS = ['krea2', 'qwen_image_2_1', 'minimax_h3_image'];
+const IMAGE_MODELS = ['krea2', 'qwen_image_2_1', 'minimax_h3_image', 'moss'];
 const DEFAULT_IMAGE_MODEL = 'qwen_image_2_1';
 const QWEN_IMAGE_CLIP_TYPE = 'qwen_image';
 // MiniMax H3 Image (Comfy-Org/MiniMax-H3-Image) is a single-checkpoint model
@@ -1039,6 +1040,58 @@ const DEFAULT_QWEN_CFG = 3;
 const DEFAULT_QWEN_EDIT_STEPS = 25;
 const DEFAULT_QWEN_EDIT_CFG = 1;
 
+// --- MOSS-Image (Comfy-Org/MOSS-Image) -----------------------------------------
+//
+// A ~5B single-stream DiT with a Qwen3.5 9B text encoder (CLIPLoader type
+// `moss_image`) and the FLUX.2 small VAE. Two independent official templates:
+//   - text-to-image: UNETLoader → CLIPLoader(moss_image) → VAELoader,
+//     positive CLIPTextEncode (optionally fed by the template's TextGenerate
+//     prompt enhancer on the same text encoder), negative CLIPTextEncode,
+//     EmptyFlux2LatentImage → KSampler (er_sde / simple, steps 25, cfg 2.5)
+//     → VAEDecode → SaveImage.
+//   - image edit: UNETLoader → LoraLoaderModelOnly (dedicated edit LoRA)
+//     → SkipLayerGuidanceDiTSimple (single layer 22) → KSampler (euler /
+//     normal, steps 30, cfg 4, denoise 1). The source is scaled to ~1 MP on a
+//     16 px grid and feeds BOTH TextEncodeMOSSImageEdit nodes (positive and
+//     negative) with edit_format `Moss-Image-Edit`; an EmptyFlux2LatentImage
+//     sized from the scaled source keeps the source aspect ratio.
+//
+// MOSS supports arbitrary aspect ratios, but width/height must be positive
+// multiples of 16. JARVIS's 32 px grid is a safe subset, so the shared
+// S/M/L/XL tiers (Qwen/Krea's 0.75 / 1 / 1.25 / 1.75 MP) are reused as-is.
+const MOSS_IMAGE_CLIP_TYPE = 'moss_image';
+const DEFAULT_MOSS_STEPS = 25;
+const DEFAULT_MOSS_CFG = 2.5;
+const MOSS_T2I_SAMPLER = 'er_sde';
+const MOSS_T2I_SCHEDULER = 'simple';
+const DEFAULT_MOSS_EDIT_STEPS = 30;
+const DEFAULT_MOSS_EDIT_CFG = 4;
+const MOSS_EDIT_SAMPLER = 'euler';
+const MOSS_EDIT_SCHEDULER = 'normal';
+const MOSS_DEFAULT_NEGATIVE_PROMPT = 'nsfw, worst quality, bad anatomy, watermark, jpeg artifact';
+const MOSS_EDIT_FORMAT = 'Moss-Image-Edit';
+const MOSS_EDIT_FORMATS = ['Moss-Image-Edit', 'ai-toolkit', 'ai-toolkit (kv_cache off)'];
+const MOSS_EDIT_SKIP_LAYERS = '22';
+const DEFAULT_MOSS_EDIT_MEGAPIXELS = 1;
+const MOSS_EDIT_MIN_MEGAPIXELS = 0.25;
+const MOSS_EDIT_MAX_MEGAPIXELS = 4;
+// The source image is image_0; the official node's Autogrow input accepts
+// additional images.image_N references. Keep source + up to four extras.
+const MOSS_MAX_EDIT_REFERENCES = 4;
+const MOSS_MIN_EDIT_VERSION = '0.43.0';
+// The prompt enhancer is the official template's TextGenerate node (deprecated
+// alias of TextGenerateV2 but still shipped) driven by MOSS's own text encoder.
+// JARVIS writes its own instruction rather than copying the template's prompt.
+const MOSS_ENHANCER_SYSTEM_PROMPT = [
+    'You rewrite a short image request into one self-contained English caption for a text-to-image model.',
+    'Describe the finished picture as it looks; never write an instruction, a report of changes, or a question.',
+    'Open with the medium and the subject (for example "Cinematic photograph of ...", "Editorial illustration of ...").',
+    'Preserve every element the user specified: number of people, identity, action, clothing, style, era, composition, palette, exclusions, and any text to render verbatim in double quotes.',
+    'Add only plausible visible detail the user left open: subject appearance, pose, foreground/midground/background, setting, framing and camera angle, lighting, colour and texture.',
+    'Never add new people, plot, dialogue, brand claims, prices, certifications or real people. Never mention resolution, aspect ratio, canvas size or generation settings.',
+    'Output the caption only: two to four flowing paragraphs, no title, preamble, code fence or commentary.'
+].join(' ');
+
 function normalizeImageModel(value) {
     const v = String(value || '').trim().toLowerCase().replace(/[\s.-]+/g, '_');
     if (v === 'qwen' || v === 'qwen2' || v === 'qwen_2' || v === 'qwen_image' ||
@@ -1050,15 +1103,19 @@ function normalizeImageModel(value) {
         v === 'h3_image' || v === 'h3' || v === 'p_h3_image' || v === 'ph3_image') {
         return 'minimax_h3_image';
     }
+    if (v === 'moss' || v === 'moss_image' || v === 'mossimage' || v === 'moss_image_sft') {
+        return 'moss';
+    }
     return null;
 }
 
 // User-facing engine names, used in the gallery/history metadata and the live
 // "Generating…" status so the active engine is always visible.
 const IMAGE_MODEL_LABELS = {
-    krea2: 'Krea2',
-    qwen_image_2_1: 'Qwen Image 2.1',
-    minimax_h3_image: 'MiniMax H3 Image'
+    krea2: imageProviders.providerLabel('krea2'),
+    qwen_image_2_1: imageProviders.providerLabel('qwen_image_2_1'),
+    minimax_h3_image: imageProviders.providerLabel('minimax_h3_image'),
+    moss: imageProviders.providerLabel('moss')
 };
 
 function imageModelLabel(value) {
@@ -1066,9 +1123,10 @@ function imageModelLabel(value) {
 }
 
 const EDIT_ENGINE_LABELS = {
-    qwen: 'Qwen Image 2.1 Edit',
-    krea2: 'Krea 2 Edit',
-    minimax_h3: 'MiniMax H3 Image Edit'
+    qwen: imageProviders.editProviderLabel('qwen'),
+    krea2: imageProviders.editProviderLabel('krea2'),
+    minimax_h3: imageProviders.editProviderLabel('minimax_h3'),
+    moss: imageProviders.editProviderLabel('moss')
 };
 
 function editEngineLabel(value) {
@@ -1086,7 +1144,7 @@ function editEngineLabel(value) {
 //              reference-guided edit that preserves a subject's identity.
 // The choice is a global image setting (`editEngine`) and only affects edits;
 // text-to-image generation keeps its own `model` selection.
-const EDIT_ENGINES = ['qwen', 'krea2', 'minimax_h3'];
+const EDIT_ENGINES = ['qwen', 'krea2', 'minimax_h3', 'moss'];
 const DEFAULT_EDIT_ENGINE = 'qwen';
 const KREA2_CLIP_TYPE = 'krea2';
 const DEFAULT_KREA2_IDENTITY_EDIT_LORA = 'krea2_identity_edit_v1_2.safetensors';
@@ -1152,6 +1210,10 @@ function normalizeEditEngine(value) {
         v === 'minimax_image_edit' || v === 'p_h3_image_edit' || v === 'ph3_image_edit') {
         return 'minimax_h3';
     }
+    if (v === 'moss' || v === 'moss_image' || v === 'mossimage' || v === 'moss_edit' ||
+        v === 'moss_image_edit' || v === 'mossimageedit') {
+        return 'moss';
+    }
     return null;
 }
 
@@ -1197,6 +1259,34 @@ const DEFAULT_SETTINGS = {
     minimaxSteps: DEFAULT_MINIMAX_STEPS,
     minimaxCfg: DEFAULT_MINIMAX_CFG,
     minimaxEditMegapixels: DEFAULT_MINIMAX_EDIT_MEGAPIXELS,
+    // MOSS-Image slot (Comfy-Org/MOSS-Image). One diffusion model, one
+    // Qwen3.5 9B text encoder loaded with type `moss_image`, the FLUX.2 small
+    // VAE and the dedicated edit LoRA (editing only, never text-to-image).
+    // The SFT int8 checkpoint is the official template's starting point.
+    mossUnet: process.env.MOSS_IMAGE_UNET || 'moss_image_sft_int8_convrot.safetensors',
+    mossClip: process.env.MOSS_IMAGE_CLIP || 'qwen3.5_9b_w4a8_gptq.safetensors',
+    mossVae: process.env.MOSS_IMAGE_VAE || 'flux2-vae_small.safetensors',
+    mossEditLora: process.env.MOSS_IMAGE_EDIT_LORA || 'moss_image_edit_lora_rank_64_bf16.safetensors',
+    mossSteps: DEFAULT_MOSS_STEPS,
+    mossCfg: DEFAULT_MOSS_CFG,
+    mossSampler: process.env.MOSS_IMAGE_SAMPLER || MOSS_T2I_SAMPLER,
+    mossScheduler: process.env.MOSS_IMAGE_SCHEDULER || MOSS_T2I_SCHEDULER,
+    mossNegativePrompt: process.env.MOSS_IMAGE_NEGATIVE || MOSS_DEFAULT_NEGATIVE_PROMPT,
+    // The official text-to-image subgraph enables its prompt upsampler by
+    // default. It runs on MOSS's own text encoder and only rewrites the
+    // caption, so it can be disabled without changing anything else.
+    mossPromptEnhancer: process.env.MOSS_IMAGE_ENHANCER !== 'false',
+    // Optional reference image (a filename in data/generated or data/images)
+    // used ONLY by the prompt enhancer. MOSS itself does not accept references.
+    mossEnhancerReference: '',
+    // Editing keeps the LoRA author's calibrated sampling: 30 steps, cfg 4,
+    // euler / normal, denoise 1, Skip Layer Guidance on single layer 22, and
+    // edit_format `Moss-Image-Edit` in BOTH encode nodes.
+    mossEditSteps: DEFAULT_MOSS_EDIT_STEPS,
+    mossEditCfg: DEFAULT_MOSS_EDIT_CFG,
+    mossEditFormat: MOSS_EDIT_FORMAT,
+    mossEditLoraStrength: 1,
+    mossEditMegapixels: DEFAULT_MOSS_EDIT_MEGAPIXELS,
     // Both image pipelines can run under an accelerated attention backend. `auto`
     // resolves against ComfyUI's /object_info (Comfy Kitchen → SageAttention →
     // dense PyTorch) so a build without the patches silently stays on dense
@@ -1255,7 +1345,7 @@ const DEFAULT_SETTINGS = {
 
 // Fields the user may override through the settings panel / API. Kept
 // separate from DEFAULT_SETTINGS so we only persist explicit overrides.
-const CONFIGURABLE_KEYS = ['model', 'unet', 'clip', 'clipType', 'vae', 'qwenUnet', 'qwenClip', 'qwenVae', 'minimaxUnet', 'minimaxClip', 'minimaxVae', 'editEngine', 'krea2IdentityEditLora', 'krea2EditSteps', 'krea2EditCfg', 'aspectRatio', 'imageSize', 'width', 'height', 'steps', 'cfg', 'qwenSteps', 'qwenCfg', 'minimaxSteps', 'minimaxCfg', 'minimaxEditMegapixels', 'attentionBackend', 'seedMode', 'seed', 'variations', 'loras', 'loraTriggerWords',
+const CONFIGURABLE_KEYS = ['model', 'unet', 'clip', 'clipType', 'vae', 'qwenUnet', 'qwenClip', 'qwenVae', 'minimaxUnet', 'minimaxClip', 'minimaxVae', 'mossUnet', 'mossClip', 'mossVae', 'mossEditLora', 'editEngine', 'krea2IdentityEditLora', 'krea2EditSteps', 'krea2EditCfg', 'aspectRatio', 'imageSize', 'width', 'height', 'steps', 'cfg', 'qwenSteps', 'qwenCfg', 'minimaxSteps', 'minimaxCfg', 'minimaxEditMegapixels', 'mossSteps', 'mossCfg', 'mossSampler', 'mossScheduler', 'mossNegativePrompt', 'mossPromptEnhancer', 'mossEnhancerReference', 'mossEditSteps', 'mossEditCfg', 'mossEditFormat', 'mossEditLoraStrength', 'mossEditMegapixels', 'attentionBackend', 'seedMode', 'seed', 'variations', 'loras', 'loraTriggerWords',
     'upscaleEngine', 'upscaleMode', 'upscaleResolution', 'upscaleMultiplier', 'upscaleProfile', 'upscaleNoise', 'upscalePreScale',
     'seedvr2Dit', 'seedvr2Vae', 'seedvr2Attention'];
 
@@ -1303,6 +1393,14 @@ function resolveBaseModels(settings) {
             clip: String(source.minimaxClip || DEFAULT_SETTINGS.minimaxClip).trim(),
             clipType: MINIMAX_IMAGE_CLIP_TYPE,
             vae: String(source.minimaxVae || DEFAULT_SETTINGS.minimaxVae).trim()
+        };
+    }
+    if (model === 'moss') {
+        return {
+            unet: String(source.mossUnet || DEFAULT_SETTINGS.mossUnet).trim(),
+            clip: String(source.mossClip || DEFAULT_SETTINGS.mossClip).trim(),
+            clipType: MOSS_IMAGE_CLIP_TYPE,
+            vae: String(source.mossVae || DEFAULT_SETTINGS.mossVae).trim()
         };
     }
     return {
@@ -1408,6 +1506,31 @@ function sanitizeSettings(patch) {
         } else if (key === 'minimaxEditMegapixels') {
             const n = Number(value);
             if (Number.isFinite(n)) out[key] = Math.max(MINIMAX_EDIT_MIN_MEGAPIXELS, Math.min(MINIMAX_EDIT_MAX_MEGAPIXELS, Math.round(n * 100) / 100));
+        } else if (key === 'mossPromptEnhancer') {
+            out[key] = value !== false && value !== 'false' && value !== 0 && value !== '0';
+        } else if (key === 'mossEnhancerReference') {
+            out[key] = String(value || '').trim();
+        } else if (key === 'mossEditFormat') {
+            const v = String(value || '').trim();
+            if (MOSS_EDIT_FORMATS.includes(v)) out[key] = v;
+        } else if (key === 'mossEditSteps') {
+            const n = Math.round(Number(value));
+            if (Number.isFinite(n) && n > 0) out[key] = Math.max(1, Math.min(100, n));
+        } else if (key === 'mossEditCfg') {
+            const n = Number(value);
+            if (Number.isFinite(n) && n >= 0) out[key] = n;
+        } else if (key === 'mossEditLoraStrength') {
+            const n = Number(value);
+            if (Number.isFinite(n)) out[key] = Math.max(0, Math.min(2, Math.round(n * 100) / 100));
+        } else if (key === 'mossEditMegapixels') {
+            const n = Number(value);
+            if (Number.isFinite(n)) out[key] = Math.max(MOSS_EDIT_MIN_MEGAPIXELS, Math.min(MOSS_EDIT_MAX_MEGAPIXELS, Math.round(n * 100) / 100));
+        } else if (key === 'mossSteps') {
+            const n = Math.round(Number(value));
+            if (Number.isFinite(n) && n > 0) out[key] = n;
+        } else if (key === 'mossCfg') {
+            const n = Number(value);
+            if (Number.isFinite(n) && n >= 0) out[key] = n;
         } else if (key === 'krea2EditSteps') {
             const n = Math.round(Number(value));
             if (Number.isFinite(n)) out[key] = Math.max(8, Math.min(12, n));
@@ -1759,6 +1882,426 @@ function buildMiniMaxH3ImageT2IGraph(prompt, options = {}) {
 
     graph.decoded = { class_type: 'VAEDecode', inputs: { samples: ['sampler', 0], vae: ['vae', 0] } };
     graph.save = { class_type: 'SaveImage', inputs: { images: ['decoded', 0], filename_prefix: 'not-so-jarvis/gen' } };
+
+    return graph;
+}
+
+// --- MOSS-Image ----------------------------------------------------------------
+//
+// Comfy-Org/MOSS-Image. The official workflows are UI templates with a
+// subgraph (text-to-image) and an explicit edit graph; both are adapted here
+// into the flat API prompt format JARVIS already submits to /prompt.
+//
+// Text-to-image (mirrors the "Text to Image (MOSS-Image)" subgraph):
+//   UNETLoader → [user LoRA stack] → [attention patch]
+//   CLIPLoader (type moss_image) → VAELoader
+//   positive: CLIPTextEncode (raw prompt, or TextGenerate's rewritten caption
+//             when the prompt enhancer is on; the enhancer runs on the SAME
+//             text encoder and may see one optional reference image)
+//   negative: CLIPTextEncode (recommended negative line)
+//   EmptyFlux2LatentImage (16 px grid, S/M/L/XL tiers reused from Qwen/Krea)
+//   KSampler (er_sde / simple, 25 steps, cfg 2.5, denoise 1)
+//   VAEDecode → SaveImage
+//
+// Image edit (mirrors image_moss_image_edit):
+//   LoadImage (source) → ImageScaleToTotalPixels (1 MP, 16 px)
+//   LoadImage (optional extra references, used as-is)
+//   UNETLoader → LoraLoaderModelOnly (edit LoRA, 1.0) → user LoRA stack
+//              → SkipLayerGuidanceDiTSimple (single layer 22) → [attention]
+//   TextEncodeMOSSImageEdit positive + negative, both with edit_format
+//     `Moss-Image-Edit`, image_strength 1, the same VAE and the same
+//     images.image_0..image_N references
+//   GetImageSize (scaled source) → EmptyFlux2LatentImage (source aspect ratio)
+//   KSampler (euler / normal, 30 steps, cfg 4, denoise 1)
+//   VAEDecode → SaveImage
+//
+// The edit LoRA is never loaded by the text-to-image builder.
+
+function snapMossDimension(value) {
+    const n = Math.round(Number(value) || 0);
+    const snapped = Math.max(16, Math.round(n / 16) * 16);
+    return Math.min(4096, snapped);
+}
+
+function normalizeMossEditFormat(value) {
+    const v = String(value || '').trim();
+    return MOSS_EDIT_FORMATS.includes(v) ? v : MOSS_EDIT_FORMAT;
+}
+
+function parseVersionParts(value) {
+    const match = String(value || '').trim().match(/^(?:v)?(\d+)\.(\d+)(?:\.(\d+))?/i);
+    return match ? [Number(match[1]), Number(match[2]), Number(match[3] || 0)] : null;
+}
+
+function compareVersionParts(a, b) {
+    for (let i = 0; i < Math.max(a.length, b.length); i++) {
+        const left = a[i] || 0;
+        const right = b[i] || 0;
+        if (left !== right) return left < right ? -1 : 1;
+    }
+    return 0;
+}
+
+function comfyuiVersionFromStats(stats) {
+    const system = stats && stats.system ? stats.system : null;
+    return system && (system.comfyui_version || system.comfyuiVersion)
+        ? String(system.comfyui_version || system.comfyuiVersion)
+        : null;
+}
+
+// Fail with the setup guidance instead of a generic queue rejection when the
+// configured MOSS files are not in ComfyUI's folders.
+function assertMossImageModels(info, base, options = {}) {
+    const checks = [
+        { label: 'diffusion model', folder: 'models/diffusion_models', node: 'UNETLoader', field: 'unet_name', value: base.unet },
+        { label: 'text encoder', folder: 'models/text_encoders', node: 'CLIPLoader', field: 'clip_name', value: base.clip },
+        { label: 'VAE', folder: 'models/vae', node: 'VAELoader', field: 'vae_name', value: base.vae }
+    ];
+    if (options.editLora !== undefined && options.editLora !== null) {
+        checks.push({
+            label: 'edit LoRA', folder: 'models/loras', node: 'LoraLoaderModelOnly', field: 'lora_name', value: options.editLora
+        });
+    }
+    const missing = [];
+    for (const check of checks) {
+        if (!check.value) { missing.push(check); continue; }
+        const choices = objectInfoChoices(info, check.node, check.field);
+        if (Array.isArray(choices) && !choices.includes(check.value)) missing.push(check);
+    }
+    if (!missing.length) return;
+    const detail = missing
+        .map((m) => m.label + ' "' + (m.value || '(not set)') + '" (in ' + m.folder + ')')
+        .join(', ');
+    const error = new Error(
+        'MOSS-Image is missing model file' + (missing.length > 1 ? 's' : '') + ': ' + detail +
+        '. Download them from Settings > Setup (or set the file names in Settings > Image), then try again.'
+    );
+    error.code = 'comfyui_missing_model';
+    error.missingModels = missing.map((m) => m.value);
+    throw error;
+}
+
+// The editing workflow needs core nodes introduced in ComfyUI 0.43.0. Node
+// presence is authoritative (a build can report a version ahead of its node
+// set); the reported version gives a clearer message when it is available.
+function assertMossEditSupport(info, stats) {
+    const required = [
+        'TextEncodeMOSSImageEdit',
+        'EmptyFlux2LatentImage',
+        'SkipLayerGuidanceDiTSimple',
+        'ImageScaleToTotalPixels',
+        'GetImageSize'
+    ];
+    const missing = required.filter((name) => !info || !info[name]);
+    const reported = comfyuiVersionFromStats(stats);
+    const reportedParts = parseVersionParts(reported);
+    const tooOld = reportedParts && compareVersionParts(reportedParts, parseVersionParts(MOSS_MIN_EDIT_VERSION)) < 0;
+    if (missing.includes('TextEncodeMOSSImageEdit') || tooOld) {
+        const versionLabel = reported ? 'v' + reported.replace(/^v/i, '') : 'an older version';
+        const error = new Error(
+            'MOSS-Image Edit needs ComfyUI v' + MOSS_MIN_EDIT_VERSION + ' or newer (the core ' +
+            '"Text Encode MOSS-Image Edit" node). This ComfyUI reports ' + versionLabel +
+            '. Update ComfyUI, then try again.'
+        );
+        error.code = 'comfyui_version_unsupported';
+        error.missingNodes = ['TextEncodeMOSSImageEdit'];
+        error.comfyuiVersion = reported;
+        throw error;
+    }
+    if (missing.length) {
+        const error = new Error(
+            'ComfyUI is missing MOSS-Image Edit node' + (missing.length > 1 ? 's' : '') + ': ' +
+            missing.join(', ') + '. Update ComfyUI, then try again.'
+        );
+        error.code = 'comfyui_missing_nodes';
+        error.missingNodes = missing;
+        throw error;
+    }
+}
+
+// The prompt enhancer is the official TextGenerate node. Prefer the template's
+// node and fall back to its non-deprecated TextGenerateV2 alias, whose image
+// slots use the `images.imageN` autogrow names.
+function resolveMossEnhancerNode(info) {
+    if (info && info.TextGenerate) return 'TextGenerate';
+    if (info && info.TextGenerateV2) return 'TextGenerateV2';
+    return null;
+}
+
+function appendMossEnhancer(graph, options) {
+    const node = String(options.enhancerNode || 'TextGenerate');
+    const refLink = options.enhancerReferenceLoadName
+        ? (() => {
+            graph.enhancer_reference = {
+                class_type: 'LoadImage',
+                inputs: { image: String(options.enhancerReferenceLoadName) }
+            };
+            return ['enhancer_reference', 0];
+        })()
+        : null;
+    const inputs = {
+        clip: options.clipLink,
+        prompt: String(options.prompt || ''),
+        max_length: 4096,
+        sampling_mode: 'on',
+        'sampling_mode.temperature': 0.7,
+        'sampling_mode.top_k': 64,
+        'sampling_mode.top_p': 0.95,
+        'sampling_mode.min_p': 0.05,
+        'sampling_mode.repetition_penalty': 1,
+        'sampling_mode.presence_penalty': 0,
+        'sampling_mode.seed': Number.isInteger(options.enhancerSeed) && options.enhancerSeed >= 0 ? options.enhancerSeed : 0,
+        thinking: false,
+        use_default_template: true,
+        mtp: 'auto',
+        system_prompt: MOSS_ENHANCER_SYSTEM_PROMPT
+    };
+    if (refLink) {
+        if (node === 'TextGenerateV2') inputs['images.image1'] = refLink;
+        else inputs.image = refLink;
+    }
+    graph.enhancer = { class_type: node, inputs };
+    return ['enhancer', 0];
+}
+
+function buildMossImageT2IGraph(prompt, options = {}) {
+    const settings = Object.assign({}, DEFAULT_SETTINGS, options.settings || {});
+    const base = {
+        unet: String(settings.mossUnet || DEFAULT_SETTINGS.mossUnet).trim(),
+        clip: String(settings.mossClip || DEFAULT_SETTINGS.mossClip).trim(),
+        vae: String(settings.mossVae || DEFAULT_SETTINGS.mossVae).trim()
+    };
+    const seed = Number.isInteger(options.seed) && options.seed >= 0 ? options.seed : 0;
+    const width = snapMossDimension(options.width || settings.width);
+    const height = snapMossDimension(options.height || settings.height);
+    const steps = clampToInt(options.steps || settings.mossSteps, 1, 100, DEFAULT_MOSS_STEPS);
+    const cfg = Number.isFinite(Number(options.cfg))
+        ? Math.max(0, Number(options.cfg))
+        : (Number.isFinite(Number(settings.mossCfg)) ? Math.max(0, Number(settings.mossCfg)) : DEFAULT_MOSS_CFG);
+    const samplerName = String(options.sampler || settings.mossSampler || MOSS_T2I_SAMPLER).trim();
+    const schedulerName = String(options.scheduler || settings.mossScheduler || MOSS_T2I_SCHEDULER).trim();
+    const negativeText = String(
+        options.negativePrompt !== undefined ? options.negativePrompt : (settings.mossNegativePrompt || '')
+    ).trim();
+    const enhancerEnabled = options.promptEnhancer !== undefined
+        ? Boolean(options.promptEnhancer)
+        : settings.mossPromptEnhancer !== false;
+
+    const graph = {
+        unet: buildDiffusionLoaderNode(base.unet),
+        clip: { class_type: 'CLIPLoader', inputs: { clip_name: base.clip, type: MOSS_IMAGE_CLIP_TYPE, device: 'default' } },
+        vae: { class_type: 'VAELoader', inputs: { vae_name: base.vae } }
+    };
+
+    // User LoRAs are applied to text-to-image only; the edit LoRA belongs to
+    // buildMossImageEditGraph and is never loaded here.
+    const stack = buildLoraChain(graph, settings.loras);
+    const attentionNode = applyImageAttentionPatch(graph, stack.model[0], settings.attentionBackend);
+    const samplerModel = attentionNode ? [attentionNode, 0] : stack.model;
+
+    let positiveText = String(prompt || '');
+    if (enhancerEnabled && options.enhancerNode) {
+        const enhancerSeed = normalizeSeed(options.enhancerSeed);
+        appendMossEnhancer(graph, {
+            clipLink: stack.clip,
+            prompt: positiveText,
+            enhancerNode: options.enhancerNode,
+            enhancerReferenceLoadName: options.enhancerReferenceLoadName,
+            enhancerSeed: enhancerSeed === null ? seed : enhancerSeed
+        });
+        positiveText = ['enhancer', 0];
+    }
+
+    graph.positive = { class_type: 'CLIPTextEncode', inputs: { clip: stack.clip, text: positiveText } };
+    graph.negative = negativeText
+        ? { class_type: 'CLIPTextEncode', inputs: { clip: stack.clip, text: negativeText } }
+        : { class_type: 'ConditioningZeroOut', inputs: { conditioning: ['positive', 0] } };
+
+    graph.canvas = {
+        class_type: 'EmptyFlux2LatentImage',
+        inputs: { width, height, batch_size: 1 }
+    };
+
+    graph.sampler = {
+        class_type: 'KSampler',
+        inputs: {
+            model: samplerModel,
+            positive: ['positive', 0],
+            negative: ['negative', 0],
+            latent_image: ['canvas', 0],
+            seed,
+            steps,
+            cfg,
+            sampler_name: samplerName,
+            scheduler: schedulerName,
+            denoise: 1
+        }
+    };
+
+    graph.decoded = { class_type: 'VAEDecode', inputs: { samples: ['sampler', 0], vae: ['vae', 0] } };
+    graph.save = { class_type: 'SaveImage', inputs: { images: ['decoded', 0], filename_prefix: 'not-so-jarvis/gen' } };
+
+    return graph;
+}
+
+function buildMossImageEditGraph(instruction, loadName, options = {}) {
+    const settings = Object.assign({}, DEFAULT_SETTINGS, options.settings || {});
+    const base = {
+        unet: String(settings.mossUnet || DEFAULT_SETTINGS.mossUnet).trim(),
+        clip: String(settings.mossClip || DEFAULT_SETTINGS.mossClip).trim(),
+        vae: String(settings.mossVae || DEFAULT_SETTINGS.mossVae).trim()
+    };
+    const editLoraValue = options.editLora !== undefined
+        ? options.editLora
+        : (settings.mossEditLora !== undefined ? settings.mossEditLora : DEFAULT_SETTINGS.mossEditLora);
+    const editLora = String(editLoraValue || '').trim();
+    if (!editLora) {
+        const error = new Error('MOSS-Image Edit needs the edit LoRA (Settings > Image, or the Setup guide).');
+        error.code = 'moss_edit_lora_missing';
+        throw error;
+    }
+    const loadNames = [loadName]
+        .concat(Array.isArray(options.referenceLoadNames) ? options.referenceLoadNames : [])
+        .map((name) => String(name || '').trim())
+        .filter(Boolean)
+        .slice(0, 1 + MOSS_MAX_EDIT_REFERENCES);
+    if (!loadNames.length) {
+        const error = new Error('MOSS-Image Edit needs a source image.');
+        error.code = 'edit_source_missing';
+        throw error;
+    }
+
+    const seed = Number.isInteger(options.seed) && options.seed >= 0 ? options.seed : 0;
+    const steps = clampToInt(options.steps || settings.mossEditSteps, 1, 100, DEFAULT_MOSS_EDIT_STEPS);
+    const cfg = Number.isFinite(Number(options.cfg))
+        ? Math.max(0, Number(options.cfg))
+        : (Number.isFinite(Number(settings.mossEditCfg)) ? Math.max(0, Number(settings.mossEditCfg)) : DEFAULT_MOSS_EDIT_CFG);
+    const editFormat = normalizeMossEditFormat(options.editFormat || settings.mossEditFormat);
+    const loraStrength = clampToRange(options.loraStrength, 0, 2,
+        clampToRange(settings.mossEditLoraStrength, 0, 2, 1));
+    const megapixels = clampToRange(options.megapixels, MOSS_EDIT_MIN_MEGAPIXELS, MOSS_EDIT_MAX_MEGAPIXELS,
+        clampToRange(settings.mossEditMegapixels, MOSS_EDIT_MIN_MEGAPIXELS, MOSS_EDIT_MAX_MEGAPIXELS, DEFAULT_MOSS_EDIT_MEGAPIXELS));
+    const negativeText = String(
+        options.negativePrompt !== undefined ? options.negativePrompt : (settings.mossNegativePrompt || '')
+    ).trim();
+
+    const graph = {
+        unet: buildDiffusionLoaderNode(base.unet),
+        clip: { class_type: 'CLIPLoader', inputs: { clip_name: base.clip, type: MOSS_IMAGE_CLIP_TYPE, device: 'default' } },
+        vae: { class_type: 'VAELoader', inputs: { vae_name: base.vae } },
+        // The dedicated edit adapter, model-only at the official strength 1.0.
+        edit_lora: {
+            class_type: 'LoraLoaderModelOnly',
+            inputs: { model: ['unet', 0], lora_name: editLora, strength_model: loraStrength }
+        }
+    };
+    let modelLink = ['edit_lora', 0];
+    let clipLink = ['clip', 0];
+
+    // User LoRAs stack on top of the edit LoRA, model-only so the text encoder
+    // stays the one the edit LoRA was trained against.
+    (settings.loras || [])
+        .filter((entry) => entry && entry.on && entry.name && entry.name !== editLora)
+        .forEach((entry, index) => {
+            const nodeId = 'lora' + (index + 1);
+            graph[nodeId] = {
+                class_type: 'LoraLoaderModelOnly',
+                inputs: {
+                    model: modelLink,
+                    lora_name: entry.name,
+                    strength_model: Number(entry.strength) || 0
+                }
+            };
+            modelLink = [nodeId, 0];
+        });
+
+    // Official edit sampling chain: the skip-layer guidance is enabled with the
+    // single-layer index the LoRA author ships (22), across the full schedule.
+    graph.skip_layer = {
+        class_type: 'SkipLayerGuidanceDiTSimple',
+        inputs: {
+            model: modelLink,
+            double_layers: '',
+            single_layers: MOSS_EDIT_SKIP_LAYERS,
+            start_percent: 0,
+            end_percent: 1
+        }
+    };
+    const attentionNode = applyImageAttentionPatch(graph, 'skip_layer', settings.attentionBackend);
+    const samplerModel = attentionNode ? [attentionNode, 0] : ['skip_layer', 0];
+
+    // image_0 is the source, scaled once to the official ~1 MP / 16 px budget.
+    // The extra references keep their own size and feed the same encoder.
+    const imageInputs = {};
+    graph.load_image = { class_type: 'LoadImage', inputs: { image: loadNames[0] } };
+    graph.scale_reference = {
+        class_type: 'ImageScaleToTotalPixels',
+        inputs: {
+            image: ['load_image', 0],
+            upscale_method: 'lanczos',
+            megapixels,
+            resolution_steps: 16
+        }
+    };
+    imageInputs['images.image_0'] = ['scale_reference', 0];
+    loadNames.slice(1).forEach((name, index) => {
+        const nodeId = 'load_image_' + (index + 1);
+        graph[nodeId] = { class_type: 'LoadImage', inputs: { image: name } };
+        imageInputs['images.image_' + (index + 1)] = [nodeId, 0];
+    });
+
+    // The output canvas follows the scaled source so the source aspect ratio is
+    // preserved. A pinned width/height (character scene generation) instead
+    // sets an explicit 16 px-aligned canvas; the reference is still scaled.
+    const pinnedWidth = clampToInt(options.width, 0, 4096, 0);
+    const pinnedHeight = clampToInt(options.height, 0, 4096, 0);
+    if (pinnedWidth > 0 && pinnedHeight > 0) {
+        graph.canvas = {
+            class_type: 'EmptyFlux2LatentImage',
+            inputs: { width: snapMossDimension(pinnedWidth), height: snapMossDimension(pinnedHeight), batch_size: 1 }
+        };
+    } else {
+        graph.source_size = { class_type: 'GetImageSize', inputs: { image: ['scale_reference', 0] } };
+        graph.canvas = {
+            class_type: 'EmptyFlux2LatentImage',
+            inputs: { width: ['source_size', 0], height: ['source_size', 1], batch_size: 1 }
+        };
+    }
+
+    const encodeInputs = Object.assign({
+        clip: clipLink,
+        edit_format: editFormat,
+        image_strength: 1,
+        vae: ['vae', 0]
+    }, imageInputs);
+
+    graph.positive = {
+        class_type: 'TextEncodeMOSSImageEdit',
+        inputs: Object.assign({}, encodeInputs, { prompt: String(instruction || '') })
+    };
+    graph.negative = {
+        class_type: 'TextEncodeMOSSImageEdit',
+        inputs: Object.assign({}, encodeInputs, { prompt: negativeText })
+    };
+
+    graph.sampler = {
+        class_type: 'KSampler',
+        inputs: {
+            model: samplerModel,
+            positive: ['positive', 0],
+            negative: ['negative', 0],
+            latent_image: ['canvas', 0],
+            seed,
+            steps,
+            cfg,
+            sampler_name: MOSS_EDIT_SAMPLER,
+            scheduler: MOSS_EDIT_SCHEDULER,
+            denoise: 1
+        }
+    };
+
+    graph.decoded = { class_type: 'VAEDecode', inputs: { samples: ['sampler', 0], vae: ['vae', 0] } };
+    graph.save = { class_type: 'SaveImage', inputs: { images: ['decoded', 0], filename_prefix: 'not-so-jarvis/edit' } };
 
     return graph;
 }
@@ -2565,87 +3108,125 @@ async function generateImage(prompt, options = {}) {
             assertMiniMaxConditioningSupported(info, minimaxConditioningNode, settings.minimaxConditioningNode);
             assertMiniMaxImageModels(info, resolveBaseModels(settings));
         }
+        let mossEnhancerNode = null;
+        let mossEnhancerReferenceName = null;
+        if (activeModel === 'moss') {
+            assertMossImageModels(info, resolveBaseModels(settings));
+            if (settings.mossPromptEnhancer !== false) {
+                mossEnhancerNode = resolveMossEnhancerNode(info);
+                if (!mossEnhancerNode) {
+                    // The enhancer is optional: fall back to the raw prompt
+                    // rather than failing an otherwise runnable generation.
+                    console.warn('[image-generator] MOSS prompt enhancer node missing; sending the raw prompt.');
+                } else if (options.enhancerReferencePath) {
+                    try {
+                        const refPath = String(options.enhancerReferencePath);
+                        if (fs.existsSync(refPath) && fs.statSync(refPath).size > 0) {
+                            const uploadName = 'jarvis_moss_ref_' + Date.now() + '_' + path.basename(refPath);
+                            const uploaded = await comfyui.uploadImage(fs.readFileSync(refPath), uploadName);
+                            mossEnhancerReferenceName = (uploaded && uploaded.name) || uploadName;
+                        }
+                    } catch (err) {
+                        console.warn('[image-generator] MOSS enhancer reference upload failed:', err.message);
+                    }
+                }
+            }
+        }
 
         const modelSettings = Object.assign({}, settings, resolveBaseModels(settings));
         let graph;
-        if (activeModel === 'qwen_image_2_1') {
-            graph = buildQwenImage21T2IGraph(finalPrompt, Object.assign({}, options, { seed, width, height, settings: modelSettings }));
-        } else if (activeModel === 'minimax_h3_image') {
-            graph = buildMiniMaxH3ImageT2IGraph(finalPrompt, Object.assign({}, options, {
-                seed, width, height, settings: modelSettings, conditioningNode: minimaxConditioningNode
-            }));
-        } else {
-            graph = buildKrea2T2IGraph(finalPrompt, Object.assign({}, options, { seed, width, height, settings }));
+        try {
+            if (activeModel === 'qwen_image_2_1') {
+                graph = buildQwenImage21T2IGraph(finalPrompt, Object.assign({}, options, { seed, width, height, settings: modelSettings }));
+            } else if (activeModel === 'minimax_h3_image') {
+                graph = buildMiniMaxH3ImageT2IGraph(finalPrompt, Object.assign({}, options, {
+                    seed, width, height, settings: modelSettings, conditioningNode: minimaxConditioningNode
+                }));
+            } else if (activeModel === 'moss') {
+                graph = buildMossImageT2IGraph(finalPrompt, Object.assign({}, options, {
+                    seed, width, height, settings: modelSettings,
+                    enhancerNode: mossEnhancerNode,
+                    enhancerReferenceLoadName: mossEnhancerReferenceName
+                }));
+            } else {
+                graph = buildKrea2T2IGraph(finalPrompt, Object.assign({}, options, { seed, width, height, settings }));
+            }
+
+            const expectedClipType = activeModel === 'qwen_image_2_1'
+                ? QWEN_IMAGE_CLIP_TYPE
+                : (activeModel === 'minimax_h3_image'
+                    ? MINIMAX_IMAGE_CLIP_TYPE
+                    : (activeModel === 'moss' ? MOSS_IMAGE_CLIP_TYPE : 'krea2'));
+            await validateGraphAgainstComfy(info, graph, expectedClipType);
+
+            const pid = await comfyui.queuePrompt(graph);
+            console.log('[image-generator] queued ' + imageModelLabel(activeModel) + ' workflow:', pid);
+
+            const history = await comfyui.waitForPrompt(pid, {
+                timeoutMs: options.timeoutMs,
+                signal
+            });
+
+            const files = comfyui.findOutputFiles(history.outputs || {}, /\.(?:png|jpg|jpeg|webp)$/i);
+            if (!files.length) {
+                const error = new Error('ComfyUI finished but produced no image file.');
+                error.code = 'comfyui_output_not_found';
+                throw error;
+            }
+
+            // The last output file is the finished image.
+            const entry = files[files.length - 1];
+            const buffer = await comfyui.downloadImage(entry);
+
+            const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+            const extension = path.extname(entry.filename).toLowerCase() || '.png';
+            const basename = safeFilename(buffer.toString('hex', 0, 4)) + '_' + stamp + extension;
+            const filePath = path.join(GENERATED_DIR, basename);
+            fs.writeFileSync(filePath, buffer);
+
+            console.log('[image-generator] saved image:', basename, '(' + buffer.length + ' bytes)');
+
+            // The image is safely on disk — remove the ComfyUI original (and its
+            // history entry) so it isn't stored twice. Best-effort; a cleanup
+            // failure never breaks the finished generation.
+            await comfyui.deleteOutputFile(entry, { history: pid });
+
+            // Record lightweight metadata so the Generated gallery can show it.
+            const activeLoras = (settings.loras || [])
+                .filter((l) => l && l.on && l.name)
+                .map((l) => ({ name: l.name, strength: Number(l.strength) || 0, triggerWord: l.triggerWord || '' }));
+            const meta = generatedHistory.add({
+                file: '/generated/' + encodeURIComponent(basename),
+                rawFilename: basename,
+                conversationId: options.conversationId || null,
+                prompt: finalPrompt,
+                model: imageModelLabel(activeModel),
+                loras: activeLoras,
+                seed,
+                width,
+                height,
+                // A character identity reference is internal media: it is tracked
+                // for cleanup but never shown in the public gallery.
+                hidden: options.hidden === true,
+                generationMs: Date.now() - startedAt
+            });
+
+            return {
+                url: meta.file,
+                filename: basename,
+                width,
+                height,
+                seed,
+                model: activeModel,
+                prompt: finalPrompt,
+                generationMs: meta.generationMs,
+                meta
+            };
+        } finally {
+            if (mossEnhancerReferenceName) {
+                await comfyui.deleteInputFile(mossEnhancerReferenceName).catch(() => {});
+            }
         }
-
-        const expectedClipType = activeModel === 'qwen_image_2_1'
-            ? QWEN_IMAGE_CLIP_TYPE
-            : (activeModel === 'minimax_h3_image' ? MINIMAX_IMAGE_CLIP_TYPE : 'krea2');
-        await validateGraphAgainstComfy(info, graph, expectedClipType);
-
-        const pid = await comfyui.queuePrompt(graph);
-        console.log('[image-generator] queued ' + imageModelLabel(activeModel) + ' workflow:', pid);
-
-        const history = await comfyui.waitForPrompt(pid, {
-            timeoutMs: options.timeoutMs,
-            signal
-        });
-
-        const files = comfyui.findOutputFiles(history.outputs || {}, /\.(?:png|jpg|jpeg|webp)$/i);
-        if (!files.length) {
-            const error = new Error('ComfyUI finished but produced no image file.');
-            error.code = 'comfyui_output_not_found';
-            throw error;
-        }
-
-        // The last output file is the finished image.
-        const entry = files[files.length - 1];
-        const buffer = await comfyui.downloadImage(entry);
-
-        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-        const extension = path.extname(entry.filename).toLowerCase() || '.png';
-        const basename = safeFilename(buffer.toString('hex', 0, 4)) + '_' + stamp + extension;
-        const filePath = path.join(GENERATED_DIR, basename);
-        fs.writeFileSync(filePath, buffer);
-
-        console.log('[image-generator] saved image:', basename, '(' + buffer.length + ' bytes)');
-
-        // The image is safely on disk — remove the ComfyUI original (and its
-        // history entry) so it isn't stored twice. Best-effort; a cleanup
-        // failure never breaks the finished generation.
-        await comfyui.deleteOutputFile(entry, { history: pid });
-
-        // Record lightweight metadata so the Generated gallery can show it.
-        const activeLoras = (settings.loras || [])
-            .filter((l) => l && l.on && l.name)
-            .map((l) => ({ name: l.name, strength: Number(l.strength) || 0, triggerWord: l.triggerWord || '' }));
-        const meta = generatedHistory.add({
-            file: '/generated/' + encodeURIComponent(basename),
-            rawFilename: basename,
-            conversationId: options.conversationId || null,
-            prompt: finalPrompt,
-            model: imageModelLabel(activeModel),
-            loras: activeLoras,
-            seed,
-            width,
-            height,
-            // A character identity reference is internal media: it is tracked
-            // for cleanup but never shown in the public gallery.
-            hidden: options.hidden === true,
-            generationMs: Date.now() - startedAt
-        });
-
-        return {
-            url: meta.file,
-            filename: basename,
-            width,
-            height,
-            seed,
-            model: activeModel,
-            prompt: finalPrompt,
-            generationMs: meta.generationMs,
-            meta
-        };
     }, queueOpts);
 }
 
@@ -3241,7 +3822,9 @@ async function editImage(sourceAbsPath, instruction, options = {}) {
         const editEngine = normalizeEditEngine(options.editEngine)
             || normalizeEditEngine(settings.editEngine)
             || DEFAULT_EDIT_ENGINE;
-        const maxReferences = editEngine === 'krea2' ? 1 : MAX_EDIT_REFERENCES;
+        const maxReferences = editEngine === 'krea2'
+            ? 1
+            : (editEngine === 'moss' ? MOSS_MAX_EDIT_REFERENCES : MAX_EDIT_REFERENCES);
         // Additional @-referenced images become image_2, image_3, … in the
         // encoder. Unreadable/empty/duplicate files are skipped rather than
         // failing the whole edit.
@@ -3342,6 +3925,20 @@ async function editImage(sourceAbsPath, instruction, options = {}) {
                     vae: String(settings.minimaxVae || DEFAULT_SETTINGS.minimaxVae).trim()
                 });
             }
+            if (editEngine === 'moss') {
+                // The edit workflow is the only place the dedicated edit LoRA
+                // is loaded. Its core text-encoding node ships with ComfyUI
+                // 0.43.0+; node presence is checked alongside the version.
+                const stats = await comfyui.getSystemStats().catch(() => null);
+                assertMossEditSupport(info, stats);
+                assertMossImageModels(info, {
+                    unet: String(settings.mossUnet || DEFAULT_SETTINGS.mossUnet).trim(),
+                    clip: String(settings.mossClip || DEFAULT_SETTINGS.mossClip).trim(),
+                    vae: String(settings.mossVae || DEFAULT_SETTINGS.mossVae).trim()
+                }, {
+                    editLora: String(settings.mossEditLora || DEFAULT_SETTINGS.mossEditLora).trim()
+                });
+            }
 
             const graph = editEngine === 'krea2'
                 ? buildKrea2IdentityEditGraph(finalInstruction, loadName, {
@@ -3365,22 +3962,38 @@ async function editImage(sourceAbsPath, instruction, options = {}) {
                         conditioningNode: minimaxConditioningNode,
                         referenceLoadNames
                     })
-                    : buildQwenImage21EditGraph(finalInstruction, loadName, {
-                        settings,
-                        seed,
-                        steps: options.steps,
-                        cfg: options.cfg,
-                        resolution: options.resolution,
-                        width: canvasWidth,
-                        height: canvasHeight,
-                        negativePrompt: options.negativePrompt,
-                        referenceLoadNames,
-                        maskLoadName
-                    });
+                    : editEngine === 'moss'
+                        ? buildMossImageEditGraph(finalInstruction, loadName, {
+                            settings,
+                            seed,
+                            steps: options.steps,
+                            cfg: options.cfg,
+                            negativePrompt: options.negativePrompt,
+                            megapixels: options.megapixels,
+                            editFormat: options.editFormat,
+                            loraStrength: options.loraStrength,
+                            width: canvasWidth,
+                            height: canvasHeight,
+                            referenceLoadNames
+                        })
+                        : buildQwenImage21EditGraph(finalInstruction, loadName, {
+                            settings,
+                            seed,
+                            steps: options.steps,
+                            cfg: options.cfg,
+                            resolution: options.resolution,
+                            width: canvasWidth,
+                            height: canvasHeight,
+                            negativePrompt: options.negativePrompt,
+                            referenceLoadNames,
+                            maskLoadName
+                        });
 
             const clipType = editEngine === 'krea2'
                 ? String(settings.clipType || KREA2_CLIP_TYPE)
-                : (editEngine === 'minimax_h3' ? MINIMAX_IMAGE_CLIP_TYPE : QWEN_IMAGE_CLIP_TYPE);
+                : (editEngine === 'minimax_h3'
+                    ? MINIMAX_IMAGE_CLIP_TYPE
+                    : (editEngine === 'moss' ? MOSS_IMAGE_CLIP_TYPE : QWEN_IMAGE_CLIP_TYPE));
             usedModel = editEngineLabel(editEngine);
             await validateGraphAgainstComfy(info, graph, clipType);
 
@@ -3484,6 +4097,25 @@ module.exports = {
     buildKrea2T2IGraph,
     buildQwenImage21T2IGraph,
     buildMiniMaxH3ImageT2IGraph,
+    buildMossImageT2IGraph,
+    buildMossImageEditGraph,
+    assertMossImageModels,
+    assertMossEditSupport,
+    resolveMossEnhancerNode,
+    comfyuiVersionFromStats,
+    parseVersionParts,
+    compareVersionParts,
+    normalizeMossEditFormat,
+    snapMossDimension,
+    MOSS_IMAGE_CLIP_TYPE,
+    MOSS_EDIT_FORMATS,
+    MOSS_EDIT_FORMAT,
+    MOSS_DEFAULT_NEGATIVE_PROMPT,
+    MOSS_MAX_EDIT_REFERENCES,
+    MOSS_MIN_EDIT_VERSION,
+    MOSS_ENHANCER_SYSTEM_PROMPT,
+    MOSS_EDIT_MIN_MEGAPIXELS,
+    MOSS_EDIT_MAX_MEGAPIXELS,
     buildMiniMaxH3ImageEditGraph,
     resolveMiniMaxConditioningNode,
     assertMiniMaxConditioningSupported,

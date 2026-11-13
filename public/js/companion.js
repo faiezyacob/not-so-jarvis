@@ -39,6 +39,29 @@ const CompanionUI = (() => {
         return node;
     }
 
+    // The shell draws its icons; a dingbat character in a button is not an
+    // icon system. One stroke weight, one 24-grid, aria-hidden inside a
+    // labelled control.
+    const ICONS = {
+        bookmark: '<path d="M7 4h10v16l-5-3.6L7 20z"/>',
+        bookmarkOn: '<path d="M7 4h10v16l-5-3.6L7 20z" fill="currentColor"/>',
+        pencil: '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/>',
+        close: '<path d="M6 6l12 12M18 6L6 18"/>'
+    };
+
+    function icon(name) {
+        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        svg.setAttribute('viewBox', '0 0 24 24');
+        svg.setAttribute('fill', 'none');
+        svg.setAttribute('stroke', 'currentColor');
+        svg.setAttribute('stroke-width', '1.6');
+        svg.setAttribute('stroke-linecap', 'round');
+        svg.setAttribute('stroke-linejoin', 'round');
+        svg.setAttribute('aria-hidden', 'true');
+        svg.innerHTML = ICONS[name] || '';
+        return svg;
+    }
+
     async function api(method, url, body) {
         const options = { method };
         if (body !== undefined) {
@@ -73,6 +96,7 @@ const CompanionUI = (() => {
     async function open() {
         if (!overlay) return;
         overlay.classList.add('open');
+        if (window.StudioShell) window.StudioShell.open(overlay);
         detailEl.innerHTML = '';
         detailEl.appendChild(el('div', 'companion-empty', 'Loading…'));
         try {
@@ -96,12 +120,25 @@ const CompanionUI = (() => {
 
     function close() {
         if (overlay) overlay.classList.remove('open');
+        if (window.StudioShell) window.StudioShell.close();
     }
 
     function renderList() {
         listEl.innerHTML = '';
         if (!characters.length) {
-            listEl.appendChild(el('div', 'companion-empty', 'No characters yet. Create one in the Creative Playground.'));
+            const empty = el('div', 'companion-empty');
+            empty.appendChild(el('div', 'companion-empty-title', 'No companions yet'));
+            empty.appendChild(el('p', null, 'A companion is a saved Character with a personality and long-term memory. Create one in the Creative Playground, then come back to set how she talks.'));
+            const create = el('button', 'companion-btn companion-btn--primary', 'Create a character');
+            create.type = 'button';
+            create.addEventListener('click', () => {
+                close();
+                if (window.PlaygroundUI && typeof window.PlaygroundUI.open === 'function') {
+                    window.PlaygroundUI.open();
+                }
+            });
+            empty.appendChild(create);
+            listEl.appendChild(empty);
             return;
         }
         characters.forEach((character) => {
@@ -171,7 +208,7 @@ const CompanionUI = (() => {
         if (!detailEl) return;
         detailEl.innerHTML = '';
         if (!currentId) {
-            detailEl.appendChild(el('div', 'companion-empty', 'Select a character.'));
+            detailEl.appendChild(el('div', 'companion-empty', 'Select a character on the left to open her profile.'));
             return;
         }
         titleEl.textContent = 'Loading…';
@@ -311,6 +348,33 @@ const CompanionUI = (() => {
         // Memory browser.
         detailEl.appendChild(buildMemoryCard());
         renderMemories();
+        buildNav();
+    }
+
+    // Five long sections stack in one detail column; the nav is the index that
+    // keeps them findable without turning the panel into five tabs.
+    function buildNav() {
+        const nav = document.getElementById('companionNav');
+        if (!nav) return;
+        const sections = Array.prototype.slice.call(detailEl.querySelectorAll('.companion-card'));
+        nav.replaceChildren();
+        if (sections.length < 2) {
+            nav.hidden = true;
+            return;
+        }
+        nav.hidden = false;
+        sections.forEach((section, index) => {
+            section.id = 'companion-section-' + index;
+            const title = section.querySelector('.companion-card-title');
+            const button = el('button', index === 0 ? 'active' : '', title ? title.textContent : 'Section ' + (index + 1));
+            button.type = 'button';
+            button.addEventListener('click', () => {
+                section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                nav.querySelectorAll('button').forEach((node) => node.classList.remove('active'));
+                button.classList.add('active');
+            });
+            nav.appendChild(button);
+        });
     }
 
     function buildStateCard(state) {
@@ -738,18 +802,23 @@ const CompanionUI = (() => {
         row.appendChild(main);
 
         const actions = el('div', 'companion-memory-actions');
-        const pin = el('button', 'companion-icon-btn', memory.pinned ? '\u2605' : '\u2606');
+        const pin = el('button', 'companion-icon-btn');
         pin.type = 'button';
-        pin.title = memory.pinned ? 'Unpin' : 'Pin';
+        pin.title = memory.pinned ? 'Unpin memory' : 'Pin memory';
+        pin.setAttribute('aria-label', pin.title);
+        pin.setAttribute('aria-pressed', memory.pinned ? 'true' : 'false');
+        pin.appendChild(icon(memory.pinned ? 'bookmarkOn' : 'bookmark'));
         pin.addEventListener('click', async () => {
             await api('PATCH', '/api/companion/' + encodeURIComponent(currentId) + '/memories/' + encodeURIComponent(memory.id), { pinned: !memory.pinned });
             renderMemories();
         });
         actions.appendChild(pin);
 
-        const edit = el('button', 'companion-icon-btn', '\u270e');
+        const edit = el('button', 'companion-icon-btn');
         edit.type = 'button';
-        edit.title = 'Edit';
+        edit.title = 'Edit memory';
+        edit.setAttribute('aria-label', 'Edit memory');
+        edit.appendChild(icon('pencil'));
         edit.addEventListener('click', async () => {
             const value = window.Dialog ? await window.Dialog.prompt({ title: 'Edit memory', value: memory.text, confirmText: 'Save' }) : prompt('Edit memory', memory.text);
             if (value === null || !value.trim()) return;
@@ -758,9 +827,11 @@ const CompanionUI = (() => {
         });
         actions.appendChild(edit);
 
-        const del = el('button', 'companion-icon-btn companion-icon-btn--danger', '\u00d7');
+        const del = el('button', 'companion-icon-btn companion-icon-btn--danger');
         del.type = 'button';
-        del.title = 'Delete';
+        del.title = 'Delete memory';
+        del.setAttribute('aria-label', 'Delete memory');
+        del.appendChild(icon('close'));
         del.addEventListener('click', async () => {
             const ok = window.Dialog ? await window.Dialog.confirm({ title: 'Delete memory', message: 'Delete this memory?', confirmText: 'Delete', danger: true }) : confirm('Delete this memory?');
             if (!ok) return;
