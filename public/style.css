@@ -1,5 +1,5 @@
 /* ============================================
-   JARVIS â€” Local AI Assistant
+   JARVIS — Local AI Assistant
    Visual Foundation & Layout
    ============================================ */
 
@@ -98,6 +98,7 @@
     --bg-card: var(--surface);
     --bg-input: var(--surface);
     --border-color: var(--rule);
+    --border: var(--rule);
     --border-focus: var(--ink);
     --accent: var(--ink);
     --accent-dim: var(--ink-2);
@@ -111,6 +112,7 @@
 
     /* --- Type --- */
     --font-sans: 'Barlow', 'Segoe UI', system-ui, -apple-system, sans-serif;
+    --font-ui: var(--font-sans);
     --font-mono: 'Barlow Condensed', 'Barlow', 'Segoe UI', system-ui, sans-serif;
     --font-condensed: 'Barlow Condensed', 'Barlow', 'Segoe UI', system-ui, sans-serif;
     --font-code: 'Cascadia Mono', 'Consolas', 'SF Mono', monospace;
@@ -841,7 +843,7 @@ details.settings-card summary.settings-card-title::after {
 }
 
 details.settings-card[open] summary.settings-card-title::after {
-    content: 'â€“';
+    content: '\2212';
 }
 
 .settings-advanced-body {
@@ -11199,7 +11201,7 @@ textarea.companion-input { resize: vertical; font-family: var(--font-sans); }
 .character-swap-prompt.is-next textarea { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(var(--ink-rgb), 0.16); }
 
 /* ============================================================
-   PRODUCTION CALL SHEET â€” shell layer
+   PRODUCTION CALL SHEET — shell layer
    Paper, ink, one stamp. Ruled rows, no cards.
    ============================================================ */
 
@@ -12241,7 +12243,7 @@ body {
 }
 
 .chat-empty-starter::before {
-    content: "ï¿½";
+    content: "";
     position: absolute;
     left: 2px;
     top: 7px;
@@ -12256,10 +12258,6 @@ body {
 
 .chat-empty-starter:hover::before {
     color: var(--stamp);
-}
-
-.chat-messages:not(:empty) ~ .chat-empty {
-    display: none;
 }
 
 @media (max-width: 768px) {
@@ -12353,10 +12351,6 @@ body {
 
 .chat-area.is-empty .chat-empty {
     display: block;
-}
-
-.chat-messages:not(:empty) ~ .chat-empty {
-    display: none;
 }
 
 /* --- Empty log: a sheet waiting for its first entry --- */

@@ -46,7 +46,7 @@
                 stored = null;
             }
             if (stored === 'light' || stored === 'dark') return;
-            root.setAttribute('data-theme', event.matches ? 'dark' : 'light');
+            apply(event.matches ? 'dark' : 'light', false);
         };
         if (media.addEventListener) media.addEventListener('change', onChange);
         else if (media.addListener) media.addListener(onChange);

@@ -23,6 +23,7 @@
     const listEl = document.getElementById('conversationList');
     const queueEl = document.getElementById('chatQueueStatus');
     const pillEl = document.getElementById('modelPillName');
+    const chatAreaEl = messagesEl ? messagesEl.closest('.chat-area') : null;
 
     let startedAt = 0;
     let lastActiveId = null;
@@ -53,6 +54,14 @@
 
     function isQueued() {
         return !!queueEl && !queueEl.hidden;
+    }
+
+    // chat.js mirrors the server's turn-queue position onto the chat area, so
+    // the figure reports a real wait rather than a boolean.
+    function serverQueuePosition() {
+        if (!chatAreaEl) return 0;
+        const value = Number(chatAreaEl.dataset.queuePosition);
+        return Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
     }
 
     function elapsedLabel() {
@@ -136,7 +145,7 @@
             pill.classList.toggle('is-blocked', !model || model === 'No model');
         }
 
-        if (els.queue) els.queue.textContent = queued ? '1' : '0';
+        if (els.queue) els.queue.textContent = String(Math.max(serverQueuePosition(), queued ? 1 : 0));
         if (els.elapsed) els.elapsed.textContent = elapsedLabel();
         if (els.frames) els.frames.textContent = String(frameCount());
 
@@ -148,7 +157,8 @@
         revealActive(item);
     }
 
-    function watch(node) {        if (!node || typeof MutationObserver === 'undefined') return;
+    function watch(node) {
+        if (!node || typeof MutationObserver === 'undefined') return;
         const observer = new MutationObserver(update);
         observer.observe(node, { childList: true, subtree: true, attributes: true, attributeFilter: ['hidden', 'class'] });
     }
@@ -157,6 +167,9 @@
     watch(listEl);
     watch(queueEl);
     watch(pillEl);
+    if (chatAreaEl && typeof MutationObserver !== 'undefined') {
+        new MutationObserver(update).observe(chatAreaEl, { attributes: true, attributeFilter: ['data-queue-position'] });
+    }
 
     if (listEl) listEl.addEventListener('click', () => setTimeout(update, 0));
 

@@ -1455,7 +1455,17 @@ const Chat = (() => {
             window.AgentUI.hydrate(chatMessagesEl, Conversations.currentId());
         }
 
+        syncEmptyState();
         chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+    }
+
+    // The empty log is a state of the log itself, never of a sibling script:
+    // if the day sheet is missing or fails, the starters still appear.
+    function syncEmptyState() {
+        if (!chatMessagesEl) return;
+        const area = chatMessagesEl.closest('.chat-area');
+        if (!area) return;
+        area.classList.toggle('is-empty', !chatMessagesEl.querySelector('.message'));
     }
 
     // Format a message timestamp for the day sheet's left gutter.
@@ -1510,6 +1520,7 @@ const Chat = (() => {
         chatMessagesEl.appendChild(el);
         if (role === 'assistant' && messageId) attachMessageDelete(head, messageId);
 
+        syncEmptyState();
         chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
         return el;
     }
@@ -1570,6 +1581,7 @@ const Chat = (() => {
             return;
         }
         if (el && el.parentNode) el.remove();
+        syncEmptyState();
         const removedMedia = Array.isArray(data && data.removedMedia) ? data.removedMedia : [];
         if (removedMedia.length) {
             removeReferencesForFiles(removedMedia);
@@ -1632,9 +1644,18 @@ const Chat = (() => {
     let activeQueueId = null;
     let activeTurnId = null;
     let activeQueueActive = false;
+    let activeQueuePosition = 0;
     let activeMessageEl = null;
     let activeMessageConversationId = null;
     let queuedTurn = null;
+
+    // Mirror the server turn-queue position onto the chat area so the day
+    // sheet's QUEUE figure reports the real wait (0 = nothing queued).
+    function setQueuePosition(position) {
+        activeQueuePosition = Math.max(0, Math.trunc(Number(position) || 0));
+        const area = chatMessagesEl ? chatMessagesEl.closest('.chat-area') : null;
+        if (area) area.dataset.queuePosition = String(activeQueuePosition);
+    }
 
     async function cancelActiveStream() {
         if (typeof VoiceOutput !== 'undefined' && VoiceOutput && typeof VoiceOutput.cancel === 'function') {
@@ -1772,7 +1793,7 @@ const Chat = (() => {
                 parts.push(uploaded.map((u) => '![upload](' + u.url + ')').join('\n'));
             } catch (e) {
                 setSendingState(false);
-                addMessageDom('ai', 'Upload failed: ' + e.message);
+                addMessageDom('ai', 'Upload failed: ' + e.message, null, Date.now());
                 return;
             }
         }
@@ -1791,7 +1812,7 @@ const Chat = (() => {
         try {
             userMsg = await Conversations.saveUserMessage(conversationId, userText);
         } catch (e) {
-            if (Conversations.currentId() === conversationId) addMessageDom('ai', 'Failed to save message: ' + e.message);
+            if (Conversations.currentId() === conversationId) addMessageDom('ai', 'Failed to save message: ' + e.message, null, Date.now());
             return;
         }
 
@@ -1810,6 +1831,7 @@ const Chat = (() => {
         activeQueueId = null;
         activeTurnId = null;
         activeQueueActive = false;
+        setQueuePosition(0);
 
         try {
             const res = await fetch('/api/chat/stream', {
@@ -1841,7 +1863,7 @@ const Chat = (() => {
                 const errorData = await res.json().catch(() => ({}));
                 removeTypingIndicator();
                 if (Conversations.currentId() === conversationId) {
-                    addMessageDom('ai', 'Error: ' + (errorData.error || 'Unknown error'));
+                    addMessageDom('ai', 'Error: ' + (errorData.error || 'Unknown error'), null, Date.now());
                 }
                 return;
             }
@@ -1849,6 +1871,14 @@ const Chat = (() => {
             // Create the AI message element for streaming
             const aiMessageEl = document.createElement('div');
             aiMessageEl.className = 'message message--ai';
+
+            // The live reply is a log entry too: stamp it at creation so the
+            // gutter (and the day sheet's "last write") is correct immediately,
+            // not only after the conversation is reloaded.
+            const liveTimeEl = document.createElement('div');
+            liveTimeEl.className = 'message-time';
+            liveTimeEl.textContent = formatMessageTime(Date.now());
+            aiMessageEl.appendChild(liveTimeEl);
 
             const headEl = document.createElement('div');
             headEl.className = 'message-head';
@@ -1935,6 +1965,7 @@ const Chat = (() => {
                             generatingLabel = data.generating;
                             generatingEl.textContent = data.generating;
                             setProgressTitle(data.generating);
+                            setQueuePosition(0);
                             activeQueueActive = true;
                             activeTurnId = null;
                             scrollActiveStream(aiMessageEl);
@@ -1949,6 +1980,7 @@ const Chat = (() => {
                             activeTurnId = data.queued.turnId || null;
                             activeQueueActive = false;
                             const pos = data.queued.position || 1;
+                            setQueuePosition(pos);
                             generatingEl.textContent = activeTurnId
                                 ? 'Waiting for another device… (# ' + pos + ', press send to cancel)'
                                 : 'Queued #' + pos + ' — waiting for current generation… (press send to cancel)';
@@ -2189,9 +2221,9 @@ const Chat = (() => {
             removeTypingIndicator();
             if (Conversations.currentId() === conversationId) {
                 if (err && err.name === 'AbortError') {
-                    addMessageDom('ai', 'Cancelled.');
+                    addMessageDom('ai', 'Cancelled.', null, Date.now());
                 } else {
-                    addMessageDom('ai', 'Connection error: ' + err.message);
+                    addMessageDom('ai', 'Connection error: ' + err.message, null, Date.now());
                 }
             }
         } finally {
@@ -2200,6 +2232,7 @@ const Chat = (() => {
             activeQueueId = null;
             activeTurnId = null;
             activeQueueActive = false;
+            setQueuePosition(0);
             activeMessageEl = null;
             activeMessageConversationId = null;
             setProgressTitle('');
