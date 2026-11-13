@@ -134,6 +134,7 @@ Everything runs from a single chat surface — there are no separate tools or da
 - **ComfyUI widget** — live generation status, progress bar, and queue information
 - **Weather widget** — browser geolocation + Open-Meteo; no API key required
 - **News widget** — keyless RSS headlines (BBC, NPR, Hacker News by default, or your own feeds) with ALL / GLOBAL / LOCAL scopes; set a local area and the LOCAL scope searches it. Every headline links out to the source, and asking *"what's the news about X?"* or *"local news"* in chat answers from the same live headlines
+- **News → creative** — ask for a meme, image or short video from today's news (or open the Creative Playground's **From today's news** section) and JARVIS lists real headlines with a satirical angle and suggested caption per story. Pick a story's **Image** or **Video** (or answer *"the second one as a video"*) and the existing image / H3 pipelines render it. Sensitive stories get a restrained editorial treatment; headlines are treated as untrusted topic data and always link to the source
 - **Model library** — browse, download, load, unload, and remove models with hardware-compatibility detection
 - **Generated gallery** — thumbnails, full-grid view, preview lightbox with zoom/pan, grouped upscales, and before/after compare
 - **First-run setup guide** — Settings > Setup checks your ComfyUI install, downloads missing models from Hugging Face and Civitai, and installs missing custom nodes

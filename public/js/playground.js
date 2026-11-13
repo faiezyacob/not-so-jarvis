@@ -731,6 +731,15 @@ const PlaygroundUI = (() => {
     let popupStatusEl = null;
     let closeButtonEl = null;
     let summaryEl = null;
+    // Tabs: Build (the composer), Ideas (today's set) and News (headlines to
+    // creative). One panel is visible at a time — the tab strip replaces the
+    // single column that used to stack both browse sections on top of every
+    // manual control.
+    let tabsEl = null;
+    let profileValueEl = null;
+    let wardrobeValueEl = null;
+    let pinValueEl = null;
+    let activeTab = 'build';
     // Form edits must survive opening/closing the popover, so options are only
     // built once and the active concept is only reflected while the form is
     // untouched.
@@ -1407,9 +1416,17 @@ const PlaygroundUI = (() => {
         } catch (e) {
             setPopupBusy(false, 'Some options could not be loaded. You can still use the defaults.');
         }
-        // Today's Playground loads independently so an option failure never
-        // hides the daily ideas.
-        await loadToday();
+        // Today's Playground and the news picks are independent: load them in
+        // parallel so the News tab is not stuck behind the daily-idea LLM.
+        await Promise.all([
+            loadToday(),
+            (window.NewsCreativeUI && typeof window.NewsCreativeUI.openPlayground === 'function')
+                ? window.NewsCreativeUI.openPlayground()
+                : Promise.resolve()
+        ]);
+        // The news tab only exists while there are headlines to show.
+        syncNewsTab();
+        updateSummary();
     }
 
     function setPopupBusy(busy, message) {
@@ -1503,6 +1520,7 @@ const PlaygroundUI = (() => {
             box.checked = locks[box.getAttribute('data-lock')] === true;
         });
         updateLockAvailability();
+        updateSummary();
     }
 
     // The Identity lock keeps the current random person across "Surprise Me
@@ -1588,16 +1606,121 @@ const PlaygroundUI = (() => {
         return labels.length + ' wardrobes (randomized)';
     }
 
-    // A compact one-line summary of the current choices, shown above the
-    // primary button and kept in sync as the controls change.
+    function pinLabels() {
+        const locks = selectedLocks();
+        return Object.keys(LOCK_LABELS).filter((key) => locks[key]).map((key) => LOCK_LABELS[key]);
+    }
+
+    function profileFieldLabel(select) {
+        if (!select || !select.value || select.value === 'random') return '';
+        const option = select.options[select.selectedIndex];
+        return option ? String(option.textContent || '').trim() : '';
+    }
+
+    // The refine disclosure shows what it currently constrains, so the block
+    // reads as one line when closed instead of three always-visible selects.
+    function profileSummaryLabel() {
+        const parts = [
+            profileFieldLabel(appearanceSelect),
+            profileFieldLabel(ageSelect),
+            profileFieldLabel(genderSelect)
+        ].filter(Boolean);
+        return parts.length ? parts.join(' \u00b7 ') : 'Random';
+    }
+
+    function specParts() {
+        const parts = [];
+        const theme = selectedThemeLabel();
+        const character = characterSummaryLabel();
+        const wardrobe = wardrobeSummaryLabel();
+        const scene = sceneSummaryLabel();
+        const activity = activitySummaryLabel();
+        const face = faceActionSummaryLabel();
+        if (theme && theme !== 'Anything') parts.push(theme);
+        if (character !== 'No character') parts.push(character);
+        if (wardrobe !== 'Theme decides') parts.push(wardrobe);
+        if (scene !== 'Theme decides') parts.push(scene);
+        if (activity !== 'Theme decides' && activity !== 'Auto') parts.push(activity);
+        if (face !== 'Auto expression') parts.push(face);
+        return parts;
+    }
+
+    // The footer carries ONE line: the spec of what the user actually chose.
+    // Defaults are never repeated back at them, so a fresh concept reads
+    // "Fully random — nothing pinned" instead of six fields of "Theme decides".
     function updateSummary() {
+        if (profileValueEl) profileValueEl.textContent = profileSummaryLabel();
+        if (wardrobeValueEl) wardrobeValueEl.textContent = wardrobeSummaryLabel();
+        const pins = pinLabels();
+        if (pinValueEl) {
+            pinValueEl.textContent = pins.length
+                ? (pins.length === 1 ? '1 pinned' : pins.length + ' pinned')
+                : 'None';
+        }
         if (!summaryEl) return;
-        summaryEl.textContent = 'Theme: ' + selectedThemeLabel()
-            + ' \u00b7 Character: ' + characterSummaryLabel()
-            + ' \u00b7 Wardrobe: ' + wardrobeSummaryLabel()
-            + ' \u00b7 Scene: ' + sceneSummaryLabel()
-            + ' \u00b7 Activity: ' + activitySummaryLabel()
-            + ' \u00b7 Face: ' + faceActionSummaryLabel();
+        if (activeTab === 'ideas') {
+            summaryEl.textContent = 'Three ideas for today \u2014 create one, or Surprise Me.';
+            summaryEl.removeAttribute('title');
+            return;
+        }
+        if (activeTab === 'news') {
+            summaryEl.textContent = 'Today\u2019s headlines \u2014 turn one into an image or a video.';
+            summaryEl.removeAttribute('title');
+            return;
+        }
+        const parts = specParts();
+        if (pins.length) parts.push(pins.length === 1 ? '1 pinned' : pins.length + ' pinned');
+        const line = parts.length ? parts.join(' \u00b7 ') : 'Fully random \u2014 nothing pinned';
+        summaryEl.textContent = line;
+        if (parts.length) summaryEl.title = line;
+        else summaryEl.removeAttribute('title');
+    }
+
+    // --- Tabs ----------------------------------------------------------------
+
+    const TAB_FALLBACK = 'build';
+
+    function tabButtons() {
+        return popupEl ? Array.from(popupEl.querySelectorAll('.chat-playground-tab')) : [];
+    }
+
+    function setTab(name, options) {
+        if (!popupEl) return;
+        const buttons = tabButtons();
+        const wanted = String(name || '');
+        let next = buttons.find((b) => b.getAttribute('data-tab') === wanted && !b.hidden);
+        if (!next) next = buttons.find((b) => b.getAttribute('data-tab') === TAB_FALLBACK && !b.hidden);
+        if (!next) next = buttons.find((b) => !b.hidden);
+        if (!next) return;
+        activeTab = next.getAttribute('data-tab') || TAB_FALLBACK;
+        buttons.forEach((button) => {
+            const on = button === next;
+            button.setAttribute('aria-selected', on ? 'true' : 'false');
+            button.tabIndex = on ? 0 : -1;
+            const panel = document.getElementById(button.getAttribute('aria-controls') || '');
+            if (panel) panel.hidden = !on;
+        });
+        if (options && options.focus) next.focus();
+        updateSummary();    }
+
+    // "From today's news" hides itself when RSS is unavailable; its tab must not
+    // advertise an empty surface.
+    function syncNewsTab() {
+        if (!popupEl) return;
+        const section = document.getElementById('playgroundNewsSection');
+        const tab = document.getElementById('playgroundTabNews');
+        if (!tab) return;
+        const available = Boolean(section && !section.hidden);
+        tab.hidden = !available;
+        if (!available && activeTab === 'news') setTab('ideas');
+    }
+
+    function moveTab(step) {
+        const buttons = tabButtons().filter((b) => !b.hidden);
+        if (!buttons.length) return;
+        const index = buttons.findIndex((b) => b.getAttribute('data-tab') === activeTab);
+        const next = buttons[(index + step + buttons.length) % buttons.length];
+        if (next) setTab(next.getAttribute('data-tab'), { focus: true });
     }
 
     function submit() {
@@ -1644,6 +1767,7 @@ const PlaygroundUI = (() => {
         if (!popupEl) return;
         popupEl.hidden = false;
         if (buttonEl) buttonEl.setAttribute('aria-expanded', 'true');
+        setTab(activeTab);
         refreshPopover();
         syncPromptMode();
     }
@@ -1746,7 +1870,7 @@ const PlaygroundUI = (() => {
             card.appendChild(figure);
         }
 
-        const title = document.createElement('h4');
+        const title = document.createElement('h3');
         title.className = 'playground-today-title';
         title.textContent = idea.title || 'Idea';
         card.appendChild(title);
@@ -1899,6 +2023,10 @@ const PlaygroundUI = (() => {
         closeButtonEl = document.getElementById('playgroundClose');
         popupStatusEl = document.getElementById('playgroundPopupStatus');
         summaryEl = document.getElementById('playgroundSummary');
+        tabsEl = document.getElementById('playgroundTabs');
+        profileValueEl = document.getElementById('playgroundProfileValue');
+        wardrobeValueEl = document.getElementById('playgroundWardrobeValue');
+        pinValueEl = document.getElementById('playgroundPinValue');
         appearanceSelect = document.getElementById('playgroundAppearance');
         ageSelect = document.getElementById('playgroundAge');
         genderSelect = document.getElementById('playgroundGender');
@@ -1915,6 +2043,12 @@ const PlaygroundUI = (() => {
         todayEl = document.getElementById('playgroundToday');
         todayStatusEl = document.getElementById('playgroundTodayStatus');
         todayRefreshBtn = document.getElementById('playgroundTodayRefresh');
+        if (window.NewsCreativeUI && typeof window.NewsCreativeUI.mountPlayground === 'function') {
+            window.NewsCreativeUI.mountPlayground();
+        }
+        // A refresh can reveal or exhaust the headline pool; keep the News tab
+        // in step without making the news module know about Playground tabs.
+        window.addEventListener('news-creative-updated', syncNewsTab);
         const submitBtn = document.getElementById('playgroundSurprise');
 
         buttonEl.addEventListener('click', (e) => {
@@ -1926,6 +2060,30 @@ const PlaygroundUI = (() => {
             if (characterWrap && !characterWrap.contains(e.target)) closeCharacterMenu();
         });
         if (submitBtn) submitBtn.addEventListener('click', submit);
+        if (tabsEl) {
+            tabsEl.addEventListener('click', (e) => {
+                const tab = e.target && e.target.closest ? e.target.closest('.chat-playground-tab') : null;
+                if (!tab) return;
+                setTab(tab.getAttribute('data-tab'));
+            });
+            tabsEl.addEventListener('keydown', (e) => {
+                const available = tabButtons().filter((b) => !b.hidden);
+                if (!available.length) return;
+                if (e.key === 'ArrowRight') {
+                    e.preventDefault();
+                    moveTab(1);
+                } else if (e.key === 'ArrowLeft') {
+                    e.preventDefault();
+                    moveTab(-1);
+                } else if (e.key === 'Home') {
+                    e.preventDefault();
+                    setTab(available[0].getAttribute('data-tab'), { focus: true });
+                } else if (e.key === 'End') {
+                    e.preventDefault();
+                    setTab(available[available.length - 1].getAttribute('data-tab'), { focus: true });
+                }
+            });
+        }
         if (todayRefreshBtn) todayRefreshBtn.addEventListener('click', () => { refreshToday(); });
         if (closeButtonEl) closeButtonEl.addEventListener('click', close);
         if (characterTrigger) {
@@ -1968,7 +2126,7 @@ const PlaygroundUI = (() => {
         }
         if (themeSelect) themeSelect.addEventListener('change', () => { popoverDirty = true; updateSummary(); });
         [appearanceSelect, ageSelect, genderSelect].forEach((select) => {
-            if (select) select.addEventListener('change', () => { popoverDirty = true; syncCharacterMode(); });
+            if (select) select.addEventListener('change', () => { popoverDirty = true; syncCharacterMode(); updateSummary(); });
         });
         if (promptEl) promptEl.addEventListener('input', () => { popoverDirty = true; syncPromptMode(); });
         if (outfitCustomEl) outfitCustomEl.addEventListener('input', () => { popoverDirty = true; });

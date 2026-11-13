@@ -91,6 +91,7 @@ const comfyuiLauncher = require('./services/comfyui-launcher');
 const vramManager = require('./services/vram-manager');
 const weather = require('./services/weather');
 const news = require('./services/news');
+const newsCreative = require('./services/news-creative');
 const taskRouter = require('./services/task-router');
 const taskState = require('./services/task-state');
 const agentEngine = require('./services/agent/engine');
@@ -461,7 +462,50 @@ async function handleAPI(req, res, urlPath) {
                 configuredFeeds: news.getFeeds(),
                 feedsCustom: news.hasCustomFeeds(),
                 localArea: news.getLocalArea()
+            }, { 'Cache-Control': 'no-store' });
+        } catch (err) {
+            json(res, 502, { error: err.message });
+        }
+        return true;
+    }
+
+    // GET /api/news/creative — today's headlines as creative picks (a meme
+    // image or a short video per story). This backs the Playground's "From
+    // today's news" section and the chat picker card. When a conversation id is
+    // supplied, the candidates are remembered for that conversation so a card
+    // action resolves the story by id, never by client-supplied headline text.
+    if (urlPath === '/api/news/creative' && req.method === 'GET') {
+        try {
+            const query = new URL(req.url, 'http://localhost').searchParams;
+            const conversationId = query.get('conversationId') || '';
+            const canAccess = Boolean(conversationId) &&
+                conversationService.canAccessConversation(conversationId, req.jarvisSession);
+            const isRefresh = query.get('refresh') === '1';
+            let exclude = (query.get('exclude') || '')
+                .split(',')
+                .map((id) => id.trim())
+                .filter(Boolean)
+                .slice(0, 12);
+            if (isRefresh && !exclude.length && canAccess) {
+                // No explicit list from the client: rotate away from the card
+                // this conversation was last given.
+                const previous = newsCreative.getCard(conversationId);
+                if (previous) exclude = previous.candidates.map((candidate) => candidate.id);
+            }
+            const card = await newsCreative.fetchCard({
+                scope: query.get('category') || 'all',
+                topic: query.get('topic') || '',
+                count: query.get('count') || undefined,
+                refresh: isRefresh,
+                exclude
             });
+            if (canAccess) newsCreative.rememberCard(conversationId, card);
+            json(res, 200, {
+                card,
+                candidates: card.candidates,
+                scope: card.scope,
+                generatedAt: card.generatedAt
+            }, { 'Cache-Control': 'no-store' });
         } catch (err) {
             json(res, 502, { error: err.message });
         }
@@ -4143,6 +4187,44 @@ async function handleChatStream(req, res) {
             }
         }
 
+        // News → creative. A request to make a meme, image or video from
+        // today's headlines gets a picker card (no GPU): choose a story and a
+        // medium, or answer an open card ("the second one as a video"). Card
+        // actions carry only ids; the server resolves the story from its own
+        // per-conversation card (or a fresh feed), never client headline text.
+        const newsCreativeAction = newsCreative.normalizeAction(body.newsCreativeAction);
+        if (newsCreativeAction) {
+            await handleNewsCreativeAction(
+                req, res,
+                { conversationId, provider, model, think },
+                newsCreativeAction,
+                routingMessage
+            );
+            return;
+        }
+        if (newsCreative.isNewsCreativeRequest(routingMessage)) {
+            await handleNewsCreativeStart(
+                req, res,
+                { conversationId, provider, model, think },
+                routingMessage
+            );
+            return;
+        }
+        const openNewsCard = newsCreative.getCard(conversationId);
+        if (openNewsCard) {
+            const newsSelection = newsCreative.selectCandidate(openNewsCard.candidates, routingMessage);
+            if (newsSelection) {
+                await runNewsCreativeGeneration(
+                    req, res,
+                    { conversationId, provider, model, think },
+                    newsSelection.candidate,
+                    newsSelection.outputType,
+                    routingMessage
+                );
+                return;
+            }
+        }
+
         // Video character replacement. A natural-language request that names a
         // source video (@video1) plus replacement image(s) (@image1) is handled
         // here — before the router — so it can never fall through to ordinary
@@ -7048,6 +7130,177 @@ async function runTodayCreate(req, res, ctx, action, rawMessage) {
     }
 }
 
+// --- News → creative -------------------------------------------------------
+//
+// A picker shared by the chat and the Creative Playground ("From today's
+// news"). It never generates from a headline directly: the user explicitly
+// picks a story and a medium, and the existing image/H3 pipelines own the
+// render. Headlines are untrusted topic data in every prompt.
+
+async function handleNewsCreativeStart(req, res, ctx, rawMessage) {
+    const { conversationId } = ctx;
+    const scope = typeof ctx.scope === 'string' && ctx.scope ? ctx.scope : news.newsScope(rawMessage);
+    if (scope === 'local' && !news.getLocalArea()) {
+        const text = 'Local news needs a local area. Set one in Settings > General > News Feeds, then ask again.';
+        sseWrite(res, { chunk: text });
+        sseWrite(res, { done: true, fullReply: text });
+        res.end();
+        return;
+    }
+    let card = null;
+    try {
+        card = await newsCreative.fetchCard({
+            scope,
+            topic: typeof ctx.topic === 'string' ? ctx.topic : newsCreative.topicFromMessage(rawMessage),
+            count: newsCreative.COUNT_DEFAULT,
+            refresh: ctx.refresh === true,
+            exclude: Array.isArray(ctx.exclude) ? ctx.exclude : []
+        });
+    } catch (err) {
+        console.warn('[news-creative] Could not fetch headlines:', err.message);
+    }
+    if (!newsCreative.hasCandidates(card)) {
+        const text = 'I could not reach the news feeds just now. Try again in a moment, or create something directly in the Creative Playground.';
+        sseWrite(res, { chunk: text });
+        sseWrite(res, { done: true, fullReply: text });
+        res.end();
+        return;
+    }
+    newsCreative.rememberCard(conversationId, card);
+    sseWrite(res, { done: true, fullReply: newsCreative.buildCardContent(card) });
+    res.end();
+}
+
+async function handleNewsCreativeAction(req, res, ctx, action, rawMessage) {
+    const { conversationId } = ctx;
+    if (action.type === 'refresh') {
+        const previous = newsCreative.getCard(conversationId);
+        const exclude = new Set(Array.isArray(action.exclude) ? action.exclude : []);
+        if (previous) (previous.candidates || []).forEach((candidate) => exclude.add(candidate.id));
+        await handleNewsCreativeStart(req, res, Object.assign({}, ctx, {
+            refresh: true,
+            scope: previous ? previous.scope : '',
+            topic: previous ? previous.topic : '',
+            exclude: Array.from(exclude).slice(0, 12)
+        }), rawMessage);
+        return;
+    }
+    const candidate = await newsCreative.resolveCandidate(conversationId, action.newsId);
+    if (!candidate) {
+        const text = 'That story is no longer in today\'s feed. Ask for the news again and pick a fresh headline.';
+        sseWrite(res, { chunk: text });
+        sseWrite(res, { done: true, fullReply: text });
+        res.end();
+        return;
+    }
+    await runNewsCreativeGeneration(req, res, ctx, candidate, action.outputType, rawMessage);
+}
+
+async function runNewsCreativeGeneration(req, res, ctx, candidate, outputType, rawMessage) {
+    const { conversationId, provider, model, think } = ctx;
+    const newsMeta = {
+        newsId: candidate.id,
+        title: candidate.title,
+        source: candidate.source,
+        outputType
+    };
+    activityLog.record({
+        type: 'generation',
+        title: 'News to creative',
+        detail: candidate.title,
+        conversationId
+    });
+
+    if (outputType === 'video') {
+        let request = null;
+        let built = null;
+        try {
+            sseWrite(res, { generating: 'Directing the news video\u2026' });
+            vramManager.rememberChatModel(provider, model);
+            await vramManager.freeVRAMBeforeChat();
+            request = newsCreative.buildVideoRequest(candidate);
+            built = await videoGenerator.buildH3VideoPrompt(
+                request, providers, provider, model, null, conversationId, false
+            );
+            const existing = taskState.getTask(conversationId).parameters || {};
+            taskState.setTask(conversationId, {
+                type: 'video',
+                operation: 'generate',
+                prompt: built.prompt,
+                originalPrompt: request.user_prompt,
+                videoMode: 't2va',
+                lastAction: 'news video',
+                status: 'running',
+                parameters: Object.assign({}, existing, {
+                    newsCreative: newsMeta,
+                    duration: built.duration,
+                    width: built.width,
+                    height: built.height
+                })
+            });
+        } catch (err) {
+            taskState.setTask(conversationId, { status: 'failed' });
+            sseWrite(res, { error: err.message || 'The news video could not be prepared.' });
+            res.end();
+            return;
+        }
+        await vramManager.freeVRAMBeforeImage();
+        await handleVideoGenerationStream(req, res, {
+            provider, model, conversationId,
+            message: rawMessage,
+            videoPrompt: built.prompt,
+            structuredRequest: request,
+            action: 'generate',
+            previousPrompt: null,
+            videoMode: 't2va',
+            duration: built.duration,
+            width: built.width,
+            height: built.height,
+            attribution: newsCreative.attributionLine(candidate),
+            think: false
+        });
+        return;
+    }
+
+    let request = null;
+    let imagePrompt = '';
+    try {
+        sseWrite(res, { generating: 'Directing the news image\u2026' });
+        vramManager.rememberChatModel(provider, model);
+        await vramManager.freeVRAMBeforeChat();
+        request = newsCreative.buildImageRequest(candidate);
+        const enhanced = await imageGenerator.buildImagePrompt(request, providers, provider, model, think);
+        imagePrompt = enhanced && enhanced.prompt ? enhanced.prompt : request.user_prompt;
+        const existing = taskState.getTask(conversationId).parameters || {};
+        taskState.setTask(conversationId, {
+            type: 'image',
+            operation: 'generate',
+            prompt: imagePrompt,
+            originalPrompt: request.user_prompt,
+            lastAction: 'news image',
+            status: 'running',
+            parameters: Object.assign({}, existing, { newsCreative: newsMeta })
+        });
+    } catch (err) {
+        taskState.setTask(conversationId, { status: 'failed' });
+        sseWrite(res, { error: err.message || 'The news image could not be prepared.' });
+        res.end();
+        return;
+    }
+    await vramManager.freeVRAMBeforeImage();
+    await handleImageGenerationStream(req, res, {
+        provider, model, conversationId,
+        message: rawMessage,
+        imagePrompt,
+        action: 'generate',
+        previousPrompt: null,
+        identity: null,
+        displayPrompt: candidate.angle ? 'News image direction: ' + candidate.angle : null,
+        attribution: newsCreative.attributionLine(candidate),
+        think
+    });
+}
+
 async function handlePlaygroundAction(req, res, ctx, action, rawMessage) {
     const { conversationId, provider, model, think } = ctx;
     let session = playground.getSession(conversationId);
@@ -8420,6 +8673,7 @@ async function handleImageGenerationStream(req, res, opts) {
         });
 
         const content =
+            (opts.attribution ? opts.attribution + '\n\n' : '') +
             summary + '\n\n' +
             '**Prompt:** ' + showPrompt + '\n\n' +
             results.map((r) => '![' + 'image' + '](' + r.url + ')').join('\n\n') +
@@ -9477,6 +9731,7 @@ async function handleVideoGenerationStream(req, res, opts) {
             ? '\n\n**Duration:** ' + opts.creatorStudio.durationNote
             : '';
         const content =
+            (opts.attribution ? opts.attribution + '\n\n' : '') +
             summary + creatorDurationNote + '\n\n' +
             '**Prompt:** ' + videoPrompt + accelLine + '\n\n' +
             '<video class="md-video" preload="metadata" playsinline src="' + finalResult.url + '"></video>';
@@ -10077,12 +10332,12 @@ function serveStatic(req, res, urlPath) {
 
 // --- Helpers ---
 
-function json(res, statusCode, data) {
+function json(res, statusCode, data, extraHeaders) {
     const body = JSON.stringify(data);
-    res.writeHead(statusCode, {
+    res.writeHead(statusCode, Object.assign({
         'Content-Type': 'application/json; charset=utf-8',
         'Content-Length': Buffer.byteLength(body)
-    });
+    }, extraHeaders || {}));
     res.end(body);
 }
 

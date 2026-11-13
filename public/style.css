@@ -6760,6 +6760,215 @@ a.modal-btn {
     color: #ff8f8f;
 }
 
+/* --- News to creative (chat card + Playground section) -------------------- */
+
+.news-creative {
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 2px solid var(--rule-heavy);
+}
+
+.news-creative-head,
+.playground-news-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.news-creative-title {
+    color: var(--ink);
+    font-family: var(--font-condensed);
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+.news-creative-refresh,
+.playground-news-refresh {
+    border: 1px solid var(--rule);
+    border-radius: 0;
+    background: none;
+    padding: 3px 8px;
+    color: var(--ink-2);
+    font-family: var(--font-condensed);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: border-color 0.14s var(--ease), color 0.14s var(--ease);
+}
+
+.news-creative-refresh:hover:not(:disabled),
+.playground-news-refresh:hover:not(:disabled) {
+    border-color: var(--ink);
+    color: var(--ink);
+}
+
+.news-creative-refresh:disabled,
+.playground-news-refresh:disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+
+.news-creative-hint,
+.playground-news .playground-section-hint {
+    max-width: 72ch;
+    margin: 4px 0 6px;
+    color: var(--ink-3);
+    font-size: 12.5px;
+    line-height: 1.5;
+}
+
+.news-creative-list {
+    display: flex;
+    flex-direction: column;
+}
+
+.news-creative-item {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+    gap: 4px 16px;
+    padding: 10px 0;
+    border-top: 1px solid var(--rule-soft);
+}
+
+.news-creative-item:first-child {
+    border-top: 1px solid var(--rule);
+}
+
+.news-creative-main {
+    min-width: 0;
+}
+
+.news-creative-headline {
+    display: block;
+    width: fit-content;
+    max-width: 100%;
+    border-bottom: 1px solid transparent;
+    color: var(--ink);
+    font-size: 13.5px;
+    font-weight: 500;
+    line-height: 1.4;
+    text-decoration: none;
+}
+
+.news-creative-headline:hover {
+    border-bottom-color: var(--ink);
+}
+
+.news-creative-meta {
+    margin-top: 2px;
+    color: var(--ink-3);
+    font-family: var(--font-condensed);
+    font-size: 11px;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+}
+
+.news-creative-item--editorial .news-creative-meta {
+    color: var(--hold);
+}
+
+.news-creative-angle {
+    margin: 4px 0 0;
+    color: var(--ink-2);
+    font-size: 12.5px;
+    line-height: 1.5;
+}
+
+.news-creative-caption {
+    margin: 3px 0 0;
+    color: var(--ink-3);
+    font-family: var(--font-condensed);
+    font-size: 11.5px;
+    letter-spacing: 0.02em;
+}
+
+.news-creative-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 6px;
+    padding-top: 1px;
+}
+
+.news-creative-btn {
+    border: 1px solid var(--rule);
+    border-radius: 0;
+    background: none;
+    padding: 4px 9px;
+    color: var(--ink-2);
+    font-family: var(--font-condensed);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: border-color 0.14s var(--ease), color 0.14s var(--ease), background 0.14s var(--ease);
+}
+
+.news-creative-btn:hover:not(:disabled) {
+    border-color: var(--ink);
+    color: var(--ink);
+    background: rgba(var(--ink-rgb), 0.05);
+}
+
+.news-creative-btn:disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+
+.news-creative-item.is-busy {
+    opacity: 0.65;
+}
+
+.news-creative-status {
+    margin: 0 0 6px;
+    color: var(--ink-3);
+    font-size: 12px;
+}
+
+.playground-news-status {
+    margin: 0 0 6px;
+    color: var(--ink-3);
+    font-size: 12px;
+}
+
+.playground-news-status--error {
+    color: var(--stamp);
+}
+
+.playground-news-status--ok {
+    color: var(--ink-3);
+    font-family: var(--font-condensed);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+.playground-news {
+    padding-top: 2px;
+}
+
+.playground-news-list {
+    margin-top: 2px;
+}
+
+@media (max-width: 640px) {
+    .news-creative-item {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .news-creative-actions {
+        justify-content: flex-start;
+        padding-top: 4px;
+    }
+}
+
 .playground-face-advanced {
     margin-top: 2px;
     color: var(--text-secondary);
@@ -15008,4 +15217,949 @@ body {
 body.studio-open {
     overflow: hidden;
 }
+
+/* ============================================================
+   CREATIVE PLAYGROUND — call-sheet refit
+   One popover, three jobs: Build (the composer), Ideas (today's
+   set), News (headlines to creative). The old single column
+   stacked both browse surfaces on top of seven manual control
+   blocks; each job now owns a panel, and the heavy controls
+   (character profile, wardrobe, custom face) fold into
+   disclosures so the common path fits without scrolling.
+   ============================================================ */
+
+.chat-playground-popup {
+    width: 460px;
+    max-width: calc(100% - 48px);
+    max-height: min(820px, calc(100vh - 100px));
+    border: 1px solid var(--rule-heavy);
+    border-radius: 0;
+    background: var(--surface);
+    box-shadow: 0 18px 40px rgba(var(--ink-rgb), 0.18);
+    backdrop-filter: none;
+}
+
+[data-theme="dark"] .chat-playground-popup {
+    box-shadow: 0 18px 40px rgba(0, 0, 0, 0.55);
+}
+
+/* --- Header -------------------------------------------------------------- */
+
+.chat-playground-head {
+    padding: 12px 14px 9px;
+    column-gap: 10px;
+    border-bottom: 1px solid var(--rule-soft);
+}
+
+.chat-playground-title {
+    color: var(--ink);
+    font-family: var(--font-condensed);
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    line-height: 1.2;
+    text-transform: uppercase;
+}
+
+.chat-playground-sub {
+    color: var(--ink-3);
+    font-family: var(--font-sans);
+    font-size: 11.5px;
+    line-height: 1.4;
+    letter-spacing: 0;
+}
+
+.chat-playground-close {
+    width: 24px;
+    height: 24px;
+    margin: -2px -2px -2px 0;
+    border: 1px solid transparent;
+    border-radius: 0;
+    background: transparent;
+    color: var(--ink-3);
+    font-size: 17px;
+}
+
+.chat-playground-close:hover {
+    border-color: var(--ink);
+    background: var(--ink);
+    color: var(--paper);
+}
+
+/* --- Tab strip ----------------------------------------------------------- */
+
+.chat-playground-tabs {
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: 1fr;
+    border-bottom: 2px solid var(--rule-heavy);
+}
+
+.chat-playground-tab {
+    appearance: none;
+    margin: 0;
+    padding: 9px 6px;
+    border: 0;
+    border-right: 1px solid var(--rule-soft);
+    background: transparent;
+    color: var(--ink-3);
+    font-family: var(--font-condensed);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.16em;
+    line-height: 1.2;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: color 0.14s var(--ease), background 0.14s var(--ease);
+}
+
+.chat-playground-tab:last-child {
+    border-right: 0;
+}
+
+.chat-playground-tab[hidden] {
+    display: none;
+}
+
+.chat-playground-tab:hover {
+    color: var(--ink);
+    background: rgba(var(--ink-rgb), 0.05);
+}
+
+.chat-playground-tab[aria-selected="true"] {
+    color: var(--ink);
+    background: rgba(var(--ink-rgb), 0.08);
+    box-shadow: inset 0 -2px 0 var(--ink);
+}
+
+.chat-playground-tab:focus-visible {
+    outline: 2px solid var(--ink);
+    outline-offset: -2px;
+}
+
+/* --- Status -------------------------------------------------------------- */
+
+.playground-popup-status {
+    margin: 0;
+    padding: 7px 14px;
+    border: 0;
+    border-bottom: 1px solid var(--rule-soft);
+    border-radius: 0;
+    background: rgba(var(--ink-rgb), 0.05);
+    color: var(--ink-2);
+    font-family: var(--font-condensed);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    line-height: 1.4;
+    text-transform: uppercase;
+}
+
+/* --- Body / panels ------------------------------------------------------- */
+
+.playground-popup-body {
+    padding: 0 14px 4px;
+    gap: 0;
+}
+
+.playground-panel {
+    display: flex;
+    flex-direction: column;
+}
+
+.playground-panel[hidden] {
+    display: none;
+}
+
+.playground-sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+}
+
+.playground-panel-title {
+    margin: 0;
+    color: var(--ink);
+    font-family: var(--font-condensed);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.16em;
+    line-height: 1.3;
+    text-transform: uppercase;
+}
+
+/* --- Numbered blocks ----------------------------------------------------- */
+
+.playground-block {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--rule-soft);
+}
+
+.playground-block:last-child {
+    border-bottom: 0;
+    padding-bottom: 6px;
+}
+
+.playground-block-label {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin: 0;
+    color: var(--ink-2);
+    font-family: var(--font-condensed);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.16em;
+    line-height: 1.2;
+    text-transform: uppercase;
+}
+
+.playground-block-num {
+    color: var(--ink-3);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.08em;
+}
+
+/* --- Fields -------------------------------------------------------------- */
+
+.playground-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+}
+
+.playground-field-label {
+    color: var(--ink-3);
+    font-family: var(--font-condensed);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    line-height: 1.3;
+    text-transform: uppercase;
+}
+
+.playground-field-opt {
+    color: var(--ink-3);
+    font-family: var(--font-sans);
+    font-size: 11px;
+    font-weight: 400;
+    letter-spacing: 0;
+    text-transform: none;
+}
+
+.chat-playground-popup .settings-select,
+.chat-playground-popup .settings-input,
+.chat-playground-popup .playground-outfit-custom {
+    min-height: 34px;
+    height: 34px;
+    padding: 0 9px;
+    border: 1px solid var(--rule);
+    border-radius: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    line-height: 1.4;
+}
+
+.chat-playground-popup .playground-prompt-input {
+    height: auto;
+    min-height: 48px;
+    padding: 7px 9px;
+    resize: vertical;
+    line-height: 1.5;
+}
+
+.chat-playground-popup .settings-select:focus,
+.chat-playground-popup .settings-input:focus {
+    border-color: var(--ink);
+    outline: none;
+}
+
+.playground-moment-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.playground-section-hint {
+    margin: 0;
+    color: var(--ink-3);
+    font-size: 11.5px;
+    line-height: 1.45;
+}
+
+/* --- Character ----------------------------------------------------------- */
+
+.playground-character-trigger {
+    height: 34px;
+    padding: 0 9px;
+    border: 1px solid var(--rule);
+    border-radius: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    font-size: 13px;
+}
+
+.playground-character-trigger:hover,
+.playground-character-trigger[aria-expanded="true"] {
+    border-color: var(--ink);
+}
+
+/* The list expands in the flow instead of floating: the popover body scrolls,
+   and an absolutely positioned menu was clipped by that scroll container. */
+.playground-character-menu {
+    position: static;
+    margin-top: 4px;
+    max-height: 232px;
+    padding: 0;
+    border: 1px solid var(--rule);
+    border-radius: 0;
+    background: var(--paper);
+    box-shadow: none;
+}
+
+.playground-character-menu-heading {
+    padding: 7px 9px 3px;
+    color: var(--ink-3);
+    font-family: var(--font-condensed);
+    font-size: 11px;
+    letter-spacing: 0.16em;
+}
+
+.playground-character-option {
+    border-radius: 0;
+    border-top: 1px solid var(--rule-soft);
+}
+
+.playground-character-option-main {
+    min-height: 38px;
+    padding: 6px 9px;
+    font-size: 12.5px;
+}
+
+.playground-character-option-thumb {
+    width: 26px;
+    height: 26px;
+    border-radius: 0;
+}
+
+.playground-character-option-status {
+    font-family: var(--font-condensed);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.playground-character-option-delete {
+    border-radius: 0;
+}
+
+/* --- Disclosures --------------------------------------------------------- */
+
+.playground-disclosure {
+    margin: 0;
+    border: 0;
+}
+
+.playground-disclosure > summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    min-height: 32px;
+    padding: 0 9px;
+    border: 1px solid var(--rule);
+    background: var(--paper);
+    color: var(--ink-2);
+    cursor: pointer;
+    list-style: none;
+}
+
+.playground-disclosure > summary::-webkit-details-marker {
+    display: none;
+}
+
+.playground-disclosure > summary::after {
+    content: "";
+    flex: 0 0 auto;
+    width: 6px;
+    height: 6px;
+    margin-right: 2px;
+    border-right: 1.5px solid var(--ink-3);
+    border-bottom: 1.5px solid var(--ink-3);
+    transform: rotate(45deg);
+    transition: transform 0.14s var(--ease);
+}
+
+.playground-disclosure[open] > summary::after {
+    transform: rotate(-135deg);
+}
+
+.playground-disclosure > summary:hover {
+    border-color: var(--ink);
+}
+
+.playground-disclosure > summary:focus-visible {
+    outline: 2px solid var(--ink);
+    outline-offset: 1px;
+}
+
+.playground-disclosure[open] > summary {
+    border-color: var(--ink);
+    border-bottom-color: var(--rule-soft);
+}
+
+.playground-disclosure-title {
+    flex: 0 1 auto;
+    min-width: 0;
+    font-family: var(--font-condensed);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+
+.playground-disclosure-value {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--ink);
+    font-size: 12px;
+    text-align: right;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Wardrobe and Pin name their block in the label above, so their row carries
+   only the current value — no repeated word. */
+.playground-disclosure--value > summary .playground-disclosure-value {
+    text-align: left;
+}
+
+.playground-disclosure-body {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 8px 0 0;
+}
+
+.playground-disclosure-body .playground-section-hint {
+    padding: 0 1px;
+}
+
+.playground-profile-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+}
+
+.playground-profile-grid--two {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.playground-profile-field > span {
+    color: var(--ink-3);
+    font-family: var(--font-condensed);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+}
+
+.chat-playground-popup .playground-profile-field .settings-select {
+    height: 32px;
+    min-height: 32px;
+    padding: 0 7px;
+    font-size: 12px;
+}
+
+.playground-face-advanced > summary {
+    width: auto;
+}
+
+.playground-face-advanced[open] .playground-profile-grid {
+    margin-top: 0;
+}
+
+/* --- Wardrobe ------------------------------------------------------------ */
+
+.chat-playground-popup .playground-outfit-packs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 4px;
+    padding-right: 0;
+}
+
+.playground-outfit-group {
+    margin-top: 6px;
+    color: var(--ink-3);
+    font-family: var(--font-condensed);
+    font-size: 11px;
+    letter-spacing: 0.16em;
+}
+
+.chat-playground-popup .playground-outfit-card {
+    gap: 2px;
+    padding: 7px 9px;
+    border: 1px solid var(--rule-soft);
+    border-radius: 0;
+    background: var(--paper);
+}
+
+.chat-playground-popup .playground-outfit-card:hover {
+    border-color: var(--ink);
+    background: var(--paper);
+}
+
+.chat-playground-popup .playground-outfit-card--active {
+    border-color: var(--ink);
+    background: rgba(var(--ink-rgb), 0.08);
+}
+
+.playground-outfit-name {
+    color: var(--ink);
+    font-family: var(--font-condensed);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    line-height: 1.25;
+}
+
+.playground-outfit-desc {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+    color: var(--ink-3);
+    font-size: 11px;
+    line-height: 1.4;
+}
+
+.playground-outfit-where {
+    color: var(--ink-3);
+    font-family: var(--font-condensed);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+.playground-outfit-palette {
+    gap: 3px;
+    margin-top: 2px;
+}
+
+.playground-outfit-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 0;
+    border: 1px solid var(--rule-soft);
+}
+
+/* --- Pin (locks) --------------------------------------------------------- */
+
+.playground-locks-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0;
+    border: 1px solid var(--rule);
+}
+
+.playground-lock {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+    min-height: 30px;
+    padding: 0 4px;
+    border-right: 1px solid var(--rule-soft);
+    border-bottom: 1px solid var(--rule-soft);
+    color: var(--ink-3);
+    font-family: var(--font-condensed);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    line-height: 1.1;
+    text-align: center;
+    text-transform: uppercase;
+}
+
+.playground-lock:nth-child(4n) {
+    border-right: 0;
+}
+
+.playground-lock:nth-last-child(-n + 4) {
+    border-bottom: 0;
+}
+
+.playground-lock:hover {
+    color: var(--ink);
+    background: rgba(var(--ink-rgb), 0.04);
+}
+
+.playground-lock:has(input:checked) {
+    color: var(--ink);
+    background: rgba(var(--ink-rgb), 0.1);
+}
+
+.playground-lock:has(input:focus-visible) {
+    outline: 2px solid var(--ink);
+    outline-offset: -2px;
+}
+
+/* The pin cells read as a ruled grid; the checkbox itself is the accessible
+   control and stays focusable, just not drawn as a switch. */
+.chat-playground-popup .playground-lock input[type="checkbox"] {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    border: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+}
+
+.chat-playground-popup .playground-lock input[type="checkbox"]::after {
+    display: none;
+}
+
+.playground-lock--disabled {
+    opacity: 0.45;
+}
+
+/* --- Footer / commit bar ------------------------------------------------- */
+
+.playground-popup-footer {
+    gap: 7px;
+    padding: 9px 14px 11px;
+    border-top: 2px solid var(--rule-heavy);
+    background: var(--surface);
+}
+
+.playground-summary {
+    min-height: 0;
+    overflow: hidden;
+    color: var(--ink-3);
+    font-family: var(--font-condensed);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    line-height: 1.4;
+    text-overflow: ellipsis;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+
+.playground-submit {
+    height: 42px;
+    margin-top: 0;
+    border: 1px solid var(--ink);
+    border-radius: 0;
+    background: var(--ink);
+    color: var(--paper);
+    font-family: var(--font-condensed);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    transition: background 0.14s var(--ease), border-color 0.14s var(--ease), color 0.14s var(--ease);
+}
+
+.playground-submit:hover:not(:disabled) {
+    border-color: var(--stamp);
+    background: var(--stamp);
+    color: var(--paper);
+}
+
+.playground-submit:active {
+    transform: none;
+}
+
+.playground-submit:disabled {
+    border-color: var(--rule);
+    background: transparent;
+    color: var(--ink-3);
+    opacity: 1;
+}
+
+.playground-popup--loading .playground-submit {
+    opacity: 0.55;
+}
+
+/* --- Ideas panel --------------------------------------------------------- */
+
+.playground-today {
+    padding: 0;
+    border-bottom: 0;
+}
+
+.playground-today-head {
+    padding: 12px 0 0;
+}
+
+.playground-today-refresh {
+    border-radius: 0;
+    border-color: var(--rule);
+    padding: 3px 8px;
+    color: var(--ink-2);
+    font-family: var(--font-condensed);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+}
+
+.playground-today-refresh:hover:not(:disabled) {
+    border-color: var(--ink);
+    background: none;
+    color: var(--ink);
+}
+
+.playground-today-status {
+    margin: 6px 0 0;
+    color: var(--ink-3);
+    font-family: var(--font-condensed);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+}
+
+.playground-today-list {
+    gap: 0;
+    margin-top: 10px;
+    border-top: 1px solid var(--rule);
+}
+
+/* One idea is one ruled row: 64px frame, then tier, title, brief, meta and
+   actions. The old card stacked a 96px banner plus four metadata lines each. */
+.playground-today-card {
+    display: grid;
+    grid-template-columns: 64px minmax(0, 1fr);
+    grid-template-areas:
+        "thumb head"
+        "thumb title"
+        "thumb brief"
+        "thumb error"
+        "meta meta"
+        "actions actions";
+    gap: 2px 10px;
+    padding: 11px 0;
+    border: 0;
+    border-bottom: 1px solid var(--rule-soft);
+    border-left: 0;
+    border-radius: 0;
+    background: none;
+}
+
+.playground-today-card:not(:has(.playground-today-thumb)) {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+        "head"
+        "title"
+        "brief"
+        "error"
+        "meta"
+        "actions";
+}
+
+.playground-today-card--easy,
+.playground-today-card--interesting,
+.playground-today-card--ambitious {
+    border-left: 0;
+}
+
+.playground-today-card-head {
+    grid-area: head;
+    justify-content: flex-start;
+    gap: 10px;
+}
+
+.playground-today-tier {
+    color: var(--ink);
+    font-family: var(--font-condensed);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.16em;
+}
+
+.playground-today-output {
+    color: var(--ink-3);
+    font-family: var(--font-condensed);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+}
+
+.playground-today-thumb {
+    grid-area: thumb;
+    width: 64px;
+    height: 64px;
+    border: 1px solid var(--rule-soft);
+    border-radius: 0;
+    background: var(--paper);
+}
+
+.playground-today-thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.playground-today-title {
+    grid-area: title;
+    color: var(--ink);
+    font-family: var(--font-condensed);
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    line-height: 1.2;
+}
+
+.playground-today-brief {
+    grid-area: brief;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+    color: var(--ink-2);
+    font-size: 12px;
+    line-height: 1.45;
+}
+
+.playground-today-error {
+    grid-area: error;
+    color: var(--stamp);
+    font-size: 11.5px;
+    line-height: 1.4;
+}
+
+.playground-today-meta {
+    grid-area: meta;
+    gap: 1px 10px;
+    margin-top: 5px;
+    color: var(--ink-3);
+    font-family: var(--font-condensed);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+.playground-today-meta-row {
+    gap: 4px;
+    font-size: 11px;
+}
+
+.playground-today-meta-label {
+    color: var(--ink-3);
+}
+
+.playground-today-meta-value {
+    color: var(--ink-2);
+}
+
+.playground-today-actions {
+    grid-area: actions;
+    gap: 6px;
+    margin-top: 7px;
+}
+
+.playground-today-dismiss {
+    border-radius: 0;
+    border-color: transparent;
+    color: var(--ink-3);
+    font-family: var(--font-condensed);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+
+.playground-today-done {
+    color: var(--ink);
+    font-family: var(--font-condensed);
+    font-size: 11px;
+    letter-spacing: 0.14em;
+}
+
+.playground-today-done--active {
+    color: var(--hold);
+}
+
+/* --- News panel ---------------------------------------------------------- */
+
+.playground-news {
+    padding-top: 0;
+}
+
+.chat-playground-popup .playground-news-head {
+    padding: 12px 0 0;
+}
+
+.chat-playground-popup .playground-news .playground-section-hint {
+    margin: 4px 0 8px;
+    font-size: 11.5px;
+}
+
+.chat-playground-popup .news-creative-item {
+    gap: 3px 12px;
+    padding: 10px 0;
+}
+
+.chat-playground-popup .news-creative-headline {
+    font-size: 13px;
+}
+
+.chat-playground-popup .news-creative-angle,
+.chat-playground-popup .news-creative-caption {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+}
+
+.chat-playground-popup .news-creative-actions {
+    flex-direction: column;
+    gap: 4px;
+}
+
+.chat-playground-popup .news-creative-btn {
+    padding: 4px 8px;
+}
+
+/* --- Small screens ------------------------------------------------------- */
+
+@media (max-width: 700px) {
+    .chat-playground-popup {
+        left: 0;
+        right: 0;
+        width: auto;
+        max-width: 100%;
+        max-height: 90vh;
+        border-radius: 0;
+        border-left: 0;
+        border-right: 0;
+        border-bottom: 0;
+    }
+
+    .chat-playground-tab {
+        min-height: 40px;
+        padding: 10px 6px;
+    }
+
+    .playground-popup-body {
+        padding-left: max(14px, env(safe-area-inset-left, 0px));
+        padding-right: max(14px, env(safe-area-inset-right, 0px));
+    }
+
+    .playground-lock {
+        min-height: 38px;
+    }
+
+    .playground-submit {
+        height: 46px;
+    }
+}
+
 

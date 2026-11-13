@@ -243,6 +243,19 @@ The production surfaces reuse the shell's grammar at full height.
 - **Disabled:** transparent with a fine rule and tertiary ink; the reason is stated in words beside it, never colour alone.
 - **Status:** 12px ink-2 text on the same row, left of the action, so progress and the action read as one line.
 
+### Playground Popover (composer)
+
+The Creative Playground opens above the composer as a small sheet, not a settings card.
+
+- **Frame:** 460px, 1px heavy rule, square corners, form surface, one floating shadow. Full-bleed bottom sheet below 700px.
+- **Header:** 13px condensed title at +0.18em, one sentence of context, square close control.
+- **Tab strip:** three equal ruled cells (Build / Ideas / News) at 11px condensed +0.16em, divided by hairlines; the current cell takes a faint ink wash and a 2px ink underline. News hides itself when there are no headlines.
+- **Body:** the only scrolling region. Build is a numbered sequence of ruled blocks (`01 Brief`, `02 Character`, `03 Moment`, `04 Wardrobe`, `05 Pin`), each label 11px condensed and each control one row tall.
+- **Progressive disclosure:** anything heavy — the random-character profile, the custom face components, the wardrobe pack grid, the eight pins — folds into a ruled summary row whose right-hand value states the current choice. A disclosure that only repeats its block label carries the value alone.
+- **Footer:** one 11px condensed spec line naming only what the user changed ("Fully random — nothing pinned" when nothing is), above the 42px commit button.
+- **Lists:** a browse row (today's ideas, headlines) is a ruled row with a 64px frame, a tier label, a title, a two-line brief and one inline metadata line — never a stacked card with a banner image.
+
+
 ### Step Rail
 
 Five equal cells on recessed stock, divided by hairlines, each an 11px condensed number over an 11px uppercase label. The current step takes the paper ground and full ink; clicking a cell scrolls its section into view and focuses its first control.

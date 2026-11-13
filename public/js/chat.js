@@ -1307,11 +1307,16 @@ const Chat = (() => {
         const replacementParsed = (window.ReplacementUI && typeof window.ReplacementUI.extract === 'function')
             ? window.ReplacementUI.extract(creatorFrameParsed.text)
             : { text: creatorFrameParsed.text, cards: [] };
+        // News picks persist as a [[news-creative:{...}]] marker and render as
+        // an interactive story list (image / video per headline).
+        const newsParsed = (window.NewsCreativeUI && typeof window.NewsCreativeUI.extract === 'function')
+            ? window.NewsCreativeUI.extract(replacementParsed.text)
+            : { text: replacementParsed.text, cards: [] };
         // Companion photos persist a [[photo-actions]] marker; strip it, then
         // attach follow-up actions (another photo / back camera / video) below.
         const photoParsed = (window.PhotoActions && typeof window.PhotoActions.extract === 'function')
-            ? window.PhotoActions.extract(replacementParsed.text)
-            : { text: replacementParsed.text, active: false };
+            ? window.PhotoActions.extract(newsParsed.text)
+            : { text: newsParsed.text, active: false };
         contentEl.innerHTML = Markdown.parse(photoParsed.text);
         if (streaming) return;
         collapseUpscalePairs(contentEl);
@@ -1339,6 +1344,9 @@ const Chat = (() => {
         }
         if (window.ReplacementUI && typeof window.ReplacementUI.render === 'function') {
             replacementParsed.cards.forEach((card) => window.ReplacementUI.render(contentEl, card));
+        }
+        if (window.NewsCreativeUI && typeof window.NewsCreativeUI.render === 'function') {
+            newsParsed.cards.forEach((card) => window.NewsCreativeUI.render(contentEl, card));
         }
         if (photoParsed.active && window.PhotoActions && typeof window.PhotoActions.attach === 'function') {
             window.PhotoActions.attach(contentEl);
@@ -1854,6 +1862,7 @@ const Chat = (() => {
                     ugcAction: override && override.ugcAction ? override.ugcAction : undefined,
                     creatorStudioAction: override && override.creatorStudioAction ? override.creatorStudioAction : undefined,
                     replacementAction: override && override.replacementAction ? override.replacementAction : undefined,
+                    newsCreativeAction: override && override.newsCreativeAction ? override.newsCreativeAction : undefined,
                     forceDirector: (typeof ChatDirector !== 'undefined' && ChatDirector && ChatDirector.isOn()) ? true : undefined
                 }),
                 signal: activeStreamAbort.signal
@@ -2202,6 +2211,9 @@ const Chat = (() => {
                     }
                     if (window.ReplacementUI && typeof window.ReplacementUI.strip === 'function') {
                         spoken = window.ReplacementUI.strip(spoken);
+                    }
+                    if (window.NewsCreativeUI && typeof window.NewsCreativeUI.strip === 'function') {
+                        spoken = window.NewsCreativeUI.strip(spoken);
                     }
                     if (window.ChatSuggestions && typeof window.ChatSuggestions.strip === 'function') {
                         spoken = window.ChatSuggestions.strip(spoken);
