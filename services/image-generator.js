@@ -929,6 +929,48 @@ function snapToLatentGrid(pixels) {
     return Math.max(64, Math.round(pixels / grid) * grid);
 }
 
+// The largest canvas edge the Qwen Image 2.1, Krea 2 and MOSS-Image graphs
+// accept. MiniMax H3 Image has its own, larger ceiling (MINIMAX_MAX_EDGE).
+const IMAGE_MAX_EDGE = 4096;
+
+// Exact latent canvas for a megapixel budget at one aspect ratio. The model
+// tiers and the Image Arena's matched resolution both resolve through here, so
+// the same input always yields the same canvas.
+function dimensionsForMegapixels(aspectRatio, megapixels) {
+    const ratio = normalizeAspectRatio(aspectRatio) || '4:5';
+    const [ratioWidth, ratioHeight] = ratio.split(':').map(Number);
+    const shape = Math.min(10, Math.max(0.1, (ratioWidth / ratioHeight) || 1));
+    const targetPixels = Math.max(0.05, Math.min(64, Number(megapixels) || 1)) * 1e6;
+    return {
+        width: snapToLatentGrid(Math.sqrt(targetPixels * shape)),
+        height: snapToLatentGrid(Math.sqrt(targetPixels / shape)),
+        aspectRatio: ratio
+    };
+}
+
+// Hard generation limits per pipeline. `minMegapixels` is the floor a model is
+// expected to render well at; `strictMinimum` marks the one engine whose floor
+// is treated as a real limit (MiniMax H3 Image is trained for 4–16 MP).
+function imageModelResolutionLimits(modelId) {
+    const model = normalizeImageModel(modelId);
+    if (model === 'minimax_h3_image') {
+        return {
+            minMegapixels: MINIMAX_IMAGE_MIN_MEGAPIXELS,
+            maxMegapixels: MINIMAX_IMAGE_MAX_MEGAPIXELS,
+            maxEdge: MINIMAX_MAX_EDGE,
+            grid: 32,
+            strictMinimum: true
+        };
+    }
+    return {
+        minMegapixels: IMAGE_MEGAPIXELS.S,
+        maxMegapixels: IMAGE_MEGAPIXELS.XL,
+        maxEdge: IMAGE_MAX_EDGE,
+        grid: model === 'moss' ? 16 : 32,
+        strictMinimum: false
+    };
+}
+
 // Map aspectRatio + imageSize to concrete latent dimensions. Invalid inputs
 // fall back to the 4:5 / M defaults. In 'CUSTOM' size mode the user pins exact
 // pixel width/height; both edges are clamped to the supported range and snapped
@@ -944,7 +986,7 @@ function resolveDimensions(settings) {
     const ratio = normalizeAspectRatio(source.aspectRatio) || '4:5';
     const size = normalizeImageSize(source.imageSize) || 'M';
     const isMiniMax = normalizeImageModel(source.model) === 'minimax_h3_image';
-    const maxEdge = isMiniMax ? MINIMAX_MAX_EDGE : 4096;
+    const maxEdge = isMiniMax ? MINIMAX_MAX_EDGE : IMAGE_MAX_EDGE;
     if (size === 'CUSTOM') {
         return {
             width: snapToLatentGrid(clampToInt(source.width, 64, maxEdge, 1024)),
@@ -953,19 +995,15 @@ function resolveDimensions(settings) {
             imageSize: size
         };
     }
-    const [ratioWidth, ratioHeight] = ratio.split(':').map(Number);
-    const shape = Math.min(10, Math.max(0.1, (ratioWidth / ratioHeight) || 1));
     const ladder = isMiniMax ? MINIMAX_IMAGE_MEGAPIXELS : IMAGE_MEGAPIXELS;
     let megapixels = ladder[size] || ladder.M;
     if (isMiniMax) {
         megapixels = Math.min(MINIMAX_IMAGE_MAX_MEGAPIXELS, Math.max(MINIMAX_IMAGE_MIN_MEGAPIXELS, megapixels));
     }
-    const targetPixels = megapixels * 1e6;
-    const longEdge = Math.sqrt(targetPixels * shape);
-    const shortEdge = Math.sqrt(targetPixels / shape);
+    const dims = dimensionsForMegapixels(ratio, megapixels);
     return {
-        width: snapToLatentGrid(longEdge),
-        height: snapToLatentGrid(shortEdge),
+        width: dims.width,
+        height: dims.height,
         aspectRatio: ratio,
         imageSize: size
     };
@@ -3045,8 +3083,32 @@ function stripLoraTriggerWords(prompt) {
     return stripped || text;
 }
 
+// Build the text-to-image graph for one explicit image model. This is the ONE
+// dispatch used by generateImage and by the Image Arena's model discovery, so a
+// new pipeline is added here once and both the normal turn and the benchmark
+// see the same graph, defaults and validation.
+function buildT2IGraphForModel(activeModel, prompt, options = {}) {
+    const model = normalizeImageModel(activeModel) || DEFAULT_IMAGE_MODEL;
+    if (model === 'qwen_image_2_1') {
+        return buildQwenImage21T2IGraph(prompt, options);
+    }
+    if (model === 'minimax_h3_image') {
+        return buildMiniMaxH3ImageT2IGraph(prompt, options);
+    }
+    if (model === 'moss') {
+        return buildMossImageT2IGraph(prompt, options);
+    }
+    return buildKrea2T2IGraph(prompt, options);
+}
+
 // Generate an image from a text prompt and write it into data/generated.
 // Returns { url, filename, width, height }.
+//
+// `options.imageModel` pins the text-to-image engine for this call (the Image
+// Arena benchmarks several engines without touching the globally selected
+// model). It is deliberately NOT `options.model`: server callers pass the chat
+// model in `model`, and that must never be read as an image engine.
+// Every other caller keeps the global Settings > Image model unchanged.
 async function generateImage(prompt, options = {}) {
     const queueOpts = {
         label: options.label || 'image generation',
@@ -3055,13 +3117,43 @@ async function generateImage(prompt, options = {}) {
         onQueued: options.onQueued || null,
         onStart: options.onStart || null
     };
-    return withGenerationLock(async (signal) => {
+    // Capture the shared-queue id so a benchmark job can be cancelled even when
+    // it started immediately (the queue only reports onStart for queued work).
+    const job = withGenerationLock(async (signal) => {
         await ensureGeneratedDir();
         const startedAt = Date.now();
 
         // Prefer a fresh read of the global settings so edits made through
         // the settings panel take effect without restarting the server.
         const settings = effectiveSettings();
+        // The Image Arena pins one engine per call. An explicit model only
+        // changes this call: the stored Settings > Image selection is never
+        // written back, so normal chat generation keeps its own model.
+        const requestedModel = options.imageModel ? normalizeImageModel(options.imageModel) : null;
+        if (options.imageModel && !requestedModel) {
+            const error = new Error('Unknown image model "' + String(options.imageModel) + '".');
+            error.code = 'image_model_unknown';
+            throw error;
+        }
+        if (requestedModel) {
+            settings.model = requestedModel;
+            // Re-derive the canvas for the pinned model only when the caller did
+            // not supply explicit dimensions (MiniMax's S/M/L/XL tiers map to a
+            // different megapixel range than Qwen/Krea, so the global stored
+            // width/height would be wrong).
+            if (!(Number.isInteger(options.width) && options.width > 0) &&
+                !(Number.isInteger(options.height) && options.height > 0)) {
+                const dims = resolveDimensions(settings);
+                settings.width = dims.width;
+                settings.height = dims.height;
+            }
+        }
+        // The MOSS prompt enhancer is optional. An explicit override lets the
+        // Image Arena keep every benchmark prompt verbatim by default while a
+        // normal MOSS turn still honours Settings > Image.
+        if (options.promptEnhancer !== undefined) {
+            settings.mossPromptEnhancer = options.promptEnhancer !== false;
+        }
         // A caller may pin explicit dimensions (e.g. the Creative Playground
         // face preview, which must not inherit the global aspect/size); every
         // other generation derives width/height from aspectRatio + imageSize.
@@ -3088,6 +3180,33 @@ async function generateImage(prompt, options = {}) {
         // the graph it always was. The resolved base models are merged into the
         // builder settings so the active UNET/CLIP/VAE actually run.
         const activeModel = normalizeImageModel(settings.model) || DEFAULT_IMAGE_MODEL;
+        // A caller may pin the exact loader filenames it inspected (the Image
+        // Arena snapshots them per benchmark job so a later settings change
+        // cannot silently swap the model under a running benchmark).
+        const baseModels = Object.assign({}, resolveBaseModels(settings),
+            options.baseModels && typeof options.baseModels === 'object' ? options.baseModels : {});
+        if (options.baseModels) {
+            // The per-model builders read their own settings slots, so pin the
+            // filenames there as well as in the merged graph settings.
+            if (activeModel === 'qwen_image_2_1') {
+                settings.qwenUnet = baseModels.unet;
+                settings.qwenClip = baseModels.clip;
+                settings.qwenVae = baseModels.vae;
+            } else if (activeModel === 'minimax_h3_image') {
+                settings.minimaxUnet = baseModels.unet;
+                settings.minimaxClip = baseModels.clip;
+                settings.minimaxVae = baseModels.vae;
+            } else if (activeModel === 'moss') {
+                settings.mossUnet = baseModels.unet;
+                settings.mossClip = baseModels.clip;
+                settings.mossVae = baseModels.vae;
+            } else {
+                settings.unet = baseModels.unet;
+                settings.clip = baseModels.clip;
+                settings.clipType = baseModels.clipType || settings.clipType;
+                settings.vae = baseModels.vae;
+            }
+        }
 
         // Resolve the accelerated attention backend and (for Qwen) the sampler
         // scheduler against what this ComfyUI build actually offers. Doing it
@@ -3106,12 +3225,12 @@ async function generateImage(prompt, options = {}) {
         if (activeModel === 'minimax_h3_image') {
             minimaxConditioningNode = resolveMiniMaxConditioningNode(info, settings.minimaxConditioningNode);
             assertMiniMaxConditioningSupported(info, minimaxConditioningNode, settings.minimaxConditioningNode);
-            assertMiniMaxImageModels(info, resolveBaseModels(settings));
+            assertMiniMaxImageModels(info, baseModels);
         }
         let mossEnhancerNode = null;
         let mossEnhancerReferenceName = null;
         if (activeModel === 'moss') {
-            assertMossImageModels(info, resolveBaseModels(settings));
+            assertMossImageModels(info, baseModels);
             if (settings.mossPromptEnhancer !== false) {
                 mossEnhancerNode = resolveMossEnhancerNode(info);
                 if (!mossEnhancerNode) {
@@ -3133,24 +3252,18 @@ async function generateImage(prompt, options = {}) {
             }
         }
 
-        const modelSettings = Object.assign({}, settings, resolveBaseModels(settings));
+        const modelSettings = Object.assign({}, settings, baseModels);
         let graph;
         try {
-            if (activeModel === 'qwen_image_2_1') {
-                graph = buildQwenImage21T2IGraph(finalPrompt, Object.assign({}, options, { seed, width, height, settings: modelSettings }));
-            } else if (activeModel === 'minimax_h3_image') {
-                graph = buildMiniMaxH3ImageT2IGraph(finalPrompt, Object.assign({}, options, {
-                    seed, width, height, settings: modelSettings, conditioningNode: minimaxConditioningNode
-                }));
-            } else if (activeModel === 'moss') {
-                graph = buildMossImageT2IGraph(finalPrompt, Object.assign({}, options, {
-                    seed, width, height, settings: modelSettings,
-                    enhancerNode: mossEnhancerNode,
-                    enhancerReferenceLoadName: mossEnhancerReferenceName
-                }));
-            } else {
-                graph = buildKrea2T2IGraph(finalPrompt, Object.assign({}, options, { seed, width, height, settings }));
-            }
+            graph = buildT2IGraphForModel(activeModel, finalPrompt, Object.assign({}, options, {
+                seed,
+                width,
+                height,
+                settings: modelSettings,
+                conditioningNode: minimaxConditioningNode,
+                enhancerNode: mossEnhancerNode,
+                enhancerReferenceLoadName: mossEnhancerReferenceName
+            }));
 
             const expectedClipType = activeModel === 'qwen_image_2_1'
                 ? QWEN_IMAGE_CLIP_TYPE
@@ -3199,6 +3312,9 @@ async function generateImage(prompt, options = {}) {
                 file: '/generated/' + encodeURIComponent(basename),
                 rawFilename: basename,
                 conversationId: options.conversationId || null,
+                // Benchmark media belongs to the device that started the
+                // session, not to whichever device first opens the gallery.
+                sessionId: options.sessionId || null,
                 prompt: finalPrompt,
                 model: imageModelLabel(activeModel),
                 loras: activeLoras,
@@ -3228,6 +3344,10 @@ async function generateImage(prompt, options = {}) {
             }
         }
     }, queueOpts);
+    if (typeof options.onQueueId === 'function' && job && job.queueId) {
+        try { options.onQueueId(job.queueId); } catch (err) { /* observer only */ }
+    }
+    return job;
 }
 
 // --- Image edit intent detection ------------------------------------------------
@@ -4089,10 +4209,14 @@ module.exports = {
     extractImageSubject,
     stripCreativeMetaInstructions,
     resolveDimensions,
+    dimensionsForMegapixels,
+    imageModelResolutionLimits,
+    IMAGE_MAX_EDGE,
     normalizeSeed,
     resolveSeed,
     MAX_SEED,
     generateImage,
+    buildT2IGraphForModel,
     stripLoraTriggerWords,
     buildKrea2T2IGraph,
     buildQwenImage21T2IGraph,
@@ -4132,6 +4256,9 @@ module.exports = {
     buildLoraChain,
     normalizeImageModel,
     resolveBaseModels,
+    normalizeAspectRatio,
+    normalizeImageSize,
+    objectInfoChoices,
     normalizeImageAttentionBackend,
     imageAttentionBackendAvailable,
     resolveImageAttentionBackend,

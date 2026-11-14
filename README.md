@@ -51,6 +51,13 @@ Everything runs from a single chat surface — there are no separate tools or da
   <sub><em>Built-in image comparison when an image gets upscaled</em></sub>
 </p>
 
+### Image Arena
+
+- **One prompt, every image model** — open **IMAGE ARENA** in the header, type a prompt and press **Generate All**; JARVIS creates one background job per selected engine (Qwen Image 2.1, Krea2, MiniMax H3 Image, MOSS-Image and any future text-to-image provider)
+- **Native or Controlled mode** — Native runs each engine exactly as configured; Controlled sends the same resolution, seed and (optionally) steps/CFG to every model and lists what could not be standardized
+- **Real background queue** — local GPU jobs run one at a time, one model failing never stops the rest, and closing the sheet or reloading JARVIS never interrupts a running benchmark
+- **Comparison gallery** — live job states, generation time, resolution, seed, steps and sampler per model; click to zoom/pan, compare two or more results side by side, download one/all, favourite, copy the effective prompt, retry a failed job, cancel pending jobs, and reopen or delete past sessions from history
+
 ### Image edit
 
 - **Instruction editing** with Qwen Image 2.1 — attach a photo (or say *"edit this image"*) and describe the change; JARVIS re-stages, recolors, adds, or removes objects while preserving the rest
@@ -220,6 +227,10 @@ Chat has no tools, so live machine state is injected as system context when rele
 3. Build the text-to-image graph (Qwen Image 2.1 by default, Krea2, MiniMax H3 Image or MOSS-Image).
 4. Submit to ComfyUI and wait, relaying step progress over SSE.
 5. Download the output to `data/generated/` and show it inline.
+
+### Image Arena
+
+**IMAGE ARENA** in the header turns one prompt into a benchmark: JARVIS discovers every enabled text-to-image provider and its real ComfyUI availability, then creates one job per selected model. Jobs are persisted to `data/benchmark-sessions.json` and executed through the existing generation pipeline by a single-slot local queue (one ComfyUI job at a time), so the rest of the app stays responsive. The submitted prompt is passed unchanged (MOSS prompt enhancement is off by default); each job records its effective prompt, model files, resolution, seed, steps/CFG, sampler/scheduler, duration and error. Native mode uses each engine's configured defaults; Controlled mode standardizes aspect ratio, size and seed (and steps/CFG when supplied) and reports what could not be standardized. Results are real generated images (kept out of the main gallery) with zoom/pan, side-by-side comparison, favourites, per-job retry, cancellation and full session history. A server restart marks in-flight jobs interrupted — never completed — and resumes only jobs that had not started.
 
 ### Image edit
 

@@ -3724,6 +3724,7 @@ async function bootApp() {
     if (window.CharacterIdentityUI && typeof window.CharacterIdentityUI.init === 'function') window.CharacterIdentityUI.init();
     if (window.UGCUI && typeof window.UGCUI.init === 'function') window.UGCUI.init();
     if (window.CompanionUI && typeof window.CompanionUI.init === 'function') window.CompanionUI.init();
+    if (window.ImageArenaUI && typeof window.ImageArenaUI.init === 'function') window.ImageArenaUI.init();
     await Chat.refreshConversationList();
     renderActiveChat();
 }

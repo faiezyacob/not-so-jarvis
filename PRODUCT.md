@@ -53,7 +53,7 @@ Deliberately undecided or out of scope: deployment beyond the user's own machine
 - Name and identity: **JARVIS** (repository `not-so-jarvis`).
 - Voice observed in the product's own copy: technical, direct, concrete, first-person about what the tool actually does. No superlatives, no invented benchmarks, no marketing claims that the code cannot back.
 - Local-only, dependency-free, MIT-licensed is part of the brand promise, not just a technical fact.
-- No logo system or brand asset beyond the dashboard UI itself.
+- Brand mark: the condensed **J** monogram in the wordmark bar, and the same J stamped out of an ink block as the favicon and touch icon. There is no other brand asset.
 
 ## Evidence on Hand
 

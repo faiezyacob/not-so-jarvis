@@ -5,6 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>NOT-SO-JARVIS — Local AI Assistant</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <link rel="apple-touch-icon" href="apple-touch-icon.png">
+    <link rel="mask-icon" href="safari-pinned-tab.svg" color="#1a1a18">
+    <meta name="theme-color" content="#f2ede3" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#171614" media="(prefers-color-scheme: dark)">
     <link rel="stylesheet" href="style.css">
     <script>
         // Resolve the light/dark ground before first paint so the shell never
@@ -26,10 +30,13 @@
 
     <header class="header">
         <div class="header-left">
-            <img class="header-logo" src="favicon.svg" alt="" width="26" height="26">
+            <svg class="header-logo" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false">
+                <path d="M15.2 4.4V13.6C15.2 17.1 13.3 19.4 10.4 19.4H8.8V16" fill="none" stroke="currentColor" stroke-width="3.6" stroke-linecap="square" stroke-linejoin="miter"></path>
+            </svg>
             <span class="header-title">NOT-SO-JARVIS</span>
         </div>
         <div class="header-right">
+            <button class="studio-trigger" id="imageArenaOpen" type="button" title="Open Image Arena">IMAGE ARENA</button>
             <button class="studio-trigger" id="companionsBtn" type="button" title="Open Companions">COMPANIONS</button>
             <button class="studio-trigger" id="ugcStudioOpen" type="button" title="Open UGC Studio">UGC STUDIO</button>
             <button class="studio-trigger" id="creatorStudioOpen" type="button" title="Open Creator Studio">CREATOR STUDIO</button>
@@ -1112,6 +1119,222 @@
                     </div>
                 </div>
             </div>
+
+    <div class="arena-overlay" id="imageArenaOverlay" hidden>
+        <section class="arena-sheet" role="dialog" aria-modal="true" aria-labelledby="imageArenaTitle" tabindex="-1">
+            <header class="arena-header">
+                <div>
+                    <h1 id="imageArenaTitle">Image Arena</h1>
+                    <p>One prompt, every configured image model. Each model runs as its own background job, so you can close this sheet and keep using JARVIS.</p>
+                </div>
+                <button class="creator-studio-close" id="imageArenaClose" type="button" aria-label="Close Image Arena" title="Close Image Arena">×</button>
+            </header>
+
+            <div class="arena-body">
+                <section class="arena-block arena-prompt-block">
+                    <div class="arena-block-head">
+                        <span class="arena-block-label">01 Prompt</span>
+                        <span class="arena-prompt-count" id="arenaSelectedCount">0 models selected</span>
+                    </div>
+                    <textarea id="arenaPrompt" class="arena-prompt" rows="5" maxlength="4000"
+                        placeholder="Describe one image. Every selected model receives this exact prompt."></textarea>
+                    <div class="arena-prompt-actions">
+                        <button class="arena-primary" id="arenaGenerate" type="button">Generate All</button>
+                        <button class="arena-btn" id="arenaClearPrompt" type="button">Clear prompt</button>
+                        <span class="arena-prompt-hint">The prompt is sent unchanged. Prompt enhancement stays off unless you enable it below.</span>
+                    </div>
+                </section>
+
+                <details class="arena-disclosure" id="arenaSettings">
+                    <summary>
+                        <span class="arena-block-label">02 Benchmark mode</span>
+                        <span class="arena-disclosure-value" id="arenaModeSummary">Native — model defaults</span>
+                    </summary>
+                    <div class="arena-disclosure-body">
+                        <div class="arena-row arena-row--three">
+                            <label class="arena-field">
+                                <span>Mode</span>
+                                <select id="arenaMode">
+                                    <option value="native">Native — model defaults</option>
+                                    <option value="controlled">Controlled — standardize what the engine allows</option>
+                                </select>
+                            </label>
+                            <label class="arena-field">
+                                <span>Aspect ratio</span>
+                                <select id="arenaAspectRatio">
+                                    <option value="1:1">1:1</option>
+                                    <option value="4:5">4:5</option>
+                                    <option value="3:4">3:4</option>
+                                    <option value="16:9">16:9</option>
+                                    <option value="9:16">9:16</option>
+                                </select>
+                            </label>
+                            <label class="arena-field">
+                                <span>Size</span>
+                                <select id="arenaImageSize">
+                                    <option value="S">S</option>
+                                    <option value="M">M</option>
+                                    <option value="L">L</option>
+                                    <option value="XL">XL</option>
+                                </select>
+                            </label>
+                        </div>
+                        <label class="arena-check">
+                            <input type="checkbox" id="arenaMatchResolution">
+                            <span>Match output resolution — every selected engine renders the same canvas, so results compare pixel for pixel</span>
+                        </label>
+                        <div class="arena-row arena-row--three" id="arenaMatchRow" hidden>
+                            <label class="arena-field">
+                                <span>Matched size</span>
+                                <select id="arenaMatchSize">
+                                    <option value="auto">Auto — smallest shared canvas</option>
+                                    <option value="0.75">0.75 MP</option>
+                                    <option value="1">1 MP</option>
+                                    <option value="1.25">1.25 MP</option>
+                                    <option value="1.75">1.75 MP</option>
+                                    <option value="4">4 MP</option>
+                                    <option value="6">6 MP</option>
+                                    <option value="10">10 MP</option>
+                                    <option value="16">16 MP</option>
+                                    <option value="custom">Custom canvas</option>
+                                </select>
+                            </label>
+                            <label class="arena-field">
+                                <span>Width</span>
+                                <input id="arenaMatchWidth" type="number" min="64" max="8192" step="32" placeholder="1024" autocomplete="off">
+                            </label>
+                            <label class="arena-field">
+                                <span>Height</span>
+                                <input id="arenaMatchHeight" type="number" min="64" max="8192" step="32" placeholder="1024" autocomplete="off">
+                            </label>
+                        </div>
+                        <p class="arena-note" id="arenaMatchNote" hidden></p>
+                        <div class="arena-row arena-row--three">
+                            <label class="arena-field">
+                                <span>Seed</span>
+                                <input id="arenaSeed" type="number" min="0" step="1" placeholder="Random" autocomplete="off">
+                            </label>
+                            <label class="arena-field">
+                                <span>Steps (optional)</span>
+                                <input id="arenaSteps" type="number" min="1" max="100" step="1" placeholder="Model default" autocomplete="off">
+                            </label>
+                            <label class="arena-field">
+                                <span>CFG (optional)</span>
+                                <input id="arenaCfg" type="number" min="0" max="30" step="0.1" placeholder="Model default" autocomplete="off">
+                            </label>
+                        </div>
+                        <label class="arena-check">
+                            <input type="checkbox" id="arenaEnhance">
+                            <span>Allow model prompt enhancement where the engine supports it (MOSS-Image only today)</span>
+                        </label>
+                        <p class="arena-note" id="arenaModeNote">Native mode runs each engine exactly as configured in Settings &gt; Image. Resolution, seed, steps and CFG are used only in Controlled mode.</p>
+                        <p class="arena-note" id="arenaStandardizationNote" hidden></p>
+                    </div>
+                </details>
+
+                <section class="arena-block">
+                    <div class="arena-block-head">
+                        <span class="arena-block-label">03 Models</span>
+                        <span class="arena-model-actions">
+                            <button class="arena-link" id="arenaSelectAll" type="button">Select all ready</button>
+                            <button class="arena-link" id="arenaSelectNone" type="button">Clear</button>
+                            <button class="arena-link" id="arenaRefreshModels" type="button">Recheck</button>
+                        </span>
+                    </div>
+                    <div class="arena-models" id="arenaModels">
+                        <div class="arena-empty">Checking ComfyUI and the installed image models…</div>
+                    </div>
+                </section>
+
+                <section class="arena-session" id="arenaSession" hidden>
+                    <div class="arena-block-head">
+                        <span class="arena-block-label">04 Session</span>
+                        <span class="arena-session-stamp" id="arenaSessionStamp">Idle</span>
+                    </div>
+                    <div class="arena-session-meta" id="arenaSessionMeta"></div>
+                    <div class="arena-jobs" id="arenaJobs"></div>
+
+                    <div class="arena-results-head">
+                        <span class="arena-block-label">05 Results</span>
+                        <div class="arena-results-tools">
+                            <label class="arena-sort">
+                                <span>Sort</span>
+                                <select id="arenaSort">
+                                    <option value="status">Completion</option>
+                                    <option value="model">Model name</option>
+                                    <option value="time">Generation time</option>
+                                </select>
+                            </label>
+                            <button class="arena-btn" id="arenaCompare" type="button" disabled>Compare selected</button>
+                            <button class="arena-btn" id="arenaCompareAll" type="button" disabled>Compare all</button>
+                            <button class="arena-btn" id="arenaDownloadAll" type="button" disabled>Download all</button>
+                        </div>
+                    </div>
+                    <div class="arena-selection-bar" id="arenaSelectionBar" hidden>
+                        <span id="arenaSelectionText">0 selected</span>
+                        <button class="arena-link" id="arenaClearSelection" type="button">Clear selection</button>
+                    </div>
+                    <div class="arena-results" id="arenaResults">
+                        <div class="arena-empty">Results appear here as each model finishes.</div>
+                    </div>
+                </section>
+
+                <section class="arena-block arena-history-block">
+                    <div class="arena-block-head">
+                        <span class="arena-block-label">History</span>
+                        <button class="arena-link" id="arenaRefreshHistory" type="button">Refresh</button>
+                    </div>
+                    <div class="arena-history" id="arenaHistory">
+                        <div class="arena-empty">No benchmarks yet.</div>
+                    </div>
+                </section>
+            </div>
+
+            <footer class="studio-commit">
+                <div class="studio-commit-row">
+                    <button class="studio-commit-btn" id="arenaGenerateFooter" type="button">Generate All</button>
+                    <span class="studio-commit-status" id="arenaStatus" aria-live="polite"></span>
+                </div>
+            </footer>
+        </section>
+    </div>
+
+    <div class="arena-viewer-overlay" id="arenaViewerOverlay" hidden>
+        <div class="arena-viewer" role="dialog" aria-modal="true" aria-label="Benchmark image viewer">
+            <header class="arena-viewer-head">
+                <div>
+                    <strong id="arenaViewerTitle">Image</strong>
+                    <span id="arenaViewerMeta"></span>
+                </div>
+                <div class="arena-viewer-tools">
+                    <button class="arena-btn" id="arenaViewerZoomOut" type="button" aria-label="Zoom out">−</button>
+                    <button class="arena-btn" id="arenaViewerZoomIn" type="button" aria-label="Zoom in">+</button>
+                    <button class="arena-btn" id="arenaViewerReset" type="button">Reset</button>
+                    <button class="arena-btn" id="arenaViewerDownload" type="button">Download</button>
+                    <button class="creator-studio-close" id="arenaViewerClose" type="button" aria-label="Close viewer">×</button>
+                </div>
+            </header>
+            <div class="arena-viewer-stage" id="arenaViewerStage">
+                <img id="arenaViewerImage" alt="" draggable="false">
+            </div>
+        </div>
+    </div>
+
+    <div class="arena-compare-overlay" id="arenaCompareOverlay" hidden>
+        <div class="arena-compare" role="dialog" aria-modal="true" aria-label="Compare benchmark images">
+            <header class="arena-viewer-head">
+                <div>
+                    <strong>Compare results</strong>
+                    <span id="arenaCompareMeta"></span>
+                </div>
+                <div class="arena-viewer-tools">
+                    <button class="creator-studio-close" id="arenaCompareClose" type="button" aria-label="Close comparison">×</button>
+                </div>
+            </header>
+            <div class="arena-compare-grid" id="arenaCompareGrid"></div>
+        </div>
+    </div>
+
 
     <div class="ugc-studio-overlay" id="ugcStudioOverlay" hidden>
         <section class="ugc-studio" role="dialog" aria-modal="true" aria-labelledby="ugcStudioTitle" tabindex="-1">
@@ -2240,6 +2463,7 @@
     <script src="js/chat-lora.js"></script>
     <script src="js/chat-director.js"></script>
     <script src="js/gallery.js"></script>
+    <script src="js/benchmark.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

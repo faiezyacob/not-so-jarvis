@@ -185,9 +185,17 @@ The shell is flat. Depth is conveyed by rule weight and tone: recessed stock beh
 
 ## Shapes
 
-Square. The shell's buttons, inputs, rows, fields, images and popovers all use a 0 radius; the only curves in the system are the circular state dots and the product's circular mark. Borders are 1px, rules 1–3px; there is no outline-only or dashed treatment anywhere.
+Square. The shell's buttons, inputs, rows, fields, images and popovers all use a 0 radius; the only curves in the system are the circular state dots and the curved hook of the product's J mark. Borders are 1px, rules 1–3px; there is no outline-only or dashed treatment anywhere.
 
 The one rotated element in the system is the state stamp on the sheet header, tilted −3.5° with a faint ink wash, which reads as a rubber stamp on the page rather than a UI badge.
+
+## Brand Mark
+
+The mark is the product's initial: a condensed **J** with a deep hook and a square terminal, drawn at a 3.6-unit stroke on a 24-unit grid. It is monochrome and inherits `currentColor`, so it sits directly on the page at 22px beside the 17px wordmark — ink on bone, cream on near-black. There is no tile, gradient, glow or accent colour in the header lockup, and the mark never takes the stamp vermilion; vermilion stays reserved for live state.
+
+The tab and app icon are the same J **knocked out of a solid ink stamp block** (`public/favicon.svg`, `public/apple-touch-icon.png`). The block stays ink with a bone J on both grounds, so the 16px tab icon holds its silhouette on light and dark chrome instead of inverting into a bright chip. `public/safari-pinned-tab.svg` is the monochrome stencil of the same block.
+
+Sizes: 22px in the wordmark bar, 16–32px in the tab, 180px as the touch icon. The touch icon is rasterized at 180×180 from the favicon geometry; the SVG is the source of truth.
 
 ## Components
 

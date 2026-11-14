@@ -118,6 +118,7 @@ const characterLife = require('./services/character-life');
 const conversationAssets = require('./services/conversation-assets');
 const videoReplacement = require('./services/video-replacement');
 const characterSwap = require('./services/character-swap');
+const benchmark = require('./services/benchmark/manager');
 const messageMedia = require('./services/message-media');
 const GENERATED_DIR = path.join(__dirname, 'data', 'generated');
 const IMAGES_DIR = path.join(__dirname, 'data', 'images');
@@ -529,6 +530,175 @@ async function handleAPI(req, res, urlPath) {
             });
         } catch (err) {
             json(res, 400, { error: err.message });
+        }
+        return true;
+    }
+
+    // --- Image Arena (benchmark) -------------------------------------------
+    //
+    // A benchmark session is a device-scoped record with one job per selected
+    // image model. Jobs run in the background queue (local ComfyUI engines are
+    // serialized) and publish snapshots over SSE; closing the sheet never
+    // stops a generation.
+
+    // GET /api/benchmark/models — live discovery of every enabled text-to-image
+    // engine and its availability. ?refresh=1 bypasses the short cache after a
+    // settings change or a Setup download.
+    if (urlPath === '/api/benchmark/models' && req.method === 'GET') {
+        try {
+            const query = new URL(req.url, 'http://localhost').searchParams;
+            const models = await benchmark.listModels({ refresh: query.get('refresh') === '1' });
+            json(res, 200, {
+                models,
+                checkedAt: new Date().toISOString(),
+                queue: benchmark.getQueueStatus()
+            }, { 'Cache-Control': 'no-store' });
+        } catch (err) {
+            json(res, 502, { error: err.message || 'Could not discover image models.' });
+        }
+        return true;
+    }
+
+    // GET /api/benchmark/history — previous benchmark sessions for this device.
+    if (urlPath === '/api/benchmark/history' && req.method === 'GET') {
+        try {
+            const query = new URL(req.url, 'http://localhost').searchParams;
+            json(res, 200, {
+                sessions: benchmark.listHistory(req.jarvisSession, query.get('limit') || undefined)
+            }, { 'Cache-Control': 'no-store' });
+        } catch (err) {
+            json(res, 500, { error: err.message });
+        }
+        return true;
+    }
+
+    // GET /api/benchmark/active — the running session to restore on open.
+    if (urlPath === '/api/benchmark/active' && req.method === 'GET') {
+        try {
+            json(res, 200, { session: benchmark.getActive(req.jarvisSession) }, { 'Cache-Control': 'no-store' });
+        } catch (err) {
+            json(res, 500, { error: err.message });
+        }
+        return true;
+    }
+
+    // POST /api/benchmark — create a session and queue one job per model.
+    if (urlPath === '/api/benchmark' && req.method === 'POST') {
+        try {
+            const body = await readBody(req);
+            const session = await benchmark.createSession({
+                sessionId: req.jarvisSession,
+                prompt: body.prompt,
+                models: body.models,
+                mode: body.mode,
+                settings: body.settings
+            });
+            json(res, 201, { session });
+        } catch (err) {
+            json(res, err.status || 400, { error: err.message });
+        }
+        return true;
+    }
+
+    // GET /api/benchmark/:id/events — live snapshots over SSE.
+    const benchmarkEventsMatch = urlPath.match(/^\/api\/benchmark\/([^/]+)\/events$/);
+    if (benchmarkEventsMatch && req.method === 'GET') {
+        const sessionId = decodeURIComponent(benchmarkEventsMatch[1]);
+        const session = benchmark.getSession(sessionId, req.jarvisSession);
+        if (!session) {
+            json(res, 404, { error: 'Benchmark session not found.' });
+            return true;
+        }
+        res.writeHead(200, {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'X-Accel-Buffering': 'no'
+        });
+        res.write('retry: 2000\n\n');
+        const send = (payload) => {
+            try {
+                if (res.writableEnded || res.destroyed) return;
+                res.write('event: snapshot\ndata: ' + JSON.stringify(payload) + '\n\n');
+            } catch (err) { /* client detached */ }
+        };
+        send({ session });
+        const unsubscribe = benchmark.subscribe(sessionId, send);
+        // Re-read after subscribing so an update between the first fetch and the
+        // subscription can never be missed.
+        const fresh = benchmark.getSession(sessionId, req.jarvisSession);
+        if (fresh) send({ session: fresh });
+        const ping = setInterval(() => {
+            try { res.write(': ping\n\n'); } catch (err) { /* client detached */ }
+        }, 25000);
+        req.on('close', () => {
+            clearInterval(ping);
+            unsubscribe();
+        });
+        return true;
+    }
+
+    // POST /api/benchmark/:id/cancel — cancel pending jobs and the active job.
+    const benchmarkCancelMatch = urlPath.match(/^\/api\/benchmark\/([^/]+)\/cancel$/);
+    if (benchmarkCancelMatch && req.method === 'POST') {
+        try {
+            const session = await benchmark.cancelSession(decodeURIComponent(benchmarkCancelMatch[1]), req.jarvisSession);
+            json(res, 200, { session });
+        } catch (err) {
+            json(res, err.status || 400, { error: err.message });
+        }
+        return true;
+    }
+
+    // POST /api/benchmark/:id/retry — retry one failed job, or every failed
+    // and cancelled job when no jobId is supplied.
+    const benchmarkRetryMatch = urlPath.match(/^\/api\/benchmark\/([^/]+)\/retry$/);
+    if (benchmarkRetryMatch && req.method === 'POST') {
+        try {
+            const body = await readBody(req);
+            const session = await benchmark.retrySession(
+                decodeURIComponent(benchmarkRetryMatch[1]), req.jarvisSession, body.jobId || null
+            );
+            json(res, 200, { session });
+        } catch (err) {
+            json(res, err.status || 400, { error: err.message });
+        }
+        return true;
+    }
+
+    // POST /api/benchmark/:id/favorite — persist the per-result favourite flag.
+    const benchmarkFavoriteMatch = urlPath.match(/^\/api\/benchmark\/([^/]+)\/favorite$/);
+    if (benchmarkFavoriteMatch && req.method === 'POST') {
+        try {
+            const body = await readBody(req);
+            if (!body.jobId) { json(res, 400, { error: 'jobId is required' }); return true; }
+            const session = benchmark.setFavorite(
+                decodeURIComponent(benchmarkFavoriteMatch[1]), req.jarvisSession, body.jobId, body.favorite === true
+            );
+            json(res, 200, { session });
+        } catch (err) {
+            json(res, err.status || 400, { error: err.message });
+        }
+        return true;
+    }
+
+    const benchmarkGetMatch = urlPath.match(/^\/api\/benchmark\/([^/]+)$/);
+    if (benchmarkGetMatch && req.method === 'GET') {
+        const session = benchmark.getSession(decodeURIComponent(benchmarkGetMatch[1]), req.jarvisSession);
+        if (!session) {
+            json(res, 404, { error: 'Benchmark session not found.' });
+            return true;
+        }
+        json(res, 200, { session }, { 'Cache-Control': 'no-store' });
+        return true;
+    }
+
+    if (benchmarkGetMatch && req.method === 'DELETE') {
+        try {
+            const result = benchmark.deleteSession(decodeURIComponent(benchmarkGetMatch[1]), req.jarvisSession);
+            json(res, 200, result);
+        } catch (err) {
+            json(res, err.status || 400, { error: err.message });
         }
         return true;
     }
@@ -10449,6 +10619,12 @@ server.listen(PORT, HOST, () => {
     });
     vramManager.reconcileOnStartup().catch((err) => {
         console.warn('[vram-manager] Startup reconcile failed:', err.message);
+    }).finally(() => {
+        // Recovery is delayed until the startup memory reconcile has finished:
+        // its /free would otherwise unload the weights of a resumed job.
+        try { benchmark.recoverSessions(); } catch (err) {
+            console.warn('[benchmark] Startup recovery failed:', err.message);
+        }
     });
     characterSwap.recover();
     startCharacterLifeScheduler();
