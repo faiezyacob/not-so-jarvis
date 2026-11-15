@@ -131,8 +131,7 @@ function normalizeSettings(raw) {
         seedMode,
         seed: seed === null ? null : seed,
         steps: Number.isFinite(steps) ? steps : null,
-        cfg: Number.isFinite(cfg) ? cfg : null,
-        allowPromptEnhancement: request.allowPromptEnhancement === true
+        cfg: Number.isFinite(cfg) ? cfg : null
     };
 }
 
@@ -245,7 +244,6 @@ function resolveJobConfig(model, mode, settings, seed, matched) {
     const matchedCanvas = Boolean(matched && matched.width && matched.height);
     const steps = controlled && settings.steps != null ? settings.steps : native.steps;
     const cfg = controlled && settings.cfg != null ? settings.cfg : native.cfg;
-    const promptEnhancer = settings.allowPromptEnhancement === true && model.promptEnhancement === true;
     const unsupported = [];
     if (controlled) {
         if (settings.steps == null) unsupported.push('Steps use each model\'s default.');
@@ -260,7 +258,6 @@ function resolveJobConfig(model, mode, settings, seed, matched) {
         cfg: Number.isFinite(Number(cfg)) ? Number(cfg) : null,
         sampler: native.sampler || null,
         scheduler: native.scheduler || null,
-        promptEnhancer,
         baseModels: model.baseModels || null,
         standardized: {
             prompt: true,

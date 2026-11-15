@@ -58,10 +58,7 @@ function graphFor(providerId, settings, info, overrides) {
         width,
         height,
         settings: modelSettings,
-        conditioningNode,
-        // Discovery probes never require the optional MOSS enhancer node.
-        enhancerNode: null,
-        promptEnhancer: false
+        conditioningNode
     });
     return { graph, conditioningNode, width, height };
 }
@@ -143,7 +140,7 @@ function createComfyAdapter(provider) {
         engine: 'ComfyUI',
         locality: 'local',
         capabilities: Object.assign({}, provider.capabilities),
-        family: provider.capabilities.promptEnhancement ? 'Prompt-enhancer capable' : 'Text-to-image',
+        family: 'Text-to-image',
         standardizationNotes: () => standardizationNotes(providerId),
 
         // Inspect one engine without generating anything. Returns its native
@@ -205,7 +202,6 @@ function createComfyAdapter(provider) {
                 seed: config.seed,
                 width: config.width,
                 height: config.height,
-                promptEnhancer: config.promptEnhancer === true,
                 baseModels: config.baseModels || null,
                 // Own the generated file with the benchmark device so the
                 // gallery's legacy adoption can never reassign it.

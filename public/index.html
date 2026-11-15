@@ -367,13 +367,6 @@
                                 <span class="settings-save-status" id="imageModelStatus"></span>
                             </div>
                             <div id="mossGenerationFields" style="display:none;">
-                                <div class="settings-field">
-                                    <label class="settings-toggle">
-                                        <span class="settings-toggle-label">MOSS prompt enhancer</span>
-                                        <input type="checkbox" id="mossPromptEnhancer" checked>
-                                    </label>
-                                    <span class="settings-hint">The official MOSS-Image text-to-image template rewrites a short request into a full caption on MOSS's own text encoder before sampling. Turn it off to send the prompt exactly as written.</span>
-                                </div>
                                 <div class="settings-field-row">
                                     <div class="settings-field">
                                         <label class="settings-field-label" for="mossSampler">Sampler</label>
@@ -388,12 +381,6 @@
                                     <label class="settings-field-label" for="mossNegativePrompt">Negative prompt</label>
                                     <input type="text" class="settings-input" id="mossNegativePrompt" autocomplete="off">
                                     <span class="settings-hint">Recommended: nsfw, worst quality, bad anatomy, watermark, jpeg artifact.</span>
-                                </div>
-                                <div class="settings-field">
-                                    <label class="settings-field-label" for="mossEnhancerReferenceFile">Enhancer reference (optional)</label>
-                                    <input type="file" class="settings-input" id="mossEnhancerReferenceFile" accept="image/*">
-                                    <span class="settings-hint" id="mossEnhancerReferenceStatus">No reference image. An optional image the prompt enhancer may read; MOSS itself does not use it.</span>
-                                    <button class="settings-browse-btn" id="mossEnhancerReferenceClear" type="button" style="display:none;">Clear reference</button>
                                 </div>
                             </div>
                         </div>
@@ -1141,7 +1128,7 @@
                     <div class="arena-prompt-actions">
                         <button class="arena-primary" id="arenaGenerate" type="button">Generate All</button>
                         <button class="arena-btn" id="arenaClearPrompt" type="button">Clear prompt</button>
-                        <span class="arena-prompt-hint">The prompt is sent unchanged. Prompt enhancement stays off unless you enable it below.</span>
+                        <span class="arena-prompt-hint">The prompt is sent to every engine unchanged.</span>
                     </div>
                 </section>
 
@@ -1223,10 +1210,6 @@
                                 <input id="arenaCfg" type="number" min="0" max="30" step="0.1" placeholder="Model default" autocomplete="off">
                             </label>
                         </div>
-                        <label class="arena-check">
-                            <input type="checkbox" id="arenaEnhance">
-                            <span>Allow model prompt enhancement where the engine supports it (MOSS-Image only today)</span>
-                        </label>
                         <p class="arena-note" id="arenaModeNote">Native mode runs each engine exactly as configured in Settings &gt; Image. Resolution, seed, steps and CFG are used only in Controlled mode.</p>
                         <p class="arena-note" id="arenaStandardizationNote" hidden></p>
                     </div>

@@ -8727,11 +8727,6 @@ async function handleImageGenerationStream(req, res, opts) {
                 : imageGenerator.generateImage(imagePrompt, {
                     provider, model, conversationId, onQueued, onStart,
                     seed: baseSeed + i,
-                    // MOSS's optional enhancer reference is a user-uploaded
-                    // image (or a generated one) resolved inside data/.
-                    enhancerReferencePath: genSettings.model === 'moss' && genSettings.mossPromptEnhancer !== false
-                        ? resolveMediaAbsPath(path.basename(String(genSettings.mossEnhancerReference || '')))
-                        : null,
                     // The Director opening frame is internal media: it lives on
                     // the approval card, never in the public gallery.
                     hidden: Boolean(opts.director),

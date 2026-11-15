@@ -199,7 +199,6 @@ const ImageArenaUI = (() => {
                 if (raw.settings.seed !== undefined && raw.settings.seed !== null) els.seed.value = String(raw.settings.seed);
                 if (raw.settings.steps !== undefined && raw.settings.steps !== null) els.steps.value = String(raw.settings.steps);
                 if (raw.settings.cfg !== undefined && raw.settings.cfg !== null) els.cfg.value = String(raw.settings.cfg);
-                els.enhance.checked = raw.settings.allowPromptEnhancement === true;
                 if (typeof raw.settings.matchSize === 'string' &&
                     Array.from(els.matchSize.options).some((option) => option.value === raw.settings.matchSize)) {
                     els.matchSize.value = raw.settings.matchSize;
@@ -228,7 +227,6 @@ const ImageArenaUI = (() => {
                     seed: els.seed.value || null,
                     steps: els.steps.value || null,
                     cfg: els.cfg.value || null,
-                    allowPromptEnhancement: els.enhance.checked,
                     matchResolution: matchingEnabled(),
                     matchSize: els.matchSize.value,
                     matchWidth: els.matchWidth.value || null,
@@ -401,8 +399,7 @@ const ImageArenaUI = (() => {
             seedMode: els.seed.value ? 'fixed' : 'random',
             seed: els.seed.value === '' ? null : Number(els.seed.value),
             steps: els.steps.value === '' ? null : Number(els.steps.value),
-            cfg: els.cfg.value === '' ? null : Number(els.cfg.value),
-            allowPromptEnhancement: els.enhance.checked === true
+            cfg: els.cfg.value === '' ? null : Number(els.cfg.value)
         };
     }
 
@@ -1396,7 +1393,6 @@ const ImageArenaUI = (() => {
             seed: document.getElementById('arenaSeed'),
             steps: document.getElementById('arenaSteps'),
             cfg: document.getElementById('arenaCfg'),
-            enhance: document.getElementById('arenaEnhance'),
             models: document.getElementById('arenaModels'),
             selectAll: document.getElementById('arenaSelectAll'),
             selectNone: document.getElementById('arenaSelectNone'),
@@ -1452,7 +1448,7 @@ const ImageArenaUI = (() => {
         [els.matchWidth, els.matchHeight].forEach((input) => {
             if (input) input.addEventListener('change', savePrefs);
         });
-        [els.aspectRatio, els.imageSize, els.seed, els.steps, els.cfg, els.enhance].forEach((input) => {
+        [els.aspectRatio, els.imageSize, els.seed, els.steps, els.cfg].forEach((input) => {
             if (input) input.addEventListener('change', savePrefs);
         });
         if (els.sort) els.sort.addEventListener('change', () => {

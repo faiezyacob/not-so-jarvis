@@ -89,7 +89,6 @@ function publicModel(adapter, inspected, settings) {
         baseModels: inspected.baseModels || null,
         supportedResolutions: inspected.available === true ? sizeTiers(adapter.id, settings) : [],
         resolutionLimits: inspected.available === true ? deps.imageGenerator.imageModelResolutionLimits(adapter.id) : null,
-        promptEnhancement: Boolean(adapter.capabilities && adapter.capabilities.promptEnhancement),
         notes: inspected.standardizationNotes || []
     };
 }
@@ -109,7 +108,6 @@ function unavailableModel(provider, reason) {
         resolution: null,
         supportedResolutions: [],
         resolutionLimits: null,
-        promptEnhancement: Boolean(provider.capabilities && provider.capabilities.promptEnhancement),
         notes: []
     };
 }

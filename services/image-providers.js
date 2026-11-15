@@ -64,8 +64,7 @@ const IMAGE_PROVIDERS = Object.freeze([
     {
         // MOSS-Image (Comfy-Org/MOSS-Image). One diffusion model + one Qwen3.5
         // 9B text encoder (CLIPLoader type `moss_image`) + FLUX.2 small VAE.
-        // Text-to-image uses the prompt enhancer (TextGenerate on the same text
-        // encoder); editing adds the dedicated edit LoRA and the core
+        // Editing adds the dedicated edit LoRA and the core
         // TextEncodeMOSSImageEdit node (ComfyUI 0.43.0+).
         id: 'moss',
         editId: 'moss',
@@ -76,7 +75,7 @@ const IMAGE_PROVIDERS = Object.freeze([
             imageEdit: true,
             multipleReferences: true,
             maxReferences: 4,
-            promptEnhancement: true,
+            promptEnhancement: false,
             negativePrompt: true,
             skipLayerGuidance: true
         },

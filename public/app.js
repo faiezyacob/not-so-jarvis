@@ -1608,31 +1608,11 @@ function initImageGenSettings() {
     }
 
     // --- MOSS-Image text-to-image options ------------------------------------
-    // The prompt enhancer toggle, recommended negative line and the optional
-    // reference image read only by the enhancer. The reference is uploaded
-    // through the existing /api/uploads store and persisted by filename; a
-    // stale filename is simply ignored at generation time.
-    const mossEnhancerToggle = document.getElementById('mossPromptEnhancer');
+    // The recommended negative line, sampler and scheduler. Values persist as
+    // plain settings; an invalid or empty sampler falls back to the default.
     const mossNegativeInput = document.getElementById('mossNegativePrompt');
     const mossSamplerInput = document.getElementById('mossSampler');
     const mossSchedulerInput = document.getElementById('mossScheduler');
-    const mossEnhancerFile = document.getElementById('mossEnhancerReferenceFile');
-    const mossEnhancerClear = document.getElementById('mossEnhancerReferenceClear');
-    const mossEnhancerStatus = document.getElementById('mossEnhancerReferenceStatus');
-    const paintMossEnhancerReference = (name) => {
-        const hasReference = Boolean(name);
-        if (mossEnhancerClear) mossEnhancerClear.style.display = hasReference ? '' : 'none';
-        if (mossEnhancerStatus) {
-            mossEnhancerStatus.textContent = hasReference
-                ? 'Enhancer reference: ' + name
-                : 'No reference image. An optional image the prompt enhancer may read; MOSS itself does not use it.';
-        }
-    };
-    if (mossEnhancerToggle) {
-        mossEnhancerToggle.addEventListener('change', () => {
-            persistValue('mossPromptEnhancer', mossEnhancerToggle.checked, mossEnhancerToggle.checked ? 'prompt enhancer on' : 'prompt enhancer off');
-        });
-    }
     if (mossNegativeInput) {
         mossNegativeInput.addEventListener('change', () => {
             const value = mossNegativeInput.value.trim();
@@ -1649,43 +1629,6 @@ function initImageGenSettings() {
         mossSchedulerInput.addEventListener('change', () => {
             const value = mossSchedulerInput.value.trim();
             if (value) persistValue('mossScheduler', value, value);
-        });
-    }
-    if (mossEnhancerFile) {
-        mossEnhancerFile.addEventListener('change', async () => {
-            const file = mossEnhancerFile.files && mossEnhancerFile.files[0];
-            if (!file) return;
-            setStatus('Uploading enhancer reference…');
-            try {
-                const dataUrl = await new Promise((resolve, reject) => {
-                    const reader = new FileReader();
-                    reader.onload = () => resolve(String(reader.result || ''));
-                    reader.onerror = () => reject(reader.error || new Error('read failed'));
-                    reader.readAsDataURL(file);
-                });
-                const base64 = dataUrl.split(',')[1] || '';
-                const res = await fetch('/api/uploads', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ filename: file.name, mime: file.type, data: base64 })
-                });
-                const uploaded = await res.json().catch(() => ({}));
-                if (!res.ok || !uploaded.filename) {
-                    throw new Error(uploaded.error || 'upload failed');
-                }
-                await persistValue('mossEnhancerReference', uploaded.filename, 'enhancer reference');
-                paintMossEnhancerReference(uploaded.filename);
-            } catch (err) {
-                setStatus('Enhancer reference upload failed: ' + (err && err.message ? err.message : 'error'), true);
-            } finally {
-                mossEnhancerFile.value = '';
-            }
-        });
-    }
-    if (mossEnhancerClear) {
-        mossEnhancerClear.addEventListener('click', async () => {
-            await persistValue('mossEnhancerReference', '', 'enhancer reference cleared');
-            paintMossEnhancerReference('');
         });
     }
 
@@ -1800,12 +1743,6 @@ function initImageGenSettings() {
                     ? settings.mossEditMegapixels
                     : (defaults.mossEditMegapixels || 1);
             }
-            if (mossEnhancerToggle) {
-                const enabled = settings.mossPromptEnhancer !== undefined && settings.mossPromptEnhancer !== null
-                    ? settings.mossPromptEnhancer
-                    : (defaults.mossPromptEnhancer !== false);
-                mossEnhancerToggle.checked = enabled !== false;
-            }
             if (mossNegativeInput) {
                 mossNegativeInput.value = settings.mossNegativePrompt !== undefined && settings.mossNegativePrompt !== null
                     ? settings.mossNegativePrompt
@@ -1817,7 +1754,6 @@ function initImageGenSettings() {
             if (mossSchedulerInput) {
                 mossSchedulerInput.value = settings.mossScheduler || defaults.mossScheduler || 'simple';
             }
-            paintMossEnhancerReference(settings.mossEnhancerReference || '');
             syncEditMegapixels();
             refreshEditEngineReadiness();
 

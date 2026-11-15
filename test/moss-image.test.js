@@ -26,8 +26,7 @@ const MOSS_INFO = {
     EmptyFlux2LatentImage: {},
     SkipLayerGuidanceDiTSimple: {},
     ImageScaleToTotalPixels: {},
-    GetImageSize: {},
-    TextGenerate: {}
+    GetImageSize: {}
 };
 
 function mossSettings(extra = {}) {
@@ -43,7 +42,7 @@ test('provider registry: MOSS is registered with its own capabilities', () => {
     assert.equal(moss.capabilities.textToImage, true);
     assert.equal(moss.capabilities.imageEdit, true);
     assert.equal(moss.capabilities.multipleReferences, true);
-    assert.equal(moss.capabilities.promptEnhancement, true);
+    assert.equal(moss.capabilities.promptEnhancement, false);
     assert.equal(moss.capabilities.maxReferences, 4);
     assert.equal(moss.requirements.comfyuiEditVersion, '0.43.0');
     assert.equal(imageProviders.providerByEditId('moss').id, 'moss');
@@ -75,7 +74,6 @@ test('defaults: MOSS files, sampling and edit format match the official template
     assert.equal(defaults.mossCfg, 2.5);
     assert.equal(defaults.mossSampler, 'er_sde');
     assert.equal(defaults.mossScheduler, 'simple');
-    assert.equal(defaults.mossPromptEnhancer, true);
     assert.equal(defaults.mossEditSteps, 30);
     assert.equal(defaults.mossEditCfg, 4);
     assert.equal(defaults.mossEditFormat, 'Moss-Image-Edit');
@@ -86,8 +84,6 @@ test('defaults: MOSS files, sampling and edit format match the official template
 test('sanitizeSettings: MOSS values are validated and clamped', () => {
     assert.deepEqual(imageGenerator.sanitizeSettings({ model: 'MOSS-Image' }), { model: 'moss' });
     assert.deepEqual(imageGenerator.sanitizeSettings({ editEngine: 'moss' }), { editEngine: 'moss' });
-    assert.deepEqual(imageGenerator.sanitizeSettings({ mossPromptEnhancer: false }), { mossPromptEnhancer: false });
-    assert.deepEqual(imageGenerator.sanitizeSettings({ mossPromptEnhancer: true }), { mossPromptEnhancer: true });
     assert.deepEqual(imageGenerator.sanitizeSettings({ mossEditFormat: 'bogus' }), {});
     assert.deepEqual(imageGenerator.sanitizeSettings({ mossEditFormat: 'ai-toolkit' }), { mossEditFormat: 'ai-toolkit' });
     assert.deepEqual(imageGenerator.sanitizeSettings({ mossEditMegapixels: 9 }), { mossEditMegapixels: 4 });
@@ -118,7 +114,7 @@ test('resolveDimensions: MOSS keeps the Qwen/Krea tiers and snaps to a 16 px mul
 });
 
 test('buildMossImageT2IGraph: official text-to-image graph, no edit LoRA', () => {
-    const settings = mossSettings({ mossPromptEnhancer: false, mossNegativePrompt: 'blurry, watermark' });
+    const settings = mossSettings({ mossNegativePrompt: 'blurry, watermark' });
     const graph = imageGenerator.buildMossImageT2IGraph('a red fox', {
         seed: 7, settings, width: 1000, height: 1500
     });
@@ -152,55 +148,12 @@ test('buildMossImageT2IGraph: official text-to-image graph, no edit LoRA', () =>
 });
 
 test('buildMossImageT2IGraph: honours mossSteps / mossCfg / sampler / scheduler', () => {
-    const settings = mossSettings({ mossSteps: 40, mossCfg: 3, mossSampler: 'euler', mossScheduler: 'normal', mossPromptEnhancer: false });
+    const settings = mossSettings({ mossSteps: 40, mossCfg: 3, mossSampler: 'euler', mossScheduler: 'normal' });
     const graph = imageGenerator.buildMossImageT2IGraph('a red fox', { seed: 1, settings, width: 1024, height: 1024 });
     assert.equal(graph.sampler.inputs.steps, 40);
     assert.equal(graph.sampler.inputs.cfg, 3);
     assert.equal(graph.sampler.inputs.sampler_name, 'euler');
     assert.equal(graph.sampler.inputs.scheduler, 'normal');
-});
-
-test('buildMossImageT2IGraph: prompt enhancer feeds the enhanced caption, and can be disabled', () => {
-    const settings = mossSettings({ mossPromptEnhancer: true });
-    const graph = imageGenerator.buildMossImageT2IGraph('a red fox', {
-        seed: 7, settings, enhancerNode: 'TextGenerate', enhancerSeed: 11
-    });
-
-    assert.equal(graph.enhancer.class_type, 'TextGenerate');
-    assert.deepEqual(graph.positive.inputs.text, ['enhancer', 0]);
-    assert.deepEqual(graph.enhancer.inputs.clip, ['clip', 0]);
-    assert.equal(graph.enhancer.inputs.prompt, 'a red fox');
-    assert.equal(graph.enhancer.inputs.sampling_mode, 'on');
-    assert.equal(graph.enhancer.inputs['sampling_mode.seed'], 11);
-    assert.equal(graph.enhancer.inputs.thinking, false);
-    assert.equal(graph.enhancer.inputs.use_default_template, true);
-    assert.match(graph.enhancer.inputs.system_prompt, /caption/i);
-    assert.equal(graph.enhancer.inputs.image, undefined);
-
-    // Disabled: the raw prompt goes straight to the encoder, no enhancer node.
-    const raw = imageGenerator.buildMossImageT2IGraph('a red fox', {
-        seed: 7, settings, promptEnhancer: false, enhancerNode: 'TextGenerate'
-    });
-    assert.equal(raw.enhancer, undefined);
-    assert.equal(raw.positive.inputs.text, 'a red fox');
-});
-
-test('buildMossImageT2IGraph: optional enhancer reference is uploaded and wired to the enhancer only', () => {
-    const settings = mossSettings({ mossPromptEnhancer: true });
-    const graph = imageGenerator.buildMossImageT2IGraph('a red fox', {
-        seed: 7, settings, enhancerNode: 'TextGenerate', enhancerReferenceLoadName: 'jarvis_moss_ref.png'
-    });
-    assert.equal(graph.enhancer_reference.class_type, 'LoadImage');
-    assert.equal(graph.enhancer_reference.inputs.image, 'jarvis_moss_ref.png');
-    assert.deepEqual(graph.enhancer.inputs.image, ['enhancer_reference', 0]);
-    // The model itself never receives the reference.
-    assert.equal(graph.sampler.inputs.latent_image[0], 'canvas');
-
-    const v2 = imageGenerator.buildMossImageT2IGraph('a red fox', {
-        seed: 7, settings, enhancerNode: 'TextGenerateV2', enhancerReferenceLoadName: 'jarvis_moss_ref.png'
-    });
-    assert.deepEqual(v2.enhancer.inputs['images.image1'], ['enhancer_reference', 0]);
-    assert.equal(v2.enhancer.inputs.image, undefined);
 });
 
 test('buildMossImageEditGraph: source is scaled once, LoRA + skip layer + official sampling', () => {
@@ -350,10 +303,4 @@ test('normalizeMossEditFormat: unknown layouts fall back to the LoRA-trained for
     assert.equal(imageGenerator.normalizeMossEditFormat('ai-toolkit'), 'ai-toolkit');
     assert.equal(imageGenerator.normalizeMossEditFormat('bogus'), 'Moss-Image-Edit');
     assert.equal(imageGenerator.normalizeMossEditFormat(''), 'Moss-Image-Edit');
-});
-
-test('resolveMossEnhancerNode: prefers the official TextGenerate, falls back to V2', () => {
-    assert.equal(imageGenerator.resolveMossEnhancerNode(MOSS_INFO), 'TextGenerate');
-    assert.equal(imageGenerator.resolveMossEnhancerNode({ TextGenerateV2: {} }), 'TextGenerateV2');
-    assert.equal(imageGenerator.resolveMossEnhancerNode({}), null);
 });
