@@ -656,12 +656,25 @@ test('buildMiniMaxH3ImageT2IGraph: official node path has no sigma shift and use
     assert.equal(graph.conditioning.inputs.width, 2048);
     assert.equal(graph.conditioning.inputs.height, 2048);
     assert.equal(graph.sigma_shift, undefined);
+    assert.equal(graph.sampler.class_type, 'SamplerCustom');
     assert.deepEqual(graph.sampler.inputs.model, ['unet', 0]);
+    assert.deepEqual(graph.sampler.inputs.positive, ['conditioning', 0]);
+    assert.deepEqual(graph.sampler.inputs.negative, ['negative', 0]);
     assert.deepEqual(graph.sampler.inputs.latent_image, ['conditioning', 1]);
-    assert.equal(graph.sampler.inputs.steps, 6);
+    assert.equal(graph.sampler.inputs.noise_seed, 7);
     assert.equal(graph.sampler.inputs.cfg, 1);
-    assert.equal(graph.sampler.inputs.sampler_name, 'euler');
-    assert.equal(graph.sampler.inputs.scheduler, 'simple');
+    assert.equal(graph.sampler.inputs.add_noise, true);
+    assert.deepEqual(graph.sampler.inputs.sampler, ['lcm_sampler', 0]);
+    assert.deepEqual(graph.sampler.inputs.sigmas, ['scheduler', 0]);
+    assert.equal(graph.lcm_sampler.class_type, 'SamplerLCM');
+    assert.equal(graph.lcm_sampler.inputs.s_noise, 0.9);
+    assert.equal(graph.lcm_sampler.inputs.s_noise_end, 0.9);
+    assert.equal(graph.lcm_sampler.inputs.noise_clip_std, 0);
+    assert.equal(graph.scheduler.class_type, 'BasicScheduler');
+    assert.deepEqual(graph.scheduler.inputs.model, ['unet', 0]);
+    assert.equal(graph.scheduler.inputs.scheduler, 'simple');
+    assert.equal(graph.scheduler.inputs.steps, 6);
+    assert.equal(graph.scheduler.inputs.denoise, 1);
     assert.equal(graph.negative.class_type, 'ConditioningZeroOut');
 });
 
@@ -679,7 +692,8 @@ test('buildMiniMaxH3ImageT2IGraph: core PH3 node inserts MiniMaxH3SigmaShift at 
     assert.equal(graph.sigma_shift.inputs.shift_audio, 1);
     assert.deepEqual(graph.sigma_shift.inputs.model, ['unet', 0]);
     assert.deepEqual(graph.sampler.inputs.model, ['sigma_shift', 0]);
-    assert.equal(graph.sampler.inputs.steps, 9);
+    assert.deepEqual(graph.scheduler.inputs.model, ['sigma_shift', 0]);
+    assert.equal(graph.scheduler.inputs.steps, 9);
     assert.equal(graph.sampler.inputs.cfg, 1.5);
 });
 
@@ -703,6 +717,9 @@ test('buildMiniMaxH3ImageEditGraph: default path resizes image_1 to the megapixe
     assert.deepEqual(graph.conditioning.inputs.width, ['source_size', 0]);
     assert.deepEqual(graph.conditioning.inputs.height, ['source_size', 1]);
     assert.deepEqual(graph.sampler.inputs.latent_image, ['conditioning', 1]);
+    assert.equal(graph.sampler.class_type, 'SamplerCustom');
+    assert.equal(graph.lcm_sampler.inputs.s_noise, 0.9);
+    assert.equal(graph.scheduler.inputs.steps, 6);
     assert.equal(graph.conditioning.inputs.prompt, 'make it sunset');
 });
 

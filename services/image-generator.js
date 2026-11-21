@@ -1041,8 +1041,13 @@ const QWEN_IMAGE_CLIP_TYPE = 'qwen_image';
 const MINIMAX_IMAGE_CLIP_TYPE = 'minimax';
 const DEFAULT_MINIMAX_STEPS = 6;
 const DEFAULT_MINIMAX_CFG = 1;
-const MINIMAX_IMAGE_SAMPLER = 'euler';
+// Sampling runs through ComfyUI's core `SamplerLCM` node instead of a KSampler
+// sampler name: only the custom-sampler chain can drive its per-step noise
+// multiplier. A constant 0.9 multiplier keeps the noise schedule flat from the
+// first step to the last.
+const MINIMAX_IMAGE_SAMPLER_NODE = 'SamplerLCM';
 const MINIMAX_IMAGE_SCHEDULER = 'simple';
+const MINIMAX_IMAGE_LCM_NOISE = 0.9;
 // The conditioning node's own schema differs between builds:
 //   - MiniMaxH3ImageConditioning: the official Comfy-Org template's node.
 //   - PH3ImageConditioning: the installed core node (its description requires
@@ -1741,8 +1746,8 @@ function resolveQwenScheduler(info, requested) {
 //   MiniMaxH3ImageConditioning / PH3ImageConditioning
 //       → positive (CONDITIONING) + LATENT (the canvas itself)
 //   ConditioningZeroOut (negative)
-//   KSampler (euler / simple, 6 steps, cfg 1, denoise 1)
-//   VAEDecode → SaveImage
+//   BasicScheduler (simple, 6 steps) → SamplerLCM (noise 0.9)
+//   SamplerCustom (cfg 1, the conditioning latent) → VAEDecode → SaveImage
 //
 // The conditioning node owns the latent, so there is no EmptyLatentImage here.
 // The official template bypasses its optional prompt-enhancer chain; JARVIS
@@ -1803,6 +1808,41 @@ function applyMiniMaxSigmaShift(graph, modelNode, conditioningNode) {
         inputs: { model: [modelNode, 0], shift_video: MINIMAX_SIGMA_SHIFT, shift_audio: MINIMAX_SIGMA_SHIFT }
     };
     return 'sigma_shift';
+}
+
+// Wire the LCM sampling chain shared by text-to-image and editing: the core
+// `SamplerLCM` node builds the sampler with a tunable noise scale, the
+// `BasicScheduler` supplies the sigmas a KSampler would derive internally
+// (scheduler/steps/denoise), and `SamplerCustom` runs them against the latent
+// the conditioning node owns.
+function applyMiniMaxSamplerChain(graph, model, sample) {
+    graph.lcm_sampler = {
+        class_type: MINIMAX_IMAGE_SAMPLER_NODE,
+        inputs: {
+            s_noise: MINIMAX_IMAGE_LCM_NOISE,
+            s_noise_end: MINIMAX_IMAGE_LCM_NOISE,
+            noise_clip_std: 0
+        }
+    };
+    graph.scheduler = {
+        class_type: 'BasicScheduler',
+        inputs: { model, scheduler: MINIMAX_IMAGE_SCHEDULER, steps: sample.steps, denoise: 1 }
+    };
+    graph.sampler = {
+        class_type: 'SamplerCustom',
+        inputs: {
+            model,
+            add_noise: true,
+            noise_seed: sample.seed,
+            cfg: sample.cfg,
+            positive: sample.positive,
+            negative: sample.negative,
+            sampler: ['lcm_sampler', 0],
+            sigmas: ['scheduler', 0],
+            latent_image: sample.latent
+        }
+    };
+    return 'sampler';
 }
 
 // Fail with an actionable message when the selected MiniMax model files are not
@@ -1878,21 +1918,14 @@ function buildMiniMaxH3ImageT2IGraph(prompt, options = {}) {
     // branch (cfg 1 means it does not contribute anyway).
     graph.negative = { class_type: 'ConditioningZeroOut', inputs: { conditioning: ['conditioning', 0] } };
 
-    graph.sampler = {
-        class_type: 'KSampler',
-        inputs: {
-            model: samplerModel,
-            positive: ['conditioning', 0],
-            negative: ['negative', 0],
-            latent_image: ['conditioning', 1],
-            seed,
-            steps,
-            cfg,
-            sampler_name: MINIMAX_IMAGE_SAMPLER,
-            scheduler: MINIMAX_IMAGE_SCHEDULER,
-            denoise: 1
-        }
-    };
+    applyMiniMaxSamplerChain(graph, samplerModel, {
+        seed,
+        steps,
+        cfg,
+        positive: ['conditioning', 0],
+        negative: ['negative', 0],
+        latent: ['conditioning', 1]
+    });
 
     graph.decoded = { class_type: 'VAEDecode', inputs: { samples: ['sampler', 0], vae: ['vae', 0] } };
     graph.save = { class_type: 'SaveImage', inputs: { images: ['decoded', 0], filename_prefix: 'not-so-jarvis/gen' } };
@@ -3492,7 +3525,8 @@ function buildQwenImage21EditGraph(instruction, loadName, options = {}) {
 //   image_1 → ResizeImageMaskNode (scale total pixels, N MP)
 //           → ResizeImageMaskNode (scale to multiple 32) → images.image_1
 //   MiniMaxH3ImageConditioning / PH3ImageConditioning → positive + LATENT
-//   ConditioningZeroOut → KSampler (euler / simple, 6 steps, cfg 1)
+//   ConditioningZeroOut → BasicScheduler (simple / 6 steps)
+//   → SamplerLCM (noise 0.9) → SamplerCustom (cfg 1)
 //   VAEDecode → SaveImage
 //
 // The template wires the conditioning canvas from GetImageSize of the resized
@@ -3600,21 +3634,14 @@ function buildMiniMaxH3ImageEditGraph(instruction, loadName, options = {}) {
     graph.conditioning = { class_type: conditioningNode, inputs: conditioningInputs };
     graph.negative = { class_type: 'ConditioningZeroOut', inputs: { conditioning: ['conditioning', 0] } };
 
-    graph.sampler = {
-        class_type: 'KSampler',
-        inputs: {
-            model: samplerModel,
-            positive: ['conditioning', 0],
-            negative: ['negative', 0],
-            latent_image: ['conditioning', 1],
-            seed,
-            steps,
-            cfg,
-            sampler_name: MINIMAX_IMAGE_SAMPLER,
-            scheduler: MINIMAX_IMAGE_SCHEDULER,
-            denoise: 1
-        }
-    };
+    applyMiniMaxSamplerChain(graph, samplerModel, {
+        seed,
+        steps,
+        cfg,
+        positive: ['conditioning', 0],
+        negative: ['negative', 0],
+        latent: ['conditioning', 1]
+    });
 
     graph.decoded = { class_type: 'VAEDecode', inputs: { samples: ['sampler', 0], vae: ['vae', 0] } };
     graph.save = { class_type: 'SaveImage', inputs: { images: ['decoded', 0], filename_prefix: 'not-so-jarvis/edit' } };

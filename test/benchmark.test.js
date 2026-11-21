@@ -251,6 +251,18 @@ test('adapter graph probe reads the real image-generator defaults', () => {
     assert.ok(config.width > 0 && config.height > 0);
 });
 
+test('adapter graph probe reads the MiniMax H3 Image custom LCM sampler', () => {
+    const info = { MiniMaxH3ImageConditioning: {} };
+    const settings = imageGenerator.effectiveSettings();
+    const probe = graphFor('minimax_h3_image', settings, info, {});
+    const config = samplerConfig(probe.graph);
+    assert.equal(config.sampler, 'SamplerLCM');
+    assert.equal(config.scheduler, 'simple');
+    assert.equal(config.steps, 6);
+    assert.equal(config.cfg, 1);
+    assert.ok(config.width > 0 && config.height > 0);
+});
+
 // --- Manager lifecycle -----------------------------------------------------
 
 test('a failed model never stops the remaining benchmark jobs', async () => {

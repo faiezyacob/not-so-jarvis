@@ -64,17 +64,29 @@ function graphFor(providerId, settings, info, overrides) {
 }
 
 function samplerConfig(graph) {
-    const sampler = (graph && graph.sampler && graph.sampler.inputs) || {};
+    const samplerNode = (graph && graph.sampler) || {};
+    const sampler = samplerNode.inputs || {};
+    const custom = samplerNode.class_type === 'SamplerCustom';
+    // A custom-sampler graph (MiniMax H3 Image's LCM chain) keeps its seed on
+    // `noise_seed` and its step count/scheduler on a BasicScheduler node.
+    const sigmas = custom && graph.scheduler && graph.scheduler.inputs ? graph.scheduler.inputs : {};
+    const lcm = custom && graph.lcm_sampler && graph.lcm_sampler.inputs ? graph.lcm_sampler.inputs : null;
+    const seed = custom ? sampler.noise_seed : sampler.seed;
+    const steps = custom ? sigmas.steps : sampler.steps;
     const canvas = (graph && graph.canvas && graph.canvas.inputs) ||
         (graph && graph.conditioning && graph.conditioning.inputs) || {};
     return {
         width: Number(canvas.width) || null,
         height: Number(canvas.height) || null,
-        seed: Number.isFinite(Number(sampler.seed)) ? Number(sampler.seed) : null,
-        steps: Number.isFinite(Number(sampler.steps)) ? Number(sampler.steps) : null,
+        seed: Number.isFinite(Number(seed)) ? Number(seed) : null,
+        steps: Number.isFinite(Number(steps)) ? Number(steps) : null,
         cfg: Number.isFinite(Number(sampler.cfg)) ? Number(sampler.cfg) : null,
-        sampler: sampler.sampler_name ? String(sampler.sampler_name) : null,
-        scheduler: sampler.scheduler ? String(sampler.scheduler) : null
+        sampler: custom
+            ? (lcm ? 'SamplerLCM' : 'SamplerCustom')
+            : (sampler.sampler_name ? String(sampler.sampler_name) : null),
+        scheduler: custom
+            ? (sigmas.scheduler ? String(sigmas.scheduler) : null)
+            : (sampler.scheduler ? String(sampler.scheduler) : null)
     };
 }
 
