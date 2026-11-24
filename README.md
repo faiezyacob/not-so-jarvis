@@ -43,6 +43,8 @@ Plain Node.js with **zero npm dependencies**, a vanilla HTML/CSS/JS frontend, an
 - **One prompt, every model** — each configured text-to-image engine runs as its own background job: Qwen Image 2.1, Krea2, MiniMax H3 Image and MOSS-Image.
 - **Native or Controlled** — Native uses each engine's own defaults; Controlled sends the same resolution, seed and optionally steps/CFG to all of them and reports what could not be standardized.
 - **Real comparison** — live job state, timing, resolution, seed, steps and sampler per model, side-by-side zoom, favourites, retry, cancellation and session history.
+- **Battle** — blind A/B votes with an Elo leaderboard and per-model win records; the names behind the images stay hidden until the set is judged.
+- **Two ways to play (opens on New images)** — write a prompt or let the chat model write a creative one (a complex, layered scene composed for comparison, with a local fallback pool when the model is busy) and every ready engine renders it (no fighter picking), or vote on benchmarks you already ran. Mid-set you only see which side you preferred; the finished set opens with every image beside the model that made it.
 - **Never blocks the app** — jobs queue one GPU job at a time, closing the sheet or reloading never interrupts a run, and a restart marks interrupted jobs failed instead of completed.
 
 ![Image Arena](screenshots/image-arena.png)
@@ -75,6 +77,7 @@ Replace a person in an existing clip with a character you supply, using either *
 - **Creator Studio** — character-led talking videos with guide-driven scripts, previewed as one opening frame before any GPU video time.
 - **UGC Studio** — a chat-first ad workflow with a Product Library and facts-only scripts, handing its approved opening frame to the Director's H3 stage.
 - **Companions** — per-character personality, long-term memory, a fictional daily life, and context-aware photos on request.
+- **Photo inbox** — a character set to share photos on her own sends a selfie and a short message from her current day without being asked; the header badge shows what arrived, and a photo can be deleted on its card, selected in bulk, or cleared with Delete all.
 
 <table align="center">
   <tr>

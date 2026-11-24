@@ -30,6 +30,7 @@ const LIMITS = {
     RECENT: 12,
     SCENES: 30,
     OFFERS: 12,
+    INBOX: 24,
     SUMMARY: 600
 };
 
@@ -138,6 +139,34 @@ function sanitizeOffer(value) {
     };
 }
 
+// One photo in the character's inbox: the image she sent without being asked,
+// plus the message that came with it. This is fiction she initiated, so it is
+// separate from the scene history (continuity) and from companion memory (facts
+// about the real user).
+function sanitizeInboxItem(value) {
+    const src = value && typeof value === 'object' ? value : {};
+    const url = cleanText(src.url, 400);
+    const status = src.status === 'failed' ? 'failed' : 'ready';
+    if (!url && status !== 'failed') return null;
+    return {
+        id: String(src.id || makeId('note')),
+        status,
+        url,
+        file: cleanText(src.file, 300),
+        caption: cleanText(src.caption, LIMITS.SUMMARY),
+        moment: cleanText(src.moment, LIMITS.FIELD),
+        activity: cleanText(src.activity, LIMITS.FIELD),
+        location: cleanText(src.location, LIMITS.FIELD),
+        outfit: cleanText(src.outfit, LIMITS.FIELD),
+        intent: cleanText(src.intent, 40) || 'selfie',
+        cameraView: cleanText(src.cameraView, 20) || 'front',
+        summary: cleanText(src.summary, LIMITS.SUMMARY),
+        error: cleanText(src.error, LIMITS.FIELD),
+        createdAt: src.createdAt || nowIso(),
+        readAt: src.readAt || null
+    };
+}
+
 function normalizeRecord(value) {
     const src = value && typeof value === 'object' ? value : {};
     const recentActivities = [];
@@ -161,11 +190,21 @@ function normalizeRecord(value) {
             if (offer) pendingOffers[String(key)] = offer;
         });
     }
+    const inbox = [];
+    if (Array.isArray(src.inbox)) {
+        for (const raw of src.inbox) {
+            const item = sanitizeInboxItem(raw);
+            if (item) inbox.push(item);
+        }
+    }
     return {
         life: sanitizeLife(src.life),
         recentActivities: recentActivities.slice(-LIMITS.RECENT),
         sceneHistory: sceneHistory.slice(-LIMITS.SCENES),
         pendingOffers,
+        inbox: inbox.slice(-LIMITS.INBOX),
+        lastInboxAt: src.lastInboxAt || null,
+        lastInboxAttemptAt: src.lastInboxAttemptAt || null,
         lastEvolutionAt: src.lastEvolutionAt || null,
         createdAt: src.createdAt || nowIso(),
         updatedAt: src.updatedAt || nowIso()
@@ -333,6 +372,87 @@ function setLastEvolutionAt(characterId, value) {
     return record.lastEvolutionAt;
 }
 
+// --- Inbox ---
+//
+// Photos a character sent unprompted. Newest first everywhere so the tray and
+// the badge agree on order.
+
+function getInbox(characterId, limit) {
+    const record = getRecord(characterId);
+    if (!record) return [];
+    const list = record.inbox.slice().reverse();
+    const n = Number(limit);
+    return Number.isFinite(n) && n > 0 ? list.slice(0, n) : list;
+}
+
+function addInboxItem(characterId, entry) {
+    const record = ensureRecord(characterId);
+    if (!record) return null;
+    const clean = sanitizeInboxItem(entry);
+    if (!clean) return null;
+    record.inbox.push(clean);
+    if (record.inbox.length > LIMITS.INBOX) {
+        record.inbox = record.inbox.slice(-LIMITS.INBOX);
+    }
+    record.lastInboxAt = clean.createdAt;
+    record.updatedAt = nowIso();
+    saveStore();
+    return clone(clean);
+}
+
+function markInboxRead(characterId, itemId, readAt) {
+    const record = getRecord(characterId);
+    if (!record) return null;
+    const item = record.inbox.find((entry) => entry.id === String(itemId));
+    if (!item) return null;
+    item.readAt = readAt || nowIso();
+    record.updatedAt = nowIso();
+    saveStore();
+    return clone(item);
+}
+
+function removeInboxItem(characterId, itemId) {
+    const record = getRecord(characterId);
+    if (!record) return null;
+    const index = record.inbox.findIndex((entry) => entry.id === String(itemId));
+    if (index === -1) return null;
+    const [removed] = record.inbox.splice(index, 1);
+    record.updatedAt = nowIso();
+    saveStore();
+    return clone(removed);
+}
+
+function clearInbox(characterId) {
+    const record = getRecord(characterId);
+    if (!record) return [];
+    const removed = record.inbox.slice();
+    record.inbox = [];
+    record.updatedAt = nowIso();
+    saveStore();
+    return clone(removed);
+}
+
+function getLastInboxAt(characterId) {
+    const record = getRecord(characterId);
+    return record ? record.lastInboxAt : null;
+}
+
+// When the last delivery was *attempted*. Kept apart from the delivery time so a
+// failed generation still waits a full interval instead of retrying every tick.
+function setLastInboxAttemptAt(characterId, value) {
+    const record = ensureRecord(characterId);
+    if (!record) return null;
+    record.lastInboxAttemptAt = value || nowIso();
+    record.updatedAt = nowIso();
+    saveStore();
+    return record.lastInboxAttemptAt;
+}
+
+function getLastInboxAttemptAt(characterId) {
+    const record = getRecord(characterId);
+    return record ? record.lastInboxAttemptAt : null;
+}
+
 function _reset() {
     store = null;
 }
@@ -344,6 +464,7 @@ module.exports = {
     sanitizeLife,
     sanitizeScene,
     sanitizeOffer,
+    sanitizeInboxItem,
     normalizeRecord,
     getRecord,
     ensureRecord,
@@ -360,5 +481,13 @@ module.exports = {
     setPendingOffer,
     clearPendingOffer,
     setLastEvolutionAt,
+    getInbox,
+    addInboxItem,
+    markInboxRead,
+    removeInboxItem,
+    clearInbox,
+    getLastInboxAt,
+    setLastInboxAttemptAt,
+    getLastInboxAttemptAt,
     _reset
 };

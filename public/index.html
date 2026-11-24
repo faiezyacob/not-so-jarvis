@@ -37,6 +37,7 @@
         </div>
         <div class="header-right">
             <button class="studio-trigger" id="imageArenaOpen" type="button" title="Open Image Arena">IMAGE ARENA</button>
+            <button class="studio-trigger studio-trigger--inbox" id="inboxOpen" type="button" title="Open the character photo inbox">INBOX<span class="inbox-badge" id="inboxBadge" hidden>0</span></button>
             <button class="studio-trigger" id="companionsBtn" type="button" title="Open Companions">COMPANIONS</button>
             <button class="studio-trigger" id="ugcStudioOpen" type="button" title="Open UGC Studio">UGC STUDIO</button>
             <button class="studio-trigger" id="creatorStudioOpen" type="button" title="Open Creator Studio">CREATOR STUDIO</button>
@@ -1113,11 +1114,17 @@
                 <div>
                     <h1 id="imageArenaTitle">Image Arena</h1>
                     <p>One prompt, every configured image model. Each model runs as its own background job, so you can close this sheet and keep using JARVIS.</p>
+                    <div class="arena-tabs" role="tablist" aria-label="Arena mode">
+                        <button class="arena-tab is-active" id="arenaTabBenchmark" type="button" role="tab"
+                            aria-selected="true" aria-controls="arenaBenchmarkPanel">Benchmark</button>
+                        <button class="arena-tab" id="arenaTabBattle" type="button" role="tab"
+                            aria-selected="false" aria-controls="arenaBattle">Battle</button>
+                    </div>
                 </div>
                 <button class="creator-studio-close" id="imageArenaClose" type="button" aria-label="Close Image Arena" title="Close Image Arena">×</button>
             </header>
 
-            <div class="arena-body">
+            <div class="arena-body" id="arenaBenchmarkPanel" role="tabpanel" aria-labelledby="arenaTabBenchmark">
                 <section class="arena-block arena-prompt-block">
                     <div class="arena-block-head">
                         <span class="arena-block-label">01 Prompt</span>
@@ -1273,7 +1280,86 @@
                 </section>
             </div>
 
-            <footer class="studio-commit">
+            <div class="arena-battle" id="arenaBattle" role="tabpanel" aria-labelledby="arenaTabBattle" hidden>
+                <div class="arena-battle-head">
+                    <div>
+                        <span class="arena-block-label">Blind battle</span>
+                        <p class="arena-battle-lede" id="arenaBattleLede">Pick the better image. The model names are hidden until you vote.</p>
+                    </div>
+                    <span class="arena-battle-stamp" id="arenaBattleStats">No votes yet</span>
+                </div>
+
+                <div class="arena-battle-sources" role="group" aria-label="Battle source">
+                    <button class="arena-battle-source is-active" id="arenaBattleSourceNew" type="button" aria-pressed="true">
+                        <strong>New images</strong>
+                        <span>Generate a fresh set first</span>
+                    </button>
+                    <button class="arena-battle-source" id="arenaBattleSourceExisting" type="button" aria-pressed="false">
+                        <strong>Finished results</strong>
+                        <span>Vote on benchmarks you already ran</span>
+                    </button>
+                </div>
+
+                <div class="arena-battle-new" id="arenaBattleNew">
+                    <label class="arena-field arena-battle-prompt-field">
+                        <span>Prompt</span>
+                        <textarea id="arenaBattlePrompt" rows="3" maxlength="4000"
+                            placeholder="Describe the image every ready engine will render. Type your own or write a creative prompt."></textarea>
+                    </label>
+                    <div class="arena-battle-new-actions">
+                        <button class="arena-primary" id="arenaBattleStart" type="button">Generate all</button>
+                        <button class="arena-btn" id="arenaBattleRandomPrompt" type="button">Creative prompt</button>
+                        <span class="arena-battle-new-note" id="arenaBattleNewNote"></span>
+                    </div>
+                    <div class="arena-battle-progress" id="arenaBattleProgress" hidden></div>
+                </div>
+
+                <div class="arena-battle-stage" id="arenaBattleStage">
+                    <button class="arena-battle-card" id="arenaBattleLeft" type="button" aria-label="Pick the left image">
+                        <img id="arenaBattleLeftImg" alt="Candidate A" draggable="false">
+                        <span class="arena-battle-pick">Pick A</span>
+                        <span class="arena-battle-reveal" id="arenaBattleLeftReveal" hidden></span>
+                    </button>
+                    <button class="arena-battle-card" id="arenaBattleRight" type="button" aria-label="Pick the right image">
+                        <img id="arenaBattleRightImg" alt="Candidate B" draggable="false">
+                        <span class="arena-battle-pick">Pick B</span>
+                        <span class="arena-battle-reveal" id="arenaBattleRightReveal" hidden></span>
+                    </button>
+                </div>
+
+                <p class="arena-battle-empty" id="arenaBattleEmpty" hidden></p>
+
+                <div class="arena-battle-lineup" id="arenaBattleLineup" hidden>
+                    <div class="arena-battle-lineup-head">
+                        <span class="arena-block-label">Set complete</span>
+                        <span class="arena-battle-lineup-note" id="arenaBattleLineupNote"></span>
+                    </div>
+                    <p class="arena-battle-lineup-prompt" id="arenaBattleLineupPrompt"></p>
+                    <div class="arena-battle-lineup-grid" id="arenaBattleLineupGrid"></div>
+                </div>
+
+                <p class="arena-note" id="arenaBattleNote" hidden></p>
+
+                <div class="arena-battle-controls">
+                    <button class="arena-btn" id="arenaBattleTie" type="button">Too close to call</button>
+                    <button class="arena-btn" id="arenaBattleNext" type="button">Next pair</button>
+                    <button class="arena-btn" id="arenaBattleAgain" type="button" hidden>Generate again</button>
+                    <button class="arena-link arena-battle-reset" id="arenaBattleReset" type="button">Reset ratings</button>
+                    <span class="arena-battle-hint">← → pick · T too close to call</span>
+                </div>
+
+                <section class="arena-block arena-battle-board-block">
+                    <div class="arena-block-head">
+                        <span class="arena-block-label">Leaderboard</span>
+                        <span class="arena-battle-board-note" id="arenaBattleBoardNote"></span>
+                    </div>
+                    <div class="arena-battle-board" id="arenaBattleBoard">
+                        <div class="arena-empty">Vote in a few battles to build the leaderboard.</div>
+                    </div>
+                </section>
+            </div>
+
+            <footer class="studio-commit" id="arenaFooter">
                 <div class="studio-commit-row">
                     <button class="studio-commit-btn" id="arenaGenerateFooter" type="button">Generate All</button>
                     <span class="studio-commit-status" id="arenaStatus" aria-live="polite"></span>
@@ -1318,6 +1404,52 @@
         </div>
     </div>
 
+
+    <div class="inbox-overlay" id="inboxOverlay" hidden>
+        <section class="inbox-sheet" role="dialog" aria-modal="true" aria-labelledby="inboxTitle" tabindex="-1">
+            <header class="inbox-header">
+                <div>
+                    <h1 id="inboxTitle">Inbox</h1>
+                    <p>Photos your characters took and sent without being asked.</p>
+                </div>
+                <button class="creator-studio-close" id="inboxClose" type="button" aria-label="Close inbox" title="Close inbox">×</button>
+            </header>
+            <div class="inbox-characters" id="inboxCharacters" hidden></div>
+            <div class="inbox-body" id="inboxBody">
+                <div class="inbox-empty">Loading…</div>
+            </div>
+            <footer class="studio-commit">
+                <div class="studio-commit-row">
+                    <button class="arena-link" id="inboxSelect" type="button" aria-pressed="false">Select</button>
+                    <button class="arena-link inbox-danger" id="inboxDeleteSelected" type="button" hidden disabled>Delete selected</button>
+                    <button class="arena-link inbox-danger" id="inboxDeleteAll" type="button" disabled>Delete all</button>
+                    <button class="arena-link" id="inboxRefresh" type="button">Refresh</button>
+                    <span class="inbox-selection" id="inboxSelection" aria-live="polite"></span>
+                    <span class="studio-commit-status" id="inboxStatus" aria-live="polite"></span>
+                </div>
+            </footer>
+        </section>
+    </div>
+
+    <div class="inbox-viewer-overlay" id="inboxViewerOverlay" hidden>
+        <div class="inbox-viewer" role="dialog" aria-modal="true" aria-label="Character photo">
+            <header class="inbox-viewer-head">
+                <div class="inbox-viewer-meta">
+                    <strong id="inboxViewerName">Character</strong>
+                    <span id="inboxViewerWhen"></span>
+                </div>
+                <div class="inbox-viewer-tools">
+                    <button class="arena-btn" id="inboxViewerReply" type="button">Reply in chat</button>
+                    <button class="arena-btn arena-action--danger" id="inboxViewerDelete" type="button">Delete</button>
+                    <button class="creator-studio-close" id="inboxViewerClose" type="button" aria-label="Close photo">×</button>
+                </div>
+            </header>
+            <div class="inbox-viewer-stage">
+                <img id="inboxViewerImage" alt="" draggable="false">
+            </div>
+            <p class="inbox-viewer-caption" id="inboxViewerCaption"></p>
+        </div>
+    </div>
 
     <div class="ugc-studio-overlay" id="ugcStudioOverlay" hidden>
         <section class="ugc-studio" role="dialog" aria-modal="true" aria-labelledby="ugcStudioTitle" tabindex="-1">
@@ -2447,6 +2579,7 @@
     <script src="js/chat-director.js"></script>
     <script src="js/gallery.js"></script>
     <script src="js/benchmark.js"></script>
+    <script src="js/inbox.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

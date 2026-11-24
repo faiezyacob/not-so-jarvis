@@ -123,8 +123,24 @@ function cancelQueued(id) {
     return true;
 }
 
+// Non-blocking acquire for background work (an unprompted character photo, for
+// example): returns null when any turn is running or waiting, so a maintenance
+// job never queues ahead of a real request and never waits.
+function tryAcquire(opts = {}) {
+    if (active || pending.length > 0) return null;
+    const entry = {
+        id: nextId++,
+        label: String(opts.label || 'background'),
+        conversationId: opts.conversationId || null,
+        enqueuedAt: Date.now(),
+        onQueued: null
+    };
+    return start(entry);
+}
+
 module.exports = {
     acquire,
+    tryAcquire,
     cancelQueued,
     getStatus,
     MAX_PENDING

@@ -119,6 +119,8 @@ const conversationAssets = require('./services/conversation-assets');
 const videoReplacement = require('./services/video-replacement');
 const characterSwap = require('./services/character-swap');
 const benchmark = require('./services/benchmark/manager');
+const benchmarkBattle = require('./services/benchmark/battle');
+const benchmarkPrompts = require('./services/benchmark/prompts');
 const messageMedia = require('./services/message-media');
 const GENERATED_DIR = path.join(__dirname, 'data', 'generated');
 const IMAGES_DIR = path.join(__dirname, 'data', 'images');
@@ -676,6 +678,143 @@ async function handleAPI(req, res, urlPath) {
                 decodeURIComponent(benchmarkFavoriteMatch[1]), req.jarvisSession, body.jobId, body.favorite === true
             );
             json(res, 200, { session });
+        } catch (err) {
+            json(res, err.status || 400, { error: err.message });
+        }
+        return true;
+    }
+
+    // GET /api/benchmark/battle — the next blind A/B pair plus the Elo
+    // leaderboard. Model identity stays server-side until the vote is cast.
+    // ?session=<id> limits the pool to one freshly generated battle.
+    if (urlPath === '/api/benchmark/battle' && req.method === 'GET') {
+        try {
+            const query = new URL(req.url, 'http://localhost').searchParams;
+            json(res, 200, benchmarkBattle.getBattle(req.jarvisSession, { session: query.get('session') || null }), {
+                'Cache-Control': 'no-store'
+            });
+        } catch (err) {
+            json(res, err.status || 500, { error: err.message });
+        }
+        return true;
+    }
+
+    // GET/POST /api/benchmark/battle/prompt — the next battle prompt. The
+    // configured chat model writes a complex, layered scene prompt (a small batch
+    // is cached per device, so repeated rolls cost one LLM call); when the app is
+    // busy, the model is offline or the reply is unusable, the local pool answers
+    // so the arena stays usable. The previous prompt rides in `exclude`.
+    if (urlPath === '/api/benchmark/battle/prompt' && (req.method === 'GET' || req.method === 'POST')) {
+        const query = new URL(req.url, 'http://localhost').searchParams;
+        let exclude = query.getAll('exclude');
+        if (req.method === 'POST') {
+            try {
+                const body = await readBody(req);
+                if (body && Array.isArray(body.exclude)) exclude = body.exclude.map(String);
+            } catch (err) { /* empty body keeps the query list */ }
+        }
+        let result = null;
+        // Prompt writing is an LLM turn: take the turn slot only when nothing else
+        // is running, so a roll never queues ahead of a real request. A running
+        // Arena/ComfyUI job also rules out the chat model, because
+        // freeVRAMBeforeChat would unload the weights it is rendering with.
+        const generation = generationQueue.getStatus();
+        const arena = benchmark.getQueueStatus();
+        const gpuBusy = !!generation.active || generation.pending.length > 0 ||
+            arena.running.length > 0 || arena.pending.length > 0;
+        const turn = gpuBusy ? null : turnQueue.tryAcquire({ label: 'arena-prompt', conversationId: '' });
+        if (turn) {
+            try {
+                const cfg = configManager.getConfig();
+                const provider = cfg.provider || 'ollama';
+                const model = cfg.model || 'llama3.2';
+                vramManager.rememberChatModel(provider, model);
+                await vramManager.freeVRAMBeforeChat();
+                result = await benchmarkPrompts.nextPrompt({
+                    sessionId: req.jarvisSession, exclude, provider, model
+                });
+            } catch (err) {
+                console.warn('[arena-prompt] generation failed:', err && err.message);
+            } finally {
+                turn.release();
+            }
+        }
+        if (!result) result = Object.assign(benchmarkPrompts.randomPrompt({ exclude }), { source: 'pool' });
+        json(res, 200, result, { 'Cache-Control': 'no-store' });
+        return true;
+    }
+
+    // GET /api/benchmark/battle/lineup?session=<id> — the finished cast: every
+    // rendered image of one generated battle WITH its model name. The client only
+    // asks for this once all pairs have been judged.
+    if (urlPath === '/api/benchmark/battle/lineup' && req.method === 'GET') {
+        try {
+            const query = new URL(req.url, 'http://localhost').searchParams;
+            const session = query.get('session');
+            if (!session) { json(res, 400, { error: 'A battle session is required.' }); return true; }
+            json(res, 200, benchmarkBattle.getLineup(req.jarvisSession, { session }), { 'Cache-Control': 'no-store' });
+        } catch (err) {
+            json(res, err.status || 400, { error: err.message });
+        }
+        return true;
+    }
+
+    // POST /api/benchmark/battle/new — generate a fresh battle: one prompt, every
+    // ready engine, rendered by the SAME benchmark pipeline (no new graph).
+    // The set is then served by GET /api/benchmark/battle?session=<id>.
+    if (urlPath === '/api/benchmark/battle/new' && req.method === 'POST') {
+        try {
+            const body = await readBody(req);
+            const prompt = String(body.prompt || '').trim();
+            if (!prompt) { json(res, 400, { error: 'A prompt is required (type one or roll a random prompt).' }); return true; }
+
+            const discovered = await benchmark.listModels({ refresh: false });
+            const roster = benchmarkBattle.resolveRoster(discovered, body.models);
+            if (roster.unavailable.length) {
+                const reasons = roster.unavailable.map((model) => model.label + ': ' + model.reason);
+                json(res, 409, { error: 'Every fighter must be ready. ' + reasons.join(' · ') });
+                return true;
+            }
+            if (roster.models.length < 2) {
+                json(res, 409, {
+                    error: roster.readyCount === 1
+                        ? 'Only one image engine is ready. A battle needs at least two.'
+                        : 'No image engines are ready. Check Settings > Setup, then recheck the models.'
+                });
+                return true;
+            }
+
+            const session = await benchmark.createSession({
+                sessionId: req.jarvisSession,
+                prompt,
+                models: roster.models.slice(0, 12),
+                mode: body.mode,
+                settings: body.settings
+            });
+            json(res, 201, { session });
+        } catch (err) {
+            json(res, err.status || 400, { error: err.message });
+        }
+        return true;
+    }
+
+    // POST /api/benchmark/battle/vote — record one pick and return the revealed
+    // models with their rating movement.
+    if (urlPath === '/api/benchmark/battle/vote' && req.method === 'POST') {
+        try {
+            const body = await readBody(req);
+            const result = benchmarkBattle.submitVote(req.jarvisSession, body.token, body.winner);
+            json(res, 200, result);
+        } catch (err) {
+            json(res, err.status || 400, { error: err.message, code: err.code || null });
+        }
+        return true;
+    }
+
+    // DELETE /api/benchmark/battle — clear this device's votes and ratings.
+    if (urlPath === '/api/benchmark/battle' && req.method === 'DELETE') {
+        try {
+            json(res, 200, benchmarkBattle.resetBattle(req.jarvisSession));
         } catch (err) {
             json(res, err.status || 400, { error: err.message });
         }
@@ -2094,6 +2233,118 @@ async function handleAPI(req, res, urlPath) {
         } catch (err) {
             json(res, 200, { ok: false, error: err.message, life: characterLife.getLife(character.id) });
         }
+        return true;
+    }
+
+    // --- Character photo inbox -------------------------------------------------
+    // Photos a character sent unprompted (scheduled initiative + automatic photo
+    // sharing). The tray is shared across devices because the character records
+    // are; every item carries its owner so read/delete never guess.
+
+    // GET /api/inbox — every item, newest first, plus unread counts.
+    if (urlPath === '/api/inbox' && req.method === 'GET') {
+        try {
+            json(res, 200, inboxPayload(), { 'Cache-Control': 'no-store' });
+        } catch (err) {
+            json(res, 500, { error: err.message });
+        }
+        return true;
+    }
+
+    // POST /api/inbox/:characterId/deliver — send one now (manual, bypasses the
+    // interval but still needs an approved portrait and photo sharing on).
+    const inboxDeliverMatch = urlPath.match(/^\/api\/inbox\/([^/]+)\/deliver$/);
+    if (inboxDeliverMatch && req.method === 'POST') {
+        const character = characterPresets.get(decodeURIComponent(inboxDeliverMatch[1]));
+        if (!character) { json(res, 404, { error: 'Character not found' }); return true; }
+        const behavior = companionService.behaviorFor(
+            character.id, characterPresets.getCompanion(character.id), configManager.getCompanionSettings()
+        );
+        if (behavior.photoSharing === 'off') {
+            json(res, 409, { error: 'Photo sharing is turned off for ' + (character.name || 'this character') + '.' });
+            return true;
+        }
+        try {
+            const started = startCharacterPhotoDelivery(character, { behavior, force: true });
+            if (!started.started) {
+                json(res, started.reason === 'already_running' ? 409 : 400, {
+                    error: started.reason === 'already_running'
+                        ? (character.name || 'This character') + ' is already taking a photo.'
+                        : 'No photo was started.',
+                    reason: started.reason
+                });
+                return true;
+            }
+            json(res, 202, { started: true, characterId: character.id });
+        } catch (err) {
+            json(res, 500, { error: err.message });
+        }
+        return true;
+    }
+
+    // POST /api/inbox/:itemId/read — mark one photo read.
+    const inboxReadMatch = urlPath.match(/^\/api\/inbox\/([^/]+)\/read$/);
+    if (inboxReadMatch && req.method === 'POST') {
+        const owner = findInboxOwner(decodeURIComponent(inboxReadMatch[1]));
+        if (!owner) { json(res, 404, { error: 'Photo not found.' }); return true; }
+        characterLife.markInboxRead(owner.character.id, owner.item.id);
+        json(res, 200, inboxPayload());
+        return true;
+    }
+
+    // POST /api/inbox/delete — delete several photos at once (multi-select).
+    if (urlPath === '/api/inbox/delete' && req.method === 'POST') {
+        let body = {};
+        try { body = await readBody(req); } catch (err) {
+            json(res, 400, { error: 'Invalid JSON body' });
+            return true;
+        }
+        const ids = Array.isArray(body.ids) ? body.ids.map((id) => String(id || '')).filter(Boolean) : [];
+        if (!ids.length) { json(res, 400, { error: 'No photos selected.' }); return true; }
+        let removed = 0;
+        ids.forEach((id) => {
+            const owner = findInboxOwner(id);
+            if (!owner) return;
+            characterLife.removeInboxItem(owner.character.id, owner.item.id);
+            removeInboxFile(owner.item);
+            removed += 1;
+        });
+        json(res, 200, Object.assign({ removed }, inboxPayload()));
+        return true;
+    }
+
+    // DELETE /api/inbox — clear every character's tray (delete all).
+    if (urlPath === '/api/inbox' && req.method === 'DELETE') {
+        let presets = [];
+        try { presets = characterPresets.list(); } catch (err) { presets = []; }
+        let removed = 0;
+        presets.forEach((character) => {
+            const items = characterLife.clearInbox(character.id);
+            items.forEach((item) => { removeInboxFile(item); removed += 1; });
+        });
+        json(res, 200, Object.assign({ removed }, inboxPayload()));
+        return true;
+    }
+
+    // DELETE /api/inbox/:itemId — delete one photo and its file.
+    const inboxItemMatch = urlPath.match(/^\/api\/inbox\/([^/]+)$/);
+    if (inboxItemMatch && req.method === 'DELETE') {
+        const owner = findInboxOwner(decodeURIComponent(inboxItemMatch[1]));
+        if (!owner) { json(res, 404, { error: 'Photo not found.' }); return true; }
+        characterLife.removeInboxItem(owner.character.id, owner.item.id);
+        removeInboxFile(owner.item);
+        json(res, 200, inboxPayload());
+        return true;
+    }
+
+    // DELETE /api/inbox/:characterId/all — clear one character's tray.
+    const inboxClearMatch = urlPath.match(/^\/api\/inbox\/([^/]+)\/all$/);
+    if (inboxClearMatch && req.method === 'DELETE') {
+        const character = characterPresets.get(decodeURIComponent(inboxClearMatch[1]));
+        if (!character) { json(res, 404, { error: 'Character not found' }); return true; }
+        const removed = characterLife.clearInbox(character.id);
+        removed.forEach(removeInboxFile);
+        json(res, 200, inboxPayload());
         return true;
     }
 
@@ -8490,6 +8741,7 @@ async function handleStartComfyUIChat(req, res, opts) {
 async function runCompanionPhoto(req, res, opts) {
     const { provider, model, conversationId, message, think, character } = opts;
     const characterId = character.id;
+    const photoSeed = creativeDefaultSeed(conversationId, message || '');
     let plan;
     try {
         plan = characterLife.planPhoto({
@@ -8497,7 +8749,8 @@ async function runCompanionPhoto(req, res, opts) {
             intent: opts.intent,
             subject: opts.subject,
             characters: [character],
-            message
+            message,
+            seed: photoSeed
         });
     } catch (err) {
         console.warn('[camera-director] plan failed:', err.message);
@@ -8547,7 +8800,11 @@ async function runCompanionPhoto(req, res, opts) {
     // automatic clothing fill.
     const identity = resolveIdentityConditioning([character], plan.request.instruction, {
         rawPrompt: plan.request.instruction,
-        seed: creativeDefaultSeed(conversationId, plan.request.instruction)
+        posture: plan.posture,
+        environment: plan.spec.location,
+        activity: plan.spec.activity,
+        defaults: false,
+        seed: photoSeed
     });
     if (!identity) {
         sseWrite(res, { generating: 'Creating an opening portrait\u2026' });
@@ -8644,6 +8901,196 @@ function scheduleCompanionLife(conversationId, character, behavior) {
     } catch (err) {
         console.warn('[character-life] schedule failed:', err.message);
         return false;
+    }
+}
+
+// --- Unprompted character photos (inbox) --------------------------------------
+//
+// A character set to share photos on her own drops one into the inbox without
+// being asked: a selfie taken from her current fictional life, captioned in her
+// voice. Two hard limits keep this polite: it only runs for an explicit opt-in
+// (scheduled initiative + automatic photo sharing) and it takes the turn slot
+// with tryAcquire, so a surprise photo never queues ahead of a real request and
+// never runs while one is in progress. Every attempt is stamped so a failed
+// render waits a full interval instead of retrying on every tick.
+async function deliverCharacterPhoto(character, options) {
+    const opts = options || {};
+    if (!character || !character.id) return { ok: false, reason: 'no_character' };
+    const characterId = character.id;
+    const behavior = opts.behavior || companionService.behaviorFor(
+        characterId, characterPresets.getCompanion(characterId), configManager.getCompanionSettings()
+    );
+    if (!opts.force) {
+        const due = characterLife.inboxDue(characterId, behavior, { hour: opts.hour });
+        if (!due.due) return { ok: false, reason: due.reason, due };
+    }
+    const slot = turnQueue.tryAcquire({ label: 'character photo' });
+    if (!slot) {
+        // A manual delivery waits a little for the floor to clear instead of
+        // dropping the request: the job is already running in the background.
+        const left = Number(opts.retries) || 0;
+        if (left > 0) {
+            await new Promise((resolve) => setTimeout(resolve, opts.retryDelayMs || 5000));
+            return deliverCharacterPhoto(character, Object.assign({}, opts, { retries: left - 1 }));
+        }
+        return { ok: false, reason: 'busy' };
+    }
+    try {
+        // Prompt building needs the chat model, so free ComfyUI first (the image
+        // pass frees the chat model again below).
+        await vramManager.freeVRAMBeforeChat();
+        // Ask the local model for a creative moment (place + body position +
+        // camera) before planning the photo; it always resolves to a usable
+        // moment, falling back to the deterministic catalog.
+        const cfg = configManager.getConfig();
+        const moment = await characterLife.planInboxMoment(characterId, {
+            character,
+            settings: characterPresets.getCompanion(characterId),
+            providers,
+            provider: cfg.provider || 'ollama',
+            model: cfg.model || ''
+        });
+        const plan = characterLife.inboxPlan(characterId, { moment });
+        if (!plan) {
+            characterLife.markInboxAttempt(characterId);
+            return { ok: false, reason: 'no_plan' };
+        }
+        const seed = Math.floor(Math.random() * 2 ** 32);
+        const photo = characterLife.planPhoto({
+            characterId,
+            intent: plan.intent,
+            moment: plan.moment,
+            characters: [character],
+            message: '',
+            seed
+        });
+        // Only a reference-guided selfie is acceptable here: identity is the
+        // whole point, and a text-only render would invent a stranger.
+        if (!photo || photo.request.mode === 'plain') {
+            characterLife.markInboxAttempt(characterId);
+            return { ok: false, reason: 'no_identity' };
+        }
+        const identity = resolveIdentityConditioning([character], photo.request.instruction, {
+            rawPrompt: photo.request.instruction,
+            posture: photo.posture,
+            environment: photo.spec.location,
+            activity: photo.spec.activity,
+            // The photo instruction owns the framing, wardrobe and phone-camera
+            // look; skip the generic creative fills so nothing is re-dressed.
+            defaults: false,
+            seed
+        });
+        if (!identity) {
+            characterLife.markInboxAttempt(characterId);
+            return { ok: false, reason: 'no_identity' };
+        }
+        await vramManager.freeVRAMBeforeImage();
+        const dims = imageGenerator.dimensionsForMegapixels('4:5', 1);
+        const result = await imageGenerator.editImage(identity.sourceAbs, identity.instruction, {
+            references: identity.references,
+            width: dims.width,
+            height: dims.height,
+            seed,
+            // Inbox media is conversational, never gallery inventory.
+            hidden: true,
+            label: 'character photo',
+            kind: 'image_generation'
+        });
+        // Keep location/outfit continuity with every other photo she takes.
+        characterLife.recordScene(characterId, photo.spec, result);
+        const item = characterLife.captureInboxPhoto(characterId, {
+            result,
+            spec: photo.spec,
+            caption: plan.caption,
+            moment: plan.reason,
+            summary: photo.summary,
+            life: characterLife.getLife(characterId)
+        });
+        try {
+            activityLog.record({
+                type: 'image',
+                title: 'Character photo',
+                detail: (character.name || 'Character') + ' sent a photo'
+                // No file: the tray owns the image, and inbox media is hidden
+                // from the gallery the ACTIVITY widget links into.
+            });
+        } catch (err) { /* the feed is advisory */ }
+        console.log('[character-inbox] ' + (character.name || characterId) + ' sent a photo');
+        return { ok: true, item };
+    } catch (err) {
+        console.warn('[character-inbox] photo failed:', err.message);
+        characterLife.markInboxAttempt(characterId);
+        return { ok: false, reason: 'failed', error: err.message };
+    } finally {
+        slot.release();
+    }
+}
+
+// Manual "send one now" must not hold an HTTP request open for the whole
+// render: it starts the job and the tray polls for the result.
+const inboxDeliveries = new Set();
+
+function startCharacterPhotoDelivery(character, options) {
+    if (!character || !character.id) return { started: false, reason: 'no_character' };
+    if (inboxDeliveries.has(character.id)) return { started: false, reason: 'already_running' };
+    inboxDeliveries.add(character.id);
+    deliverCharacterPhoto(character, Object.assign({ retries: 24, retryDelayMs: 5000 }, options || {}))
+        .catch(() => null)
+        .finally(() => { inboxDeliveries.delete(character.id); });
+    return { started: true };
+}
+
+// The inbox across every saved character, newest first. Character records are
+// shared by every device on this machine, so the tray is shared too.
+function inboxPayload() {
+    const items = [];
+    const rows = [];
+    let presets = [];
+    try { presets = characterPresets.list(); } catch (err) { presets = []; }
+    presets.forEach((character) => {
+        const unread = characterLife.inboxUnreadCount(character.id);
+        const base = character.approvedBaseImage || null;
+        rows.push({
+            id: character.id,
+            name: character.name || 'Character',
+            image: base && base.url ? base.url : null,
+            unread
+        });
+        characterLife.listInbox(character.id).forEach((item) => {
+            items.push(Object.assign({}, item, {
+                characterId: character.id,
+                characterName: character.name || 'Character',
+                characterImage: base && base.url ? base.url : null
+            }));
+        });
+    });
+    items.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+    return {
+        items: items.slice(0, 60),
+        characters: rows,
+        unread: items.filter((item) => !item.readAt).length
+    };
+}
+
+// One character's inbox action needs its owner: the client never supplies a
+// characterId for a read/delete, the server resolves it from the item id.
+function findInboxOwner(itemId) {
+    const wanted = String(itemId || '');
+    if (!wanted) return null;
+    const characters = characterPresets.list();
+    for (const character of characters) {
+        const item = characterLife.listInbox(character.id).find((entry) => entry.id === wanted);
+        if (item) return { character, item };
+    }
+    return null;
+}
+
+// Remove the file behind an inbox item. The item is stored with the generated
+// filename, and history removal also drops it from the media index.
+function removeInboxFile(item) {
+    if (!item || !item.file) return;
+    try { generatedHistory.removeByFilename(item.file); } catch (err) {
+        console.warn('[character-inbox] could not remove file:', err.message);
     }
 }
 
@@ -10625,11 +11072,15 @@ server.listen(PORT, HOST, () => {
     startCharacterLifeScheduler();
 });
 
+let inboxSweepActive = false;
+
 // A bounded, opt-in fictional-life scheduler. It only advances the life state of
 // characters explicitly set to the `scheduled` initiative with life progression
 // on, at most once per their configured interval, and never between quiet hours.
-// It does not push messages or generate media (there is no push channel); the
-// advanced state surfaces the next time the companion chat is opened.
+// It does not push messages; the advanced state surfaces the next time the
+// companion chat is opened. The same tick is also where an unprompted photo can
+// land in the inbox: at most ONE photo per sweep, only for a character who opted
+// into automatic photo sharing, and only when no turn is running.
 function startCharacterLifeScheduler() {
     const TICK_MS = 15 * 60 * 1000;
     const withinQuietHours = (hour, start, end) => {
@@ -10662,9 +11113,44 @@ function startCharacterLifeScheduler() {
                 /* keep the scheduler alive */
             }
         });
+        sweepCharacterInbox().catch(() => {});
     };
+    // Advance the life state first, then let a due photo drop into the inbox: one
+    // character, one photo per sweep, and never while another turn has the floor.
+    async function sweepCharacterInbox() {
+        if (inboxSweepActive) return { delivered: 0, reason: 'sweeping' };
+        inboxSweepActive = true;
+        try {
+            const global = configManager.getCompanionSettings();
+            const hour = new Date().getHours();
+            let characters = [];
+            try { characters = characterPresets.list(); } catch (err) { return { delivered: 0 }; }
+            for (const character of characters) {
+                try {
+                    if (inboxDeliveries.has(character.id)) continue;
+                    const behavior = companionService.behaviorFor(
+                        character.id, characterPresets.getCompanion(character.id), global
+                    );
+                    if (behavior.initiative !== 'scheduled' || behavior.photoSharing !== 'auto') continue;
+                    const result = await deliverCharacterPhoto(character, { behavior, hour });
+                    if (result.ok) return { delivered: 1, characterId: character.id };
+                    // A busy app means the user is here: do not compete for the GPU.
+                    if (result.reason === 'busy') return { delivered: 0, reason: 'busy' };
+                } catch (err) {
+                    /* one character's failure never stops the sweep */
+                }
+            }
+            return { delivered: 0 };
+        } finally {
+            inboxSweepActive = false;
+        }
+    }
     const timer = setInterval(tick, TICK_MS);
     if (timer.unref) timer.unref();
+    // One early sweep so a drop that came due while the app was closed arrives
+    // shortly after boot instead of waiting a full tick.
+    const first = setTimeout(() => { sweepCharacterInbox().catch(() => {}); }, 45000);
+    if (first.unref) first.unref();
 }
 
 server.on('error', (err) => {

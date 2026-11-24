@@ -268,6 +268,7 @@ const ImageArenaUI = (() => {
             setStatus('Could not reach the Image Arena API.', 'error');
         } finally {
             if (button) button.disabled = false;
+            if (battleMode && battleSource === 'new') updateBattleRoster();
         }
     }
 
@@ -1329,13 +1330,598 @@ const ImageArenaUI = (() => {
         clear(els.compareGrid);
     }
 
+    // --- Battle --------------------------------------------------------------
+    //
+    // A blind A/B vote over results that already exist. The pair payload never
+    // carries a model name, so the picture decides the pick; names and rating
+    // movement are only revealed after the vote lands.
+
+    let battleMode = false;
+    let battlePair = null;
+    let battleBusy = false;
+    let battleRolling = false;
+    let battleTimer = null;
+    let battleStats = null;
+    // 'new' is the default: a battle is most interesting when the images were
+    // just rendered for it. 'existing' votes on finished benchmark results.
+    let battleSource = 'new';
+    let battleSessionId = null;
+    let battleEvents = null;
+    let battlePoll = null;
+
+    function setBattleSource(source) {
+        battleSource = source === 'new' ? 'new' : 'existing';
+        [[els.sourceExisting, battleSource === 'existing'], [els.sourceNew, battleSource === 'new']]
+            .forEach(([button, active]) => {
+                if (!button) return;
+                button.classList.toggle('is-active', active);
+                button.setAttribute('aria-pressed', active ? 'true' : 'false');
+            });
+        if (els.battleNew) els.battleNew.hidden = battleSource !== 'new';
+        if (els.battleAgain) els.battleAgain.hidden = true;
+        if (battleSource === 'new') {
+            battleSessionId = null;
+            battlePair = null;
+            stopBattleWatch();
+            hideBattleLineup();
+            renderBattleProgress(null);
+            updateBattleRoster();
+            renderBattleEmpty('new_mode', 'Write a prompt or tap Creative prompt. Every ready engine renders it, then you vote blind between the results.');
+            if (els.battlePrompt && !els.battlePrompt.value.trim()) rollBattlePrompt();
+            return;
+        }
+        battleSessionId = null;
+        stopBattleWatch();
+        renderBattleProgress(null);
+        loadBattle();
+    }
+
+    // The roster is never chosen by hand: every ready engine renders the prompt,
+    // which is the whole point of the battle (you cannot tell which image came
+    // from which model).
+    function readyModels() {
+        return models.filter((model) => model.available && model.native);
+    }
+
+    function updateBattleRoster() {
+        const ready = readyModels();
+        if (els.battleStart) els.battleStart.disabled = battleRolling || ready.length < 2;
+        setBattleFormNote(ready.length >= 2
+            ? 'Ready engines: ' + ready.length
+            : (ready.length === 1
+                ? 'Only one engine is ready. A battle needs at least two.'
+                : 'No ready engines yet. Check Settings > Setup, then Recheck.'));
+    }
+
+    function setBattleFormNote(text) {
+        if (els.battleNewNote) els.battleNewNote.textContent = text || '';
+    }
+
+    function setBattleFormEnabled(enabled) {
+        [els.battleStart, els.battleRandomPrompt, els.battlePrompt]
+            .forEach((node) => { if (node) node.disabled = !enabled; });
+        if (enabled) updateBattleRoster();
+    }
+
+    async function rollBattlePrompt() {
+        if (battleRolling) return;
+        const current = els.battlePrompt ? els.battlePrompt.value.trim() : '';
+        // A roll is an LLM turn: keep Generate all disabled until it lands so a
+        // render can never start while the chat model is loading.
+        battleRolling = true;
+        if (els.battleRandomPrompt) els.battleRandomPrompt.disabled = true;
+        if (els.battleStart) els.battleStart.disabled = true;
+        setBattleFormNote('Writing a creative prompt\u2026');
+        try {
+            const res = await fetch('/api/benchmark/battle/prompt', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                cache: 'no-store',
+                body: JSON.stringify({ exclude: current ? [current] : [] })
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.error || 'Could not roll a prompt.');
+            if (els.battlePrompt) els.battlePrompt.value = data.prompt;
+            const label = data.source === 'llm' ? 'Creative prompt' : 'Random prompt';
+            setBattleFormNote(data.category ? label + ' \u00B7 ' + data.category : label);
+        } catch (err) {
+            setBattleFormNote(err.message);
+        } finally {
+            battleRolling = false;
+            if (els.battleRandomPrompt && !battleBusy) els.battleRandomPrompt.disabled = false;
+            if (!battleBusy) updateBattleRoster();
+        }
+    }
+
+    function renderBattleProgress(snapshot) {
+        if (!els.battleProgress) return;
+        const jobs = (snapshot && snapshot.jobs) || [];
+        clear(els.battleProgress);
+        els.battleProgress.hidden = jobs.length === 0;
+        jobs.forEach((job) => {
+            const row = el('div', 'arena-battle-progress-row is-' + job.status);
+            row.appendChild(el('span', 'arena-battle-progress-name', job.modelLabel || job.modelId));
+            row.appendChild(el('span', 'arena-battle-progress-state', jobStateText(job)));
+            const bar = el('div', 'arena-battle-progress-bar');
+            if (job.status === 'generating' && progressFor(job) === null) bar.classList.add('is-indeterminate');
+            const fill = el('i', 'arena-battle-progress-fill');
+            const pct = progressFor(job);
+            if (pct !== null) fill.style.width = pct + '%';
+            bar.appendChild(fill);
+            row.appendChild(bar);
+            els.battleProgress.appendChild(row);
+        });
+    }
+
+    function stopBattleWatch() {
+        if (battleEvents) {
+            try { battleEvents.close(); } catch (err) { /* already closed */ }
+            battleEvents = null;
+        }
+        if (battlePoll) {
+            clearInterval(battlePoll);
+            battlePoll = null;
+        }
+    }
+
+    // One prompt, two fighters: the pair is rendered by the benchmark pipeline,
+    // so this is the same graph, LoRA stack and error handling as normal
+    // generation. Generation progress is watched here, not in the session view.
+    function watchBattleSession(sessionId) {
+        stopBattleWatch();
+        const apply = (snapshot) => {
+            if (!snapshot) return;
+            renderBattleProgress(snapshot);
+            const counts = snapshot.counts || {};
+            if (counts.active === 0) finishBattleGeneration(snapshot);
+        };
+        if (typeof EventSource === 'function') {
+            try {
+                battleEvents = new EventSource('/api/benchmark/' + encodeURIComponent(sessionId) + '/events');
+                battleEvents.addEventListener('snapshot', (event) => {
+                    try {
+                        const payload = JSON.parse(event.data);
+                        if (payload.session && payload.session.id === sessionId) apply(payload.session);
+                    } catch (err) { /* malformed event is ignored */ }
+                });
+                battleEvents.onerror = () => { /* EventSource retries on its own */ };
+                return;
+            } catch (err) {
+                battleEvents = null;
+            }
+        }
+        battlePoll = setInterval(async () => {
+            try {
+                const res = await fetch('/api/benchmark/' + encodeURIComponent(sessionId), { cache: 'no-store' });
+                const data = await res.json();
+                if (res.ok && data.session) apply(data.session);
+            } catch (err) { /* keep polling */ }
+        }, 1500);
+    }
+
+    async function resumeBattleSession() {
+        if (!battleSessionId) return loadBattle();
+        try {
+            const res = await fetch('/api/benchmark/' + encodeURIComponent(battleSessionId), { cache: 'no-store' });
+            const data = await res.json();
+            if (!res.ok || !data.session) return loadBattle();
+            const counts = data.session.counts || {};
+            if (counts.active > 0) {
+                renderBattleProgress(data.session);
+                watchBattleSession(battleSessionId);
+                return;
+            }
+            renderBattleProgress(data.session);
+            if (counts.completed >= 2) return loadBattle();
+            renderBattleEmpty('new_mode', 'That battle did not finish both images. Generate again.');
+            setBattleFormEnabled(true);
+        } catch (err) {
+            loadBattle();
+        }
+    }
+
+    function finishBattleGeneration(snapshot) {
+        stopBattleWatch();
+        battleBusy = false;
+        setBattleFormEnabled(true);
+        const jobs = snapshot.jobs || [];
+        const completed = jobs.filter((job) => job.status === 'completed').length;
+        const failed = jobs.filter((job) => job.status === 'failed' || job.status === 'cancelled').length;
+        if (completed < 2) {
+            setBattleFormNote('Not enough images rendered (' + completed + ' of ' + jobs.length +
+                '). Generate again, or check the failed engines in the Benchmark tab.');
+            renderBattleEmpty('new_mode', 'Not enough images rendered. Generate again, or check the failed engines in the Benchmark tab.');
+            if (els.battleAgain) els.battleAgain.hidden = false;
+            return;
+        }
+        setBattleFormNote(failed
+            ? completed + ' of ' + jobs.length + ' rendered. The battle uses the finished ones.'
+            : 'All ' + completed + ' rendered. Which one is better?');
+        loadBattle();
+    }
+
+    async function startBattle() {
+        if (battleBusy || !els.battlePrompt) return;
+        const prompt = els.battlePrompt.value.trim();
+        if (!prompt) { setBattleFormNote('Write a prompt or roll a random one.'); return; }
+        if (readyModels().length < 2) { updateBattleRoster(); return; }
+        battleBusy = true;
+        setBattleFormNote('Starting\u2026');
+        setBattleFormEnabled(false);
+        battlePair = null;
+        if (els.battleStage) els.battleStage.hidden = true;
+        if (els.battleEmpty) els.battleEmpty.hidden = true;
+        hideBattleLineup();
+        if (els.battleAgain) els.battleAgain.hidden = true;
+        try {
+            const res = await fetch('/api/benchmark/battle/new', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    prompt,
+                    // No `models`: the server renders on every ready engine.
+                    mode: els.mode ? els.mode.value : 'native',
+                    settings: readSettings()
+                })
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.error || 'The battle could not start.');
+            battleSessionId = data.session.id;
+            renderBattleProgress(data.session);
+            setBattleFormNote('Rendering on ' + ((data.session.jobs || []).length) + ' engines\u2026');
+            watchBattleSession(data.session.id);
+        } catch (err) {
+            battleBusy = false;
+            setBattleFormEnabled(true);
+            setBattleFormNote(err.message);
+            renderBattleEmpty('new_mode', err.message);
+        }
+    }
+
+    function setBattleMode(on) {
+        battleMode = on === true;
+        if (els.benchmarkPanel) els.benchmarkPanel.hidden = battleMode;
+        if (els.battle) els.battle.hidden = !battleMode;
+        if (els.footer) els.footer.hidden = battleMode;
+        [[els.tabBenchmark, !battleMode], [els.tabBattle, battleMode]].forEach(([tab, active]) => {
+            if (!tab) return;
+            tab.classList.toggle('is-active', active);
+            tab.setAttribute('aria-selected', active ? 'true' : 'false');
+        });
+        if (battleMode) {
+            if (battleSource === 'new') {
+                if (battleSessionId) resumeBattleSession();
+                else setBattleSource('new');
+            } else {
+                loadBattle();
+            }
+        } else {
+            clearTimeout(battleTimer);
+            stopBattleWatch();
+        }
+    }
+
+    function battleStatLine(stats) {
+        if (!stats) return '';
+        const votes = Number(stats.votes) || 0;
+        const models = Number(stats.models) || 0;
+        const results = Number(stats.results) || 0;
+        const voteLabel = votes === 1 ? '1 vote' : votes + ' votes';
+        return voteLabel + ' \u00B7 ' + (models === 1 ? '1 model' : models + ' models') +
+            ' \u00B7 ' + (results === 1 ? '1 result' : results + ' results');
+    }
+
+    function renderBattleStats(data) {
+        if (!els.battleStats) return;
+        els.battleStats.textContent = battleStatLine((data && data.stats) || battleStats) || 'No votes yet';
+    }
+
+    function setBattleCardsEnabled(enabled) {
+        [els.battleLeft, els.battleRight].forEach((card) => {
+            if (!card) return;
+            card.disabled = !enabled;
+            card.classList.toggle('is-locked', !enabled);
+        });
+        [els.battleTie, els.battleNext].forEach((button) => {
+            if (!button) return;
+            if (button === els.battleTie) button.disabled = !enabled || !battlePair;
+            else button.disabled = !battlePair;
+        });
+    }
+
+    function hideBattleReveals() {
+        [els.battleLeftReveal, els.battleRightReveal].forEach((node) => {
+            if (!node) return;
+            node.hidden = true;
+            node.textContent = '';
+        });
+        [els.battleLeft, els.battleRight].forEach((card) => {
+            if (!card) return;
+            card.classList.remove('is-winner', 'is-loser');
+        });
+    }
+
+    function hideBattleLineup() {
+        if (els.battleLineup) els.battleLineup.hidden = true;
+        if (els.battleLineupGrid) clear(els.battleLineupGrid);
+    }
+
+    // While a generated set is still being judged the cards may show WHICH side
+    // you preferred, never which model made it: every image appears in several
+    // pairs, so one leaked name would spoil the rest of the set.
+    function renderScopedReveal(data) {
+        const winner = data && data.vote ? data.vote.winner : '';
+        [[els.battleLeft, els.battleLeftReveal, 'left'], [els.battleRight, els.battleRightReveal, 'right']]
+            .forEach(([card, reveal, side]) => {
+                const won = winner === 'tie' || winner === side;
+                if (reveal) {
+                    reveal.textContent = winner === 'tie'
+                        ? 'Too close'
+                        : (won ? 'Your pick' : 'Not this one');
+                    reveal.hidden = false;
+                }
+                if (card) {
+                    card.classList.toggle('is-winner', won && winner !== 'tie');
+                    card.classList.toggle('is-loser', !won);
+                }
+            });
+    }
+
+    function renderLineup(data) {
+        const lineup = Array.isArray(data && data.lineup) ? data.lineup : [];
+        if (els.battleLineupNote) {
+            els.battleLineupNote.textContent = lineup.length
+                ? lineup.length + (lineup.length === 1 ? ' engine' : ' engines')
+                    + (data.total && data.total > lineup.length ? ' \u00B7 ' + data.total + ' attempted' : '')
+                : '';
+        }
+        if (els.battleLineupPrompt) {
+            els.battleLineupPrompt.textContent = data && data.prompt ? '\u201C' + data.prompt + '\u201D' : '';
+        }
+        if (!els.battleLineupGrid) return;
+        clear(els.battleLineupGrid);
+        lineup.forEach((entry) => {
+            const card = el('div', 'arena-battle-lineup-card');
+            const stage = el('div', 'arena-battle-lineup-stage');
+            const img = document.createElement('img');
+            img.src = entry.url;
+            img.alt = entry.modelLabel;
+            img.loading = 'lazy';
+            img.draggable = false;
+            stage.appendChild(img);
+            card.appendChild(stage);
+            const foot = el('div', 'arena-battle-lineup-foot');
+            foot.appendChild(el('strong', '', entry.modelLabel));
+            foot.appendChild(el('span', 'arena-battle-lineup-record',
+                String(Math.round(entry.rating)) + (entry.games
+                    ? ' \u00B7 ' + entry.wins + '\u2013' + entry.losses + (entry.ties ? '\u2013' + entry.ties : '')
+                    : '')));
+            card.appendChild(foot);
+            els.battleLineupGrid.appendChild(card);
+        });
+    }
+
+    // The payoff screen: every image of the finished set beside the model that
+    // made it. Only requested once all pairs are judged.
+    async function showLineup() {
+        if (!battleSessionId) return;
+        if (els.battleStage) els.battleStage.hidden = true;
+        if (els.battleEmpty) els.battleEmpty.hidden = true;
+        if (els.battleNote) els.battleNote.hidden = true;
+        if (els.battleLineup) els.battleLineup.hidden = false;
+        if (els.battleAgain) els.battleAgain.hidden = false;
+        setBattleCardsEnabled(false);
+        if (els.battleTie) els.battleTie.disabled = true;
+        if (els.battleNext) els.battleNext.disabled = true;
+        try {
+            const res = await fetch('/api/benchmark/battle/lineup?session=' + encodeURIComponent(battleSessionId), {
+                cache: 'no-store'
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.error || 'Could not load the finished set.');
+            renderLineup(data);
+        } catch (err) {
+            hideBattleLineup();
+            renderBattleEmpty('session_done', err.message);
+        }
+    }
+
+    function renderBattleEmpty(reason, message) {
+        hideBattleLineup();
+        if (els.battleStage) els.battleStage.hidden = true;
+        if (els.battleEmpty) {
+            const copy = message || (
+                reason === 'new_mode'
+                    ? 'Write a prompt or roll one. Every ready engine renders it, then you vote blind between the results.'
+                    : (reason === 'session_done'
+                        ? 'Every pair from this set is judged. Generate again for a fresh set, or switch to finished results.'
+                        : (reason === 'session_not_ready'
+                            ? 'The engines are still rendering. The vote starts when at least two finish.'
+                            : (reason === 'no_comparable_results'
+                                ? 'These results all come from one engine, so there is nothing to compare. Run a benchmark with two or more models.'
+                                : 'Run a benchmark with two or more models first — battles compare finished results.')))
+            );
+            els.battleEmpty.textContent = copy;
+            els.battleEmpty.hidden = false;
+        }
+        if (els.battleLede) {
+            els.battleLede.textContent = 'Pick the better image. The model names are hidden until you vote.';
+        }
+        setBattleCardsEnabled(false);
+        if (els.battleTie) els.battleTie.disabled = true;
+        if (els.battleNext) els.battleNext.disabled = true;
+        if (els.battleNote) els.battleNote.hidden = true;
+    }
+
+    function renderBattlePair() {
+        if (!battlePair) return;
+        hideBattleLineup();
+        hideBattleReveals();
+        if (els.battleStage) els.battleStage.hidden = false;
+        if (els.battleEmpty) els.battleEmpty.hidden = true;
+        // Once the pair is on screen the progress rows have done their job, and
+        // keeping them would only repeat the cast the user already chose.
+        if (els.battleProgress) els.battleProgress.hidden = true;
+        if (els.battleAgain) els.battleAgain.hidden = battleSource !== 'new';
+        if (els.battleLeftImg) {
+            els.battleLeftImg.src = battlePair.left.url;
+            els.battleLeftImg.alt = 'Candidate A';
+        }
+        if (els.battleRightImg) {
+            els.battleRightImg.src = battlePair.right.url;
+            els.battleRightImg.alt = 'Candidate B';
+        }
+        if (els.battleNote) {
+            const samePrompt = battlePair.left.prompt && battlePair.left.prompt === battlePair.right.prompt;
+            const parts = [];
+            if (samePrompt) parts.push('\u201C' + battlePair.left.prompt + '\u201D');
+            if (battlePair.repeated) parts.push('You have rated every available pair \u2014 these are repeats, so the leaderboard keeps settling.');
+            els.battleNote.textContent = parts.join(' ');
+            els.battleNote.hidden = !parts.length;
+        }
+        setBattleCardsEnabled(true);
+    }
+
+    function renderBattleReveal(data) {
+        const result = data && data.result;
+        if (!result) return;
+        const sides = [
+            [els.battleLeft, els.battleLeftReveal, result.left],
+            [els.battleRight, els.battleRightReveal, result.right]
+        ];
+        const winner = data.vote && data.vote.winner;
+        sides.forEach(([card, reveal, entry], index) => {
+            if (!reveal || !entry) return;
+            const won = winner === 'tie' || winner === (index === 0 ? 'left' : 'right');
+            const delta = Number(entry.delta) || 0;
+            reveal.textContent = entry.label + ' \u00B7 ' + entry.rating +
+                ' (' + (delta >= 0 ? '+' : '') + delta + ')';
+            reveal.hidden = false;
+            if (card) {
+                card.classList.toggle('is-winner', won && winner !== 'tie');
+                card.classList.toggle('is-loser', !won);
+            }
+        });
+        setBattleCardsEnabled(false);
+    }
+
+    function renderBattleBoard(rows) {
+        if (!els.battleBoard) return;
+        clear(els.battleBoard);
+        const list = Array.isArray(rows) ? rows : [];
+        if (els.battleBoardNote) {
+            els.battleBoardNote.textContent = list.length ? 'Elo \u00B7 1200 start' : '';
+        }
+        if (!list.length) {
+            els.battleBoard.appendChild(el('div', 'arena-empty', 'Vote in a few battles to build the leaderboard.'));
+            return;
+        }
+        list.forEach((row) => {
+            const line = el('div', 'arena-battle-row');
+            line.appendChild(el('span', 'arena-battle-rank', String(row.rank)));
+            const name = el('span', 'arena-battle-name');
+            name.appendChild(el('strong', '', row.label));
+            name.appendChild(el('span', 'arena-battle-record',
+                row.wins + '\u2013' + row.losses + (row.ties ? '\u2013' + row.ties : '') + ' \u00B7 ' + row.games + ' played'));
+            line.appendChild(name);
+            line.appendChild(el('span', 'arena-battle-rating', String(Math.round(row.rating))));
+            els.battleBoard.appendChild(line);
+        });
+    }
+
+    async function loadBattle() {
+        if (!els.battle || !battleMode) return;
+        clearTimeout(battleTimer);
+        battleBusy = true;
+        try {
+            const url = '/api/benchmark/battle' + (battleSessionId
+                ? '?session=' + encodeURIComponent(battleSessionId)
+                : '');
+            const res = await fetch(url, { cache: 'no-store' });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.error || 'Could not load a battle.');
+            battleStats = data.stats || null;
+            renderBattleStats(data);
+            renderBattleBoard(data.leaderboard);
+            if (data.pair && battleSessionId && data.pair.repeated) {
+                // Every pair from this fresh set has been judged: show the cast
+                // with the model names, which is safe now that no vote is left.
+                battlePair = null;
+                await showLineup();
+            } else if (data.pair) {
+                battlePair = data.pair;
+                renderBattlePair();
+            } else {
+                battlePair = null;
+                renderBattleEmpty(data.reason);
+            }
+        } catch (err) {
+            battlePair = null;
+            renderBattleEmpty('error', err.message);
+        } finally {
+            battleBusy = false;
+        }
+    }
+
+    async function castVote(side) {
+        if (!battlePair || battleBusy) return;
+        const token = battlePair.token;
+        battleBusy = true;
+        setBattleCardsEnabled(false);
+        try {
+            const res = await fetch('/api/benchmark/battle/vote', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ token, winner: side })
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.error || 'The vote could not be recorded.');
+            battleStats = data.stats || battleStats;
+            if (battleSessionId) renderScopedReveal(data);
+            else renderBattleReveal(data);
+            renderBattleBoard(data.leaderboard);
+            renderBattleStats(data);
+            // Let the reveal land before the next pair (or the "set complete"
+            // state) replaces it.
+            battleTimer = setTimeout(loadBattle, 1900);
+        } catch (err) {
+            setStatus(err.message, 'error');
+            setBattleCardsEnabled(true);
+            if (/no longer|not valid|not ready|same model/i.test(err.message)) {
+                battleTimer = setTimeout(loadBattle, 900);
+            }
+        } finally {
+            battleBusy = false;
+        }
+    }
+
+    async function resetBattle() {
+        const ok = window.Dialog
+            ? await window.Dialog.confirm('Reset the leaderboard? Every vote and rating for this device is cleared.')
+            : window.confirm('Reset the leaderboard? Every vote and rating for this device is cleared.');
+        if (!ok) return;
+        try {
+            const res = await fetch('/api/benchmark/battle', { method: 'DELETE' });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.error || 'Could not reset the ratings.');
+            battleStats = data.stats || null;
+            renderBattleBoard([]);
+            renderBattleStats(data);
+            await loadBattle();
+        } catch (err) {
+            setStatus(err.message, 'error');
+        }
+    }
+
     // --- Open / close --------------------------------------------------------
 
     async function open() {
         if (!els.overlay) return;
         els.overlay.hidden = false;
         requestAnimationFrame(() => els.overlay.classList.add('open'));
-        if (window.StudioShell) window.StudioShell.open(els.overlay, { initial: '#arenaPrompt' });
+        if (window.StudioShell) {
+            window.StudioShell.open(els.overlay, { initial: battleMode ? '#arenaBattleLeft' : '#arenaPrompt' });
+        }
         setStatus('');
         loadPrefs();
         syncModeUi();
@@ -1354,6 +1940,14 @@ const ImageArenaUI = (() => {
                 await openSession(lastSessionId);
             }
         } catch (err) { /* history remains available */ }
+        if (battleMode) {
+            if (battleSource === 'new') {
+                if (battleSessionId) resumeBattleSession();
+                else setBattleSource('new');
+            } else {
+                loadBattle();
+            }
+        }
     }
 
     function close() {
@@ -1361,6 +1955,8 @@ const ImageArenaUI = (() => {
         savePrefs();
         closeCompare();
         closeViewer();
+        clearTimeout(battleTimer);
+        stopBattleWatch();
         els.overlay.classList.remove('open');
         if (window.StudioShell) window.StudioShell.close();
         stopWatch();
@@ -1424,7 +2020,41 @@ const ImageArenaUI = (() => {
             compareOverlay: document.getElementById('arenaCompareOverlay'),
             compareGrid: document.getElementById('arenaCompareGrid'),
             compareMeta: document.getElementById('arenaCompareMeta'),
-            compareClose: document.getElementById('arenaCompareClose')
+            compareClose: document.getElementById('arenaCompareClose'),
+            footer: document.getElementById('arenaFooter'),
+            tabBenchmark: document.getElementById('arenaTabBenchmark'),
+            tabBattle: document.getElementById('arenaTabBattle'),
+            benchmarkPanel: document.getElementById('arenaBenchmarkPanel'),
+            battle: document.getElementById('arenaBattle'),
+            battleLede: document.getElementById('arenaBattleLede'),
+            battleStats: document.getElementById('arenaBattleStats'),
+            battleStage: document.getElementById('arenaBattleStage'),
+            battleEmpty: document.getElementById('arenaBattleEmpty'),
+            battleNote: document.getElementById('arenaBattleNote'),
+            battleLeft: document.getElementById('arenaBattleLeft'),
+            battleRight: document.getElementById('arenaBattleRight'),
+            battleLeftImg: document.getElementById('arenaBattleLeftImg'),
+            battleRightImg: document.getElementById('arenaBattleRightImg'),
+            battleLeftReveal: document.getElementById('arenaBattleLeftReveal'),
+            battleRightReveal: document.getElementById('arenaBattleRightReveal'),
+            battleTie: document.getElementById('arenaBattleTie'),
+            battleNext: document.getElementById('arenaBattleNext'),
+            battleReset: document.getElementById('arenaBattleReset'),
+            battleBoard: document.getElementById('arenaBattleBoard'),
+            battleBoardNote: document.getElementById('arenaBattleBoardNote'),
+            sourceExisting: document.getElementById('arenaBattleSourceExisting'),
+            sourceNew: document.getElementById('arenaBattleSourceNew'),
+            battleNew: document.getElementById('arenaBattleNew'),
+            battlePrompt: document.getElementById('arenaBattlePrompt'),
+            battleStart: document.getElementById('arenaBattleStart'),
+            battleRandomPrompt: document.getElementById('arenaBattleRandomPrompt'),
+            battleNewNote: document.getElementById('arenaBattleNewNote'),
+            battleProgress: document.getElementById('arenaBattleProgress'),
+            battleAgain: document.getElementById('arenaBattleAgain'),
+            battleLineup: document.getElementById('arenaBattleLineup'),
+            battleLineupGrid: document.getElementById('arenaBattleLineupGrid'),
+            battleLineupNote: document.getElementById('arenaBattleLineupNote'),
+            battleLineupPrompt: document.getElementById('arenaBattleLineupPrompt')
         };
     }
 
@@ -1524,6 +2154,29 @@ const ImageArenaUI = (() => {
         if (els.compareClose) els.compareClose.addEventListener('click', closeCompare);
         if (els.compareOverlay) els.compareOverlay.addEventListener('click', (event) => {
             if (event.target === els.compareOverlay) closeCompare();
+        });
+
+        // Battle controls.
+        if (els.tabBenchmark) els.tabBenchmark.addEventListener('click', () => setBattleMode(false));
+        if (els.tabBattle) els.tabBattle.addEventListener('click', () => setBattleMode(true));
+        if (els.battleLeft) els.battleLeft.addEventListener('click', () => castVote('left'));
+        if (els.battleRight) els.battleRight.addEventListener('click', () => castVote('right'));
+        if (els.battleTie) els.battleTie.addEventListener('click', () => castVote('tie'));
+        if (els.battleNext) els.battleNext.addEventListener('click', () => loadBattle());
+        if (els.battleReset) els.battleReset.addEventListener('click', resetBattle);
+        if (els.battleAgain) els.battleAgain.addEventListener('click', startBattle);
+        if (els.sourceExisting) els.sourceExisting.addEventListener('click', () => setBattleSource('existing'));
+        if (els.sourceNew) els.sourceNew.addEventListener('click', () => setBattleSource('new'));
+        if (els.battleStart) els.battleStart.addEventListener('click', startBattle);
+        if (els.battleRandomPrompt) els.battleRandomPrompt.addEventListener('click', rollBattlePrompt);
+
+        document.addEventListener('keydown', (event) => {
+            if (!battleMode || !els.overlay || els.overlay.hidden || !battlePair) return;
+            const tag = String((event.target && event.target.tagName) || '').toLowerCase();
+            if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+            if (event.key === 'ArrowLeft') { event.preventDefault(); castVote('left'); }
+            else if (event.key === 'ArrowRight') { event.preventDefault(); castVote('right'); }
+            else if (event.key === 't' || event.key === 'T') { event.preventDefault(); castVote('tie'); }
         });
 
         document.addEventListener('keydown', (event) => {

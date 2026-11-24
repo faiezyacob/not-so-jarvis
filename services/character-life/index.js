@@ -12,6 +12,9 @@
 const store = require('./store');
 const life = require('./life');
 const camera = require('./camera-director');
+const inbox = require('./inbox');
+const moments = require('./moments');
+const creativeDefaults = require('../creative-defaults');
 
 function cleanId(characterId) {
     return String(characterId || '').trim();
@@ -57,8 +60,9 @@ function detectPhotoIntent(message, options) {
     }
 }
 
-// Build the structured photo plan for a resolved intent. Returns
-// { spec, request, summary } where `request` is { mode, instruction, prompt }.
+// Build the structured photo plan for a resolved intent (or a creative moment).
+// Returns { spec, request, summary, posture } where `request` is
+// { mode, instruction, prompt }.
 function planPhoto(options) {
     const opts = options || {};
     const characterId = cleanId(opts.characterId);
@@ -68,18 +72,62 @@ function planPhoto(options) {
     // this one generation; any other specifics they added are carried too. The
     // stored life state is never changed.
     const parsed = camera.parseUserRequest(opts.message || '');
-    const spec = camera.buildPhotoSpec({
+    const specOptions = {
         intent: opts.intent,
         subject: opts.subject,
+        moment: opts.moment,
         life: current || {},
         characters: opts.characters,
         previous,
         timeOfDay: opts.timeOfDay,
         outfitOverride: opts.outfitOverride || parsed.clothing,
         userScene: opts.userScene || parsed.scene
-    });
+    };
+    let spec = camera.buildPhotoSpec(specOptions);
+    // A character photo always has a complete outfit. When the user named only
+    // one garment, the shared wardrobe fills the missing slots; when the user,
+    // the life state and continuity left clothing open (a moment in another
+    // room), it composes the whole outfit. The identity editor is therefore
+    // never asked to invent clothing against a low-cut reference portrait.
+    const characters = Array.isArray(opts.characters) ? opts.characters.filter(Boolean) : [];
+    const explicitGarment = String(opts.outfitOverride || parsed.clothing || '').trim();
+    const composeWardrobe = (rawPrompt) => {
+        const defaults = creativeDefaults.buildCreativeDefaults(characters, {
+            environment: spec.location,
+            activity: spec.activity,
+            scenePrompt: [spec.location, spec.activity, spec.momentTitle].filter(Boolean).join(' '),
+            rawPrompt,
+            seed: opts.seed
+        });
+        return defaults && Array.isArray(defaults.clothing) && defaults.clothing[0] && defaults.clothing[0].outfit
+            ? defaults.clothing[0].outfit
+            : '';
+    };
+    if (spec.includeCharacter && characters.length) {
+        if (explicitGarment) {
+            const wardrobe = composeWardrobe(opts.message || explicitGarment);
+            // The partial-fill pass returns only the slots the user left open, so
+            // put the named garment back in front of it.
+            const completed = !wardrobe
+                ? ''
+                : (wardrobe.toLowerCase().indexOf(explicitGarment.toLowerCase()) !== -1
+                    ? wardrobe
+                    : explicitGarment + ' with ' + wardrobe);
+            if (completed && completed !== explicitGarment) {
+                spec = camera.buildPhotoSpec(Object.assign({}, specOptions, { outfitOverride: completed }));
+            }
+        } else if (!spec.outfit) {
+            const composed = composeWardrobe('');
+            if (composed) spec = camera.buildPhotoSpec(Object.assign({}, specOptions, { autoOutfit: composed }));
+        }
+    }
     const request = camera.buildPhotoInstruction(spec);
-    return { spec, request, summary: camera.specSummary(spec) };
+    return {
+        spec,
+        request,
+        summary: camera.specSummary(spec),
+        posture: spec.posture || null
+    };
 }
 
 // Persist a generated photo into the character's scene history so the next
@@ -177,6 +225,94 @@ function formatForPrompt(characterId) {
     return life.formatLife(store.getLife(characterId));
 }
 
+// --- Unprompted photo inbox ----------------------------------------------------
+
+// Is a photo drop due for this character right now? Pure policy check.
+function inboxDue(characterId, behavior, options) {
+    const id = cleanId(characterId);
+    if (!id) return { due: false, reason: 'no_character' };
+    return inbox.dueCheck(Object.assign({}, options, {
+        behavior: behavior || {},
+        record: store.getRecord(id)
+    }));
+}
+
+// The moment to capture (intent + moment + message), from the current fictional
+// life and the moments already sent, so consecutive drops do not repeat.
+function inboxPlan(characterId, options) {
+    const id = cleanId(characterId);
+    if (!id) return null;
+    const opts = options || {};
+    const current = store.getLife(id) || {};
+    const recent = Array.isArray(opts.recent) ? opts.recent : inboxHistory(id);
+    return inbox.planMoment(Object.assign({}, opts, {
+        life: current,
+        count: store.getInbox(id).length,
+        recent
+    }));
+}
+
+// The creative moment for the next unprompted drop. Asks the local model first
+// and always resolves to a usable moment (deterministic catalog on any failure).
+function planInboxMoment(characterId, options) {
+    const id = cleanId(characterId);
+    if (!id) return Promise.resolve(null);
+    const opts = options || {};
+    return moments.buildInboxMoment({
+        character: opts.character,
+        settings: opts.settings,
+        life: store.getLife(id) || {},
+        recent: Array.isArray(opts.recent) ? opts.recent : inboxHistory(id),
+        count: store.getInbox(id).length,
+        providers: opts.providers,
+        provider: opts.provider,
+        model: opts.model,
+        timeoutMs: opts.timeoutMs,
+        now: opts.now,
+        hour: opts.hour
+    });
+}
+
+// Recent moment titles from the tray plus the recent scene activities, newest
+// first, so a new drop avoids what the last few photos already showed.
+function inboxHistory(characterId) {
+    const sent = store.getInbox(characterId, 6)
+        .map((item) => item.moment)
+        .filter(Boolean);
+    const seen = store.getSceneHistory(characterId, 6)
+        .map((scene) => [scene.activity, scene.location].filter(Boolean).join(' '))
+        .filter(Boolean);
+    return sent.concat(seen);
+}
+
+function captureInboxPhoto(characterId, input) {
+    return inbox.capture(characterId, input);
+}
+
+function markInboxAttempt(characterId, at) {
+    return inbox.markAttempt(characterId, at);
+}
+
+function listInbox(characterId, limit) {
+    return inbox.listInbox(characterId, limit);
+}
+
+function inboxUnreadCount(characterId) {
+    return inbox.unreadCount(characterId);
+}
+
+function markInboxRead(characterId, itemId) {
+    return inbox.markRead(characterId, itemId);
+}
+
+function removeInboxItem(characterId, itemId) {
+    return inbox.remove(characterId, itemId);
+}
+
+function clearInbox(characterId) {
+    return inbox.clear(characterId);
+}
+
 function clearRecord(characterId) {
     return store.deleteRecord(characterId);
 }
@@ -208,6 +344,19 @@ module.exports = {
     formatLife: life.formatLife,
     cameraLabel: camera.cameraLabel,
     specSummary: camera.specSummary,
+    // Unprompted photo inbox.
+    inboxDue,
+    inboxPlan,
+    planInboxMoment,
+    pickDeterministicMoment: moments.pickDeterministicMoment,
+    MOMENT_CATALOG: moments.MOMENT_CATALOG,
+    captureInboxPhoto,
+    markInboxAttempt,
+    listInbox,
+    inboxUnreadCount,
+    markInboxRead,
+    removeInboxItem,
+    clearInbox,
     clearRecord,
     _reset: store._reset
 };

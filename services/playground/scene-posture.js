@@ -47,6 +47,11 @@ const LOCATION_POSTURES = Object.freeze({
         stance: 'standing',
         phrase: 'standing relaxed at the counter with an even weight balance, both feet planted on the floor and hands resting naturally or lightly on the counter'
     },
+    counter: {
+        label: 'Seated on the counter',
+        stance: 'sitting',
+        phrase: 'seated up on the counter with the legs hanging down, the seat taking the weight and one hand resting on the counter beside her'
+    },
     cafe: {
         label: 'Seated at the cafe table',
         stance: 'sitting',
@@ -172,6 +177,16 @@ const LOCATION_POSTURES = Object.freeze({
         stance: 'sitting',
         phrase: 'seated comfortably on the sofa with the back supported by the cushions, both feet resting on the floor and hands relaxed in the lap'
     },
+    floor: {
+        label: 'Seated on the floor',
+        stance: 'sitting',
+        phrase: 'sitting comfortably on the floor with the legs loosely folded to one side, the weight resting on the floor and hands relaxed'
+    },
+    stairs: {
+        label: 'Seated on the stairs',
+        stance: 'sitting',
+        phrase: 'seated on a stair with the back supported by the step behind, both feet resting on the step below and forearms resting on the knees'
+    },
     mirror: {
         label: 'Standing at the mirror',
         stance: 'standing',
@@ -232,6 +247,9 @@ const LOCATION_HINTS = [
     { id: 'chair', re: /\b(?:chair|stool|bench|perched)\b/i },
     { id: 'mirror', re: /\b(?:mirror|vanity)\b/i },
     { id: 'sofa', re: /\b(?:sofa|couch)\b/i },
+    { id: 'counter', re: /\b(?:countertop|kitchen counter|on the counter|kitchen island)\b/i },
+    { id: 'floor', re: /\b(?:on the floor|floor|rug|yoga mat|picnic blanket)\b/i },
+    { id: 'stairs', re: /\bstairs?\b/i },
     { id: 'bedroom', re: /\bbed\b/i }
 ];
 
@@ -254,7 +272,7 @@ function activityStance(activity) {
 }
 
 function locationId(environment, activity) {
-    const text = String(environment || '');
+    const text = [environment, activity].filter(Boolean).join(' ');
     for (const hint of LOCATION_HINTS) {
         if (hint.re.test(text)) return hint.id;
     }

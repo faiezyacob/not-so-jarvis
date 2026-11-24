@@ -15,6 +15,7 @@
    ============================================ */
 
 const outfitContext = require('../playground/outfit-context');
+const scenePosture = require('../playground/scene-posture');
 
 const INTENT = {
     SELFIE: 'selfie',
@@ -271,33 +272,60 @@ function lightingFor(environment, timeOfDay) {
 
 // --- Spec building -------------------------------------------------------------
 
-// Build the structured photo specification from an intent + the life state.
+// Build the structured photo specification from an intent (or a creative
+// moment) plus the life state. A moment is a whole composed shot: place, body
+// position, camera framing and light, so the identity editor has to recompose
+// the frame rather than keep the portrait's front-on composition.
 function buildPhotoSpec(options) {
     const opts = options || {};
-    const intent = opts.intent && opts.intent !== INTENT.NONE ? opts.intent : INTENT.SELFIE;
-    const life = opts.life || {};
+    const moment = opts.moment && typeof opts.moment === 'object' && (opts.moment.activity || opts.moment.location)
+        ? opts.moment : null;
+    const intent = moment
+        ? (moment.camera === 'mirror' ? INTENT.OUTFIT : INTENT.SELFIE)
+        : (opts.intent && opts.intent !== INTENT.NONE ? opts.intent : INTENT.SELFIE);
+    const lifeState = opts.life || {};
     const previous = opts.previous || null;
     const characters = Array.isArray(opts.characters) ? opts.characters : [];
     const name = characters[0] && characters[0].name ? characters[0].name : 'the character';
-    const location = life.location || (previous && previous.location) || '';
-    const activity = life.activity || '';
+    const location = (moment && moment.location) || lifeState.location || (previous && previous.location) || '';
+    const activity = (moment && moment.activity) || lifeState.activity || '';
     // A garment the user explicitly named always wins for this generation; the
     // life-state outfit is only the fallback and is never overwritten on disk.
+    // A moment in a different place drops the life outfit so the shared creative
+    // defaults can dress her for the room she is actually in (work clothes do not
+    // belong in bed), and continuity only applies where the place matches.
     const outfitOverride = String(opts.outfitOverride || '').trim();
-    const outfit = outfitOverride || life.outfit || (previous && previous.outfit) || '';
-    const userScene = String(opts.userScene || '').trim();
+    const autoOutfit = String(opts.autoOutfit || '').trim();
+    const momentPlaceMatchesLife = !moment
+        ? true
+        : Boolean(lifeState.location && location
+            && location.toLowerCase().trim() === lifeState.location.toLowerCase().trim());
+    const keepsLifeOutfit = !moment || momentPlaceMatchesLife;
+    const continuityOutfit = (previous && previous.outfit) || '';
+    const outfit = (moment && moment.outfit)
+        || outfitOverride
+        || (keepsLifeOutfit ? (lifeState.outfit || continuityOutfit) : '')
+        || autoOutfit;
+    const outfitSource = (moment && moment.outfit) ? 'moment'
+        : outfitOverride ? 'user'
+            : (keepsLifeOutfit && lifeState.outfit) ? 'life'
+                : (keepsLifeOutfit && continuityOutfit) ? 'continuity'
+                    : (autoOutfit ? 'auto' : 'none');
+    const userScene = moment ? '' : String(opts.userScene || '').trim();
     // The action/pose the user explicitly asked for ("lying on the bed") is
     // authoritative: it replaces the life-state activity for this generation.
     // A phrase that is not action-shaped ("a big smile") is carried as an extra
     // detail instead of being forced into a "she is …" clause.
-    const requestedAction = String(opts.requestedAction || userScene || '').trim();
+    const requestedAction = moment
+        ? String(moment.activity || '').trim()
+        : String(opts.requestedAction || userScene || '').trim();
     const actionIsAction = looksLikeAction(requestedAction);
     // Lighting/context follow the requested place when the user named one.
     const environment = outfitContext.classifyEnvironment(
         [location, activity, requestedAction].filter(Boolean).join(' '), ''
     ) || null;
     const timeOfDay = opts.timeOfDay || '';
-    const lighting = lightingFor(environment, timeOfDay);
+    const lighting = (moment && moment.lighting) || lightingFor(environment, timeOfDay);
 
     let cameraView = CAMERA_VIEW.FRONT;
     let includeCharacter = true;
@@ -355,6 +383,14 @@ function buildPhotoSpec(options) {
             break;
     }
 
+    // A creative moment owns the shot: its framing/angle/composition replace the
+    // intent defaults so the photo is a new composition, not a portrait crop.
+    if (moment) {
+        if (moment.framing) distance = moment.framing;
+        if (moment.angle) angle = moment.angle;
+        if (moment.composition) composition = moment.composition;
+    }
+
     const continuity = [];
     if (previous) {
         if (location && previous.location && location.toLowerCase() === previous.location.toLowerCase()) {
@@ -365,6 +401,19 @@ function buildPhotoSpec(options) {
         }
     }
 
+    // One physically supported body position. A creative moment already states
+    // the exact pose and its support ("sitting cross-legged on the counter"), so
+    // that wording is the position; the resolver still supplies the stance and
+    // the support check instead of a second, contradictory pose.
+    const resolvedPosture = scenePosture.resolve({
+        environment: location,
+        activity: activity || requestedAction,
+        userPrompt: (moment && moment.stance) || ''
+    });
+    const posture = moment
+        ? Object.assign({}, resolvedPosture, { phrase: activity, source: 'moment' })
+        : resolvedPosture;
+
     return {
         intent,
         cameraView,
@@ -373,13 +422,13 @@ function buildPhotoSpec(options) {
         activity,
         location,
         outfit,
-        outfitSource: outfitOverride ? 'user' : (life.outfit ? 'life' : (outfit ? 'continuity' : 'none')),
+        outfitSource,
         userScene,
         requestedAction,
-        actionSource: actionIsAction ? 'user' : (activity ? 'life' : 'none'),
-        detail: actionIsAction ? '' : requestedAction,
-        context: life.context || '',
-        mood: life.mood || '',
+        actionSource: moment ? 'moment' : (actionIsAction ? 'user' : (activity ? 'life' : 'none')),
+        detail: moment ? '' : (actionIsAction ? '' : requestedAction),
+        context: lifeState.context || '',
+        mood: (moment && moment.mood) || lifeState.mood || '',
         distance,
         angle,
         composition,
@@ -388,17 +437,52 @@ function buildPhotoSpec(options) {
         continuity,
         characterName: name,
         subject: opts.subject || '',
-        activityPhrase: (actionIsAction ? requestedAction : '') || (activity && location ? activity + ' in ' + location : (activity || (location ? 'in ' + location : '')))
+        momentId: moment ? String(moment.id || '') : '',
+        momentTitle: moment ? String(moment.title || '') : '',
+        hands: moment ? String(moment.hands || '') : '',
+        posture,
+        activityPhrase: moment
+            ? activity
+            : ((actionIsAction ? requestedAction : '') || (activity && location ? activity + ' in ' + location : (activity || (location ? 'in ' + location : ''))))
     };
 }
 
 function wearingClause(spec) {
-    return spec.outfit ? ' She is wearing ' + spec.outfit + '.' : '';
+    if (!spec.outfit) {
+        return ' She is fully dressed for this setting: the outfit covers her torso and hips and is worn normally and completely.';
+    }
+    return ' She is fully dressed in ' + spec.outfit + ', worn normally and completely, and the outfit covers her torso and hips.';
+}
+
+// Anatomy + object integrity. The reference portrait has no hands in frame and
+// no props, so an unprompted recompose can otherwise produce a hidden arm or an
+// object hovering in front of the body. Phrased positively on purpose.
+function integrityClause(spec) {
+    const parts = [
+        'ANATOMY: exactly two arms, two hands with five fingers each and one head, all correctly attached to the body.',
+        'A hand that is outside the camera framing stays entirely outside the frame.'
+    ];
+    if (spec.hands) parts.push('Hands: ' + spec.hands + '.');
+    parts.push('OBJECTS: anything she holds is held in a hand, and anything else rests on the furniture or surface it belongs to; the room behind her is clean and uncluttered.');
+    return parts.join(' ');
 }
 
 function doingClause(spec) {
     const phrase = spec.activityPhrase || '';
     return phrase ? ' She is ' + phrase + '.' : '';
+}
+
+// The reference portrait is a front-on, head-and-shoulders studio frame, and the
+// identity editor tends to reproduce exactly that while only restyling the
+// clothes. This directive is the one part of the instruction the editor cannot
+// satisfy by keeping the portrait's composition, so it leads and trails the
+// instruction.
+function buildRecomposeDirective(spec) {
+    const name = spec.characterName || 'the character';
+    return 'SHOT / CAMERA — highest priority: this is a new candid photo of ' + name + ', not the reference portrait. '
+        + 'Recompose the frame completely at ' + spec.distance + ', ' + spec.angle + '. '
+        + 'The framing, camera height, body position and background must visibly change from the reference portrait; '
+        + 'do not keep its head-and-shoulders crop, centred composition, front-on pose, plain backdrop or studio lighting.';
 }
 
 // The identity-mode instruction: appends a camera direction to the existing
@@ -408,20 +492,24 @@ function buildIdentityInstruction(spec) {
     const base = 'PHOTOGRAPH (keep her exact facial identity, hair, natural skin tone and body proportions unchanged).';
     let body;
     if (spec.cameraView === CAMERA_VIEW.MIRROR) {
-        body = ' This is a casual full-body mirror selfie of ' + name + ', standing in front of a mirror and holding her phone at chest height so the mirror shows her whole outfit.' + doingClause(spec) + wearingClause(spec)
-            + ' Framing: ' + spec.distance + ', ' + spec.angle + '. The reflection is clean and plausible, the phone visible in one hand.';
+        body = ' This is a casual full-body mirror selfie of ' + name + ', standing in front of a mirror that shows her whole outfit.' + doingClause(spec) + wearingClause(spec)
+            + ' Framing: ' + spec.distance + ', ' + spec.angle + '. The reflection is clean and plausible.';
     } else if (spec.intent === INTENT.GROUP) {
         body = ' This is a casual smartphone group photo with ' + name + ' and the people around her.' + doingClause(spec) + wearingClause(spec)
             + ' Framing: ' + spec.distance + ', ' + spec.angle + '.';
     } else {
-        body = ' This is a casual handheld smartphone photo of ' + name + ', taken by herself on the front-facing camera as a selfie.' + doingClause(spec) + wearingClause(spec)
-            + ' Framing: ' + spec.distance + ', ' + spec.angle + ', the phone held at selfie distance.';
+        body = ' This is a casual handheld smartphone selfie of ' + name + ', taken with the front-facing camera; the phone itself is not in the picture.' + doingClause(spec) + wearingClause(spec)
+            + ' Framing: ' + spec.distance + ', ' + spec.angle + '.';
     }
-    return base + body
+    return buildRecomposeDirective(spec) + ' '
+        + base + body
         + ' Composition: ' + spec.composition + '.'
         + ' Lighting: ' + spec.lighting + '.'
         + (spec.detail ? ' The user also asked for: ' + spec.detail + '.' : '')
-        + ' Natural, unposed and candid, the way a phone photo looks. Avoid professional studio lighting, editorial styling, generated-looking perfection and cinematic colour grading. Do not change who she is.';
+        + ' ' + integrityClause(spec)
+        + ' Natural, unposed and candid, the way a phone photo looks. Avoid professional studio lighting, editorial styling, generated-looking perfection and cinematic colour grading. Do not change who she is.'
+        + ' FINAL REMINDER: create the new camera setup described above and do not reproduce the reference portrait\'s framing, pose or background.'
+        + (spec.outfit ? ' Keep the full outfit on (' + spec.outfit + ').' : ' Keep the full outfit on.');
 }
 
 // The plain-generation prompt: a rear-camera subject/scenery photo with no
@@ -480,6 +568,7 @@ module.exports = {
     buildPhotoSpec,
     buildPhotoInstruction,
     buildIdentityInstruction,
+    buildRecomposeDirective,
     buildPlainPrompt,
     lightingFor,
     cameraLabel,

@@ -3661,6 +3661,7 @@ async function bootApp() {
     if (window.UGCUI && typeof window.UGCUI.init === 'function') window.UGCUI.init();
     if (window.CompanionUI && typeof window.CompanionUI.init === 'function') window.CompanionUI.init();
     if (window.ImageArenaUI && typeof window.ImageArenaUI.init === 'function') window.ImageArenaUI.init();
+    if (window.InboxUI && typeof window.InboxUI.init === 'function') window.InboxUI.init();
     await Chat.refreshConversationList();
     renderActiveChat();
 }

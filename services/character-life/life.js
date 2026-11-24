@@ -244,6 +244,7 @@ module.exports = {
     pickDeterministicActivity,
     buildEvolveMessages,
     parseEvolve,
+    extractJsonObject,
     shouldEvolve,
     hashString,
     mulberry32

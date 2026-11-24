@@ -112,7 +112,7 @@ test('an explicit clothing request overrides the life-state outfit', () => {
         characters: [{ name: 'Maya' }],
         message: 'send me a selfie of you wearing a tank top'
     });
-    assert.equal(plan.spec.outfit, 'a tank top');
+    assert.match(plan.spec.outfit, /^a tank top\b/, 'the named garment leads the completed outfit');
     assert.equal(plan.spec.outfitSource, 'user');
     assert.equal(plan.request.mode, 'identity');
     assert.match(plan.request.instruction, /tank top/);
